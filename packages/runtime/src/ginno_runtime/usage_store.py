@@ -81,6 +81,7 @@ def record(
     output_tokens: int,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    reasoning_tokens: int = 0,
     provider: str,
     model: str,
     source: str = "chat",
@@ -110,6 +111,7 @@ def record(
             "output_tokens": int(output_tokens),
             "cache_read_tokens": int(cache_read_tokens),
             "cache_creation_tokens": int(cache_creation_tokens),
+            "reasoning_tokens": int(reasoning_tokens),
             "latency_ms": latency_ms,
             "ok": bool(ok),
             "error": (error or None) if not ok else None,
@@ -219,6 +221,9 @@ def _acc() -> dict[str, int]:
         "output_tokens": 0,
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
+        # 思考 token 拆分(thinking-effort-design §8,计入 output 的其中一部分;
+        # 老记录无此键按 0 累加)。
+        "reasoning_tokens": 0,
         "calls": 0,
         # V2 P1-1: money, when a pricing table is configured (0 otherwise).
         "est_cost": 0.0,
@@ -231,6 +236,7 @@ def _add(acc: dict[str, int], e: dict) -> None:
     acc["output_tokens"] += int(e.get("output_tokens") or 0)
     acc["cache_read_tokens"] += int(e.get("cache_read_tokens") or 0)
     acc["cache_creation_tokens"] += int(e.get("cache_creation_tokens") or 0)
+    acc["reasoning_tokens"] += int(e.get("reasoning_tokens") or 0)
     acc["calls"] += 1
     try:
         from . import pricing

@@ -127,6 +127,7 @@ def build_subagent_tools(
         acceptance: str = "",
         agent_type: str = "",
         fork: bool = False,
+        thinking_effort: str = "",
     ) -> str:
         """创建一个拥有独立上下文和独立对话的子代理（subagent），立即返回、
         不阻塞当前回合；子代理完成后其结果摘要会自动注入本对话。
@@ -162,6 +163,9 @@ def build_subagent_tools(
                 按类型路由 persona/工具集/模型；未知类型会返回可用清单。
             fork: true 时子代理继承本对话的完整上下文（并行分支，适用于
                 需要全部对话细节的委派）。fork 出的子代理不能再 fork。
+            thinking_effort: 可选思考档位 "off"/"low"/"medium"/"high"。子代理
+                默认不继承本会话档位；深研类子任务可显式调高（如 high），
+                简单查证类可显式 off 省 token。其它值/空 = 默认链。
         """
         if fork:
             # P3 contract 2: fork children cannot fork again (mode recorded on
@@ -182,7 +186,7 @@ def build_subagent_tools(
                 )
         res = await create_subagent(
             session_id, goal, constraints, acceptance, origin="agent",
-            agent_type=agent_type, fork=fork,
+            agent_type=agent_type, fork=fork, thinking_effort=thinking_effort,
         )
         if not res.get("ok"):
             return str(

@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 from . import providers as prov_mod
-from ._version import __version__ as _GINNO_VERSION
+from ._version import ginno_user_agent
 
 # Per-request timeout (seconds) for chat calls. Without this the SDK falls back
 # to its ~600s default and a stalled gateway makes a turn hang for minutes (the
@@ -371,6 +371,58 @@ def _healing_chat_anthropic() -> type:
     return _ANTHROPIC_CLS
 
 
+# ---- 思考强度(thinking-effort-design.md §1/§3)-----------------------------
+THINKING_EFFORTS = ("off", "low", "medium", "high")
+
+# 档位 → token 预算内置默认;provider 配置 thinking_budgets 可整体覆盖。
+_THINKING_BUDGETS = {"low": 4096, "medium": 16384, "high": 32768}
+
+
+def normalize_effort(value: Any) -> str | None:
+    """容错解析档位:None/"auto"/空/非法值 → None(= 跟随 provider 配置)。"""
+    v = str(value or "").strip().lower()
+    return v if v in THINKING_EFFORTS else None
+
+
+def thinking_budgets(cfg: dict) -> dict[str, int]:
+    """档位 → token 预算;provider 配置 thinking_budgets 的正整数覆盖默认。"""
+    out = dict(_THINKING_BUDGETS)
+    custom = cfg.get("thinking_budgets")
+    if isinstance(custom, dict):
+        for k in out:
+            try:
+                n = int(custom.get(k) or 0)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                out[k] = n
+    return out
+
+
+def thinking_dialect(cfg: dict, model: str | None) -> str:
+    """openai-compat 的思考方言:qwen / glm / deepseek / generic(按模型名 +
+    base_url 判别;判别不出 → generic 尽力透传 reasoning_effort)。"""
+    m = (model or "").lower()
+    if m.startswith(("qwen", "qwq")):
+        return "qwen"
+    if "dashscope" in str(cfg.get("base_url") or "").lower():
+        return "qwen"
+    if m.startswith(("glm", "chatglm")) or "bigmodel" in str(cfg.get("base_url") or "").lower():
+        return "glm"
+    if "deepseek" in m:
+        return "deepseek"
+    return "generic"
+
+
+def _effective_effort(cfg: dict, value: Any) -> str | None:
+    """解析档位并套能力闸门:provider 显式声明 thinking_mode="none" 时按
+    auto 处理(UI 置灰之外的服务端兜底,见设计 §7)。"""
+    eff = normalize_effort(value)
+    if eff and str(cfg.get("thinking_mode") or "auto") == "none":
+        return None
+    return eff
+
+
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     """Sampling params for the chat constructors.
 
@@ -465,10 +517,14 @@ def build_model(
     model_name: str | None = None,
     enable_search: bool | None = None,
     session_id: str | None = None,
+    thinking_effort: str | None = None,
 ):
     """Return a LangChain chat model for the given provider id.
 
     `model_name` overrides the provider's configured default/model.
+    ``thinking_effort``("off"/"low"/"medium"/"high";None="auto" 跟随配置)按
+    协议映射成 thinking 参数(thinking-effort-design §3)——anthropic 出
+    budget_tokens、responses 出 reasoning.effort、compat 按方言。
     Raises ValueError if the provider is unknown, disabled, or missing a key.
 
     Test seam: when ``GINNO_FAKE_LLM`` is set, return a deterministic
@@ -514,6 +570,9 @@ def build_model(
     )
     temperature, model_kwargs = _sampling(cfg)
     base_url = cfg.get("base_url") or None
+    # 思考档位(设计 §3):一次解析三个分支共用;auto(None)时各分支维持
+    # 现状(provider 配置的 enable_thinking 等继续生效)。
+    effort = _effective_effort(cfg, thinking_effort)
 
     if proto == "anthropic":
         key = cfg.get("api_key")
@@ -526,7 +585,7 @@ def build_model(
         # User-supplied default_headers are merged OVER these by
         # langchain-anthropic, so ours win here. bearer_auth's Authorization
         # rides on the same dict instead of replacing the UA.
-        default_headers: dict[str, str] = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
+        default_headers: dict[str, str] = {"User-Agent": ginno_user_agent()}
         # Session affinity for external gateways (magpie etc.): magpie reads
         # x-session-id ahead of its content-fingerprint fallback, giving
         # exact per-session routing (incl. subagent isolation — each subagent
@@ -546,6 +605,20 @@ def build_model(
             max_retries=6,
             default_headers=default_headers,
         )
+        if effort:
+            if effort == "off":
+                # 显式关(网关可能默认开);多数 Claude 模型等价于不传。
+                chat_kwargs["thinking"] = {"type": "disabled"}
+            else:
+                budget = thinking_budgets(cfg)[effort]
+                chat_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Anthropic 约束:开思考时 temperature 必须 1,且 max_tokens
+                # 必须大于 budget —— 抬到 max(现值, budget + 4096) 保证成立
+                #(max_tokens=0 不传的语义由端点自决,budget 预留余量即可)。
+                chat_kwargs["temperature"] = 1.0
+                mk = dict(chat_kwargs.get("model_kwargs") or {})
+                mk["max_tokens"] = max(int(mk.get("max_tokens") or 0), budget + 4096)
+                chat_kwargs["model_kwargs"] = mk
         m = _healing_chat_anthropic()(**chat_kwargs)
         if server_web_search_on(cfg):
             m = _anthropic_with_server_search(m, cfg)
@@ -572,10 +645,15 @@ def build_model(
         # Same gateway-identity override as the anthropic branch above: the
         # openai SDK stamps AsyncOpenAI/Python, which magpie attributes to
         # "AsyncOpenAI". SDK default_headers merge over its own UA, so ours wins.
-        default_headers = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
+        default_headers = {"User-Agent": ginno_user_agent()}
         if session_id:
             default_headers["x-session-id"] = session_id
         chat_kw["default_headers"] = default_headers
+        if effort:
+            # Responses API:langchain-openai 把 reasoning_effort 转成
+            # reasoning={"effort": ...};off 映射 minimal(o 系/gpt-5 系最低
+            # 档)。不支持思考的模型由端点报错透传错误卡(设计 §7)。
+            chat_kw["reasoning_effort"] = "minimal" if effort == "off" else effort
         return _responses_chat_openai()(**chat_kw)
 
     # openai / openai-compatible
@@ -604,14 +682,34 @@ def build_model(
     es = cfg.get("enable_search") if enable_search is None else enable_search
     if es:
         extra_body["enable_search"] = True
-    if cfg.get("enable_thinking"):
+    if effort:
+        # 会话档位覆盖 provider 配置(设计 §3):有档位时 cfg.enable_thinking
+        # 不再参与;方言决定参数形状。
+        dialect = thinking_dialect(cfg, model)
+        if dialect == "qwen":
+            # DashScope 兼容模式:开关 + 预算(商业版 qwen3 系)。
+            if effort == "off":
+                extra_body["enable_thinking"] = False
+            else:
+                extra_body["enable_thinking"] = True
+                extra_body["thinking_budget"] = thinking_budgets(cfg)[effort]
+        elif dialect == "glm":
+            # GLM(bigmodel)只有开关,无预算概念:off=关,其余全落开。
+            extra_body["thinking"] = {
+                "type": "disabled" if effort == "off" else "enabled"
+            }
+        else:
+            # deepseek / generic:尽力透传 reasoning_effort(chat completions
+            # 参数);不支持的老网关报错原文回错误卡,用户可回落 auto。
+            chat_kw["reasoning_effort"] = "minimal" if effort == "off" else effort
+    elif cfg.get("enable_thinking"):
         extra_body["enable_thinking"] = True
     if extra_body:
         chat_kw["extra_body"] = extra_body
     # Same gateway-identity override as the anthropic branch above: the
     # openai SDK stamps AsyncOpenAI/Python, which magpie attributes to
     # "AsyncOpenAI". SDK default_headers merge over its own UA, so ours wins.
-    default_headers = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
+    default_headers = {"User-Agent": ginno_user_agent()}
     if session_id:
         default_headers["x-session-id"] = session_id
     chat_kw["default_headers"] = default_headers

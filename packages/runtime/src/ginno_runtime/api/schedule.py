@@ -21,8 +21,14 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from .. import schedule_store as store
 from .. import scheduler
 from .. import workflows as wf_store
+from ..models import normalize_effort
 
 router = APIRouter()
+
+
+def _stored_task_effort(merged: dict) -> str:
+    """任务级思考档位归一:"auto"|档位(非法/缺省 → auto)。"""
+    return normalize_effort(merged.get("thinking_effort")) or "auto"
 
 
 def _schedule_payload() -> dict:
@@ -85,7 +91,7 @@ def _validate_inputs_check(data: dict) -> None:
 def _validated_task(data: dict, *, partial: bool, current: dict | None = None) -> dict:
     """合并（PATCH）或整体（POST）校验任务数据，返回待落库的任务字段。"""
     merged = dict(current or {})
-    for key in ("name", "target", "schedule", "enabled", "notify", "model"):
+    for key in ("name", "target", "schedule", "enabled", "notify", "model", "thinking_effort"):
         if key in data:
             merged[key] = data[key]
     errs = store.validate_task(merged)
@@ -109,6 +115,9 @@ async def create_task(data: dict) -> dict:
         "notify": bool(merged.get("notify", False)),  # P1
         # 任务级模型覆盖（仅 prompt 目标生效）；null = 跟随 agent/全局默认
         "model": merged.get("model"),
+        # 任务级思考档位覆盖（thinking-effort-design §4/§9 P1）:拉起的会话用
+        # 该档位创建;缺省 auto = agent 默认 > provider 配置。
+        "thinking_effort": _stored_task_effort(merged),
         "created": now,
         "updated": now,
     }
@@ -127,7 +136,14 @@ async def patch_task(task_id: str, data: dict) -> dict:
         raise HTTPException(status_code=404, detail="task not found")
     data = data or {}
     merged = _validated_task(data, partial=True, current=current)
-    patch = {k: merged[k] for k in ("name", "target", "schedule", "enabled", "notify", "model") if k in data}
+    patch = {
+        k: merged[k]
+        for k in ("name", "target", "schedule", "enabled", "notify", "model", "thinking_effort")
+        if k in data
+    }
+    if "thinking_effort" in patch:
+        # 归一后再落(非法值存成 auto,别把脏值写进 schedules.json)。
+        patch["thinking_effort"] = _stored_task_effort(merged)
     # 仅计划变更/启停重算 next_run_at（§5.1）；改名等无关字段不动它——interval
     # 的网格锚点若被重置，会让每次改名都把节拍平移到 now+间隔。
     if "next_run_at" in data and data["next_run_at"] is None:

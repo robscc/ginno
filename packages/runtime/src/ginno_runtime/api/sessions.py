@@ -25,7 +25,7 @@ from ..goals import store as goal_store
 from ..goals import templates as goal_templates
 from ..graph import build_all_tools, build_graph
 from ..lang import t
-from ..models import build_model
+from ..models import build_model, normalize_effort
 from ..server_shared import (
     _GOAL_DRIVERS,
     _PENDING_KIND,
@@ -100,6 +100,10 @@ class CreateSessionRequest(BaseModel):
     # legacy aliases
     model_provider: str | None = None
     model_name: str | None = None
+    # 思考档位(thinking-effort-design §2):"off"/"low"/"medium"/"high";
+    # None/"auto" = 跟随 provider 配置(现状行为)。解析链:req > agent 默认
+    # > auto(见 _resolve_thinking_effort)。
+    thinking_effort: str | None = None
 
 
 def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | None]:
@@ -138,8 +142,26 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
     return provider, model, (agent.id if agent else req.agent_id)
 
 
+def _stored_effort(value: Any) -> str:
+    """落盘归一(thinking-effort-design §2):恒返回 "auto"|档位,不落 None
+    ——``_session_meta_patch`` 过滤 None,回 auto 必须显式存 "auto" 字符串。"""
+    return normalize_effort(value) or "auto"
+
+
+def _resolve_thinking_effort(req: CreateSessionRequest) -> str:
+    """创建时档位解析链(§9 P1):显式请求 > agent 默认 > auto。"""
+    eff = normalize_effort(req.thinking_effort)
+    if eff:
+        return eff
+    agent = _agent_lookup(req.agent_id)
+    return _stored_effort(agent.thinking_effort if agent else None)
+
+
 def _build_model_with_fallback(
-    provider: str, model_name: str | None, session_id: str | None = None
+    provider: str,
+    model_name: str | None,
+    session_id: str | None = None,
+    thinking_effort: str | None = None,
 ):
     """Build the session model, falling back to the global default config.
 
@@ -150,7 +172,9 @@ def _build_model_with_fallback(
     itself is broken (nothing to fall back to).
     """
     try:
-        return build_model(provider, model_name, session_id=session_id)
+        return build_model(
+            provider, model_name, session_id=session_id, thinking_effort=thinking_effort
+        )
     except ValueError as e:
         dflt = prov_mod.get_default_provider()
         dflt_model = prov_mod.model_for_provider(prov_mod.load_providers(), dflt)
@@ -165,7 +189,9 @@ def _build_model_with_fallback(
             dflt,
             dflt_model,
         )
-        return build_model(dflt, dflt_model, session_id=session_id)
+        return build_model(
+            dflt, dflt_model, session_id=session_id, thinking_effort=thinking_effort
+        )
 
 
 def _default_title(agent_id: str | None) -> str:
@@ -556,9 +582,15 @@ async def clear_session_goal(session_id: str) -> dict:
 @router.post("/api/sessions")
 async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
+    # 思考档位(设计 §2):解析链显式 > agent 默认;落盘值恒 "auto"|档位,
+    # build 时 "auto" 归 None(跟随 provider 配置)。
+    effort_stored = _resolve_thinking_effort(req)
+    effort = None if effort_stored == "auto" else effort_stored
     session_id = uuid.uuid4().hex
     try:
-        model = _build_model_with_fallback(provider, model_name, session_id)
+        model = _build_model_with_fallback(
+            provider, model_name, session_id, thinking_effort=effort
+        )
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
@@ -638,6 +670,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "agent_id": agent_id,
         "provider": provider,
         "model": model_name,
+        "thinking_effort": effort_stored,
         "workspace": workspace,
         "context_folders": folder_ids,
         "primary_folder": primary_id,
@@ -691,6 +724,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "icon": icon,
         "model_provider": provider,
         "model_name": model_name,
+        # 思考档位(设计 §2):条目里存落盘值("auto"|档位),PATCH 换档时
+        # 重建 model 对象并同步此键。
+        "thinking_effort": effort_stored,
         "graph": graph,
         # WorldState inputs (plan C1): the model for compaction summaries and
         # tool-name rosters for the agent/mcp sections' snapshots.
@@ -888,6 +924,9 @@ class PatchSessionRequest(BaseModel):
     # 缺省 = 接活（main 本身也是 worker）；False = 用户显式关闭。只对 main
     # 生效，task-typed 天生 worker。
     worker: bool | None = None
+    # 思考档位换档(设计 §2):非 None 即换,走与 provider/model 同一条热切
+    # 路径(重建 model 对象原地换入,运行中 turn 下一 superstep 生效)。
+    thinking_effort: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}")
@@ -904,7 +943,17 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     # keeps streaming its current call on the OLD model, no reconnect needed.
     # Structural patches (agent/workflow rebinding) still pop the entry so the
     # next WS connect rebuilds the graph, same heal path as PUT /api/providers.
-    switched = patch.get("provider") is not None or patch.get("model") is not None
+    # 思考档位换档(thinking-effort-design §2):非 None 即换("auto" 显式回
+    # 缺省),归一成落盘值;与 provider/model 共用同一条热切路径。
+    eff_raw = patch.get("thinking_effort")
+    eff_changed = eff_raw is not None
+    if eff_changed:
+        patch["thinking_effort"] = _stored_effort(eff_raw)
+    switched = (
+        patch.get("provider") is not None
+        or patch.get("model") is not None
+        or eff_changed
+    )
     new_model = None
     if switched:
         cur_meta = next(
@@ -919,8 +968,24 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
             patch["model"] = prov_mod.model_for_provider(
                 prov_mod.load_providers(), patch["provider"]
             )
+        if patch.get("model") is None:
+            # 只换档位/只换 provider 以外的组合:模型沿用会话现值(meta 名),
+            # 不能回落 provider 默认把会话的钉选模型洗掉。
+            patch["model"] = (s or {}).get("model_name") or cur_meta.get("model")
+        # 档位:patch 归一值 > 会话现值;build 参数 auto → None。
+        eff_stored = (
+            patch.get("thinking_effort")
+            or (s or {}).get("thinking_effort")
+            or str(cur_meta.get("thinking_effort") or "auto")
+        )
+        eff = None if eff_stored == "auto" else eff_stored
         try:
-            new_model = build_model(provider, patch.get("model"), session_id=session_id)
+            new_model = build_model(
+                provider,
+                patch.get("model"),
+                session_id=session_id,
+                thinking_effort=eff,
+            )
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
@@ -958,10 +1023,11 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
         s["title_auto"] = title_auto
     if new_model is not None:
         _log.info(
-            "session_model_switched session=%s provider=%s model=%s running=%s",
+            "session_model_switched session=%s provider=%s model=%s effort=%s running=%s",
             session_id,
             provider,
             patch.get("model"),
+            (s or {}).get("thinking_effort") if s else None,
             session_id in shared._RUNNING_TURNS,
         )
         await shared._push_session_event(
@@ -971,6 +1037,9 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
                 "session_id": session_id,
                 "provider": provider,
                 "model": patch.get("model"),
+                # 思考档位随事件同步(设计 §6):其它已打开同会话的客户端据此
+                # 更新 chip 角标;auto 也显式给,缺字段时前端保持旧值。
+                "thinking_effort": (s or {}).get("thinking_effort") or "auto",
                 "effective": "next_step",
             },
         )
@@ -1584,8 +1653,15 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     model_name = meta.get("model") or prov_mod.model_for_provider(
         prov_mod.load_providers(), provider
     )
+    # 思考档位随会话记录恢复(设计 §2):meta 落盘值 "auto"|档位,auto → None。
+    stored_eff = _stored_effort(meta.get("thinking_effort"))
     try:
-        model = _build_model_with_fallback(provider, model_name, session_id)
+        model = _build_model_with_fallback(
+            provider,
+            model_name,
+            session_id,
+            thinking_effort=None if stored_eff == "auto" else stored_eff,
+        )
     except ValueError:
         return None
     # Derive the workspace from paths (not meta) so legacy sessions whose meta
@@ -1641,6 +1717,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "icon": meta.get("icon"),
         "model_provider": provider,
         "model_name": model_name,
+        "thinking_effort": stored_eff,
         "graph": graph,
         "model": model,
         "all_tool_names": [t.name for t in all_tools],

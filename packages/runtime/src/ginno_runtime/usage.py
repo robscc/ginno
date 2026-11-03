@@ -131,7 +131,20 @@ def extract_usage(message: Any) -> dict[str, int] | None:
         "output_tokens": _num(_field(um, "output_tokens")),
         "cache_read_tokens": cache_read,
         "cache_creation_tokens": cache_creation,
+        # 思考 token 拆分(thinking-effort-design §8,best-effort):langchain
+        # 1.x 规范键是 output_token_details.reasoning(OutputTokenDetails
+        # TypedDict,OpenAI 系细项;anthropic thinking 同样归入);个别网关
+        # 塞 reasoning_tokens——两种都认,拿不到就是 0。
+        "reasoning_tokens": _num(_field(_output_details(um), "reasoning"))
+        or _num(_field(_output_details(um), "reasoning_tokens")),
     }
+
+
+def _output_details(um: Any) -> Any:
+    """usage_metadata.output_token_details,dict/attr 两种形态通吃。"""
+    if isinstance(um, dict):
+        return um.get("output_token_details") or {}
+    return getattr(um, "output_token_details", None) or {}
 
 
 def add_usage(acc: dict[str, int], usage: dict[str, int]) -> dict[str, int]:
@@ -139,6 +152,8 @@ def add_usage(acc: dict[str, int], usage: dict[str, int]) -> dict[str, int]:
     for k in USAGE_FIELDS:
         acc[k] = acc.get(k, 0) + int(usage.get(k, 0))
     acc["calls"] = acc.get("calls", 0) + 1
+    # reasoning_tokens 是 output 的子集,单独累加供 Stats 拆分显示。
+    acc["reasoning_tokens"] = acc.get("reasoning_tokens", 0) + int(usage.get("reasoning_tokens", 0))
     return acc
 
 
@@ -184,6 +199,7 @@ def record_message(
             output_tokens=u.get("output_tokens") or 0,
             cache_read_tokens=u.get("cache_read_tokens") or 0,
             cache_creation_tokens=u.get("cache_creation_tokens") or 0,
+            reasoning_tokens=u.get("reasoning_tokens") or 0,
             provider=provider or "",
             model=model or "",
             source=source,

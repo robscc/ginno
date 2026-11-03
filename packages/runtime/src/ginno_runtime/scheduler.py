@@ -648,6 +648,9 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         type="scheduled",
         provider=(model or {}).get("provider") or None,
         model=(model or {}).get("model") or None,
+        # 任务级思考档位覆盖(thinking-effort-design §9 P1):auto/缺省走
+        # _resolve_thinking_effort 的 agent 默认链。
+        thinking_effort=str(task.get("thinking_effort") or "") or None,
     )
     meta = await _sessions_api.create_session(req)
     if meta.get("ok") is False or not meta.get("id"):

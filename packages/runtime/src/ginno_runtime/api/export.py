@@ -61,6 +61,12 @@ def _render_markdown(slug: str, session_id: str, meta: dict) -> str:
         f"- 会话：`{session_id}`",
         f"- 创建：{time.strftime('%Y-%m-%d %H:%M', time.localtime(meta.get('created') or 0))}",
         f"- 模型：{meta.get('provider') or ''} / {meta.get('model') or ''}",
+        # 思考档位(thinking-effort-design §8):导出快照当前配置;auto 不单列。
+        *(
+            [f"- 思考强度：{meta.get('thinking_effort')}"]
+            if str(meta.get("thinking_effort") or "auto") not in ("", "auto")
+            else []
+        ),
         "",
         "---",
         "",

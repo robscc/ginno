@@ -62,6 +62,7 @@ async def create_subagent(
     origin: str = "agent",
     agent_type: str = "",
     fork: bool = False,
+    thinking_effort: str = "",
 ) -> dict:
     """Create + launch one child session. Never raises; ``ok: False`` results
     carry an ``[error]``-style message the tool returns verbatim.
@@ -71,7 +72,10 @@ async def create_subagent(
     list, optional model override); ``fork`` seeds the child's initial history
     with a copy of the parent's checkpoint messages (ALL ids freshly minted)
     plus the standalone brief at the top. A fork child itself refuses
-    ``fork=True``; fork does NOT change the depth rules."""
+    ``fork=True``; fork does NOT change the depth rules.
+
+    ``thinking_effort``(P2,thinking-effort-design §9):子代理默认不继承父会话
+    档位(auto);深研子任务可显式带参覆盖。"""
     goal = (goal or "").strip()
     if not goal:
         return {"ok": False, "error": _NS.t("goal must not be empty", "goal 不能为空")}
@@ -233,6 +237,9 @@ async def create_subagent(
             # 页 per-agent override outranks it; the type also tightens tools.
             provider=provider,
             model=model_name,
+            # 思考档位(P2):显式带参才覆盖;空 = auto(子代理默认不继承
+            # 父会话档位,走 agent 默认 > provider 配置链)。
+            thinking_effort=thinking_effort or None,
             context_folders=list(parent_meta.get("context_folders") or []),
             primary_folder=parent_meta.get("primary_folder") or None,
             parent_session_id=parent_session_id,

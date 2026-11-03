@@ -51,6 +51,9 @@ class AgentConfig:
     # {type_name: {"provider": str, "model": str}}。键缺席 = 继承（类型
     # frontmatter → 父会话模型）；model 空串 = 该 provider 的默认模型。
     subagent_models: dict[str, dict[str, str]] = field(default_factory=dict)
+    # 默认思考档位(thinking-effort-design §9 P1):新建会话未显式选档时的
+    # 兜底;""/缺省 = auto(跟随 provider 配置)。只影响会话创建,不改已建会话。
+    thinking_effort: str = ""
     tools_allow: list[str] = field(default_factory=lambda: ["*"])
     # Per-agent connector denial (connector-module-design.md §8). Denylist on
     # purpose: per-agent config can only RESTRICT below the global connectors

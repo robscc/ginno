@@ -66,7 +66,18 @@ def test_extract_usage_basic():
         "output_tokens": 20,
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
     }
+
+
+def test_extract_usage_reasoning_tokens():
+    # 思考 token：langchain 1.x 归一到 output_token_details.reasoning_tokens
+    # （thinking-effort-design §3——档位生效的可观测面）。
+    meta = {"input_tokens": 100, "output_tokens": 80, "total_tokens": 180,
+            "output_token_details": {"reasoning": 60}}
+    u = extract_usage(AIMessage(content="x", usage_metadata=meta))
+    assert u["reasoning_tokens"] == 60
+    assert u["output_tokens"] == 80
 
 
 def test_extract_usage_cache_details_anthropic_normalizes_input():

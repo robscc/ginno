@@ -778,6 +778,7 @@ async def _stream_graph(
                                     output_tokens=u["output_tokens"],
                                     cache_read_tokens=u["cache_read_tokens"],
                                     cache_creation_tokens=u["cache_creation_tokens"],
+                                    reasoning_tokens=u.get("reasoning_tokens", 0),
                                     provider=_sreg.get("model_provider") or "",
                                     model=_sreg.get("model_name") or "",
                                     source=usage_source,

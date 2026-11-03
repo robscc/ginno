@@ -139,7 +139,7 @@ def test_patch_model_switch_updates_meta_and_keeps_entry(client, patch_build_mod
 
 
 def test_patch_model_switch_rejects_invalid(client, monkeypatch):
-    def fake(provider, model=None, session_id=None):
+    def fake(provider, model=None, session_id=None, thinking_effort=None):
         if model == "nope":
             raise ValueError("unknown model")
         return object()
