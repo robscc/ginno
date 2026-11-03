@@ -30,14 +30,30 @@ pub(crate) struct RuntimeProcess(pub(crate) Mutex<Option<Child>>);
 /// Serialize Debug → Restart Runtime so a double-click cannot spawn two sidecars.
 pub(crate) struct RestartLock(pub(crate) Mutex<()>);
 
+/// Sidecar stdio capture → `sidecar-stdio.log`. This is the raw-stdout/stderr
+/// safety net (crash tracebacks, PyInstaller bootloader output, stray prints)
+/// — NOT the primary log. Structured logging, including uvicorn access lines,
+/// goes to `sidecar.log` from inside Python, which owns that file's rotation.
+/// We must not append stdio to sidecar.log itself: this fd never rotates, so
+/// after Python's first rotation it would keep writing into the renamed
+/// archive (observed: sidecar.log.3 at 12MB vs the 5MB cap, timestamps out of
+/// order). Truncate at spawn when past 5MB so one runaway session cannot grow
+/// the file unboundedly; the previous session's tail survives normal restarts.
 fn open_log_file_for<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<std::fs::File> {
     let logs = ginno_home_path(app).join("logs");
     std::fs::create_dir_all(&logs).ok()?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(logs.join("sidecar.log"))
-        .ok()
+    let path = logs.join("sidecar-stdio.log");
+    let oversized = std::fs::metadata(&path)
+        .map(|m| m.len() > 5_000_000)
+        .unwrap_or(false);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true);
+    if oversized {
+        opts.truncate(true);
+    } else {
+        opts.append(true);
+    }
+    opts.open(&path).ok()
 }
 
 pub(crate) fn sidecar_listening() -> bool {

@@ -1,9 +1,10 @@
 """Model factory — build a LangChain chat model from a provider id.
 
 Reads provider config from settings.json `providers` (see providers.py).
-Sampling params: temperature as a top-level kwarg; max_tokens via
-model_kwargs (robust across langchain versions). base_url + api_key as
-top-level kwargs (verified present on ChatAnthropic + ChatOpenAI).
+Sampling params: temperature + max_tokens as explicit top-level kwargs —
+langchain warns ("should be specified explicitly") whenever max_tokens rides
+inside model_kwargs. base_url + api_key as top-level kwargs (verified present
+on ChatAnthropic + ChatOpenAI).
 """
 
 from __future__ import annotations
@@ -423,22 +424,26 @@ def _effective_effort(cfg: dict, value: Any) -> str | None:
     return eff
 
 
-def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
-    """Sampling params for the chat constructors.
+def _sampling(cfg: dict[str, Any]) -> tuple[float | None, int | None]:
+    """Sampling params for the chat constructors (both explicit kwargs).
 
-    max_tokens 语义(2026-10-16,office-bench 根因修复):正值 → 传;0 → 完全
-    不传(交由端点自决——thinking 模型的 reasoning 计入输出预算,一个过小的
-    上限会让重任务在思考阶段耗尽预算、content 一个字不吐);缺省(None,
-    只有未 normalize 的调用方)→ 沿用历史默认 8192。
+    max_tokens 语义(2026-10-16,office-bench 根因修复):正值 → int 值;
+    0 → None(完全不传,交由端点自决——thinking 模型的 reasoning 计入输出
+    预算,一个过小的上限会让重任务在思考阶段耗尽预算、content 一个字不吐);
+    缺省(None,只有未 normalize 的调用方)→ 沿用历史默认 8192。
+    以显式 ``max_tokens=`` kwarg 传给 ChatX 构造器,不再经 model_kwargs
+    (langchain 对后者每次打 UserWarning: should be specified explicitly)。
     """
     temperature = cfg.get("temperature")
-    model_kwargs: dict[str, Any] = {}
     mt = cfg.get("max_tokens")
+    max_tokens: int | None
     if mt is None:
-        model_kwargs["max_tokens"] = 8192
+        max_tokens = 8192
     elif int(mt) > 0:
-        model_kwargs["max_tokens"] = int(mt)
-    return (float(temperature) if temperature is not None else None, model_kwargs)
+        max_tokens = int(mt)
+    else:  # 0 → None = 不传,端点自决
+        max_tokens = None
+    return (float(temperature) if temperature is not None else None, max_tokens)
 
 
 def server_web_search_on(cfg: dict) -> bool:
@@ -568,7 +573,7 @@ def build_model(
         or prov_mod.model_for_provider(all_prov, provider_id)
         or prov_mod.model_for_config(cfg)
     )
-    temperature, model_kwargs = _sampling(cfg)
+    temperature, max_tokens = _sampling(cfg)
     base_url = cfg.get("base_url") or None
     # 思考档位(设计 §3):一次解析三个分支共用;auto(None)时各分支维持
     # 现状(provider 配置的 enable_thinking 等继续生效)。
@@ -594,12 +599,15 @@ def build_model(
             default_headers["x-session-id"] = session_id
         if cfg.get("bearer_auth"):
             default_headers["Authorization"] = f"Bearer {key}"
+        # Anthropic 协议必须显式 max_tokens:_sampling 的 None(0=不传,端点
+        # 自决)在这里没有"不传"可走,退回老默认 4096。
+        mt = max_tokens if (max_tokens is not None and max_tokens > 0) else 4096
         chat_kwargs: dict[str, Any] = dict(
             model=model or "claude-3-7-sonnet-20250219",
             api_key=key,
             base_url=base_url,
             temperature=temperature if temperature is not None else 0.7,
-            model_kwargs=model_kwargs or {"max_tokens": 4096},
+            max_tokens=mt,
             streaming=True,
             timeout=_chat_timeout(cfg),
             max_retries=6,
@@ -614,11 +622,11 @@ def build_model(
                 chat_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic 约束:开思考时 temperature 必须 1,且 max_tokens
                 # 必须大于 budget —— 抬到 max(现值, budget + 4096) 保证成立
-                #(max_tokens=0 不传的语义由端点自决,budget 预留余量即可)。
+                #(mt 为 4096 fallback 时同样被抬升;budget 预留余量)。
                 chat_kwargs["temperature"] = 1.0
-                mk = dict(chat_kwargs.get("model_kwargs") or {})
-                mk["max_tokens"] = max(int(mk.get("max_tokens") or 0), budget + 4096)
-                chat_kwargs["model_kwargs"] = mk
+                chat_kwargs["max_tokens"] = max(
+                    int(chat_kwargs.get("max_tokens") or 0), budget + 4096
+                )
         m = _healing_chat_anthropic()(**chat_kwargs)
         if server_web_search_on(cfg):
             m = _anthropic_with_server_search(m, cfg)
@@ -634,12 +642,13 @@ def build_model(
             api_key=cfg.get("api_key") or "not-needed",
             base_url=base_url or "https://api.openai.com/v1",
             temperature=temperature if temperature is not None else 0.7,
-            model_kwargs=model_kwargs,
             streaming=True,
             timeout=_chat_timeout(cfg),
             max_retries=6,
             use_responses_api=True,
         )
+        if max_tokens:  # None(0=不传)不传——openai 协议不强制,端点自决
+            chat_kw["max_tokens"] = max_tokens
         if cfg.get("org_id"):
             chat_kw["openai_organization"] = cfg["org_id"]
         # Same gateway-identity override as the anthropic branch above: the
@@ -665,11 +674,12 @@ def build_model(
         api_key=key or "not-needed",
         base_url=base_url,
         temperature=temperature if temperature is not None else 0.7,
-        model_kwargs=model_kwargs,
         streaming=True,
         timeout=_chat_timeout(cfg),
         max_retries=6,
     )
+    if max_tokens:  # None(0=不传)不传——openai 协议不强制,端点自决
+        chat_kw["max_tokens"] = max_tokens
     # OpenAI-compatible gateway switches, forwarded verbatim into the request
     # body via `extra_body` (langchain-openai passes it through untouched):
     # - `enable_search` (None = follow the provider config) lets gateways such

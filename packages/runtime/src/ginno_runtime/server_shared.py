@@ -24,6 +24,104 @@ _log = logging.getLogger("ginno.turn")
 _log.setLevel(logging.INFO)
 _log.propagate = False
 
+# The one rotating handler every ginno-side writer shares (see
+# _ensure_turn_log). Kept as a module global so home-move swaps can unwire it
+# from the uvicorn loggers it was attached to (below).
+_SIDECAR_FH: Any = None
+
+# uvicorn loggers routed through the same sidecar.log handler. Only these two:
+# "uvicorn" also serves "uvicorn.error" via propagation (uvicorn.access has
+# propagate=False and its own handler, so it needs the direct attach).
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.access")
+
+# 2xx/3xx GET polls that would otherwise flood sidecar.log — the Dock badge
+# watcher hits /api/badge every 5s (26.8k lines / 3 days, 39% of the whole
+# log) and the web dashboards poll tasks/schedule/connectors/workflow_runs.
+# Non-GET and every >=400 status still get through (that is how the
+# file-preview 500s were traced), as do GETs on all other paths.
+_ACCESS_QUIET_GET_PREFIXES = (
+    "/api/badge",
+    "/api/health",
+    "/api/tasks",
+    "/api/schedule",
+    "/api/connectors",
+    "/api/workflow_runs",
+)
+
+
+def _access_poll_filter(record: logging.LogRecord) -> bool:
+    """Keep a uvicorn access record? Drops only quiet-path 2xx/3xx GETs.
+
+    Uvicorn logs ``logger.info('%s - "%s %s HTTP/%s" %d', client_addr,
+    method, full_path, http_version, status_code)`` — a 5-tuple in args.
+    Anything unexpected (shape change across uvicorn versions, non-access
+    record) is KEPT: a filter must never silently eat what it can't parse.
+    """
+    try:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _addr, method, path, _ver, status = args
+        if str(method).upper() != "GET" or int(status) >= 400:
+            return True
+        p = str(path)
+        if p.startswith(_ACCESS_QUIET_GET_PREFIXES):
+            return False
+        return not (p.startswith("/api/sessions/") and p.endswith("/linked"))
+    except Exception:
+        return True
+
+
+def _wire_uvicorn_logging(fh: logging.Handler) -> None:
+    """Route uvicorn's loggers through the same rotating sidecar.log handler.
+
+    Why: the desktop shell used to pipe the sidecar's stdout/stderr into
+    sidecar.log with a never-rotating fd while Python rotated the same path —
+    after the first rotation the shell kept appending into the renamed
+    archive (sidecar.log.3 measured 12MB against the 5MB cap, timestamps out
+    of order). Now Python's handler is the ONLY writer to sidecar.log and the
+    shell redirects stdio to sidecar-stdio.log; uvicorn's own stream handlers
+    stay in place as that safety net's feed, so nothing is lost if our file
+    handler ever fails.
+
+    Called from _ensure_turn_log (lifespan + per turn). Lifespan startup runs
+    AFTER uvicorn's dictConfig — attaching earlier would be wiped, since
+    dictConfig replaces handlers of the loggers it configures.
+
+    Also stamps every handler here with asctime (uvicorn access lines
+    historically carried no timestamp, so they were uncorrelatable with the
+    app lines they interleaved) and installs the polling filter above on the
+    uvicorn.access logger — logger-level, so it applies to both handlers.
+    """
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    for name in _UVICORN_LOGGERS:
+        lg = logging.getLogger(name)
+        # Same values uvicorn's own dictConfig uses — restated so the wiring
+        # is self-consistent even when that config never ran (engine import
+        # paths in tests; without this, uvicorn.access propagates into
+        # "uvicorn" and fh (attached to both) writes every record twice).
+        lg.propagate = False
+        if not any(h is fh for h in lg.handlers):
+            lg.addHandler(fh)
+        for h in lg.handlers:
+            try:
+                h.setFormatter(fmt)
+            except Exception:
+                pass
+        if lg.level == logging.NOTSET or lg.level > logging.INFO:
+            lg.setLevel(logging.INFO)
+    acc = logging.getLogger("uvicorn.access")
+    if not any(f is _access_poll_filter for f in acc.filters):
+        acc.addFilter(_access_poll_filter)
+
+
+def _unwire_uvicorn_logging(fh: logging.Handler) -> None:
+    for name in _UVICORN_LOGGERS:
+        try:
+            logging.getLogger(name).removeHandler(fh)
+        except Exception:
+            pass
+
 
 def _ensure_turn_log() -> None:
     """Attach a rotating file handler under the *current* paths.home()/logs.
@@ -32,6 +130,7 @@ def _ensure_turn_log() -> None:
     time — e.g. tests redirect GINNO_HOME after importing this module. If the home
     moves, the stale handler is swapped so traces always land in the active home
     (the real ~/.ginno in production, the isolated tmp dir in tests)."""
+    global _SIDECAR_FH
     try:
         from logging.handlers import RotatingFileHandler
         from pathlib import Path as _Path
@@ -40,13 +139,17 @@ def _ensure_turn_log() -> None:
         for h in list(_log.handlers):
             if isinstance(h, RotatingFileHandler):
                 if _Path(getattr(h, "baseFilename", "")).resolve() == target:
+                    _wire_uvicorn_logging(h)  # idempotent; may run pre-lifespan
                     return  # already pointing at the right file
+                _unwire_uvicorn_logging(h)
                 _log.removeHandler(h)
                 h.close()
         target.parent.mkdir(parents=True, exist_ok=True)
         fh = RotatingFileHandler(target, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         _log.addHandler(fh)
+        _SIDECAR_FH = fh
+        _wire_uvicorn_logging(fh)
     except Exception:  # never let logging setup break a turn
         pass
 
