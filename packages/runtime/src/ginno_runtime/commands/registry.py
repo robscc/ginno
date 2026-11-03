@@ -12,6 +12,7 @@ in docs/commands-and-mentions-design.md).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -1120,6 +1121,87 @@ async def _think_async_handler(
     )
 
 
+
+
+
+async def _dev_swap_background(sid: str, repo: str) -> None:
+    """后台跑 make dev-swap（构建 3-6 分钟）；完成即广播 finish 信号。
+
+    成功 → ``runtime.dev_swap_pending``（前端 invoke 壳 finish_dev_swap：
+    重启+指纹验证+失败回滚，之后本进程被重启换掉——这就是闭环）。
+    失败 → notice 带构建尾部输出（当前运行不受任何影响，未切换）。
+    """
+    import os as _os
+
+    from ..server_shared import _push_session_event
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "scripts/dev_swap.sh",
+            cwd=repo,
+            env={**_os.environ, "DEV_SWAP_REQUESTED_BY": "agent"},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+    except FileNotFoundError:
+        await _push_session_event(
+            sid, "notice", {"message": "/dev-swap: repo path invalid: " + repo}
+        )
+        return
+    tail = (out or b"")[-600:].decode(errors="replace")
+    if proc.returncode == 0:
+        await _push_session_event(
+            sid,
+            "runtime.dev_swap_pending",
+            {"message": "dev-swap build ready; finishing swap (restart + verify)"},
+        )
+    else:
+        await _push_session_event(
+            sid,
+            "notice",
+            {"message": f"/dev-swap failed (exit {proc.returncode}), nothing swapped:\n{tail}"},
+        )
+
+
+async def _dev_swap_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/dev-swap — 开发热切换（docs/runtime-hot-swap-design.md）。
+
+    产线闭环：本命令跑 build 段（quiesce 检查 → 单测 → make runtime →
+    blue-green 预检 → symlink 原子切），随后广播 finish 信号由壳完成
+    「重启 + 指纹验证 + 失败回滚」。**发起本命令的 turn 会在重启中被
+    换掉**（发起者即旧进程）——回复只到「构建启动」，重启后由 TopBar
+    dev 指纹黄条/回滚 notice 给出结局。
+
+    repo 发现顺序：/dev-swap <repo路径> 显式参数 > build-info.repo
+    （打包时写入的源码树路径）。
+    """
+    sid = (session or {}).get("session_id") or ""
+    repo = (args or "").strip()
+    if not repo:
+        from .._build import build_info
+
+        repo = str(build_info().get("repo") or "")
+    from pathlib import Path as _P
+
+    if not repo or not (_P(repo) / "scripts" / "dev_swap.sh").exists():
+        return t(
+            "(/dev-swap needs the ginno repo path — usage: /dev-swap /path/to/ginno)",
+            "（/dev-swap 需要 ginno 源码树路径——用法：/dev-swap /path/to/ginno）",
+        )
+    task = asyncio.create_task(_dev_swap_background(sid, repo))
+    _DEV_SWAP_TASKS.add(task)
+    task.add_done_callback(_DEV_SWAP_TASKS.discard)
+    return t(
+        "Dev-swap build started (~3-6 min: tests → PyInstaller → preflight → "
+        "symlink swap). I'll restart onto the new bundle when it's ready.",
+        "热切换构建已启动（约 3-6 分钟：单测 → PyInstaller → 预检 → symlink 切换）。"
+        "构建完成后我会自动重启到新 bundle。",
+    )
+
+
 BUILTINS: dict[str, BuiltinCommand] = {
     "help": BuiltinCommand(
         name="help",
@@ -1146,6 +1228,20 @@ BUILTINS: dict[str, BuiltinCommand] = {
         ),
         handler=_clear_handler,
         async_handler=_clear_async_handler,
+    ),
+    "dev-swap": BuiltinCommand(
+        name="dev-swap",
+        description=(
+            "Developer hot-swap: rebuild the runtime bundle and restart onto it "
+            "(tests → build → preflight → swap → verify, auto-rollback on failure)",
+            "开发热切换：重建 runtime bundle 并热重启到新版本"
+            "（单测 → 构建 → 预检 → 切换 → 验证，失败自动回滚）",
+        ),
+        handler=lambda *a, **k: t(
+            "(/dev-swap runs asynchronously — just send it plain)",
+            "（/dev-swap 异步执行——直接发送即可）",
+        ),
+        async_handler=_dev_swap_async_handler,
     ),
     "fork": BuiltinCommand(
         name="fork",

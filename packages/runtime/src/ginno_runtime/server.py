@@ -566,10 +566,12 @@ app.include_router(_workflows_api.router)
 @app.get("/api/health")
 async def health() -> dict:
     from . import diagnostics, runtime_watch
+    from ._build import build_info
 
     return {
         "ok": True,
         "version": "0.1.0",
+        "build": build_info(),
         **runtime_watch.status(),
         **diagnostics.startup_summary(),
     }
