@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDownUp, Download, Loader2, MoreVertical } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
@@ -125,6 +125,36 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
   );
 }
 
+/** Dev 热切换指纹黄条（docs/runtime-hot-swap-design.md P1）：build.channel
+ *  非 app（或 fingerprint 带 -dirty）时显示琥珀 pill，明示「你正跑在开发
+ *  bundle 上」。单次 fetch——dev-swap 重启会整页 reload，无需轮询。 */
+function DevBuildBadge() {
+  const [fp, setFp] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${api.BASE}/health`)
+      .then((r) => r.json())
+      .then((j: { build?: { fingerprint?: string; channel?: string } }) => {
+        const b = j.build;
+        if (alive && b && (b.channel === "dev" || (b.fingerprint || "").includes("-dirty")))
+          setFp(b.fingerprint || "dev");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (!fp) return null;
+  return (
+    <span
+      className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
+      title="dev-override runtime bundle · make dev-swap-clean 回出厂"
+    >
+      dev·{fp.slice(0, 13)}
+    </span>
+  );
+}
+
 export function TopBar({
   session,
   agent,
@@ -181,6 +211,7 @@ export function TopBar({
 
   return (
     <header className="flex min-h-14 min-w-0 shrink-0 select-none flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
+      <DevBuildBadge />
       <div className="flex min-w-[min(100%,12rem)] flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
         {/* 身份区(topbar-unification.md §2.4):agent 纯图标、标题左侧,名称进
             tooltip——侧栏行同款「图标+颜色」识别,让出的宽度全给标题。 */}

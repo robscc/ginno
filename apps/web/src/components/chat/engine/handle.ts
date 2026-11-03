@@ -638,6 +638,25 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       }
       break;
     }
+    case "runtime.dev_swap_pending": {
+      // 开发热切换（docs/runtime-hot-swap-design.md §3.4）：CLI 已把 symlink
+      // 切到新 bundle，剩下的「重启 + 指纹验证 + 失败回滚」只有壳能做
+      // （它持有 child handle 与 webview 导航）——前端只做中转 invoke。
+      // 结果：restart 会整页 reload，回来后 TopBar 的 dev 指纹黄条即状态。
+      markDelivered(ctx, sid);
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const res = await invoke<{ ok: boolean; rolled_back?: boolean; detail?: string }>(
+            "finish_dev_swap",
+          );
+          console.info("[dev-swap] finished:", res);
+        } catch (e) {
+          console.warn("[dev-swap] finish_dev_swap unavailable:", e);
+        }
+      })();
+      break;
+    }
     case "notice":
       // Built-in command reply (e.g. /help): no graph turn ran, so the server
       // pushes the rendered text directly into the live bubble as one delta.
