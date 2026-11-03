@@ -17,6 +17,9 @@ import { isDesktop } from "./desktop";
 import * as api from "./runtime";
 
 export interface FloatingPrefs {
+  /** Master switch: false = no hotkey registration, summon/toggle no-op,
+   *  window hidden — the accidental-trigger kill switch (Rust PinPrefs.enabled). */
+  enabled: boolean;
   /** global-shortcut crate syntax, e.g. "CommandOrControl+Alt+Space". */
   hotkey: string;
   /** Pin window's initial session mode: own quick session or follow main. */
@@ -35,6 +38,7 @@ export const DEFAULT_FLOATING: FloatingPrefs = {
   // ⇧⌘Space — must match DEFAULT_HOTKEY in apps/desktop/src/lib.rs.
   // (⌃⌥Space was the old default: it collides with macOS input-source
   // switching, hence the move.)
+  enabled: true,
   hotkey: "CommandOrControl+Shift+Space",
   defaultMode: "quick",
   inactiveOpacity: 0.7,
@@ -57,6 +61,7 @@ function fromWire(raw: unknown): FloatingPrefs {
   const d = { ...DEFAULT_FLOATING };
   if (raw && typeof raw === "object") {
     const o = raw as Record<string, unknown>;
+    if (typeof o.enabled === "boolean") d.enabled = o.enabled;
     if (typeof o.hotkey === "string" && o.hotkey.trim()) d.hotkey = o.hotkey.trim();
     if (o.default_mode === "quick" || o.default_mode === "follow") d.defaultMode = o.default_mode;
     if (typeof o.inactive_opacity === "number" && o.inactive_opacity >= 0.1 && o.inactive_opacity <= 1) {
@@ -74,6 +79,7 @@ function fromWire(raw: unknown): FloatingPrefs {
 
 function toWire(p: FloatingPrefs): Record<string, unknown> {
   return {
+    enabled: p.enabled,
     hotkey: p.hotkey,
     default_mode: p.defaultMode,
     inactive_opacity: p.inactiveOpacity,

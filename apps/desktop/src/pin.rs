@@ -53,6 +53,11 @@ pub(crate) struct FloatingGeo {
 /// the hotkey works before any webview is up.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub(crate) struct PinPrefs {
+    /// Master switch (用户 2026-11-03：⇧⌘Space 误触发太频繁). false = 整个
+    /// 悬浮窗功能关闭：不注册全局热键、summon/toggle 全 no-op、窗口收起
+    /// （webview 保留，重开秒回）；在 设置 → 悬浮窗 重新打开。
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     #[serde(default = "default_hotkey")]
     pub(crate) hotkey: String,
     #[serde(default = "default_true")]
@@ -78,6 +83,7 @@ fn default_fullscreen_policy() -> String {
 impl Default for PinPrefs {
     fn default() -> Self {
         Self {
+            enabled: true,
             hotkey: default_hotkey(),
             visible_on_all_spaces: true,
             fullscreen_policy: default_fullscreen_policy(),
@@ -120,6 +126,10 @@ pub(crate) fn load_pin_prefs(home: &Path) -> PinPrefs {
         return defaults;
     };
     PinPrefs {
+        enabled: f
+            .get("enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(defaults.enabled),
         hotkey: f
             .get("hotkey")
             .and_then(|x| x.as_str())
@@ -407,6 +417,9 @@ fn hide_pin_now(app: &tauri::AppHandle, w: &WebviewWindow) {
 
 /// Show in the last-used shape (tray / show-at-launch / Settings test button).
 pub(crate) fn toggle_pin_now(app: &tauri::AppHandle) {
+    if pin_disabled(app) {
+        return;
+    }
     let w = match ensure_pin_window(app) {
         Ok(w) => w,
         Err(e) => {
@@ -437,6 +450,14 @@ pub(crate) fn toggle_pin_now(app: &tauri::AppHandle) {
     }
 }
 
+/// Master switch off → every summon/toggle entry (hotkey, tray, show-on-
+/// launch) is a no-op until re-enabled in Settings.
+fn pin_disabled(app: &tauri::AppHandle) -> bool {
+    app.try_state::<PinState>()
+        .map(|st| !st.prefs.lock().unwrap().enabled)
+        .unwrap_or(false)
+}
+
 /// Global-hotkey semantics — "summon the composer":
 ///   hidden (any last shape) → show as mini; visible pill → expand to mini;
 ///   visible mini → hide (toggle off).
@@ -445,6 +466,9 @@ pub(crate) fn toggle_pin_now(app: &tauri::AppHandle) {
 /// the hotkey is its only expansion path (Settings → 悬浮窗 promises
 /// 「需用快捷键唤出」). Hence never land on a shape without an input box.
 fn summon_pin_now(app: &tauri::AppHandle) {
+    if pin_disabled(app) {
+        return;
+    }
     let w = match ensure_pin_window(app) {
         Ok(w) => w,
         Err(e) => {
@@ -587,11 +611,33 @@ pub(crate) fn pin_apply_prefs(app: tauri::AppHandle, prefs: PinPrefs) -> bool {
         let mut g = st.prefs.lock().unwrap();
         std::mem::replace(&mut *g, prefs.clone())
     };
-    // Re-register when the hotkey changed; also retry an unchanged one that
-    // never went live (e.g. it was taken at launch but has since been freed).
-    let hotkey_ok = if old.hotkey != prefs.hotkey {
-        if let Ok(sc) = old.hotkey.parse::<Shortcut>() {
-            let _ = app.global_shortcut().unregister(sc);
+    // Master switch off: unregister the hotkey (the accidental-trigger source)
+    // and tuck the window away. The webview is kept alive so a later re-enable
+    // returns instantly; summon/toggle no-op via the enabled check.
+    if !prefs.enabled {
+        for hk in [&old.hotkey, &prefs.hotkey] {
+            if let Ok(sc) = hk.parse::<Shortcut>() {
+                let _ = app.global_shortcut().unregister(sc);
+            }
+        }
+        st.hotkey_active.store(false, Ordering::Relaxed);
+        if let Some(w) = app.get_webview_window(PIN_LABEL) {
+            if w.is_visible().unwrap_or(false) {
+                hide_pin_now(&app, &w);
+            }
+        }
+        shell_log(&app, "pin: feature disabled — hotkey unregistered, window hidden");
+        return true; // nothing left to conflict with
+    }
+    // Re-register when the hotkey changed or the feature was just re-enabled;
+    // also retry an unchanged one that never went live (e.g. it was taken at
+    // launch but has since been freed).
+    let hotkey_ok = if old.hotkey != prefs.hotkey || !old.enabled {
+        if old.enabled {
+            // only a live feature ever registered the old hotkey
+            if let Ok(sc) = old.hotkey.parse::<Shortcut>() {
+                let _ = app.global_shortcut().unregister(sc);
+            }
         }
         register_pin_hotkey(&app, &prefs.hotkey)
     } else {

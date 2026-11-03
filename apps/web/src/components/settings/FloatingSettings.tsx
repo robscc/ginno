@@ -46,7 +46,9 @@ export function FloatingSettings() {
       try {
         const { prefs: p, hotkeyOk } = await savePinPrefs(patch);
         setPrefs(p);
-        if ("hotkey" in patch) setHotkeyActive(hotkeyOk);
+        // enabled also changes registration state (off ⇒ no hotkey at all,
+        // on ⇒ fresh register attempt), so refresh the warn banner for both.
+        if ("hotkey" in patch || "enabled" in patch) setHotkeyActive(hotkeyOk);
         setMsg(
           "hotkey" in patch && !hotkeyOk
             ? t("savedHotkeyConflict")
@@ -82,7 +84,23 @@ export function FloatingSettings() {
       <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
       <p className="mt-1 text-sm text-muted">{t("description")}</p>
       <div className="mt-4 max-w-md space-y-5">
-        {!hotkeyActive && (
+        {/* Master switch（误触发总闸，Rust PinPrefs.enabled）：关掉后热键不
+            注册、托盘/菜单 summon 全 no-op、窗口收起；其余配置照常可编辑，
+            重新打开后立即生效。 */}
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={prefs.enabled}
+              onChange={(e) => void save({ enabled: e.target.checked })}
+            />
+            {t("enabledLabel")}
+          </label>
+          <p className="mt-1 text-xs text-faint">{t("enabledHelp")}</p>
+        </div>
+        {/* 关闭态下 hotkey_active=false 是“没有热键”而非“注册失败”——
+            不显示冲突警告。 */}
+        {!hotkeyActive && prefs.enabled && (
           <div className="flex items-start gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs leading-relaxed text-yellow">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{t("hotkeyWarn", { hotkey: formatAccelerator(prefs.hotkey) })}</span>

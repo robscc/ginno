@@ -328,8 +328,14 @@ pub fn run() {
             // team blocked/done (agent-team §5.3.1). Self-throttling poller;
             // no-ops while the sidecar is down.
             badge::spawn_badge_watcher(app.handle().clone());
-            register_pin_hotkey(app.handle(), &prefs.hotkey);
-            if show_on_launch {
+            // Off switch: a disabled pin window registers no global hotkey
+            // (the point is killing accidental ⇧⌘Space presses) and never
+            // spawns the show-on-launch wait thread. toggle_pin_now re-checks
+            // for the tray entry.
+            if prefs.enabled {
+                register_pin_hotkey(app.handle(), &prefs.hotkey);
+            }
+            if show_on_launch && prefs.enabled {
                 let h = app.handle().clone();
                 std::thread::spawn(move || {
                     // Release: /pin is served by the sidecar — wait for it.
