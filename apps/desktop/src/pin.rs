@@ -626,7 +626,10 @@ pub(crate) fn pin_apply_prefs(app: tauri::AppHandle, prefs: PinPrefs) -> bool {
                 hide_pin_now(&app, &w);
             }
         }
-        shell_log(&app, "pin: feature disabled — hotkey unregistered, window hidden");
+        shell_log(
+            &app,
+            "pin: feature disabled — hotkey unregistered, window hidden",
+        );
         return true; // nothing left to conflict with
     }
     // Re-register when the hotkey changed or the feature was just re-enabled;
