@@ -185,7 +185,7 @@ def build_stable_system(
         )
     if any(n.startswith("todo_") for n in allowed):
         parts.append(
-            "The user's daily TODO list is shown in the right panel. Use todo_list to read "
+            "The user's TODO list is shown in the right panel. Use todo_list to read "
             "it (each line starts with the item id), and todo_create / todo_update / "
             "todo_done / todo_delete to change it. New items look better with an emoji icon "
             "and 1-3 tags (todo_create/todo_update accept emoji and tags). If a TODO has a "

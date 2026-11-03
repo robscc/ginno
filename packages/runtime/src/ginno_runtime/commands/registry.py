@@ -813,6 +813,10 @@ async def fork_session_core(sid: str, slug: str, meta: dict, session: dict) -> d
             workspace="",
             agent_id=meta.get("agent_id") or session.get("agent_id") or None,
             title=fork_title,
+            # 思考档位随副本(thinking-effort-design §8):源会话显式选过档位
+            # 就带过去;auto 走 agent 默认链(provider/model 的 fork 语义不变,
+            # 仍由 agent 绑定解析)。
+            thinking_effort=str(meta.get("thinking_effort") or "") or None,
         )
     )
     if new_meta.get("ok") is False or not new_meta.get("id"):
@@ -1061,6 +1065,61 @@ async def _subagent_split_async_handler(
         return t(f"Split failed: {e}", f"拆分失败：{e}")
 
 
+def _think_usage() -> str:
+    return t(
+        "**Thinking effort usage**\n"
+        "- `/think <off|low|medium|high>` — set this session's thinking effort\n"
+        "- `/think auto` — follow the provider config (default)\n"
+        "- `/think` — show the current effort",
+        "**/think 用法**\n"
+        "- `/think <off|low|medium|high>` — 设置本会话思考强度\n"
+        "- `/think auto` — 跟随 provider 配置（缺省）\n"
+        "- `/think` — 查看当前强度",
+    )
+
+
+def _think_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    """/think — 查询走同步路径;换档走 async(busy-gated,不与运行中 turn 抢)。"""
+    if not session:
+        return _think_usage()
+    arg = (args or "").strip().lower()
+    if arg not in ("", "auto", "off", "low", "medium", "high"):
+        return _think_usage()
+    if arg:
+        return ""  # 动作交给 async_handler
+    cur = str(session.get("thinking_effort") or "auto")
+    return (
+        t("Current thinking effort", "当前思考强度")
+        + f": **{cur}**\n\n"
+        + _think_usage()
+    )
+
+
+async def _think_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    if not session:
+        return _think_usage()
+    arg = (args or "").strip().lower()
+    if arg not in ("auto", "off", "low", "medium", "high"):
+        return _think_usage()
+    sid = session.get("session_id") or session.get("id") or ""
+    # 懒导入防环:api.sessions 经 ws/stream 链路最终引用本模块。
+    from ..api.sessions import PatchSessionRequest, patch_session
+
+    r = await patch_session(sid, PatchSessionRequest(thinking_effort=arg))
+    if not r.get("ok"):
+        return t(
+            f"Thinking effort change failed: {r.get('error')}",
+            f"思考强度切换失败：{r.get('error')}",
+        )
+    return (
+        t("Thinking effort set to", "思考强度已设为")
+        + f" **{arg}** — "
+        + t("effective from the next model call.", "下一次模型调用起生效。")
+    )
+
+
 BUILTINS: dict[str, BuiltinCommand] = {
     "help": BuiltinCommand(
         name="help",
@@ -1163,5 +1222,14 @@ BUILTINS: dict[str, BuiltinCommand] = {
         ),
         handler=_subagent_handler,
         async_handler=_subagent_split_async_handler,
+    ),
+    "think": BuiltinCommand(
+        name="think",
+        description=(
+            "Set or show this session's thinking effort (/think <off|low|medium|high|auto>)",
+            "设置或查看本会话思考强度（/think <off|low|medium|high|auto>）",
+        ),
+        handler=_think_handler,
+        async_handler=_think_async_handler,
     ),
 }
