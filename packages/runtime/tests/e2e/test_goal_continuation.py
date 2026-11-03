@@ -76,7 +76,13 @@ def test_continuation_completes_goal(create_session, client):
     sid = create_session(model)
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "Write the report"})
 
-    goal = _wait_goal(client, sid, lambda g: g and g["status"] == "complete")
+    goal = _wait_goal(
+        client,
+        sid,
+        # status 与 turns_used 的记账存在写序窗口（工具先置 complete，turn
+        # 收尾才 +1）——两者齐备才算到达，否则慢机上断言会读到 complete+0。
+        lambda g: g and g["status"] == "complete" and g["turns_used"] >= 1,
+    )
     assert goal["turns_used"] >= 1
     assert goal["time_used_seconds"] >= 0
 
@@ -134,7 +140,13 @@ def test_continuation_blocked_stops_loop(create_session, client):
     sid = create_session(model)
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "Sync Todoist"})
 
-    goal = _wait_goal(client, sid, lambda g: g and g["status"] == "blocked")
+    goal = _wait_goal(
+        client,
+        sid,
+        # 同上：等 blocked 与 turns_used 记账齐备（写序窗口里 blocked+0 会让
+        # 「不再增加」的对比基线错位 → 慢机上 1 != 0 的假阳性）。
+        lambda g: g and g["status"] == "blocked" and g["turns_used"] >= 1,
+    )
     turns_at_blocked = goal["turns_used"]
     # The loop must stop: no further turns accrue once blocked.
     time.sleep(0.6)

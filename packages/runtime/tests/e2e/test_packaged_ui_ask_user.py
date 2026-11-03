@@ -228,7 +228,9 @@ def test_card_renders_answer_folds_and_survives_reload(app):
     assert page.locator(f"text={OPTION_A}").count() >= 1
     assert page.locator(f"text={OPTION_B}").count() >= 1
     # the Skip escape hatch is always offered alongside the options
-    assert page.locator("text=Skip · use your best judgment").count() >= 1
+    # 文案已改为 composer.json 的 askCard.skip（"Skip · let the agent use its
+    # best judgment"）——跟随 catalog，勿写死旧措辞
+    assert page.locator("text=let the agent use its best judgment").count() >= 1
 
     page.locator(f"text={OPTION_B}").first.click()
 

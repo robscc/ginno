@@ -214,12 +214,16 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
                 ta.fill(text)
                 ta.press("Enter")
 
-            # ---- turn 1 → usage pill appears in the TopBar ----
+            # ---- turn 1 → usage button appears in the TopBar ----
+            # UI 演进：usage 从文本 pill（span.pill 带 ↑/数字）改为图标按钮
+            # （ArrowDownUp，数据在 title tooltip："Session total: input …"）
             send_msg("你好")
             page.wait_for_selector("text=你好，我是 Dev Agent。", timeout=15000)
-            pill = page.locator("header span.pill", has_text="↑")
-            pill.first.wait_for(timeout=10000)
-            assert "120" in pill.first.inner_text() or "↑" in pill.first.inner_text()
+            usage_btn = page.locator(
+                "header button[title*='Session total']"
+            ).first
+            usage_btn.wait_for(timeout=10000)
+            assert "120" in usage_btn.get_attribute("title") or "1" in usage_btn.get_attribute("title")
 
             # ---- edit the active agent's prompt via the API ----
             page.evaluate(
