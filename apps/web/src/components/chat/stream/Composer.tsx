@@ -119,6 +119,7 @@ export function Composer({
   const {
     pendingMounts, setPendingMounts, modelOpen, setModelOpen, pickModel,
     enabledProviders, targetAgent, homeEffective, homeModelSource, modelChipLabel,
+    thinkingEffort, effortDisabled, pickThinking,
   } = model;
 
   return (
@@ -407,10 +408,13 @@ export function Composer({
           targetAgent={targetAgent}
           homeEffective={homeEffective}
           enabledProviders={enabledProviders}
+          thinkingEffort={thinkingEffort}
+          effortDisabled={effortDisabled}
           open={modelOpen}
           onToggle={() => setModelOpen((v) => !v)}
           onClose={() => setModelOpen(false)}
           onPick={(pid, m) => void pickModel(pid, m)}
+          onPickEffort={(e) => void pickThinking(e)}
         />
         {running && session && !parked ? (
           <button

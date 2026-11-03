@@ -391,6 +391,8 @@ export function AgentsSettings() {
       tools_allow: toolsFor(a),
       provider: get(a.id, "provider", a.provider),
       model: get(a.id, "model", a.model),
+      // 默认思考档位（thinking-effort-design §9 P1）：新建会话的兜底档位。
+      thinking_effort: get(a.id, "thinking_effort", a.thinking_effort || ""),
       icon: get(a.id, "icon", a.icon),
       color: get(a.id, "color", a.color),
       connectors_deny: denyFor(a),
@@ -704,7 +706,7 @@ export function AgentsSettings() {
                   <div className="mt-0.5 text-[11px] text-faint">{t("connectorsNote")}</div>
                 </>
               )}
-              <div className="mt-2 grid grid-cols-3 gap-2">
+              <div className="mt-2 grid grid-cols-4 gap-2">
                 <div>
                   <label className="field-label">{t("providerLabel")}</label>
                   <select
@@ -746,6 +748,23 @@ export function AgentsSettings() {
                       </option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="field-label">{t("thinkingEffortLabel")}</label>
+                  <select
+                    className="field"
+                    value={get(a.id, "thinking_effort", a.thinking_effort || "")}
+                    onChange={(e) => set(a.id, "thinking_effort", e.target.value)}
+                  >
+                    {/* 默认思考档位（thinking-effort-design §9 P1）：只影响
+                        新建会话，已建会话的档位不随它变。 */}
+                    <option value="">{t("thinkingEffortAuto")}</option>
+                    <option value="off">{t("thinkingEffortOff")}</option>
+                    <option value="low">{t("thinkingEffortLow")}</option>
+                    <option value="medium">{t("thinkingEffortMedium")}</option>
+                    <option value="high">{t("thinkingEffortHigh")}</option>
+                  </select>
+                  <div className="mt-0.5 text-[11px] text-faint">{t("thinkingEffortNote")}</div>
                 </div>
                 <div>
                   <label className="field-label">{t("iconLabel")}</label>

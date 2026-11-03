@@ -367,6 +367,58 @@ export function ModelConfigForm({
           </div>
         )}
 
+        {!isAsr && (
+          // 思考档位能力声明(thinking-effort-design §7/§9):auto = 按协议 +
+          // 模型名启发式(默认);none = chip 菜单置灰 + 服务端把档位按 auto
+          // 处理。预算覆盖(anthropic/qwen 用)可一并自定义。
+          <div className="space-y-2 rounded-xl border border-line p-3">
+            <div className="text-xs font-medium text-muted">{t("thinkingCapabilityTitle")}</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="field-label">{t("thinkingModeLabel")}</label>
+                <select
+                  className="field"
+                  value={draft.thinking_mode ?? "auto"}
+                  onChange={(e) =>
+                    set("thinking_mode", e.target.value as ModelConfig["thinking_mode"])
+                  }
+                >
+                  <option value="auto">{t("thinkingModeAuto")}</option>
+                  <option value="none">{t("thinkingModeNone")}</option>
+                </select>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                  {t("thinkingModeHint")}
+                </p>
+              </div>
+              <div>
+                <label className="field-label">{t("thinkingBudgetsLabel")}</label>
+                <div className="flex items-center gap-1.5">
+                  {(["low", "medium", "high"] as const).map((k) => (
+                    <input
+                      key={k}
+                      type="number"
+                      min={0}
+                      step={1024}
+                      className="field w-full"
+                      placeholder={t(`thinkingBudget_${k}`)}
+                      value={draft.thinking_budgets?.[k] ?? ""}
+                      onChange={(e) =>
+                        set("thinking_budgets", {
+                          ...(draft.thinking_budgets ?? {}),
+                          [k]: Number(e.target.value) || 0,
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                  {t("thinkingBudgetsHint")}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("modelsLabel")} hint={t("modelsHint")}>
             <div className="mb-2 flex items-center gap-2">

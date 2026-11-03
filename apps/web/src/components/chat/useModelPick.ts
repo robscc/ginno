@@ -23,9 +23,11 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   const router = useRouter();
 
   // Home-state model pick (composer model chip, M3) consumed on lazy creation.
-  const [homeModel, setHomeModel] = useState<{ provider?: string; model?: string } | undefined>(
-    undefined,
-  );
+  // thinking_effort 混在同一个对象里(thinking-effort-design §5):随
+  // createAndSend 的 ...(homeModel ?? {}) 一并下发。
+  const [homeModel, setHomeModel] = useState<
+    { provider?: string; model?: string; thinking_effort?: string } | undefined
+  >(undefined);
   const homeCreatingRef = useRef(false);
 
   // 首页待挂载目录(home-mount-picker-design.md §2.3)：随首条消息的建会话请求
@@ -96,6 +98,7 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     }
   }
   const enabledProviders = Object.entries(g.providers).filter(([, p]) => p.enabled);
+
   // At home nothing is chosen yet, so the chip should name what WOULD be used —
 // the default provider's own model — not the provider id. A bare "custom" there
 // reads as a model name and looks unchangeable (the "default is customer"
@@ -144,9 +147,51 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
       defaultProviderCfg?.name ||
       g.defaultProvider;
 
+  // ── 思考档位(thinking-effort-design §5)───────────────────────────────
+  // 会话态 = PATCH 热切(与 pickModel 同一条乐观更新+失败回滚路径);首页态
+  // 写进 homeModel 随懒创建下发。auto 是合法值(显式回缺省)。首页的生效
+  // 档位镜像服务端解析链:显式点选 > agent 默认 > auto。
+  const sessionEffort = session?.thinking_effort || "auto";
+  const homeEffort =
+    homeModel?.thinking_effort ||
+    (targetAgent?.thinking_effort && targetAgent.thinking_effort !== "auto"
+      ? targetAgent.thinking_effort
+      : "") ||
+    "auto";
+  const thinkingEffort = session ? sessionEffort : homeEffort;
+  // 能力闸门(设计 §7):provider 显式声明 thinking_mode="none" 时置灰。
+  const effortProviderId = session ? session.provider : homeEffective?.provider;
+  const effortDisabled =
+    effortProviderId != null && g.providers[effortProviderId]?.thinking_mode === "none";
+
+  async function pickThinking(value: string) {
+    setModelOpen(false);
+    if (!session) {
+      setHomeModel((prev) => ({ ...prev, thinking_effort: value }));
+      return;
+    }
+    const prev = session.thinking_effort || "auto";
+    g.applySessionPatch(session.id, {
+      thinking_effort: value as SessionMeta["thinking_effort"],
+    });
+    try {
+      const r = await api.patchSession(session.id, {
+        thinking_effort: value as SessionMeta["thinking_effort"],
+      });
+      if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
+      g.applySessionPatch(session.id, r.session);
+    } catch {
+      g.applySessionPatch(session.id, {
+        thinking_effort: prev as SessionMeta["thinking_effort"],
+      });
+      pushNotice("error", tc("notice.thinkingSwitchFailed"), { source: "model" });
+    }
+  }
+
   return {
     homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
     modelOpen, setModelOpen, pickModel, enabledProviders, defaultProviderCfg,
     targetAgent, agentBindingPid, homeEffective, homeModelSource, modelChipLabel,
+    thinkingEffort, effortDisabled, pickThinking,
   };
 }

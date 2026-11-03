@@ -81,7 +81,15 @@
       "noProviders": "尚无启用的服务商——请到 设置 → 模型 API 启用一个",
       "noModels": "该服务商未配置模型——请到 设置 → 模型 API 添加",
       "footnoteHome": "勾选的模型即下一个会话将使用的模型 · 在此选择可覆盖该会话的 Agent 绑定",
-      "footnote": "下一回合生效 · 你的选择随会话保留，除非其服务商或模型被移除"
+      "footnote": "下一回合生效 · 你的选择随会话保留，除非其服务商或模型被移除",
+      "thinkingTitle": "思考强度",
+      "thinkingAuto": "自动（跟随服务商配置）",
+      "thinkingAutoHint": "跟随服务商配置——默认行为",
+      "thinkingOff": "关闭",
+      "thinkingLow": "低 · 快速",
+      "thinkingMedium": "中",
+      "thinkingHigh": "高 · 深度",
+      "thinkingUnsupported": "该服务商声明不支持思考档位"
     },
     "agentChips": {
       "ask": "问 {name}",
@@ -380,6 +388,7 @@
     },
     "notice": {
       "modelSwitchFailed": "切换到 {model} 失败 — 该会话仍使用原模型",
+      "thinkingSwitchFailed": "思考强度切换失败 — 该会话保持原设置",
       "openModelSettings": "模型设置",
       "dismiss": "关闭",
       "homeModelPicked": "下一个会话将使用 {model}"

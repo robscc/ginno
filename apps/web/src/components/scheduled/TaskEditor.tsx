@@ -82,6 +82,13 @@ export function TaskEditor({
   const [modelPick, setModelPick] = useState(
     initial?.model ? `${initial.model.provider}::${initial.model.model}` : "",
   );
+  // 任务级思考档位覆盖（thinking-effort-design §9 P1）：拉起的影子会话用该
+  // 档位创建；""/auto = 跟随 agent 默认链。仅 prompt 目标生效。
+  const [effortPick, setEffortPick] = useState(
+    initial?.thinking_effort && initial.thinking_effort !== "auto"
+      ? initial.thinking_effort
+      : "",
+  );
   // 与 AgentsSettings/chat 模型 chip 同一套枚举：enabled provider × models[]
   //（缺省回落 default_model）。
   const modelGroups = useMemo(
@@ -179,10 +186,22 @@ export function TaskEditor({
       targetType === "prompt" && sep > 0
         ? { provider: modelPick.slice(0, sep), model: modelPick.slice(sep + 2) }
         : null;
+    // 思考档位显式随 body 提交（PATCH 语义同 model）；workflow 目标不生效，
+    // 统一回 auto 清残留。
+    const thinking_effort = (
+      targetType === "prompt" && effortPick ? effortPick : "auto"
+    ) as import("@/lib/types").ScheduleTask["thinking_effort"];
 
     setBusy(true);
     try {
-      const body = { name: name.trim(), target, schedule: plan, enabled: initial?.enabled ?? true, model };
+      const body = {
+        name: name.trim(),
+        target,
+        schedule: plan,
+        enabled: initial?.enabled ?? true,
+        model,
+        thinking_effort,
+      };
       const r = initial
         ? await api.patchScheduleTask(initial.id, body)
         : await api.createScheduleTask(body);
@@ -277,25 +296,37 @@ export function TaskEditor({
                 />
               </div>
             </div>
-            <div className="mt-3">
-              <div className="field-label">{tr("editor.model")}</div>
-              <select className="field" value={modelPick} onChange={(e) => setModelPick(e.target.value)}>
-                <option value="">{tr("editor.modelDefault")}</option>
-                {modelGroups.map((grp) => (
-                  <optgroup key={grp.pid} label={grp.name}>
-                    {grp.models.map((m) => (
-                      <option key={`${grp.pid}::${m}`} value={`${grp.pid}::${m}`}>
-                        {m}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-                {staleModel && (
-                  <option value={`${staleModel.provider}::${staleModel.model}`}>
-                    {staleModel.provider} / {staleModel.model}
-                  </option>
-                )}
-              </select>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <div>
+                <div className="field-label">{tr("editor.model")}</div>
+                <select className="field" value={modelPick} onChange={(e) => setModelPick(e.target.value)}>
+                  <option value="">{tr("editor.modelDefault")}</option>
+                  {modelGroups.map((grp) => (
+                    <optgroup key={grp.pid} label={grp.name}>
+                      {grp.models.map((m) => (
+                        <option key={`${grp.pid}::${m}`} value={`${grp.pid}::${m}`}>
+                          {m}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {staleModel && (
+                    <option value={`${staleModel.provider}::${staleModel.model}`}>
+                      {staleModel.provider} / {staleModel.model}
+                    </option>
+                  )}
+                </select>
+              </div>
+              <div>
+                <div className="field-label">{tr("editor.thinking")}</div>
+                <select className="field" value={effortPick} onChange={(e) => setEffortPick(e.target.value)}>
+                  <option value="">{tr("editor.thinkingAuto")}</option>
+                  <option value="off">{tr("editor.thinkingOff")}</option>
+                  <option value="low">{tr("editor.thinkingLow")}</option>
+                  <option value="medium">{tr("editor.thinkingMedium")}</option>
+                  <option value="high">{tr("editor.thinkingHigh")}</option>
+                </select>
+              </div>
             </div>
           </>
         ) : (

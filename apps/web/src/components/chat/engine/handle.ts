@@ -16,6 +16,7 @@ import type {
   ContextState,
   Goal,
   Plan,
+  SessionMeta,
   SessionUsage,
   SubagentPlanEvent,
   SubagentSpawnEvent,
@@ -288,10 +289,17 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 会话条目的模型对象，下一个 superstep 生效。发起端乐观更新过，这里
       // 兜底其它视图（回放页/另一窗口）并给一条轻提示。applySessionPatch
       // 是裸 spread，未携带的键不能以 undefined 进 patch（会清字段）。
-      const patch: Partial<{ provider: string; model: string }> = {};
+      const patch: Partial<SessionMeta> = {};
       if (typeof ev.provider === "string") patch.provider = ev.provider;
       if (typeof ev.model === "string") patch.model = ev.model;
-      if (patch.provider || patch.model) ctx.g.applySessionPatch(sid, patch);
+      // 思考档位随事件同步（thinking-effort-design §6）。
+      const evEffort = (ev as Record<string, unknown>).thinking_effort;
+      if (typeof evEffort === "string") {
+        patch.thinking_effort = evEffort as SessionMeta["thinking_effort"];
+      }
+      if (patch.provider || patch.model || patch.thinking_effort) {
+        ctx.g.applySessionPatch(sid, patch);
+      }
       // 轻提示走**公共通知层**（notice-center-design.md）：旧实现借用
       // chat/mod 的右下角 toast 宿主，语义错位且 mods 未挂载时帧直接丢弃。
       // dedupeKey 按会话去重——多窗口/回放页收到同一事件只弹一条。

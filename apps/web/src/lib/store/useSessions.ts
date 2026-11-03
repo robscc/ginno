@@ -177,6 +177,8 @@ export function useSessions({
         title?: string;
         provider?: string;
         model?: string;
+        /** 思考档位（thinking-effort-design §2）；"auto"/缺省走 agent 默认链 */
+        thinking_effort?: string;
         workflow_id?: string;
         /** 出生即挂载(home-mount-picker-design.md §3)——首页 composer 的 pending 目录 */
         context_folders?: string[];
@@ -193,6 +195,7 @@ export function useSessions({
           title: opts?.title,
           provider: opts?.provider,
           model: opts?.model,
+          thinking_effort: opts?.thinking_effort,
           workflow_id: opts?.workflow_id,
           context_folders: opts?.context_folders,
           primary_folder: opts?.primary_folder ?? undefined,

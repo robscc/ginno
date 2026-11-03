@@ -2,12 +2,22 @@
 
 // ModelChipMenu — composer 的模型 chip 与下拉菜单（自 ChatStream.tsx 机械拆出，
 // 渲染逐字一致）：per-session provider/model 切换；home 态为「首条消息将生效」
-// 的选择（含 agent 绑定与应用默认的解析结果）。
+// 的选择（含 agent 绑定与应用默认的解析结果）。thinking-effort-design §5：
+// 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
 
-import { ChevronDown, Globe } from "lucide-react";
+import { Brain, ChevronDown, Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
 import type { SessionMeta } from "@/lib/types";
+
+const EFFORTS = ["auto", "off", "low", "medium", "high"] as const;
+// chip 角标缩写（locale 无关）;auto 不占宽。
+const EFFORT_BADGE: Record<string, string> = {
+  off: "OFF",
+  low: "LO",
+  medium: "MED",
+  high: "HI",
+};
 
 export function ModelChipMenu({
   session,
@@ -16,10 +26,13 @@ export function ModelChipMenu({
   targetAgent,
   homeEffective,
   enabledProviders,
+  thinkingEffort,
+  effortDisabled,
   open,
   onToggle,
   onClose,
   onPick,
+  onPickEffort,
 }: {
   session: SessionMeta | null;
   label: string;
@@ -27,12 +40,24 @@ export function ModelChipMenu({
   targetAgent: AgentConfig | null;
   homeEffective: { provider?: string; model?: string };
   enabledProviders: Array<[string, ProviderConfig]>;
+  /** 当前思考档位（"auto" = 跟随 provider 配置）。 */
+  thinkingEffort: string;
+  /** provider 声明 thinking_mode="none" 时置灰分组。 */
+  effortDisabled: boolean;
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
   onPick: (pid: string, model: string) => void;
+  onPickEffort: (effort: string) => void;
 }) {
   const tc = useTranslations("chat");
+  const effortLabel: Record<string, string> = {
+    auto: tc("model.thinkingAuto"),
+    off: tc("model.thinkingOff"),
+    low: tc("model.thinkingLow"),
+    medium: tc("model.thinkingMedium"),
+    high: tc("model.thinkingHigh"),
+  };
   return (
     <div className="relative">
       <button
@@ -54,6 +79,14 @@ export function ModelChipMenu({
       >
         <Globe className="h-3.5 w-3.5 shrink-0" />
         <span className="max-w-[160px] truncate font-medium">{label}</span>
+        {EFFORT_BADGE[thinkingEffort] && (
+          <span
+            className="shrink-0 rounded border border-violet/40 px-1 text-[9px] leading-4 font-medium text-violet"
+            title={tc("model.thinkingTitle")}
+          >
+            {EFFORT_BADGE[thinkingEffort]}
+          </span>
+        )}
         <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
       </button>
       {open && (
@@ -109,6 +142,38 @@ export function ModelChipMenu({
                 </div>
               );
             })}
+            {/* 思考档位分组(thinking-effort-design §5):5 档 radio,选定即
+                热切;provider 声明不支持时整体置灰。 */}
+            <div className="mt-1 border-t border-line pt-1">
+              <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-faint">
+                <Brain className="h-3 w-3" />
+                {tc("model.thinkingTitle")}
+              </div>
+              {effortDisabled ? (
+                <div className="px-3 py-1 text-[11px] text-faint">
+                  {tc("model.thinkingUnsupported")}
+                </div>
+              ) : (
+                EFFORTS.map((e) => {
+                  const on = thinkingEffort === e;
+                  return (
+                    <button
+                      key={e}
+                      onClick={() => onPickEffort(e)}
+                      title={
+                        e === "auto" ? tc("model.thinkingAutoHint") : undefined
+                      }
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
+                        on ? "text-txt" : "text-muted"
+                      }`}
+                    >
+                      <span className={on ? "" : "opacity-0"}>✓</span>
+                      <span className="min-w-0 flex-1 truncate">{effortLabel[e]}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
             <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
               {tc(session ? "model.footnote" : "model.footnoteHome")}
             </div>

@@ -77,6 +77,9 @@ export interface AgentConfig {
    *  key = subagent type name; absent = inherit (type frontmatter → parent
    *  session model). Saved via the Agents page's Sub-agent models section. */
   subagent_models?: Record<string, { provider: string; model: string }>;
+  /** 默认思考档位（thinking-effort-design §9 P1）：新建会话未显式选档时的
+   *  兜底；""/缺省 = auto。只影响会话创建，不改已建会话。 */
+  thinking_effort?: string;
   tools_allow: string[];
   /** Connector ids this agent may NOT use (connector-module-design §8).
    *  Denylist: [] = all enabled connectors; per-agent can only restrict. */
@@ -118,6 +121,11 @@ export interface ProviderConfig {
   // OFF server-side; opt in via request body `enable_thinking: true` so the
   // endpoint streams `reasoning_content` deltas (rendered as thinking blocks).
   enable_thinking?: boolean;
+  // 思考档位能力声明（thinking-effort-design §7）：auto = 按协议 + 模型名
+  // 启发式；none = 显式不支持（chip 菜单置灰 + 服务端把档位按 auto 处理）。
+  thinking_mode?: "auto" | "budget" | "effort" | "none";
+  // 档位 → token 预算覆盖（anthropic / qwen 方言用）；缺省用内置 4k/16k/32k。
+  thinking_budgets?: { low?: number; medium?: number; high?: number };
 }
 
 export type Providers = Record<string, ProviderConfig>;
@@ -147,6 +155,8 @@ export interface ModelConfig {
   timeout_s: number;
   enable_search?: boolean; // openai-compatible private body param (Qwen/DashScope…)
   enable_thinking?: boolean; // openai-compatible hybrid-thinking opt-in
+  thinking_mode?: "auto" | "budget" | "effort" | "none"; // 思考档位能力声明（设计 §7）
+  thinking_budgets?: { low?: number; medium?: number; high?: number }; // 档位预算覆盖
   enabled: boolean;
   // Unix seconds of the last successful verify (persisted server-side);
   // null/absent = never verified. last_error holds the most recent failure.
@@ -175,6 +185,9 @@ export interface SessionMeta {
   agent_id: string | null;
   provider: string;
   model: string;
+  /** 思考档位（thinking-effort-design §2）："auto"（缺省，跟随 provider 配置）
+   *  或显式档位。运行中换档 = PATCH 热切（下一 superstep 生效）。 */
+  thinking_effort?: "auto" | "off" | "low" | "medium" | "high";
   created: number;
   updated: number;
   // Context folder mounts (docs/context-folders-design.md): library ids +
@@ -341,6 +354,9 @@ export interface SessionUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  /** 思考 token（thinking-effort-design §8）：output 的子集，尽力提取
+   *  （OpenAI 系 completion_tokens_details / anthropic thinking）；老记录缺省。 */
+  reasoning_tokens?: number;
   calls: number;
 }
 
@@ -903,6 +919,9 @@ export interface ScheduleTask {
   notify?: boolean; // P1
   /** 任务级模型覆盖（仅 prompt 目标生效）；null/缺省 = 跟随 agent/全局默认。 */
   model?: { provider: string; model: string } | null;
+  /** 任务级思考档位覆盖（thinking-effort-design §9 P1）：拉起的影子会话用
+   *  该档位创建；"auto"/缺省 = agent 默认链。 */
+  thinking_effort?: "auto" | "off" | "low" | "medium" | "high";
   created: number;
   updated: number;
   /** 调度器回写（epoch 秒）；UI 冷启动即有值。null/缺省 = 暂停或单次已完成。 */
