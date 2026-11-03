@@ -110,7 +110,7 @@
       "applyFailedConnect": "Failed to promote: cannot connect to the runtime"
     },
     "todo": {
-      "title": "Daily TODO",
+      "title": "TODO",
       "new": "New",
       "add": "Add",
       "save": "Save",

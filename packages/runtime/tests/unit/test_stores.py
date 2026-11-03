@@ -54,6 +54,85 @@ def test_todo_seed_when_empty(isolated_home):
     assert len(todo_store.list_todos()) == 7
 
 
+# ------------------- todos 数据安全（2026-11-03 清单蒸发事故） ------------------- #
+def test_todo_corrupt_file_is_quarantined_not_rebuilt(isolated_home):
+    """旧版：半截 JSON → _read 静默返回 [] → 下一次 create 把只剩新条目的
+    列表整表写回，旧数据无痕蒸发。现在：损坏文件先挪去 .corrupt-<ts> 留
+    现场，从空表继续——现场可人工找回。"""
+    from ginno_runtime import paths
+
+    paths.todos_path().write_text('[{"id": "a", "title": "旧条目", "done": false')  # 半截
+    t = todo_store.create_todo({"title": "新条目"})
+    assert [x["title"] for x in todo_store.list_todos()] == ["新条目"]
+    leftovers = list(paths.todos_path().parent.glob("todos.json.corrupt-*"))
+    assert leftovers, "损坏现场必须保留"
+    assert "旧条目" in leftovers[0].read_text()
+    assert t["id"]
+
+
+def test_todo_write_is_atomic(isolated_home):
+    """写走 tmp + os.replace：任何时刻磁盘上要么是完整旧表要么是完整新表，
+    并发读者永远不会看到半截 JSON（也无 .tmp 残留）。"""
+    from ginno_runtime import paths
+
+    todo_store.create_todo({"title": "a"})
+    p = paths.todos_path()
+    assert not (p.parent / "todos.json.tmp").exists()
+    import json as _json
+
+    data = _json.loads(p.read_text())  # 完整合法
+    assert len(data) == 1
+
+
+def test_todo_purge_stale_done_after_one_week(isolated_home):
+    """完成超 1 周自动清理（用户 2026-11-03 定）；未完成与一周内的完成项保留。"""
+    from ginno_runtime import paths
+    import json as _json
+    import time as _time
+
+    now = _time.time()
+    rows = [
+        {"id": "old-done", "title": "旧完成", "done": True,
+         "completed_at": now - 8 * 86400, "created": now - 9 * 86400},
+        {"id": "fresh-done", "title": "新完成", "done": True,
+         "completed_at": now - 2 * 86400, "created": now - 3 * 86400},
+        {"id": "old-open", "title": "旧的未完成", "done": False,
+         "completed_at": None, "created": now - 30 * 86400},
+    ]
+    paths.todos_path().write_text(_json.dumps(rows))
+    removed = todo_store.purge_stale_done()
+    assert removed == 1
+    ids = [x["id"] for x in todo_store.list_todos()]
+    assert ids == ["fresh-done", "old-open"]
+
+
+def test_todo_cross_process_write_no_lost_update(isolated_home):
+    """跨进程竞态（用户点名）：两个真子进程各自 read-modify-write 一次，
+    flock 串行化后两条都在——旧版裸 write_text 会互相覆盖只剩一条。"""
+    import subprocess
+    import sys
+
+    code = (
+        "from ginno_runtime.todos import store as s; "
+        "s.create_todo({'title': __import__('os').environ['TODO_TITLE']})"
+    )
+    envs = [{"TODO_TITLE": f"p{i}"} for i in range(2)]
+    import os
+
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", code],
+            env={**os.environ, **e},
+            cwd="/",
+        )
+        for e in envs
+    ]
+    for p in procs:
+        assert p.wait() == 0
+    titles = sorted(x["title"] for x in todo_store.list_todos())
+    assert titles == ["p0", "p1"]
+
+
 # --------------------------- workflows --------------------------- #
 def test_workflow_def_crud(isolated_home):
     wf = wf_store.create_def(

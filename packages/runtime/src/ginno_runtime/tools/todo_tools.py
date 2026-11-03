@@ -1,4 +1,4 @@
-"""TODO tools — let agents manage the global daily TODO list (right panel).
+"""TODO tools — let agents manage the global TODO list (right panel).
 
 Availability per agent is gated by tools_allow patterns (see
 registry.ensure_todo_tools): e.g. research gets only `todo_list`
@@ -55,7 +55,7 @@ def _fmt(t: dict) -> str:
 
 
 def todo_list() -> str:
-    """List the current daily TODO items (with ids, for use in update/done/link)."""
+    """List the current TODO items (with ids, for use in update/done/link)."""
     items = todo_store.list_todos()
     if not items:
         return "(empty)"

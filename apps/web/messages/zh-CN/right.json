@@ -110,7 +110,7 @@
       "applyFailedConnect": "晋升失败：无法连接运行时"
     },
     "todo": {
-      "title": "每日 TODO",
+      "title": "TODO",
       "new": "新建",
       "add": "添加",
       "save": "保存",

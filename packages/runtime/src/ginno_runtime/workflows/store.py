@@ -632,7 +632,7 @@ _SEED = [
     {
         "id": "todo-pull",
         "name": "🔄 TODO 拉取",
-        "description": "拉取外部 TODO 平台未完成待办，镜像到本地 Daily TODO（带 ext ref）。",
+        "description": "拉取外部 TODO 平台未完成待办，镜像到本地 TODO（带 ext ref）。",
         "system": True,
         "dsl": {
             "entry": "pull",
