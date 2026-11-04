@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -66,6 +67,15 @@ def detect_rtk() -> str | None:
     if _detect_cache is not _UNSET:
         return _detect_cache  # type: ignore[return-value]
     path = shutil.which("rtk")
+    if not path:
+        # GUI 应用不继承登录 shell 的 PATH（launchd 只给 /usr/bin:/bin:…），
+        # Homebrew 安装的 rtk 位于 which 找不到的目录（2026-11-04 实案：
+        # app 内启动 sidecar detect 失败 → 集成整体静默失效）。补探两个
+        # Homebrew 标准前缀；仅 when which 未命中，不改变 PATH 语义。
+        for cand in ("/opt/homebrew/bin/rtk", "/usr/local/bin/rtk"):
+            if os.access(cand, os.X_OK):
+                path = cand
+                break
     result: str | None = None
     if path:
         try:
