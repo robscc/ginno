@@ -1,7 +1,7 @@
 {
   "devswap": {
     "card": {
-      "title": "dev-swap",
+      "title": "热切换",
       "working": "进行中…",
       "stage": {
         "quiesce": "静默检查",
@@ -17,20 +17,20 @@
       "hideLogs": "收起日志",
       "rolledBack": "已失败——自动回滚到旧 bundle。",
       "finished": "全部阶段通过——sidecar 正在重启到新 bundle。",
-      "hoverHint": "悬停查看 dev-swap 进度",
+      "hoverHint": "悬停查看 热切换 进度",
       "slowShort": "慢"
     },
     "badge": {
       "hint": "dev-override 运行时 bundle · {fp} · 构建于 {time} —— make dev-swap-clean 回出厂"
     },
     "wait": {
-      "line": "dev-swap · {stage} {bar} {pct} · 已用 {elapsed} / 剩 {eta}",
-      "slow": "dev-swap · {stage} —— 比往常慢（P90 {p90}）"
+      "line": "热切换 · {stage} {bar} {pct} · 已用 {elapsed} / 剩 {eta}",
+      "slow": "热切换 · {stage} —— 比往常慢（P90 {p90}）"
     },
     "result": {
-      "ok": "dev-swap → {fp} · {elapsed}",
-      "fail": "dev-swap 失败于 {stage} · {elapsed}",
-      "rolledBack": "dev-swap 已回滚（失败于 {stage}）· {elapsed}",
+      "ok": "热切换 → {fp} · {elapsed}",
+      "fail": "热切换 失败于 {stage} · {elapsed}",
+      "rolledBack": "热切换 已回滚（失败于 {stage}）· {elapsed}",
       "logs": "日志（尾 {n} 行）",
       "hideLogs": "收起日志"
     }
