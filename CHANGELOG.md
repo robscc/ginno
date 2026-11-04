@@ -9,6 +9,12 @@ versions.
 
 ### Added
 
+- **Turn 级耗时 + token 显示**（对话每个 turn 右下角）：运行中每秒跳动
+  （token 随每次 LLM 调用累加实时更新），turn 结束由 message.end 的权威值
+  定格，reload 后从 session 的 turns.jsonl 投影恢复（按 bubble 内最后一条
+  AIMessage id 精确对齐；老会话静默降级不显示）。
+- **工具输出分色**：bash 类输出的 `[exit N]` 行 0=绿/非 0（含 timeout）=红，
+  stdout 默认色、stderr 琥珀色文字（不分色块）；标题行 ✓/✗ 跟随退出状态。
 - **Runtime 热切换（开发自闭环）**：`make dev-swap`（或会话内 `/dev-swap`）一条命令
   完成「单测 → PyInstaller 重建 → blue-green 预检 → symlink 原子切换 → 壳热重启
   → 构建指纹验证 → 失败自动回滚」——改 runtime 代码不再需要退出重开应用
