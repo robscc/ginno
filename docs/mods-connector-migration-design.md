@@ -1,7 +1,7 @@
 # Mods × 连接器：统一扩展基座 + 差异化详情视图
 
 - 日期：2026-10-23
-- 状态：设计稿（待实现）
+- 状态：**S1-S3 已实施**（commit 5e7ab3b：连接器统一基座 + ConfigEditor + InstallWizard + ConnectorDetail，`ModsSettings.tsx` 已删除移除旧页签；2026-11-04 核实）。**待做：S4 权限与信任（grants 前端控件未找到）、S5 健康与诊断（broker validate socket 仍未实现）、S6 会话内呈现（band Input/Select 值丢弃、ask 互相覆盖、#generation 暴露——§9 顺带 bug 未修）**。
 - 前置：`claude-code-mods-design.md`、`mod-marketplace-design.md`、`connector-module-design.md`
 - 原型：`docs/mods-config-editing-redesign.html`
 

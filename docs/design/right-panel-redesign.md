@@ -1,6 +1,6 @@
 # 右栏改版方案（right-panel-redesign）
 
-> 状态：待评审
+> 状态：**已实施（2026-08 落地；2026-11-04 核实）**，且已超出本方案演进：右栏现含 6 个 tab（新增 synthesis / code，`lib/rightTabs.ts`），宽度从「单值持久化」演进为**按 tab 分别记忆**（`rightPanelWidthByTab`）。原方案 §3 各项（tab 重排/Dock/⌘\/拖拽/角标）均已实现。
 > 日期：2026-08-08
 > 关联代码：`apps/web/src/components/right/`、`components/shell/AppShell.tsx`、`lib/store.tsx`
 

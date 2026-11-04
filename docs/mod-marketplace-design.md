@@ -1,6 +1,6 @@
 # Mods Marketplace / Mod 商店产品设计
 
-> 2026-10-21。状态:**产品方案(待评审)**。前置:`claude-code-mods-design.md`(兼容层)、
+> 2026-10-21。状态：**M1+M2 大体已实施（2026-11-04 核实）**——`mods/marketplace.py` + `/api/mods/marketplace/*`（list/get_item/install/update/sources）与前端 `ModStoreDrawer.tsx` 已落地。**待做：M3（投稿/评分/跨仓库 source）**、开放问题 1-4（官方源收录标准、社区源默认、离线降级、评分缓存 key）；试装评分（§5.3 preview）端点待确认。前置:`claude-code-mods-design.md`(兼容层)、
 > 其缺口清单(2026-10-20 盘点:tool.* op 族、Input/Select/Markdown/Code 元素等)。
 > 定位:分发与信任层,不解决 API 兼容度——兼容度用**评分显性化**,不阻塞上架。
 

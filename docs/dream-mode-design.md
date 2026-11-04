@@ -1,6 +1,6 @@
 # Dream（记忆蒸馏）产品设计 — UI 管理 + 用量归因
 
-> 状态：**设计稿（2026-10-25），待评审，未实施**。
+> 状态：**核心已实施（2026-11-04 核实），实现形态与本稿不同**——未做独立 `/settings/knowledge/dream` 页，四个痛点全部在既有载体解决：多草稿队列（`/api/memory/drafts` 全套 + split）、蒸馏 usage 归因（`source="memory"` 桶，summarize.py）、运行历史与池浏览（MemorySettings 的 run log/pool 分页/趋势）、管线卫生（server.py §4.5 legacy fold）。独立工坊页与 §8 的 9 处记账缺口审计若仍需，另立小任务。
 > 关联：[`memory-kb-gates-implementation-notes.md`](memory-kb-gates-implementation-notes.md)（质量门控 G1–G3）、
 > [`usage-stats-design.md`](usage-stats-design.md)（用量台账 §3.6 来源口径）、
 > [`knowledge-and-wiki-design.md`](knowledge-and-wiki-design.md)（KB 提升路径）。

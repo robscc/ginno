@@ -149,3 +149,14 @@ cd apps/web && pnpm test          # vitest（src/lib/*.test.ts，node 环境，�
 - `apps/web/src/` — Next.js 前端（`src/lib/*.test.ts` 为 vitest 单测）；
   `apps/desktop/` — Tauri 壳（Rust 源码在 `apps/desktop/src/`，Cargo.toml /
   tauri.conf.json 直接在此目录）
+
+<!-- rtk-instructions v2 -->
+# Command output
+
+Command output here is condensed to save tokens, keeping every signal and
+dropping costly noise. Treat it as the complete result: run commands
+normally, and batch related commands into one call to avoid extra turns.
+Truncated results state their recovery path in their own output. Re-run a
+command as `rtk bypass <cmd>` only when its result is unusable: empty when
+output was clearly expected, contradicting its exit code, or garbled.
+<!-- /rtk-instructions -->
