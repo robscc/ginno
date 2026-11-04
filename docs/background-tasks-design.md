@@ -286,3 +286,20 @@ Other running tasks: t_ef56 (pnpm dev, 3m)
 4. **`kind: "bg-task"`** 补进 `lib/desktop.ts` NativeNotification 联合类型
    与 `notify.rs focus_and_open` 的分发（此前未知 kind 会误走
    `__ginnoOpenSession`，task id 不是 session id）。
+5. **反孤儿化两层加固（2026-11-04，进程泄露盘点后续）**：D4 的「app 退出
+   即死」长期只在 SIGKILL 意义上成立——uvicorn 未设 `timeout_graceful_shutdown`
+   时优雅关闭卡死在 background tasks 等待，`stop_all` 从未真正执行（同日
+   已修，见 server.py `main()`）。剩余两个硬死场景补位：
+   a) **壳硬死** → sidecar 自退：壳 spawn 时注入 `GINNO_SHELL_PID`，
+      `server._watch_shell_pid` 2s 轮询（kill -0 + ppid 过继双判据），
+      壳消失即给自己 SIGTERM 走优雅关闭。
+   b) **sidecar 硬死（SIGKILL，无 stop_all 机会）** → 非 detached 命令
+      自杀：spawn 改 `start_new_session`（独立进程组），命令前置看守
+      wrapper（`_WATCHDOG_PREFIX`：后台 subshell 轮询 `GINNO_SIDECAR_PID`，
+      sidecar 消失即 `kill -TERM/-KILL -$pgid` 整组；主命令结束 shell
+      退出后 `$$` 失活，看守随之撤岗不残留）。detached 不加——活过
+      sidecar 是它的设计行为（退出码落盘）。
+   连带修 `_signal`：非 detached 从「只 send_signal 顶层 shell」改为
+   killpg 整组——`a && b` 复合命令的孙进程此前漏杀。安全边界：
+   `startup_migrate` 先把 running 全标 interrupted、仅 detached 认领回
+   running，killpg 不会误杀旧 sidecar 的进程组。

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
@@ -30,6 +31,36 @@ from . import workflows as wf_store
 from .hooks.dispatcher import HookDispatcher
 from .mcp.registry import MCPRegistry
 from .todos import store as todo_store
+
+
+async def _watch_shell_pid(poll_s: float = 2.0, fire=None) -> None:
+    """壳 pid 看守（反孤儿化，2026-11-04）：壳硬死（崩溃/强退/kill -9）时
+    sidecar 不随之消亡——孤儿 sidecar 占着 8787、后台命令全体陪跑（当日
+    PID 60637 事故）。轮询 env GINNO_SHELL_PID（壳 spawn 时注入，prod/dev
+    两分支都有；无 env = 人肉看管的裸 dev 服务，不启用），壳 pid 消失或本
+    进程被过继（ppid 变化）即自请退出：给自己发 SIGTERM → uvicorn 优雅
+    关闭（timeout_graceful_shutdown 兜底）→ lifespan finally 的 stop_all
+    等一起收尾。``fire`` 参数仅测试注入。
+    """
+    raw = os.environ.get("GINNO_SHELL_PID", "")
+    if not raw.isdigit() or int(raw) <= 1:
+        return
+    shell_pid = int(raw)
+    ppid0 = os.getppid()
+    while True:
+        await asyncio.sleep(poll_s)
+        gone = os.getppid() != ppid0  # 被过继 = 直接父（壳/uv wrapper）没了
+        if not gone:
+            try:
+                os.kill(shell_pid, 0)
+            except ProcessLookupError:
+                gone = True
+            except OSError:
+                pass  # PermissionError 等：pid 复用为他户进程，保守视作活着
+        if gone:
+            _log.info("shell_gone_self_terminating shell_pid=%s", shell_pid)
+            (fire or (lambda: os.kill(os.getpid(), signal.SIGTERM)))()
+            return
 
 
 @asynccontextmanager
@@ -318,12 +349,15 @@ async def lifespan(app: FastAPI):
     # dev-override/state.json 的 pending → verified/rolled_back 跳变，补报
     # finish 终态（旧进程已被换掉，报不了这一笔）。
     devswap_watch_task = asyncio.create_task(_devswap_api.watch_swap_finish())
+    # 壳 pid 看守（反孤儿化，见 _watch_shell_pid docstring）：壳硬死时自退。
+    shell_watch_task = asyncio.create_task(_watch_shell_pid())
     try:
         yield
     finally:
         if not mcp_connect_task.done():
             mcp_connect_task.cancel()
         devswap_watch_task.cancel()
+        shell_watch_task.cancel()
         # 取消调度循环 + 在途执行协程（契约同 Goal driver / _connect_mcp_background）。
         if scheduler_task is not None:
             try:

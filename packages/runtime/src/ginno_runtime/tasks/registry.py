@@ -33,6 +33,35 @@ WATCH_MIN_INTERVAL_S = 15.0
 WATCH_MAX_EVENTS = 50
 STOP_GRACE_S = 2.0
 
+# 反孤儿化看守 wrapper（非 detached 专用，2026-11-04）：sidecar 被 SIGKILL
+# 时没有 stop_all 的机会，不读 stdin 的命令连 EOF 自愈都没有——wrapper 在
+# 命令 shell 里起一个后台 subshell 轮询 GINNO_SIDECAR_PID（_popen 注入的
+# 本进程 pid），sidecar 消失即 killpg 自杀整组。要点：
+# - $$ 在 subshell 里仍是本 shell 的 pid（POSIX），start_new_session 下它
+#   就是进程组长 → kill -"$_ginno_pgid" = 整棵命令树（含孙进程）。
+# - subshell 先 exec 重定向到 /dev/null：不持有 stdout 管道（reader 线程
+#   等 EOF，看守活多久管道就开多久）。
+# - 主命令结束 shell 退出后 $$ 失活——看守随之撤岗，不残留常驻轮询。
+# - env 缺失静默退出绝不误杀；GINNO_BG_WATCH_INTERVAL_S 供测试调快。
+_WATCHDOG_PREFIX = (
+    "_ginno_pgid=$$\n"
+    "( exec >/dev/null 2>&1\n"
+    '  [ -n "${GINNO_SIDECAR_PID:-}" ] || exit 0\n'
+    '  while kill -0 "$GINNO_SIDECAR_PID" 2>/dev/null; do\n'
+    '    kill -0 "$$" 2>/dev/null || exit 0\n'
+    '    sleep "${GINNO_BG_WATCH_INTERVAL_S:-2}"\n'
+    "  done\n"
+    '  kill -TERM -"$_ginno_pgid" 2>/dev/null\n'
+    "  sleep 1\n"
+    '  kill -KILL -"$_ginno_pgid" 2>/dev/null ) &\n'
+)
+
+
+def _sidecar_pid_env() -> dict[str, str]:
+    """看守 wrapper 的注入 env（GINNO_SIDECAR_PID=本进程 pid）。独立成函数
+    纯粹为了单测 monkeypatch——测试指向短命进程验证孤儿回收。"""
+    return {"GINNO_SIDECAR_PID": str(os.getpid())}
+
 
 def _fmt_dur(secs: float) -> str:
     s = max(0, int(secs))
@@ -297,6 +326,14 @@ class TaskRegistry:
         )
         if rec.get("detached"):
             kwargs["start_new_session"] = True
+        else:
+            # 反孤儿化（2026-11-04）：非 detached 也独立进程组——stop/stop_all
+            # 可安全 killpg 整棵命令树（此前只 SIGTERM 顶层 shell，`a && b`
+            # 的孙进程漏杀）；看守 wrapper 兜底 sidecar 被 SIGKILL 的场景。
+            # detached 不加 wrapper——活过 sidecar 是它的设计行为（退出码落盘）。
+            kwargs["start_new_session"] = True
+            cmd_text = _WATCHDOG_PREFIX + cmd_text
+            kwargs["env"] = {**os.environ, **_sidecar_pid_env()}
         task.proc = subprocess.Popen([shell, "-lc", cmd_text], **kwargs)
 
     # ------------------------------------------------------------------ #
@@ -488,8 +525,12 @@ class TaskRegistry:
     # ------------------------------------------------------------------ #
 
     def _signal(self, t: Task, sig: int) -> None:
+        # 整组投递：detached 与非 detached 现在都是独立进程组（start_new_
+        # session），killpg 覆盖整棵命令树——旧实现对非 detached 只
+        # send_signal 顶层 shell，`a && b` 复合命令的孙进程漏杀。pid 缺失
+        # （极旧记录）回退只杀进程本体。
         try:
-            if t.record.get("detached") and t.record.get("pid"):
+            if t.record.get("pid"):
                 os.killpg(os.getpgid(int(t.record["pid"])), sig)
             elif t.proc is not None:
                 t.proc.send_signal(sig)

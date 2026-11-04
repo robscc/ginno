@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -18,6 +20,7 @@ import pytest
 from ginno_runtime import paths
 from ginno_runtime.tasks import get_registry, reset_registry
 from ginno_runtime.tasks import inject as task_inject
+from ginno_runtime.tasks import registry as registry_mod
 from ginno_runtime.tasks import store as task_store
 from ginno_runtime.tools.tasks import build_task_tools
 
@@ -73,6 +76,71 @@ def test_stop_settles_as_stopped(isolated_home: Path):
     final = _reap_until(reg, rec["id"], timeout_s=10)
     assert final["status"] == "stopped"
     assert (final["exit_code"] or 0) < 0  # 信号死
+
+
+# --------------------------------------------------------------------------- #
+# 反孤儿化：独立进程组 + 看守 wrapper（2026-11-04）
+# --------------------------------------------------------------------------- #
+
+def test_nondetached_own_process_group(isolated_home: Path):
+    """非 detached 也独立进程组：stop/stop_all 可 killpg 整棵树，孙进程不
+    漏杀，也不会波及 sidecar（本测试进程）自身所在的组。"""
+    reg = get_registry()
+    rec = reg.spawn(command="sleep 30", title="pg", cwd=None, origin_session=None,
+                    origin_turn=None)
+    try:
+        assert rec["pid"]
+        assert os.getpgid(rec["pid"]) != os.getpgid(os.getpid())
+    finally:
+        reg.remove(rec["id"])
+        _reap_until(reg, rec["id"])
+
+
+def test_watchdog_kills_group_when_sidecar_dies(isolated_home: Path, monkeypatch):
+    """看守 wrapper：sidecar pid 消失（模拟 sidecar 被 SIGKILL，无 stop_all
+    机会）→ wrapper killpg 自杀整组，命令不孤儿化。"""
+    monkeypatch.setenv("GINNO_BG_WATCH_INTERVAL_S", "0.2")
+    probe = subprocess.Popen(["sleep", "0.3"])  # 短命进程充当「sidecar」
+    monkeypatch.setattr(
+        registry_mod, "_sidecar_pid_env", lambda: {"GINNO_SIDECAR_PID": str(probe.pid)}
+    )
+    reg = get_registry()
+    rec = reg.spawn(command="sleep 30", title="wd", cwd=None, origin_session=None,
+                    origin_turn=None)
+    # 收割 probe：不 wait 的话僵尸 pid 的 kill -0 恒成功，看守永不触发
+    # （生产无此问题——壳持有 Child、sidecar 死后必然被 reap）。
+    probe.wait()
+    try:
+        proc = reg._get(rec["id"]).proc
+        # probe(0.3s) 死后，wrapper ≤0.2s 轮询发现 + SIGTERM 组；给足收敛余量
+        deadline = time.time() + 6.0
+        while time.time() < deadline and proc.poll() is None:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "看守 wrapper 未在 sidecar 消失后回收命令组"
+    finally:
+        reg.remove(rec["id"])
+        _reap_until(reg, rec["id"])
+
+
+def test_watchdog_exits_after_command_finishes(isolated_home: Path, monkeypatch):
+    """看守不残留：主命令正常结束（shell 退出 → $$ 失活）后看守随之撤岗，
+    进程组清空——不留「每任务一个」的常驻轮询。"""
+    monkeypatch.setenv("GINNO_BG_WATCH_INTERVAL_S", "0.2")
+    reg = get_registry()
+    rec = reg.spawn(command="echo hi", title="wd2", cwd=None, origin_session=None,
+                    origin_turn=None)
+    pgid = os.getpgid(rec["pid"])
+    final = _reap_until(reg, rec["id"])
+    assert final["status"] == "finished"
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break  # 组清空 = 看守已撤
+        time.sleep(0.1)
+    else:
+        pytest.fail("看守 subshell 在命令结束后残留（进程组仍在）")
 
 
 def test_timeout_kills(isolated_home: Path):

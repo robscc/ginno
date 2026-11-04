@@ -351,6 +351,10 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
     // via `--port`, but server.py's write_port_file (browser relay) still
     // reads GINNO_RUNTIME_PORT at startup — so set it in dev too.
     cmd.env("GINNO_RUNTIME_PORT", port.to_string());
+    // 反孤儿化（runtime server.py _watch_shell_pid）：sidecar 轮询壳 pid，
+    // 壳硬死（崩溃/强退/kill -9）时自请优雅退出——不再作为孤儿占着 8787、
+    // 后台命令陪跑（2026-11-04 PID 60637 事故）。prod/dev 两分支都要。
+    cmd.env("GINNO_SHELL_PID", std::process::id().to_string());
     cmd.stdin(Stdio::null());
     // Mods broker endpoint (design §2.1 step 2): socket + token-file env so
     // the runtime's ModChannel connects to the in-shell broker, plus the
