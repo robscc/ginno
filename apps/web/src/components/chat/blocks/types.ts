@@ -36,6 +36,12 @@ export type Block =
   // 渲染时翻译（ContextBlocks）；历史重放只有成品 text，原样直显。
   | { kind: "context"; text: string;
       i18n_key?: string; params?: Record<string, string | number> }
+  // turn 级耗时+token（turn 右下角小字）：engine 收尾写 session turns.jsonl，
+  // history 投影按 bubble 内最后一条 AIMessage id 对齐；live 值由前端计时/
+  // usage 聚合，message.end 的 payload.meta 定格后转成同款 block。
+  // t0Ms 仅 live 阶段存在（组件据此每秒自跳）；定格/投影版带 elapsedS。
+  | { kind: "turn_meta"; elapsedS?: number; t0Ms?: number;
+      inputTokens?: number; outputTokens?: number }
   // Answer provenance (docs/citations-design.md): wiki pages / web sources the
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).

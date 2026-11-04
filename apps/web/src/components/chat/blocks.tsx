@@ -1,8 +1,11 @@
 "use client";
 
+import React from "react";
+
 import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
+import { fmtTokens } from "@/lib/format";
 import { AskUserCard } from "./AskUserCard";
 import { useGinno } from "@/lib/store";
 import { ensureFileRegistered } from "@/lib/api/workspace";
@@ -140,6 +143,29 @@ function RefChip({ refKind, name, refId }: { refKind: string; name: string; refI
   );
 }
 
+/** turn 级耗时+token 小字（turn 右下角）。live 版带 t0Ms → 每秒自跳；
+ * 定格版（message.end 权威值 / history 投影）只有 elapsedS。 */
+export function TurnMetaLine({ block }: { block: Extract<Block, { kind: "turn_meta" }> }) {
+  const [, tick] = React.useState(0);
+  const live = typeof block.t0Ms === "number";
+  React.useEffect(() => {
+    if (!live) return;
+    const h = setInterval(() => tick((n: number) => n + 1), 1000);
+    return () => clearInterval(h);
+  }, [live]);
+  const elapsed = live
+    ? Math.max(0, Math.round((Date.now() - (block.t0Ms ?? Date.now())) / 1000))
+    : block.elapsedS;
+  const hasTok = typeof block.inputTokens === "number" || typeof block.outputTokens === "number";
+  return (
+    <div className="flex select-none justify-end gap-1 pt-0.5 font-mono text-[11px] leading-4 text-muted/80">
+      {typeof elapsed === "number" && <span>{elapsed}s</span>}
+      {typeof block.inputTokens === "number" && <span>↑{fmtTokens(block.inputTokens)}</span>}
+      {typeof block.outputTokens === "number" && <span>↓{fmtTokens(block.outputTokens)}</span>}
+    </div>
+  );
+}
+
 /** Blocks rendered INSIDE the assistant card (everything except refs).
  * onAnswerQuestion/questionLive thread ChatStream's ask_user resume channel
  * down to a pending question card; without them the card renders read-only. */
@@ -238,6 +264,8 @@ export function InnerBlocks({
       // context 的消息于是显示成一张空白卡片（2026-10-26 联同底部空白一起
       // 排查）。历史重放会把它折成 system 行，两条路径现在都看得见。
       out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} />);
+    } else if (b.kind === "turn_meta") {
+      out.push(<TurnMetaLine key={`tm-${key++}`} block={b} />);
     }
     // refs rendered outside
     i++;

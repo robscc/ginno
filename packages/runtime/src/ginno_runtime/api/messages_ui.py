@@ -15,6 +15,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime import jsonx as json
+from ginno_runtime.paths import session_files_dir
 
 from .. import workflows as wf_store
 from ..api import server_tools
@@ -787,6 +788,21 @@ def _messages_to_ui(
 
     results: dict[str, str] = {}
     raw_results: dict[str, str] = {}
+    # turn-meta（turn 右下角耗时+token）：读 session 的 turns.jsonl，按
+    # message_id 对齐 assistant bubble（engine 收尾追加；缺失=老会话/工具轮）。
+    _turn_metas: dict[str, dict] = {}
+    if session_id and project_slug:
+        try:
+            _tf = Path(session_files_dir(project_slug, session_id)) / "turns.jsonl"
+            for _line in _tf.read_text(encoding="utf-8").splitlines():
+                try:
+                    _r = json.loads(_line)
+                except ValueError:
+                    continue
+                if isinstance(_r, dict) and _r.get("message_id"):
+                    _turn_metas[str(_r["message_id"])] = _r
+        except OSError:
+            pass
     for m in messages:
         if isinstance(m, ToolMessage):
             raw = getattr(m, "content", "")
@@ -811,6 +827,9 @@ def _messages_to_ui(
     # exactly one turn, so the first tagged message wins; the session-level
     # ``agent_id`` argument stays as the fallback for old, untagged sessions.
     acc_agent: str | None = None
+    # turn-meta 对齐键（见 AIMessage 分支注释）：当前 bubble 内最后一条
+    # AIMessage 的 id——turns.jsonl 的 message_id 用同一键匹配。
+    acc_last_ai_id: str | None = None
     # AgentTeam 回帖标记（agent-team-design.md §5.2 要点 2）：成员产出写回主会话
     # 时带 ``ginno_team_reply`` kw，序列化到 bubble 上让前端渲染成**回帖卡**
     # （带头像、可折叠、点「展开全文」跳成员工作台），而不是普通 assistant 气泡。
@@ -832,7 +851,7 @@ def _messages_to_ui(
     pending_bands: list[list[dict]] = []
 
     def flush_assistant() -> None:
-        nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks, acc_team_reply
+        nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks, acc_team_reply, acc_last_ai_id
         if acc:
             # A turn can produce the same ref twice — a real attach_ref call
             # plus the XML tag models sometimes write into the answer — and
@@ -849,6 +868,18 @@ def _messages_to_ui(
             acc = _deduped
             if acc_img_blocks:
                 acc.extend(acc_img_blocks)
+            # turn-meta（turn 右下角耗时+token）：turns.jsonl 按 message_id 精确
+            # 对齐（engine 收尾写入；对不上就不显示——老会话/工具轮无 meta）。
+            _tm = _turn_metas.get(acc_last_ai_id or "")
+            if _tm:
+                acc.append(
+                    {
+                        "kind": "turn_meta",
+                        "elapsedS": _tm.get("elapsed_s"),
+                        "inputTokens": _tm.get("input_tokens"),
+                        "outputTokens": _tm.get("output_tokens"),
+                    }
+                )
             bubble = {"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc}
             if acc_team_reply:
                 bubble["teamReply"] = acc_team_reply
@@ -859,6 +890,7 @@ def _messages_to_ui(
         acc_team_reply = None
         acc_imgs = set()
         acc_img_blocks = []
+        acc_last_ai_id = None
 
     for m in messages:
         if isinstance(m, HumanMessage):
@@ -983,6 +1015,10 @@ def _messages_to_ui(
                     for _group in pending_bands:
                         acc.extend(_group)
                     pending_bands.clear()
+            # turn-meta 对齐键：bubble 内最后一条 AIMessage 的 id（engine 收尾
+            # 写 turns.jsonl 用的同一键）。flush 时据此附加耗时+token 小字块。
+            if getattr(m, "id", None):
+                acc_last_ai_id = m.id
             if acc_agent is None:
                 acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
             if acc_team_reply is None:

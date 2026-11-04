@@ -69,10 +69,43 @@ export function ensureLive(ctx: EngineCtx, sid: string, evTurn?: string): string
   const id = mid();
   ctx.storeRef.current[sid] = [
     ...(ctx.storeRef.current[sid] ?? []),
-    { id, role: "assistant", blocks: [], agentId: ctx.streamAgentRef.current[sid], turnId: evTurn || newTurnId() },
+    {
+      id,
+      role: "assistant",
+      blocks: [{ kind: "turn_meta", t0Ms: Date.now() }],
+      agentId: ctx.streamAgentRef.current[sid],
+      turnId: evTurn || newTurnId(),
+    },
   ];
   ctx.liveBySessionRef.current[sid] = id;
   return id;
+}
+
+/** turn-meta（turn 右下角耗时+token）的 live upsert：在 live 气泡尾部维护
+ * 唯一的 turn_meta block——usage 事件累加 token，message.end 的 payload.meta
+ * 定格（elapsedS 权威值替换 t0Ms）。历史投影版（reload）只有定格字段。 */
+export function upsertTurnMeta(
+  ctx: EngineCtx,
+  sid: string,
+  patch: Partial<{ elapsedS: number; t0Ms: number; inputTokens: number; outputTokens: number }>,
+  opts: { finalize?: boolean } = {},
+) {
+  const id = ctx.liveBySessionRef.current[sid];
+  if (!id) return;
+  ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((m) => {
+    if (m.id !== id) return m;
+    const blocks = [...m.blocks];
+    const i = blocks.findIndex((b) => b.kind === "turn_meta");
+    const base =
+      i >= 0
+        ? (blocks[i] as { kind: "turn_meta"; elapsedS?: number; t0Ms?: number; inputTokens?: number; outputTokens?: number })
+        : { kind: "turn_meta" as const, t0Ms: Date.now() };
+    const next = { ...base, ...patch };
+    if (opts.finalize) delete next.t0Ms;
+    if (i >= 0) blocks[i] = next;
+    else blocks.push(next);
+    return { ...m, blocks };
+  });
 }
 
 export function mutateLive(ctx: EngineCtx, sid: string, ev: { event: string; [k: string]: unknown }) {
@@ -946,6 +979,18 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           cache_creation_tokens: t.cache_creation_tokens ?? 0,
           calls: 1,
         });
+        // turn-meta live（turn 右下角）：本 turn 多次调用逐次累加。
+        const _lid = ctx.liveBySessionRef.current[sid];
+        const _cur = (
+          _lid &&
+          (ctx.storeRef.current[sid] ?? [])
+            .find((m) => m.id === _lid)
+            ?.blocks.find((b) => b.kind === "turn_meta")
+        ) as Extract<Block, { kind: "turn_meta" }> | undefined;
+        upsertTurnMeta(ctx, sid, {
+          inputTokens: (_cur?.inputTokens ?? 0) + (t.input_tokens ?? 0),
+          outputTokens: (_cur?.outputTokens ?? 0) + (t.output_tokens ?? 0),
+        });
       }
       // 上下文占用（TopBar 圆环）：当前状态，直接替换。
       const c = ev.context as ContextState | undefined;
@@ -1020,6 +1065,28 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
             : m,
         );
       };
+      // turn-meta 定格：engine 的权威值（elapsed_s/tokens）替换 live 计时版
+      // （删 t0Ms 停跳）。老 sidecar 无 meta 时保留 live 计时的最后读数。
+      {
+        const meta = ev.meta as { elapsed_s?: number; input_tokens?: number; output_tokens?: number } | undefined;
+        if (meta && typeof meta.elapsed_s === "number") {
+          const keep = endedLiveId;
+          if (keep) {
+            ctx.liveBySessionRef.current[sid] = keep; // upsert 以 liveId 定位
+            upsertTurnMeta(
+              ctx,
+              sid,
+              {
+                elapsedS: meta.elapsed_s,
+                ...(typeof meta.input_tokens === "number" ? { inputTokens: meta.input_tokens } : {}),
+                ...(typeof meta.output_tokens === "number" ? { outputTokens: meta.output_tokens } : {}),
+              },
+              { finalize: true },
+            );
+            ctx.liveBySessionRef.current[sid] = null;
+          }
+        }
+      }
       // Turn done → desktop notification unless the user is watching this
       // exact session right now (visible ∧ workspace route ∧ active session).
       // Socket callbacks capture stale closures (sockets outlive session

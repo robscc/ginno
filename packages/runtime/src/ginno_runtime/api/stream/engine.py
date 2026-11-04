@@ -136,6 +136,12 @@ async def _stream_graph(
     # at the turn.start tap below (resumes keep the segment-entry stamp).
     _mods_t0 = time.monotonic()
     session_id = (config.get("configurable") or {}).get("thread_id", "")
+    # turn-meta（docs/…「turn 右下角耗时+token」）：per-turn 用量累计与最后
+    # 一条 assistant 消息 id——completed 收尾时随 message.end 下发实时值，
+    # 并落 session 的 turns.jsonl 供 history 投影（reload 后仍在）。
+    _turn_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                   "cache_creation_tokens": 0, "reasoning_tokens": 0}
+    _last_ai_id: str | None = None
     # Pre-init so the except/finally blocks below can never NameError-mask the
     # original failure when the error lands before the try-body assigns them.
     # (The placeholder Event is replaced by the session's shared stop event
@@ -764,9 +770,12 @@ async def _stream_graph(
                             # complete AIMessages carry usage_metadata (never
                             # streamed chunks), so this fires once per LLM call.
                             u = extract_usage(m)
+                            if getattr(m, "id", None):
+                                _last_ai_id = m.id
                             if u:
                                 acc = _USAGE_BY_SESSION.setdefault(session_id, empty_usage())
                                 add_usage(acc, u)
+                                add_usage(_turn_usage, u)
                                 # Persist the call into the global usage log
                                 # (usage-stats-design.md §4). Best-effort: the
                                 # store never raises, so this cannot break the
@@ -1144,7 +1153,28 @@ async def _stream_graph(
                 from ...channels.base import relay_channel_reply
 
                 spawn_bg(relay_channel_reply(session_id, _clean_text))
-            await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
+            # turn-meta（turn 右下角耗时+token 显示）：
+            # ① message.end payload 带权威值（前端 live 值定格）；
+            # ② 落 session 的 turns.jsonl（history 投影按最后 AI 消息 id 对齐，
+            #    reload 后仍在）。best-effort——meta 永不阻断 turn 收尾。
+            try:
+                _tm = {
+                    "turn_id": turn_id,
+                    "message_id": _last_ai_id,
+                    "elapsed_s": round(time.monotonic() - _mods_t0, 1),
+                    "input_tokens": _turn_usage["input_tokens"],
+                    "output_tokens": _turn_usage["output_tokens"],
+                    "ts": int(time.time()),
+                }
+                _tf = paths.session_files_dir(slug, session_id) / "turns.jsonl"
+                _tf.parent.mkdir(parents=True, exist_ok=True)
+                with _tf.open("a", encoding="utf-8") as _f:
+                    _f.write(json.dumps(_tm, ensure_ascii=False) + "\n")
+            except Exception:
+                _log.debug("turn_meta_write_failed session=%s", session_id, exc_info=True)
+            await safe_send(
+                emit("message.end", {"text": _clean_text.strip()[:200], "meta": _tm})
+            )
         else:
             _log.info(
                 "turn_done session=%s turn=%s status=paused_at_interrupt",
