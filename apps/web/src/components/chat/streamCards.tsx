@@ -293,7 +293,7 @@ const hex = agentHex(agent?.color);
 // 子会话的 persona 是继承父会话的（Dev Agent），标注没有信息量——子代理类型
 // 才是它的身份，与侧栏行/子会话顶栏/主对话卡片保持一致（用户反馈 2026-10-01）。
 const displayName = subagentTypeName || agent?.name || agentName || tc("stream.fallbackAgent");
-const hasInner = blocks.some((b) => b.kind !== "ref");
+const hasInner = blocks.some((b) => b.kind !== "ref" && b.kind !== "turn_meta");
 
 // ── 轮次边界等待行（2026-11-03 用户反馈）─────────────────────────────────────
 // 多步 turn 里「上一个块已收尾 → 下一轮首个 delta」之间是模型调用静默窗（慢

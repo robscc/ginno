@@ -108,6 +108,27 @@ export function upsertTurnMeta(
   });
 }
 
+/** turn 中止/失败（turn.stopped / error / 老侧 message.end 无 meta）时定格
+ * turn-meta：无服务端权威值，用本地 t0Ms 算 elapsedS 后删 t0 停跳——否则
+ * 气泡已停止流但秒表永远每秒自增。 */
+export function finalizeTurnMetaLocal(ctx: EngineCtx, sid: string, liveId: string | null) {
+  if (!liveId) return;
+  const bubble = (ctx.storeRef.current[sid] ?? []).find((m) => m.id === liveId);
+  const tm = bubble?.blocks.find(
+    (b) => b.kind === "turn_meta",
+  ) as { kind: "turn_meta"; t0Ms?: number } | undefined;
+  if (!tm || typeof tm.t0Ms !== "number") return;
+  const was = ctx.liveBySessionRef.current[sid];
+  ctx.liveBySessionRef.current[sid] = liveId; // upsert 以 liveId 定位
+  upsertTurnMeta(
+    ctx,
+    sid,
+    { elapsedS: Math.max(0, Math.round((Date.now() - tm.t0Ms) / 1000)) },
+    { finalize: true },
+  );
+  ctx.liveBySessionRef.current[sid] = was ?? null;
+}
+
 export function mutateLive(ctx: EngineCtx, sid: string, ev: { event: string; [k: string]: unknown }) {
   const id = ensureLive(ctx, sid, ev.turn_id as string | undefined);
   // 气泡归属体检（2026-10-01 串线排查）：流事件带的 turn_id 必须与它落入的
@@ -228,6 +249,19 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // server-provided agent name is kept (bug: continuation showed "Agent").
       if (evAgent) ctx.streamAgentRef.current[sid] = evAgent;
       const id = ctx.liveBySessionRef.current[sid] ?? ensureLive(ctx, sid);
+      // turn-meta live 计时（turn 右下角耗时+token）：turn.start 是**所有**
+      // 气泡来源都会经过的唯一事件——attemptSend 预建的空气泡占用了 liveId
+      // （ensureLive 的新建分支被 `??` 短路，不会插 turn_meta）、ensureLive
+      // 新建、孤儿认领都汇到这里。缺 meta 就补插，t0 取此刻（turn 真正开始，
+      // 而非首个 usage 事件——那是模型首答完成时刻，慢网关下差几十秒）。
+      // 已有则不动：interrupt resume 的续段保留原 t0，计时连续。
+      {
+        const lid = ctx.liveBySessionRef.current[sid];
+        const m = lid ? (ctx.storeRef.current[sid] ?? []).find((x) => x.id === lid) : undefined;
+        if (m && !m.blocks.some((b) => b.kind === "turn_meta")) {
+          upsertTurnMeta(ctx, sid, { t0Ms: Date.now() });
+        }
+      }
       ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((msg) =>
         msg.id === id
           ? {
@@ -1085,6 +1119,9 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
             );
             ctx.liveBySessionRef.current[sid] = null;
           }
+        } else {
+          // 老 sidecar 无 meta：live 计时的最后读数定格（不删 t0 会永远自跳）。
+          finalizeTurnMetaLocal(ctx, sid, endedLiveId);
         }
       }
       // Turn done → desktop notification unless the user is watching this
@@ -1182,6 +1219,9 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       ctx.streamAgentRef.current[sid] = null;
       ctx.busyBySessionRef.current[sid] = false;
       ctx.serverRunningRef.current[sid] = false;
+      // turn-meta 定格：停表（无服务端权威值，本地 t0 折算；服务端 stopped
+      // 分支不写 turns.jsonl，reload 后该轮无小字——与「停止非完成」语义一致）。
+      finalizeTurnMetaLocal(ctx, sid, liveMsgId);
       // ⏹ means stop, so what was queued for absorption is handed back to the
       // composer rather than discarded or auto-sent (design §4.1). Done here,
       // in the event, so a stop from another tab recalls on this one too.
@@ -1225,6 +1265,8 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       ctx.streamAgentRef.current[sid] = null;
       ctx.busyBySessionRef.current[sid] = false;
       ctx.serverRunningRef.current[sid] = false;
+      // turn-meta 定格：失败气泡保留在转录里（failed 红边卡），秒表停跳。
+      finalizeTurnMetaLocal(ctx, sid, liveMsgId);
       // Orphaned turn that failed: reconcile from history instead of
       // building a card on the split store — mapHistory re-surfaces the
       // persisted last_error as a proper error card with retry.

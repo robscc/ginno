@@ -185,9 +185,24 @@ export function InnerBlocks({
   let key = 0;
   // Resolve `web|sN` citation ids against this bubble's web_search results.
   const refMap = webRefMap(blocks);
+  // turn_meta（耗时+token 小字）是「卡片角落 chrome」而非内容：live 期插入
+  // 位置不定（ensureLive 建%、turn.start 补插在首、usage 追加在尾、history
+  // 投影在尾），若按数组位置内联渲染会漂到内容上方/中间——统一提取到所有
+  // 内容之后渲染，「turn 右下角」语义恒成立。
+  const tmBlock = blocks.find(
+    (b): b is Extract<Block, { kind: "turn_meta" }> => b.kind === "turn_meta",
+  );
+  // 流式光标/尾部判定的「最后一个内容块」：turn_meta 不占位（它在数组尾时，
+  // 不能让真正的末尾 text 块失去光标与 partial-citation 掩码）。
+  let contentEnd = blocks.length - 1;
+  while (contentEnd >= 0 && blocks[contentEnd].kind === "turn_meta") contentEnd--;
   while (i < blocks.length) {
     const b = blocks[i];
-    const last = i === blocks.length - 1;
+    if (b.kind === "turn_meta") {
+      i++;
+      continue;
+    }
+    const last = i === contentEnd;
     if (b.kind === "image") {
       // Group consecutive images into one gallery.
       const urls: string[] = [];
@@ -264,13 +279,16 @@ export function InnerBlocks({
       // context 的消息于是显示成一张空白卡片（2026-10-26 联同底部空白一起
       // 排查）。历史重放会把它折成 system 行，两条路径现在都看得见。
       out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} />);
-    } else if (b.kind === "turn_meta") {
-      out.push(<TurnMetaLine key={`tm-${key++}`} block={b} />);
     }
     // refs rendered outside
     i++;
   }
-  return <>{out}</>;
+  return (
+    <>
+      {out}
+      {tmBlock && <TurnMetaLine key="tm" block={tmBlock} />}
+    </>
+  );
 }
 
 /** User bubble content: attached images as a gallery, text kept verbatim. */

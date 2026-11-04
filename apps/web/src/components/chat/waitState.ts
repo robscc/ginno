@@ -8,10 +8,12 @@
 
 import type { Block } from "./blocks/types";
 
-/** 最后一个内层（非 ref）块——ref chips 渲染在卡片下方，不代表流推进。 */
+/** 最后一个内层（非 ref）块——ref chips 渲染在卡片下方，不代表流推进。
+ * turn_meta 同理是卡片角落 chrome（统一渲染在内容之后），不是内容：
+ * 若当作尾块，tool.end 后追加的 turn_meta 会把「等待下一轮」判据顶掉。 */
 export function innerTail(blocks: Block[]): Block | undefined {
   for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks[i].kind !== "ref") return blocks[i];
+    if (blocks[i].kind !== "ref" && blocks[i].kind !== "turn_meta") return blocks[i];
   }
   return undefined;
 }

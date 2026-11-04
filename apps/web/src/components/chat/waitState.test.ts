@@ -22,6 +22,19 @@ describe("innerTail", () => {
   it("空数组返回 undefined", () => {
     expect(innerTail([])).toBeUndefined();
   });
+
+  it("跳过尾部 turn_meta 块取最后一个内容块（chrome 不占流推进位）", () => {
+    const blocks = [
+      text("a"),
+      tool(false),
+      { kind: "turn_meta", t0Ms: 1 } as Block,
+    ];
+    expect(innerTail(blocks)?.kind).toBe("tool");
+  });
+
+  it("仅 turn_meta（TTFT）返回 undefined", () => {
+    expect(innerTail([{ kind: "turn_meta", t0Ms: 1 } as Block])).toBeUndefined();
+  });
 });
 
 describe("isWaitingNextRound", () => {
@@ -66,6 +79,11 @@ describe("isWaitingNextRound", () => {
 
   it("ref 块不掩盖等待态：工具结束后来的 ref.emit 不熄灭等待行", () => {
     const blocks = [tool(false), { kind: "ref", refKind: "link", name: "l" } as Block];
+    expect(isWaitingNextRound(blocks, true, false)).toBe(true);
+  });
+
+  it("turn_meta 块不掩盖等待态：usage 追加的小字排在尾部也不熄灭等待行", () => {
+    const blocks = [text("前言"), tool(false), { kind: "turn_meta", t0Ms: 1 } as Block];
     expect(isWaitingNextRound(blocks, true, false)).toBe(true);
   });
 });
