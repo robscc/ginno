@@ -1,17 +1,20 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
-import { useTranslations } from "next-intl";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { useId, useMemo, useState, type ReactNode } from "react";
+import { useLocale, useTranslations } from "next-intl";
+import { ChevronDown, Eye, EyeOff, Loader2, X } from "lucide-react";
 import * as api from "@/lib/runtime";
+import { cn } from "@/lib/utils";
 import type { ModelConfig, ModelProtocol } from "@/lib/types";
 import {
   blankConfig,
+  countNonDefaults,
   domainRecommendations,
   mergeModelIds,
   parseModelsText,
   PROTOCOLS,
   PROTOCOL_LABEL,
+  reconcileDefaultModel,
 } from "./modelConfigShared";
 
 // Add/edit form for one model config (multi-provider-model-config.md §2.2–2.4).
@@ -24,6 +27,54 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
       <label className="field-label">{label}</label>
       {children}
       {hint && <p className="mt-1 text-[11px] text-faint">{hint}</p>}
+    </div>
+  );
+}
+
+// 折叠段标题的双语内联映射（本次重构只动本文件，未入 messages catalog；
+// 后续把 tuningTitle/advancedTitle 收进 settings.model.form 后可整段删除）。
+const SECTION_TITLES: Record<string, { tuning: string; advanced: string }> = {
+  en: { tuning: "Tuning", advanced: "Advanced" },
+  "zh-CN": { tuning: "调优", advanced: "进阶" },
+};
+
+// 折叠段容器（2026-11-04 三段折叠）：标题 +（进阶段）已改项徽标 + 旋转箭头。
+// 收起时内容不渲染——字段值都活在 draft state 里，收起只是视觉收纳（纯布局），
+// 不影响提交与校验。
+function CollapseSection({
+  title,
+  badge,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  badge?: number;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-line">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-xs font-medium text-muted transition-colors hover:text-txt"
+      >
+        <span>{title}</span>
+        {!!badge && (
+          <span className="rounded-full bg-violet/15 px-1.5 py-px text-[10px] font-medium leading-4 text-violet">
+            {badge}
+          </span>
+        )}
+        <ChevronDown
+          className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-line px-3.5 py-3">{children}</div>
+      )}
     </div>
   );
 }
@@ -46,11 +97,37 @@ export function ModelConfigForm({
   const t = useTranslations("settings.model.form");
   // 与 form 平级的 key（推荐理由文案）走父命名空间 settings.model.*
   const tp = useTranslations("settings.model");
-  const [draft, setDraft] = useState<ModelConfig>(initial.protocol ? initial : blankConfig());
+  const locale = useLocale();
+  const titles = SECTION_TITLES[locale] ?? SECTION_TITLES.en;
+  // 默认模型 radio 组名（同页可能同时展开多张卡的编辑体，useId 防串组）。
+  const defaultRadioGroup = useId();
+  // 默认模型恒在列表内（后端不变式）：存量脏值（legacy 单模型 / 手改过
+  // settings.json）mount 即收敛——保留仍在列表内的值，否则落到首条。
+  const [draft, setDraft] = useState<ModelConfig>(() => {
+    const base = initial.protocol ? initial : blankConfig();
+    return { ...base, default_model: reconcileDefaultModel(base.models, base.default_model) };
+  });
   const [modelsText, setModelsText] = useState(initial.models?.join("\n") ?? "");
   const [showKey, setShowKey] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 验证成功的行内绿条（「连接成功」+延迟 ms）。父组件 onSaved 会收起本
+  // 表单，所以绿条先展示一小段时间再交棒（否则用户根本看不到）。
+  const [savedOk, setSavedOk] = useState<number | null>(null);
+  // extra_body 原始文本：输入框直接绑定它（受控）。合法性在失焦时校验——
+  // 输入中途的未闭合 JSON 留在框里不打断输入，draft.extra_body 只在解析
+  // 成功时同步；非法时红框+行内提示（字段级，不进全局 error bar）。
+  const [extraBodyText, setExtraBodyText] = useState(() =>
+    initial.extra_body ? JSON.stringify(initial.extra_body) : "",
+  );
+  const [extraBodyInvalid, setExtraBodyInvalid] = useState(false);
+
+  // ②调优 / ③进阶 两个折叠段的展开态（默认折叠；进阶段的已改项用徽标提示，
+  // 无需记住展开状态）。
+  const [tuningOpen, setTuningOpen] = useState(false);
+  const [advOpen, setAdvOpen] = useState(false);
+  // 进阶段「已改项」徽标：与默认值不同的进阶字段数，0 时不渲染。
+  const advChanged = countNonDefaults(draft);
 
   // 「从 API 拉取」 panel: fetched catalogue + ticked ids + search filter.
   const [fetching, setFetching] = useState(false);
@@ -59,6 +136,13 @@ export function ModelConfigForm({
   const [modelSearch, setModelSearch] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
+  // ③ 模型列表视图切换：chip 行（行内 radio 设默认 + ✕ 移除）为主视图，
+  // 手动 textarea 是兜底入口。有存量列表 → 直接 chip 视图；空列表（新建 /
+  // legacy 单模型配置）→ 手动起步。拉取成功 / 应用所选后切回 chip。
+  const [listMode, setListMode] = useState<"chips" | "manual">(
+    initial.models?.length ? "chips" : "manual",
+  );
+
   const set = <K extends keyof ModelConfig>(key: K, value: ModelConfig[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
@@ -66,6 +150,9 @@ export function ModelConfigForm({
   const isAnthropic = draft.protocol === "anthropic";
   const isCompat = draft.protocol === "openai-compatible";
   const isResponses = draft.protocol === "openai-responses";
+  // ①思考强度联动：能力声明的生效档位（缺省 auto）。auto → 三个思考控件
+  // 隐藏只留状态行；budget/effort → 只展开对应控件；none → 状态行。
+  const thinkingMode = draft.thinking_mode ?? "auto";
 
   const recommendations = useMemo(
     () => (isCompat ? domainRecommendations(draft.base_url) : []),
@@ -97,6 +184,8 @@ export function ModelConfigForm({
         // models already in the list start checked (merging them is a no-op)
         setPicked(new Set(draft.models));
         setModelSearch("");
+        // 拉取成功 → 模型列表升级为 chip 视图（手动编辑随时可切回）。
+        setListMode("chips");
       } else {
         setFetchError(r.error || t("fetchUnknownError"));
       }
@@ -118,12 +207,20 @@ export function ModelConfigForm({
   const onModelsText = (text: string) => {
     const models = parseModelsText(text);
     setModelsText(text);
-    setDraft((d) => {
-      // Keep default_model only while it survives in the list; otherwise fall
-      // to the first entry (backend invariant: default_model ∈ models).
-      const dm = d.default_model && models.includes(d.default_model) ? d.default_model : (models[0] ?? "");
-      return { ...d, models, default_model: dm };
-    });
+    setDraft((d) => ({
+      ...d,
+      models,
+      // Backend invariant: default_model ∈ models (reconcileDefaultModel).
+      default_model: reconcileDefaultModel(models, d.default_model),
+    }));
+  };
+
+  // chip 行移除：列表与默认模型一并收敛（默认被移除 → 落到剩余首条；清空
+  // → ""，校验用 vModels 兜底）。同步 modelsText 让「手动编辑」视图同源。
+  const removeModel = (id: string) => {
+    const models = draft.models.filter((m) => m !== id);
+    setModelsText(models.join("\n"));
+    setDraft((d) => ({ ...d, models, default_model: reconcileDefaultModel(models, d.default_model) }));
   };
 
   // Blank input = omit the field so the backend applies its per-protocol
@@ -131,6 +228,26 @@ export function ModelConfigForm({
   const num = (key: "max_tokens" | "timeout_s" | "temperature" | "context_window", v: string) => {
     const n = v === "" ? undefined : Number(v);
     setDraft((d) => ({ ...d, [key]: n != null && Number.isFinite(n) ? n : undefined }));
+  };
+
+  // extra_body 失焦/提交校验：空串或合法 JSON → 放过并同步 draft；非法 →
+  // 字段级红框（返回 false）。submit 复用同一入口兜底，避免把框里的非法
+  // 文本静默丢弃后存走旧值。
+  const validateExtraBody = (): boolean => {
+    const raw = extraBodyText.trim();
+    if (!raw) {
+      set("extra_body", undefined);
+      setExtraBodyInvalid(false);
+      return true;
+    }
+    try {
+      set("extra_body", JSON.parse(raw));
+      setExtraBodyInvalid(false);
+      return true;
+    } catch {
+      setExtraBodyInvalid(true);
+      return false;
+    }
   };
 
   const validate = (): string | null => {
@@ -147,7 +264,9 @@ export function ModelConfigForm({
   // Q4: verify against the DRAFT (no save-then-verify dance); a pass is
   // already persisted server-side and the response carries the saved record.
   const submit = async () => {
+    if (checking || savedOk != null) return; // 防重复提交（按钮已禁用，双保险）
     setError(null);
+    if (!validateExtraBody()) return; // 行内红框已提示，不进全局 bar
     const invalid = validate();
     if (invalid) {
       setError(invalid);
@@ -158,7 +277,10 @@ export function ModelConfigForm({
       const body = { ...draft, name: draft.name.trim(), id: isNew ? undefined : draft.id };
       const r = await api.verifyModelConfig(body);
       if (r.ok) {
-        onSaved(r.config, r.latency_ms);
+        // 行内绿条先亮 ~0.9s 再交给父组件收起表单（父级还有自己的顶部
+        // notice）；期间按钮保持禁用，防止绿条窗口内二次提交。
+        setSavedOk(r.latency_ms ?? null);
+        window.setTimeout(() => onSaved(r.config, r.latency_ms), 900);
         return;
       }
       setError(r.error || t("verifyUnknownError"));
@@ -271,18 +393,243 @@ export function ModelConfigForm({
           </Field>
         </div>
 
+        {/* bearer_auth 属连接凭据（Anthropic 网关是否走 Bearer 头），留在
+            基础段紧邻密钥；server_web_search 面板移入「进阶」折叠段。 */}
         {isAnthropic && (
-          <>
-            <label className="flex items-start gap-2 text-xs text-muted">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={!!draft.bearer_auth}
-                onChange={(e) => set("bearer_auth", e.target.checked)}
-              />
-              <span>{t("bearerAuth")}</span>
-            </label>
+          <label className="flex items-start gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={!!draft.bearer_auth}
+              onChange={(e) => set("bearer_auth", e.target.checked)}
+            />
+            <span>{t("bearerAuth")}</span>
+          </label>
+        )}
 
+        {isResponses && (
+          <Field label={t("orgIdLabel")} hint={t("orgIdHint")}>
+            <input
+              className="field"
+              placeholder="org-..."
+              value={draft.org_id ?? ""}
+              onChange={(e) => set("org_id", e.target.value)}
+            />
+          </Field>
+        )}
+
+        {/* ②模型列表（2026-11-04 重构）：主视图 = chip 行（行内 radio 设默认
+            + ✕ 移除），「手动编辑」切回 textarea 兜底。独立「默认模型」输入
+            框已删——默认模型只能从列表行点选，恒在列表内（reconcileDefaultModel）。 */}
+        <Field
+          label={t("modelsLabel")}
+          hint={listMode === "chips" ? t("defaultModelHint") : t("modelsHint")}
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void fetchModels()}
+              disabled={!canFetchModels || fetching}
+              className="pill inline-flex shrink-0 items-center gap-1.5 border border-blue/50 text-blue transition-colors hover:bg-blue/10 disabled:opacity-50"
+            >
+              {fetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {fetching ? t("fetching") : t("fetchModels")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setListMode((m) => (m === "chips" ? "manual" : "chips"))}
+              className="pill shrink-0 border border-line text-muted transition-colors hover:text-txt"
+            >
+              {listMode === "chips" ? t("manualEdit") : t("listView")}
+            </button>
+            {!canFetchModels && (
+              <span className="text-[11px] text-faint">{t("fetchNeedKeys")}</span>
+            )}
+          </div>
+          {fetchError && (
+            <div className="selectable mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+              {t("fetchFailed", { error: fetchError })}
+            </div>
+          )}
+          {fetched && (
+            // Ticker-style picker over the provider's catalogue.
+            <div className="mb-2 space-y-2 rounded-xl border border-line p-3">
+              <div className="flex items-center gap-2">
+                <input
+                  className="field flex-1"
+                  placeholder={t("searchModelsPlaceholder")}
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFetched(null);
+                    setPicked(new Set());
+                  }}
+                  className="shrink-0 rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
+                >
+                  {t("cancel")}
+                </button>
+              </div>
+              <div className="max-h-56 overflow-y-auto rounded-lg border border-line">
+                {filteredFetched.map((m) => (
+                  <label
+                    key={m.id}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-card2"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={picked.has(m.id)}
+                      onChange={(e) =>
+                        setPicked((p) => {
+                          const n = new Set(p);
+                          if (e.target.checked) n.add(m.id);
+                          else n.delete(m.id);
+                          return n;
+                        })
+                      }
+                    />
+                    <span className="truncate font-mono">{m.id}</span>
+                    {m.owned_by && (
+                      <span className="ml-auto shrink-0 text-[11px] text-faint">{m.owned_by}</span>
+                    )}
+                  </label>
+                ))}
+                {!filteredFetched.length && (
+                  <div className="px-3 py-3 text-center text-xs text-faint">{t("noMatching")}</div>
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-faint">
+                  {t("fetchedStats", { total: filteredFetched.length, selected: picked.size })}
+                </span>
+                <button
+                  type="button"
+                  onClick={applyPicked}
+                  disabled={!picked.size}
+                  className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {t("addSelected", { count: picked.size })}
+                </button>
+              </div>
+            </div>
+          )}
+            {listMode === "chips" ? (
+              // chip 视图：一行一模型——radio 行内点选默认 + ✕ 移除。默认模型
+              // 只能出自这里（default_model ∈ models 恒成立，移除默认行自动
+              // 落到剩余首条）。
+              <div className="rounded-xl border border-line">
+                {draft.models.map((m) => (
+                  <div
+                    key={m}
+                    className="flex items-center gap-2 border-b border-line px-3 py-1.5 last:border-b-0"
+                  >
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-xs">
+                      <input
+                        type="radio"
+                        name={defaultRadioGroup}
+                        aria-label={t("setDefaultAria", { model: m })}
+                        checked={draft.default_model === m}
+                        onChange={() => set("default_model", m)}
+                      />
+                      <span className="truncate font-mono">{m}</span>
+                      {draft.default_model === m && (
+                        <span className="pill shrink-0 border border-violet/50 text-violet">
+                          {t("defaultBadge")}
+                        </span>
+                      )}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => removeModel(m)}
+                      aria-label={t("removeModelAria", { model: m })}
+                      className="shrink-0 text-faint transition-colors hover:text-txt"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                {!draft.models.length && (
+                  <div className="px-3 py-3 text-center text-xs text-faint">
+                    {t("emptyModelsHint")}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="mb-1 text-[11px] text-faint">{t("manualHint")}</div>
+                <textarea
+                  className="field font-mono text-xs"
+                  rows={4}
+                  placeholder={isAsr ? "qwen3-asr-flash" : "qwen-plus\ndeepseek-v3\nclaude-sonnet-4-5"}
+                  value={modelsText}
+                  onChange={(e) => onModelsText(e.target.value)}
+                />
+              </>
+            )}
+          </Field>
+
+        {/* ② 模型行为 —— 数值调优（chat：最大 Token / 上下文窗口 / 温度 / 超时；
+            asr：仅超时）。默认折叠；值都在 draft 里，收起不影响提交与校验。 */}
+        <CollapseSection
+          title={titles.tuning}
+          open={tuningOpen}
+          onToggle={() => setTuningOpen((v) => !v)}
+        >
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {!isAsr && (
+              <Field label={t("maxTokens")}>
+                <input
+                  type="number"
+                  className="field"
+                  value={draft.max_tokens ?? ""}
+                  onChange={(e) => num("max_tokens", e.target.value)}
+                />
+              </Field>
+            )}
+            {!isAsr && (
+              <Field label={t("contextWindowLabel")} hint={t("contextWindowHint")}>
+                <input
+                  type="number"
+                  className="field"
+                  placeholder="200000"
+                  value={draft.context_window ?? ""}
+                  onChange={(e) => num("context_window", e.target.value)}
+                />
+              </Field>
+            )}
+            {!isAsr && (
+              <Field label={t("temperature")}>
+                <input
+                  type="number"
+                  step="0.1"
+                  className="field"
+                  value={draft.temperature ?? ""}
+                  onChange={(e) => num("temperature", e.target.value)}
+                />
+              </Field>
+            )}
+            <Field label={t("timeoutS")}>
+              <input
+                type="number"
+                className="field"
+                value={draft.timeout_s ?? ""}
+                onChange={(e) => num("timeout_s", e.target.value)}
+              />
+            </Field>
+          </div>
+        </CollapseSection>
+
+        {/* ③ 进阶 —— 协议私有开关 / 思考强度区 / extra_body；徽标 = 与默认
+            值不同的项数（countNonDefaults），0 时不显示。 */}
+        <CollapseSection
+          title={titles.advanced}
+          badge={advChanged}
+          open={advOpen}
+          onToggle={() => setAdvOpen((v) => !v)}
+        >
+          {isAnthropic && (
             <div className="space-y-2 rounded-xl border border-line p-3">
               <label className="flex items-start gap-2 text-xs text-muted">
                 <input
@@ -312,346 +659,178 @@ export function ModelConfigForm({
                 {t("serverWebSearchHint")}
               </p>
             </div>
-          </>
-        )}
+          )}
 
-        {isResponses && (
-          <Field label={t("orgIdLabel")} hint={t("orgIdHint")}>
-            <input
-              className="field"
-              placeholder="org-..."
-              value={draft.org_id ?? ""}
-              onChange={(e) => set("org_id", e.target.value)}
-            />
-          </Field>
-        )}
-
-        {isCompat && !isAsr && (
-          <div className="space-y-2 rounded-xl border border-line p-3">
-            <div className="text-xs font-medium text-muted">{t("compatSwitchesTitle")}</div>
-            <div className="flex flex-col gap-2">
-              {(
-                [
-                  ["enable_search", t("enableSearchHint")],
-                  ["enable_thinking", t("enableThinkingHint")],
-                ] as const
-              ).map(([flag, text]) => {
-                const rec = recommendations.find((r) => r.flag === flag);
-                return (
-                  <div key={flag} className="flex items-start gap-2">
-                    <label className="flex flex-1 items-start gap-2 text-xs text-muted">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={!!draft[flag]}
-                        onChange={(e) => set(flag, e.target.checked)}
-                      />
-                      <span>{text}</span>
-                    </label>
-                    {rec && !draft[flag] && (
-                      // Q5: recommend by base_url domain, never auto-check;
-                      // the pill applies the suggestion in one click.
-                      <button
-                        type="button"
-                        onClick={() => set(flag, true)}
-                        title={t("recommendedTitle", { why: tp(`recommendWhy.${rec.whyKey}`) })}
-                        className="pill shrink-0 border border-blue/50 text-blue transition-colors hover:bg-blue/10"
-                      >
-                        {t("recommended")}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+          {isCompat && !isAsr && (
+            <div className="space-y-2 rounded-xl border border-line p-3">
+              <div className="text-xs font-medium text-muted">{t("compatSwitchesTitle")}</div>
+              <div className="flex flex-col gap-2">
+                {(
+                  [
+                    ["enable_search", t("enableSearchHint")],
+                    ["enable_thinking", t("enableThinkingHint")],
+                  ] as const
+                ).map(([flag, text]) => {
+                  const rec = recommendations.find((r) => r.flag === flag);
+                  return (
+                    <div key={flag} className="flex items-start gap-2">
+                      <label className="flex flex-1 items-start gap-2 text-xs text-muted">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={!!draft[flag]}
+                          onChange={(e) => set(flag, e.target.checked)}
+                        />
+                        <span>{text}</span>
+                      </label>
+                      {rec && !draft[flag] && (
+                        // Q5: recommend by base_url domain, never auto-check;
+                        // the pill applies the suggestion in one click.
+                        <button
+                          type="button"
+                          onClick={() => set(flag, true)}
+                          title={t("recommendedTitle", { why: tp(`recommendWhy.${rec.whyKey}`) })}
+                          className="pill shrink-0 border border-blue/50 text-blue transition-colors hover:bg-blue/10"
+                        >
+                          {t("recommended")}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {!isAsr && (
-          // 思考档位能力声明(thinking-effort-design §7/§9):auto = 按协议 +
-          // 模型名启发式(默认);none = chip 菜单置灰 + 服务端把档位按 auto
-          // 处理。预算覆盖(anthropic/qwen 用)可一并自定义。
-          <div className="space-y-2 rounded-xl border border-line p-3">
-            <div className="text-xs font-medium text-muted">{t("thinkingCapabilityTitle")}</div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
+          {!isAsr && (
+            // ①思考强度联动(thinking-effort-design §7/§9):能力声明 auto(默认)
+            // → 预算三档/参数风格/extra_body 三控件隐藏,只留一行状态说明;
+            // 显式选具体档位才展开对应控件(budget→预算,effort→参数风格,
+            // 两者都带 extra_body 逃生口);none = 菜单置灰 + 服务端把档位按
+            // auto 处理。隐藏的字段值仍留在 draft 里(视觉收纳,payload 不变)。
+            <div className="space-y-2 rounded-xl border border-line p-3">
+              <div className="text-xs font-medium text-muted">{t("thinkingCapabilityTitle")}</div>
+              <div className="max-w-sm">
                 <label className="field-label">{t("thinkingModeLabel")}</label>
                 <select
                   className="field"
-                  value={draft.thinking_mode ?? "auto"}
+                  value={thinkingMode}
                   onChange={(e) =>
                     set("thinking_mode", e.target.value as ModelConfig["thinking_mode"])
                   }
                 >
                   <option value="auto">{t("thinkingModeAuto")}</option>
+                  <option value="budget">{t("thinkingModeBudget")}</option>
+                  <option value="effort">{t("thinkingModeEffort")}</option>
                   <option value="none">{t("thinkingModeNone")}</option>
                 </select>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-                  {t("thinkingModeHint")}
-                </p>
-                {/* 参数风格覆写（2026-11-04 Magpie 实案）：Qwen 套 Anthropic 壳
-                    的网关只吃 reasoning_effort，thinking 参数必 400。 */}
-                <label className="field-label mt-2">{t("thinkingParamStyleLabel")}</label>
-                <select
-                  className="field"
-                  value={draft.thinking_param_style ?? "auto"}
-                  onChange={(e) =>
-                    set("thinking_param_style", e.target.value as ModelConfig["thinking_param_style"])
-                  }
-                >
-                  <option value="auto">{t("thinkingParamStyleAuto")}</option>
-                  <option value="reasoning_effort">{t("thinkingParamStyleEffort")}</option>
-                </select>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-                  {t("thinkingParamStyleHint")}
-                </p>
-                <label className="field-label mt-2">{t("extraBodyLabel")}</label>
-                <input
-                  className="field font-mono text-[11px]"
-                  placeholder={t("extraBodyPlaceholder")}
-                  value={draft.extra_body ? JSON.stringify(draft.extra_body) : ""}
-                  onChange={(e) => {
-                    const raw = e.target.value.trim();
-                    if (!raw) {
-                      set("extra_body", undefined);
-                      return;
-                    }
-                    try {
-                      set("extra_body", JSON.parse(raw));
-                    } catch {
-                      /* 未闭合 JSON：不打断输入，失焦/保存时由校验兜底 */
-                    }
-                  }}
-                />
+                {thinkingMode === "auto" ? (
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                    {t("thinkingAutoStatus")}
+                  </p>
+                ) : thinkingMode === "none" ? (
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                    {t("thinkingNoneStatus")}
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                    {t("thinkingModeHint")}
+                  </p>
+                )}
               </div>
-              <div>
-                <label className="field-label">{t("thinkingBudgetsLabel")}</label>
-                <div className="flex items-center gap-1.5">
-                  {(["low", "medium", "high"] as const).map((k) => (
-                    <input
-                      key={k}
-                      type="number"
-                      min={0}
-                      step={1024}
-                      className="field w-full"
-                      placeholder={t(`thinkingBudget_${k}`)}
-                      value={draft.thinking_budgets?.[k] ?? ""}
-                      onChange={(e) =>
-                        set("thinking_budgets", {
-                          ...(draft.thinking_budgets ?? {}),
-                          [k]: Number(e.target.value) || 0,
-                        })
-                      }
-                    />
-                  ))}
-                </div>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
-                  {t("thinkingBudgetsHint")}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("modelsLabel")} hint={t("modelsHint")}>
-            <div className="mb-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void fetchModels()}
-                disabled={!canFetchModels || fetching}
-                className="pill inline-flex shrink-0 items-center gap-1.5 border border-blue/50 text-blue transition-colors hover:bg-blue/10 disabled:opacity-50"
-              >
-                {fetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {fetching ? t("fetching") : t("fetchModels")}
-              </button>
-              {!canFetchModels && (
-                <span className="text-[11px] text-faint">{t("fetchNeedKeys")}</span>
-              )}
-            </div>
-            {fetchError && (
-              <div className="selectable mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-                {t("fetchFailed", { error: fetchError })}
-              </div>
-            )}
-            {fetched && (
-              // Ticker-style picker over the provider's catalogue.
-              <div className="mb-2 space-y-2 rounded-xl border border-line p-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    className="field flex-1"
-                    placeholder={t("searchModelsPlaceholder")}
-                    value={modelSearch}
-                    onChange={(e) => setModelSearch(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFetched(null);
-                      setPicked(new Set());
-                    }}
-                    className="shrink-0 rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
-                  >
-                    {t("cancel")}
-                  </button>
-                </div>
-                <div className="max-h-56 overflow-y-auto rounded-lg border border-line">
-                  {filteredFetched.map((m) => (
-                    <label
-                      key={m.id}
-                      className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-card2"
-                    >
+              {thinkingMode === "budget" && (
+                <div>
+                  <label className="field-label">{t("thinkingBudgetsLabel")}</label>
+                  <div className="flex max-w-md items-center gap-1.5">
+                    {(["low", "medium", "high"] as const).map((k) => (
                       <input
-                        type="checkbox"
-                        checked={picked.has(m.id)}
+                        key={k}
+                        type="number"
+                        min={0}
+                        step={1024}
+                        className="field w-full"
+                        placeholder={t(`thinkingBudget_${k}`)}
+                        value={draft.thinking_budgets?.[k] ?? ""}
                         onChange={(e) =>
-                          setPicked((p) => {
-                            const n = new Set(p);
-                            if (e.target.checked) n.add(m.id);
-                            else n.delete(m.id);
-                            return n;
+                          set("thinking_budgets", {
+                            ...(draft.thinking_budgets ?? {}),
+                            [k]: Number(e.target.value) || 0,
                           })
                         }
                       />
-                      <span className="truncate font-mono">{m.id}</span>
-                      {m.owned_by && (
-                        <span className="ml-auto shrink-0 text-[11px] text-faint">{m.owned_by}</span>
-                      )}
-                    </label>
-                  ))}
-                  {!filteredFetched.length && (
-                    <div className="px-3 py-3 text-center text-xs text-faint">{t("noMatching")}</div>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-faint">
-                    {t("fetchedStats", { total: filteredFetched.length, selected: picked.size })}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={applyPicked}
-                    disabled={!picked.size}
-                    className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                  >
-                    {t("addSelected", { count: picked.size })}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="mb-1 text-[11px] text-faint">{t("manualHint")}</div>
-            <textarea
-              className="field font-mono text-xs"
-              rows={4}
-              placeholder={isAsr ? "qwen3-asr-flash" : "qwen-plus\ndeepseek-v3\nclaude-sonnet-4-5"}
-              value={modelsText}
-              onChange={(e) => onModelsText(e.target.value)}
-            />
-          </Field>
-          <div className="space-y-3">
-            <Field label={t("defaultModelLabel")}>
-              {draft.models.length > 0 && draft.models.length <= 12 ? (
-                // Short list → a select. The current value is added as an option
-                // when it is not in the list, so a mismatch is visible and
-                // fixable instead of being unrepresentable.
-                <select
-                  className="field"
-                  value={draft.default_model}
-                  onChange={(e) => set("default_model", e.target.value)}
-                >
-                  {!draft.models.includes(draft.default_model) && draft.default_model && (
-                    <option value={draft.default_model}>{draft.default_model} {t("notInListSuffix")}</option>
-                  )}
-                  {draft.models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                // Free text, for a LONG list and for NO list at all. The empty
-                // case is a legacy config (it stores only `model`, no `models[]`)
-                // — such a provider still HAS a model (the chat works, and the
-                // server synthesizes the list from `model`), so this input must
-                // stay editable. It used to be `disabled` here, which left the
-                // default model of every legacy-config provider permanently
-                // unsettable ("默认模型不能改"). Native datalist keeps it
-                // dependency-free.
-                <div>
-                  <input
-                    className="field font-mono text-xs"
-                    list="mc-default-model-options"
-                    value={draft.default_model}
-                    onChange={(e) => set("default_model", e.target.value)}
-                    placeholder={t("modelIdPlaceholder")}
-                  />
-                  <datalist id="mc-default-model-options">
-                    {draft.models.map((m) => (
-                      <option key={m} value={m} />
                     ))}
-                  </datalist>
-                  {draft.models.length === 0 ? (
-                    <p className="mt-1 text-[11px] text-faint">{t("noModelListNote")}</p>
-                  ) : (
-                    !draft.models.includes(draft.default_model) &&
-                    draft.default_model && (
-                      <p className="mt-1 text-[11px] text-yellow">
-                        {t("notInListModel", { model: draft.default_model })}
-                      </p>
-                    )
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                    {t("thinkingBudgetsHint")}
+                  </p>
+                </div>
+              )}
+              {thinkingMode === "effort" && (
+                <div className="max-w-sm">
+                  {/* 参数风格覆写（2026-11-04 Magpie 实案）：Qwen 套 Anthropic 壳
+                      的网关只吃 reasoning_effort，thinking 参数必 400。 */}
+                  <label className="field-label">{t("thinkingParamStyleLabel")}</label>
+                  <select
+                    className="field"
+                    value={draft.thinking_param_style ?? "auto"}
+                    onChange={(e) =>
+                      set("thinking_param_style", e.target.value as ModelConfig["thinking_param_style"])
+                    }
+                  >
+                    <option value="auto">{t("thinkingParamStyleAuto")}</option>
+                    <option value="reasoning_effort">{t("thinkingParamStyleEffort")}</option>
+                  </select>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                    {t("thinkingParamStyleHint")}
+                  </p>
+                </div>
+              )}
+              {(thinkingMode === "budget" || thinkingMode === "effort") && (
+                <div className="max-w-sm">
+                  <label className="field-label">{t("extraBodyLabel")}</label>
+                  <input
+                    className={cn(
+                      "field font-mono text-[11px]",
+                      extraBodyInvalid && "border-red",
+                    )}
+                    placeholder={t("extraBodyPlaceholder")}
+                    value={extraBodyText}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setExtraBodyText(raw);
+                      const trimmed = raw.trim();
+                      if (!trimmed) {
+                        set("extra_body", undefined);
+                        setExtraBodyInvalid(false);
+                        return;
+                      }
+                      try {
+                        set("extra_body", JSON.parse(trimmed));
+                        setExtraBodyInvalid(false);
+                      } catch {
+                        /* 未闭合 JSON：留在框里不打断输入，失焦/提交时由
+                           validateExtraBody 兜底 */
+                      }
+                    }}
+                    onBlur={validateExtraBody}
+                  />
+                  {extraBodyInvalid && (
+                    <p className="mt-0.5 text-[11px] text-red">{t("extraBodyInvalid")}</p>
                   )}
                 </div>
               )}
-            </Field>
-            {isAsr ? (
-              <Field label={t("timeoutS")}>
-                <input
-                  type="number"
-                  className="field"
-                  value={draft.timeout_s ?? ""}
-                  onChange={(e) => num("timeout_s", e.target.value)}
-                />
-              </Field>
-            ) : (
-              <div className="grid grid-cols-3 gap-3">
-                <Field label={t("maxTokens")}>
-                  <input
-                    type="number"
-                    className="field"
-                    value={draft.max_tokens ?? ""}
-                    onChange={(e) => num("max_tokens", e.target.value)}
-                  />
-                </Field>
-                <Field label={t("contextWindowLabel")} hint={t("contextWindowHint")}>
-                  <input
-                    type="number"
-                    className="field"
-                    placeholder="200000"
-                    value={draft.context_window ?? ""}
-                    onChange={(e) => num("context_window", e.target.value)}
-                  />
-                </Field>
-                <Field label={t("temperature")}>
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="field"
-                    value={draft.temperature ?? ""}
-                    onChange={(e) => num("temperature", e.target.value)}
-                  />
-                </Field>
-                <Field label={t("timeoutS")}>
-                  <input
-                    type="number"
-                    className="field"
-                    value={draft.timeout_s ?? ""}
-                    onChange={(e) => num("timeout_s", e.target.value)}
-                  />
-                </Field>
-              </div>
-            )}
-          </div>
-        </div>
+            </div>
+          )}
+        </CollapseSection>
       </div>
+
+      {savedOk != null && (
+        // Green bar for a passing verify (the record is already persisted —
+        // onSaved fires ~0.9s later and collapses the form).
+        <div className="selectable mt-4 rounded-md border border-green/40 bg-green/10 px-3 py-2 text-xs text-green">
+          {t("verifyOk", { ms: savedOk })}
+        </div>
+      )}
 
       {error && (
         // Yellow bar for verify failures / validation problems.
@@ -669,9 +848,10 @@ export function ModelConfigForm({
         </button>
         <button
           onClick={() => void submit()}
-          disabled={checking}
-          className="rounded-lg bg-violet px-4 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          disabled={checking || savedOk != null}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-violet px-4 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
+          {checking && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {checking ? t("verifying") : t("verifySave")}
         </button>
       </div>

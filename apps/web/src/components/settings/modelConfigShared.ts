@@ -105,6 +105,28 @@ export function normalizeConfig(raw: ModelConfig): ModelConfig {
   return { ...raw, models: Array.isArray(raw.models) ? raw.models : [] };
 }
 
+/** 进阶折叠段「已改项」徽标：与默认值不同的进阶字段数（0 = 不显示徽标）。
+ *  默认值口径与 blankConfig / 表单占位一致：布尔开关 false、thinking_mode /
+ *  thinking_param_style = "auto"、extra_body 与 thinking_budgets 未设（或全 0
+ *  ——清空输入框会把档位写成 0，视为未改）、max_uses = 5。纯函数，便于单测。 */
+export function countNonDefaults(cfg: ModelConfig): number {
+  let n = 0;
+  if (cfg.server_web_search) n++;
+  if ((cfg.server_web_search_max_uses ?? 5) !== 5) n++;
+  if (cfg.enable_search) n++;
+  if (cfg.enable_thinking) n++;
+  if (cfg.thinking_mode && cfg.thinking_mode !== "auto") n++;
+  if (cfg.thinking_param_style && cfg.thinking_param_style !== "auto") n++;
+  if (cfg.extra_body != null) n++;
+  if (
+    cfg.thinking_budgets &&
+    (["low", "medium", "high"] as const).some((k) => (cfg.thinking_budgets?.[k] ?? 0) > 0)
+  ) {
+    n++;
+  }
+  return n;
+}
+
 export type RelTimePart =
   | { key: "justNow"; count?: undefined }
   | { key: "minAgo" | "hoursAgo" | "daysAgo"; count: number };
@@ -135,4 +157,12 @@ export function mergeModelIds(existing: string[], picked: string[]): string[] {
   const have = new Set(existing);
   const fresh = [...new Set(picked)].filter((id) => !have.has(id)).sort();
   return [...existing, ...fresh];
+}
+
+/** 默认模型不变式（后端契约 default_model ∈ models）：列表变化后仍在列表内
+ *  的默认值保留，否则落到首条；空列表 → ""。表单 mount 收敛、chip 行移除、
+ *  textarea 解析后统一走这里——默认模型只能来自列表（radio 行内点选）外无
+ *  旁路。纯函数，vitest 覆盖见 modelConfigShared.test.ts。 */
+export function reconcileDefaultModel(models: string[], prev?: string): string {
+  return prev && models.includes(prev) ? prev : (models[0] ?? "");
 }
