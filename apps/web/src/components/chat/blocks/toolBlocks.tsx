@@ -7,6 +7,7 @@ import { toolLabelOptions } from "@/lib/toolLabels";
 import { parseDelegation } from "./delegation";
 import { useChatT } from "./i18n";
 import { TaskCard, parseBgTaskId } from "../TaskCard";
+import { parseShellOutput } from "@/lib/toolOutput";
 
 // Every tool output is collapsible. Long outputs (over these thresholds)
 // default to a compact header row and expand into a capped, internally
@@ -81,6 +82,7 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
     );
   }
   const lineCount = content.split("\n").length;
+  const shell = parseShellOutput(content);
   const del = name === "delegate_agent" ? parseDelegation(content) : null;
   // 机器头与溯源行是给模型/回放跳转看的，展示层剥掉。
   const shown = del
@@ -113,7 +115,9 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
           {tc("tools.prefix")}<span className="text-muted">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
-        <span className="shrink-0 text-green">✓</span>
+        <span className={shell?.ok === false ? "shrink-0 text-red-500" : "shrink-0 text-green"}>
+          {shell?.ok === false ? "✗" : "✓"}
+        </span>
         {del && (
           <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
             {del.backend} · {del.mode} · {del.stop}
@@ -135,7 +139,25 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
       )}
       {expanded && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
-          <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{shown}</pre>
+          {(() => {
+            const sh = shell;
+            if (!sh) return <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{shown}</pre>;
+            return (
+              <div className="px-2.5 py-1.5">
+                <div className={sh.ok ? "text-emerald-600/90 dark:text-emerald-400/90" : "text-red-500 dark:text-red-400"}>
+                  [{sh.exitLine}]
+                </div>
+                {sh.stdout.trim() && (
+                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-faint">{sh.stdout}</pre>
+                )}
+                {sh.stderr != null && sh.stderr.trim() && (
+                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-amber-600/90 dark:text-amber-400/80">
+                    {sh.stderr}
+                  </pre>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
