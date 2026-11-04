@@ -613,8 +613,20 @@ def build_model(
             max_retries=6,
             default_headers=default_headers,
         )
+        # extra_body 透传（2026-11-04）：网关私有参数（如 enable_thinking、
+        # top_k 等非规范字段）经 model_kwargs 原样进请求 body。
+        extra_body = cfg.get("extra_body")
+        if isinstance(extra_body, dict) and extra_body:
+            chat_kwargs["model_kwargs"] = {**extra_body}
         if effort:
-            if effort == "off":
+            # 参数风格覆写（2026-11-04 Magpie/TestChannel 实案）：Qwen 套
+            # Anthropic 壳的网关只吃 `reasoning_effort`，且服务端会自动注入
+            # effort——任何 `thinking` 参数都触发 400 「cannot be set
+            # simultaneously」。cfg["thinking_param_style"]="reasoning_effort"
+            # 时改走 effort 直传，不发 thinking 块参数。
+            if str(cfg.get("thinking_param_style") or "") == "reasoning_effort":
+                chat_kwargs["reasoning_effort"] = "minimal" if effort == "off" else effort
+            elif effort == "off":
                 # 显式关(网关可能默认开);多数 Claude 模型等价于不传。
                 chat_kwargs["thinking"] = {"type": "disabled"}
             else:

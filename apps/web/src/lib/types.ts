@@ -126,6 +126,12 @@ export interface ProviderConfig {
   thinking_mode?: "auto" | "budget" | "effort" | "none";
   // 档位 → token 预算覆盖（anthropic / qwen 方言用）；缺省用内置 4k/16k/32k。
   thinking_budgets?: { low?: number; medium?: number; high?: number };
+  /** 思考参数风格覆写（2026-11-04）：Qwen 套 Anthropic 壳的网关（如 Magpie
+   *  TestChannel）只吃 reasoning_effort 且服务端自动注入，任何 thinking 参数
+   *  都 400。"reasoning_effort" 直传档位；缺省 auto = 按协议发 thinking。 */
+  thinking_param_style?: "auto" | "reasoning_effort";
+  /** 网关私有参数透传（如 enable_thinking），原样并进请求 body。 */
+  extra_body?: Record<string, unknown>;
 }
 
 export type Providers = Record<string, ProviderConfig>;
@@ -157,6 +163,12 @@ export interface ModelConfig {
   enable_thinking?: boolean; // openai-compatible hybrid-thinking opt-in
   thinking_mode?: "auto" | "budget" | "effort" | "none"; // 思考档位能力声明（设计 §7）
   thinking_budgets?: { low?: number; medium?: number; high?: number }; // 档位预算覆盖
+  /** 思考参数风格覆写（2026-11-04）：{"reasoning_effort"} = 直传档位、不发
+   *  thinking 块参数（Qwen-on-Anthropic 网关如 Magpie TestChannel 必需——其
+   *  服务端自动注入 reasoning_effort，任何 thinking 参数都 400）。 */
+  thinking_param_style?: "auto" | "reasoning_effort";
+  /** 网关私有参数透传（如 enable_thinking），原样并进请求 body。 */
+  extra_body?: Record<string, unknown>;
   enabled: boolean;
   // Unix seconds of the last successful verify (persisted server-side);
   // null/absent = never verified. last_error holds the most recent failure.

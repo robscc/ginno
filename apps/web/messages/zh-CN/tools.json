@@ -866,7 +866,13 @@
         "kindChat": "对话模型",
         "kindAsr": "语音识别",
         "asrHint": "语音转写端点（OpenAI 兼容）：base_url + API Key + 转写模型（如 qwen3-asr-flash）。不参与对话与默认模型。",
-        "asrProtocolNote": "语音识别固定走 OpenAI 兼容端点（chat/completions + input_audio）。"
+        "asrProtocolNote": "语音识别固定走 OpenAI 兼容端点（chat/completions + input_audio）。",
+        "thinkingParamStyleLabel": "思考参数风格",
+        "thinkingParamStyleAuto": "自动（按协议）",
+        "thinkingParamStyleEffort": "reasoning_effort 直传",
+        "thinkingParamStyleHint": "Qwen 套 Anthropic 壳的网关（如 Magpie TestChannel）只接受 reasoning_effort，传 thinking 参数会 400。",
+        "extraBodyLabel": "extra_body 透传（JSON）",
+        "extraBodyPlaceholder": "{\"enable_thinking\": true}"
       },
       "collapseCard": "收起",
       "asrChip": "语音识别",

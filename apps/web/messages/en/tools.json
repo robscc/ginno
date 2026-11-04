@@ -866,7 +866,13 @@
         "kindChat": "Chat model",
         "kindAsr": "Speech-to-text",
         "asrHint": "Speech-to-text endpoint (OpenAI-compatible): base URL + API key + transcription model (e.g. qwen3-asr-flash). Never used for chat or as the default model.",
-        "asrProtocolNote": "Speech-to-text always uses the OpenAI-compatible endpoint (chat/completions + input_audio)."
+        "asrProtocolNote": "Speech-to-text always uses the OpenAI-compatible endpoint (chat/completions + input_audio).",
+        "thinkingParamStyleLabel": "Thinking param style",
+        "thinkingParamStyleAuto": "Auto (by protocol)",
+        "thinkingParamStyleEffort": "reasoning_effort passthrough",
+        "thinkingParamStyleHint": "Qwen-on-Anthropic gateways (e.g. Magpie TestChannel) only accept reasoning_effort; thinking params 400.",
+        "extraBodyLabel": "extra_body passthrough (JSON)",
+        "extraBodyPlaceholder": "{\"enable_thinking\": true}"
       },
       "collapseCard": "Collapse",
       "asrChip": "ASR",

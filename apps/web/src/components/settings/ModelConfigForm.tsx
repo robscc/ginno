@@ -389,6 +389,40 @@ export function ModelConfigForm({
                 <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
                   {t("thinkingModeHint")}
                 </p>
+                {/* 参数风格覆写（2026-11-04 Magpie 实案）：Qwen 套 Anthropic 壳
+                    的网关只吃 reasoning_effort，thinking 参数必 400。 */}
+                <label className="field-label mt-2">{t("thinkingParamStyleLabel")}</label>
+                <select
+                  className="field"
+                  value={draft.thinking_param_style ?? "auto"}
+                  onChange={(e) =>
+                    set("thinking_param_style", e.target.value as ModelConfig["thinking_param_style"])
+                  }
+                >
+                  <option value="auto">{t("thinkingParamStyleAuto")}</option>
+                  <option value="reasoning_effort">{t("thinkingParamStyleEffort")}</option>
+                </select>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-faint">
+                  {t("thinkingParamStyleHint")}
+                </p>
+                <label className="field-label mt-2">{t("extraBodyLabel")}</label>
+                <input
+                  className="field font-mono text-[11px]"
+                  placeholder={t("extraBodyPlaceholder")}
+                  value={draft.extra_body ? JSON.stringify(draft.extra_body) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    if (!raw) {
+                      set("extra_body", undefined);
+                      return;
+                    }
+                    try {
+                      set("extra_body", JSON.parse(raw));
+                    } catch {
+                      /* 未闭合 JSON：不打断输入，失焦/保存时由校验兜底 */
+                    }
+                  }}
+                />
               </div>
               <div>
                 <label className="field-label">{t("thinkingBudgetsLabel")}</label>
