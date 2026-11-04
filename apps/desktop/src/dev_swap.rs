@@ -230,12 +230,7 @@ pub(crate) fn run_finish(app: &tauri::AppHandle) -> DevSwapResult {
         .get("built_at")
         .and_then(Value::as_str)
         .map(str::to_string);
-    if let Some(fp) = wait_fingerprint(
-        port,
-        &sha,
-        want_built.as_deref(),
-        Duration::from_secs(90),
-    ) {
+    if let Some(fp) = wait_fingerprint(port, &sha, want_built.as_deref(), Duration::from_secs(90)) {
         let mut st = state;
         st["state"] = Value::from("verified");
         write_state(app, st);
