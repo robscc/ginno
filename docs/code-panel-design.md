@@ -1,6 +1,6 @@
 # 代码面板设计（在会话工作区内当轻量 IDE 用）
 
-状态：待评审 · 勘察日期 2026-09-29 · 体例沿用 `docs/*-design.md`
+状态：**已实施**（`apps/web/src/components/right/code/CodePanel.tsx`，S1 起各阶段的实施偏差已记于文内；2026-11-04 核实）· 勘察日期 2026-09-29 · 体例沿用 `docs/*-design.md`
 
 ---
 

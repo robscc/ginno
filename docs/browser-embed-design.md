@@ -1,6 +1,6 @@
 # Browser Embedding Design（内嵌浏览器：聊天 + 工作流 + Goal）
 
-> 状态：**设计稿**（待评审）。目标：在 Ginno 里内嵌一台带 Space 的真 Chromium 浏览器——
+> 状态：**已被双轨实现取代**（扩展轨 + CDP：`browser/executor.py`+`relay.py`+`packages/extension/`，见 `browser-companion-extension-design.md`；2026-11-04 核实）。CEF 内嵌路线由 `browser-single-window-design.md` 接续。原目标：在 Ginno 里内嵌一台带 Space 的真 Chromium 浏览器——
 > 复制 ego-lite 的体验（真页面、真标签、真接管、登录共享），并作为**一等能力**同时服务
 > 聊天、工作流节点、Goal 自主推进。
 >

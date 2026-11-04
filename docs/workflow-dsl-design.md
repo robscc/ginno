@@ -1,6 +1,6 @@
 # Workflow DSL 设计（LangGraph 图驱动）
 
-> 状态：设计稿（待评审）。目标：把 workflow 从「LLM 自报进度的标题清单」升级为「由沉淀的 DSL 编译成 LangGraph 图、可重跑、可观测、可对话式版本化编辑」的一等公民。
+> 状态：**主体已实施**（`workflows/`：dsl/compiler/engine/store/synthesis/dryrun/doctor 全模块 + Studio UI；2026-11-04 核实）。待评审项仅剩对话式版本化编辑的交互细节。目标：把 workflow 从「LLM 自报进度的标题清单」升级为「由沉淀的 DSL 编译成 LangGraph 图、可重跑、可观测、可对话式版本化编辑」的一等公民。
 
 ## 0. TL;DR
 

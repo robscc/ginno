@@ -1,6 +1,6 @@
 # 多模型 API 配置（Multi-Provider Model Config）设计
 
-状态：设计稿（未实施） · 2026-09-26
+状态：**已实施**（`providers.py` 多 provider 注册表 + 设置 UI 的 provider 管理表单；2026-11-04 核实）· 原稿日期 2026-09-26
 范围：`~/.ginno/settings.json` 的 providers 结构 v2、设置页「模型 API」重构、runtime 协议适配层。本文只做设计，不涉及实现。
 
 ---

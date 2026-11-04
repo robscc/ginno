@@ -1,7 +1,7 @@
 # Ginno × Claude Code Mods 兼容层设计方案
 
 - 日期:2026-10-06
-- 状态:设计稿 v2(架构定案:Rust broker 分布式编排,待评审)
+- 状态：**架构已实施**（`crates/mod-broker` 编译进 Tauri 进程 + `packages/mod-runner` runner，桌面启动注入 env；2026-11-04 核实）——v2 中 marketplace/迁移等后续阶段见关联文档
 - 前置调研:`~/.ginno/projects/default/sessions/.../uploads/2026-10-06-Claude Code Mods 规范与 Ginno 适配方案.md`(下称「调研笔记」)
 - 规范基线:Claude Code 2.1.289 Mods reference
 - 相关既有文档:`connector-module-design.md`、`external-agents-design.md`、`subagent-design.md`、`docs/design/right-panel-redesign.md`、`p3-packaging-notes.md`

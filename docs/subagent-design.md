@@ -1,6 +1,6 @@
 # Ginno Subagent 系统设计
 
-> 状态：产品方案（待评审）
+> 状态：**核心已实施**（`subagent_scheduler/` + `spawn_subagent` 工具 + plan 编排；2026-11-04 核实）——产品方案中剩余增强项（见文内 P2 段）仍待评审
 > 日期：2026-09-30
 > 前置调研：Ginno 现有架构（stream/graph/steering/checkpointer）；Claude Code subagent 官方文档（sub-agents / tools-reference / workflows）
 
