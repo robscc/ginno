@@ -397,12 +397,11 @@ return (
               onAnswerQuestion={onAnswerQuestion}
               questionLive={questionLive}
             />
-            {/* 尾部等待行：右下角小胶囊，紧贴 turn_meta（耗时+token）统计行上方
-                （2026-11-04 用户反馈：整行长条占注意且位置漂，改与统计行同轴
-                右对齐）。视觉语言仍与 TTFT 状态行一致（wave dots + 小字）。 */}
+            {/* 尾部等待行：右下角小字+wave dots（2026-11-04 二次反馈：去掉
+                外框胶囊，只留与 turn_meta 同语言的轻量文字）。 */}
             {streaming && (connLost || waitingNextRound || !!statusOverride) && (
               <div className="mt-1.5 flex justify-end">
-                <div className="flex items-center gap-2 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
+                <div className="flex items-center gap-2 px-1 py-0.5">
                 <div className="flex items-center gap-0.5">
                   <WaveDot delay={0} color={connLost ? "#eab308" : hex} />
                   <WaveDot delay={150} color={connLost ? "#eab308" : hex} />
