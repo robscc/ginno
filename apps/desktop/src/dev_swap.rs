@@ -9,6 +9,13 @@
 //!
 //! 触发链：runtime 广播 `runtime.dev_swap_pending` → 前端 invoke
 //! `finish_dev_swap`（见 web 侧监听）；Debug 菜单也提供手动入口。
+//!
+//! **P2 合流注记（self-update-design.md）**：整 app 自更新的 relauncher
+//! 可直接复用本模块的骨架——`state.json` 状态机（pending/verified/
+//! rolled_back + 原子写）、`flip_link` 的 tmp+rename 原子切换、
+//! `wait_fingerprint` 的指纹验证与「验证不过即回滚」语义。差异仅在：
+//! relauncher 换的是 .app 整体（需要第三方进程接力），本模块换的是
+//! runtime bundle（壳自己就是 supervisor）。
 
 use serde::Serialize;
 use serde_json::Value;

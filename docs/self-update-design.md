@@ -1,6 +1,6 @@
 # Ginno 自更新(self-update)方案设计
 
-> 状态:**方案待评审**。目标:让 Ginno 具备「杀掉自己 → 换新 → 拉起新进程 → 恢复原会话继续对话」的完整能力,首期服务于 agent 驱动的本地源码自更新(agent 改代码 → `make app` → 自己更新自己)。
+> 状态:**方案待评审**。目标:让 Ginno 具备「杀掉自己 → 换新 → 拉起新进程 → 恢复原会话继续对话」的完整能力,首期服务于 agent 驱动的本地源码自更新(agent 改代码 → `make app` → 自己更新自己)。runtime 单独热切换(`make dev-swap`)已实施(P0-P2,见 `runtime-hot-swap-design.md`)——其 state.json 状态机 / symlink 原子切换 / 指纹验证+回滚骨架即本文 relauncher 的可复用件(对应 `apps/desktop/src/dev_swap.rs` 的 P2 合流注记)。
 > 相关:`CLAUDE.md`(zlib 已知故障)、`docs/p3-packaging-notes.md`、`docs/notice-center-design.md`(更新完成通知的落点)。
 
 ---

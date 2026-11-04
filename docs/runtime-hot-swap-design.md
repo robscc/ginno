@@ -124,9 +124,13 @@ release 分支改为：
 - 优雅 quiesce：发起方 turn 先停在 interrupt / 空闲点再换，消灭僵尸 checkpoint。
 - Debug 菜单手动「热切换 runtime」入口 + TopBar dev 版黄条。
 
-### P2（合流）
+### P2（合流，已做 2026-11-04）
 
-- 与 `self-update-design.md` 合流：整 app 更新时 runtime override 自动失效清理（app 内置版本 > override 版本则提示）；relauncher 复用本文 state.json/回滚骨架。
+- [x] 整 app 更新时 override 自动失效：spawn 梯子比较双方 build-info 的
+  `built_at`，override 落后于 app 内置 → 日志提示并忽略（走内置），
+  不再静默遮蔽新 app。
+- [x] relauncher 复用骨架：`dev_swap.rs` 顶部合流注记 + self-update-design
+  状态行互链（完整 relauncher 仍属 self-update 独立工程，未实施）。
 
 ## 6. 关键风险
 

@@ -56,6 +56,20 @@ fn open_log_file_for<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<std::fs::
     opts.open(&path).ok()
 }
 
+/// Read `built_at` from a PyInstaller onedir bundle's build-info.json
+/// (`_internal/build-info.json`, written by `make runtime`). Missing file or
+/// unparsable value → None (treated as "cannot judge staleness").
+fn builtin_built_at<M: tauri::Manager<tauri::Wry>>(
+    _app: &M,
+    bundle_dir: &std::path::Path,
+) -> Option<String> {
+    let raw = std::fs::read_to_string(bundle_dir.join("_internal").join("build-info.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("built_at")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
 pub(crate) fn sidecar_listening() -> bool {
     let addr: SocketAddr = ([127, 0, 0, 1], sidecar_port()).into();
     TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
@@ -262,20 +276,52 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
         ]);
         cmd
     } else {
-        // Dev hot-swap ladder (docs/runtime-hot-swap-design.md §3.2): prefer a
-        // dev-override bundle under the Ginno home (atomically swapped by
-        // `make dev-swap`), else the app-bundled runtime. The override is
-        // absent on end-user machines — no behavior change there.
-        let override_exe = crate::common::ginno_home_path(app)
+        // Dev hot-swap ladder (docs/runtime-hot-swap-design.md §3.2 + P2):
+        // 1. dev-override bundle under the Ginno home — used only when it is
+        //    NOT older than the app-bundled runtime (an app update ships a
+        //    newer bundle; a stale dev override from before the update is
+        //    ignored with a log hint instead of silently shadowing it).
+        // 2. The bundled app resource (factory default, always present).
+        let override_dir = crate::common::ginno_home_path(app)
             .join("dev-override")
-            .join("ginno-runtime")
             .join("ginno-runtime");
-        let cmd = if override_exe.is_file() {
-            shell_log(
+        let override_exe = override_dir.join("ginno-runtime");
+        let stale = || -> Option<String> {
+            let ov_built = builtin_built_at(app, &override_dir)?;
+            let app_built = builtin_built_at(
                 app,
-                &format!("runtime: dev-override bundle ({})", override_exe.display()),
-            );
-            Command::new(override_exe)
+                &app.path()
+                    .resource_dir()
+                    .ok()?
+                    .join("resources")
+                    .join("runtime"),
+            )?;
+            // ISO-8601 UTC strings compare chronologically as strings.
+            (ov_built < app_built).then(|| {
+                format!(
+                    "runtime: dev-override is stale (built {ov_built} < app bundle {app_built}) \
+                     — ignoring it; run `make dev-swap-clean` to remove"
+                )
+            })
+        };
+        let cmd = if override_exe.is_file() {
+            if let Some(reason) = stale() {
+                shell_log(app, &reason);
+                let runtime_exe = app
+                    .path()
+                    .resource_dir()
+                    .map_err(|e| format!("resource dir: {e}"))?
+                    .join("resources")
+                    .join("runtime")
+                    .join("ginno-runtime");
+                Command::new(runtime_exe)
+            } else {
+                shell_log(
+                    app,
+                    &format!("runtime: dev-override bundle ({})", override_exe.display()),
+                );
+                Command::new(override_exe)
+            }
         } else {
             let runtime_exe = app
                 .path()
