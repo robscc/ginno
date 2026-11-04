@@ -1124,6 +1124,10 @@ async def _think_async_handler(
 
 
 
+# /dev-swap 后台任务持有集：防 GC + 便于观测（完成后自动移出）。
+_DEV_SWAP_TASKS: set[asyncio.Task] = set()
+
+
 async def _dev_swap_background(sid: str, repo: str) -> None:
     """后台跑 make dev-swap（构建 3-6 分钟）；完成即广播 finish 信号。
 
