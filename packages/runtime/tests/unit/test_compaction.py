@@ -450,3 +450,41 @@ async def test_compact_strips_analysis_block_from_state(isolated_home):
     assert "这是结构化摘要。" in joined  # summary body landed
     assert "SECRET_TRACE" not in joined  # analysis discarded
     assert "<analysis>" not in joined and "<summary>" not in joined
+
+
+def test_effective_threshold_follows_model_window(isolated_home):
+    """窗口 < 默认阈值时收紧到窗口×0.75（会话 1a0c1d77 死锁：254k/500k
+    不压、前端占比 127%）。显式 compact_threshold_tokens 永远是上限。"""
+    import json
+
+    from ginno_runtime.compaction import _effective_compact_threshold
+    from ginno_runtime.paths import settings_path
+
+    settings_path().write_text(
+        json.dumps(
+            {
+                "default_provider": "custom",
+                "providers": {
+                    "custom": {
+                        "enabled": True,
+                        "protocol": "openai-compatible",
+                        "api_key": "k",
+                        "base_url": "http://127.0.0.1:1",
+                        "model": "test-model",
+                        "context_window": 200000,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _effective_compact_threshold({}) == 150000  # 200k × 0.75
+    assert _effective_compact_threshold({"compact_threshold_tokens": 600000}) == 150000
+    assert _effective_compact_threshold({"compact_threshold_tokens": 100000}) == 100000
+
+
+def test_effective_threshold_unknown_window_keeps_default(isolated_home):
+    """窗口未知（0）时维持原行为——不误伤 1M 窗口模型。"""
+    from ginno_runtime.compaction import _effective_compact_threshold
+
+    assert _effective_compact_threshold({}) == 500000

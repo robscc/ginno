@@ -183,6 +183,27 @@ def _copy_with_new_id(m: BaseMessage) -> BaseMessage:
     return m
 
 
+def _effective_compact_threshold(settings: dict) -> int:
+    """压缩阈值 = min(compact_threshold_tokens(默认 500k), 模型窗口×0.75)。
+
+    阈值跟随模型窗口（2026-11-04，会话 1a0c1d77 实测）：默认 500k 是 1M
+    窗口时代的基线——小窗口模型（200k/128k）上下文撑满时 estimate 仍远低
+    于 500k，压缩永不触发（前端占比已 >100%）。已知窗口时收紧到
+    窗口×0.75；窗口未知（0）维持原行为。
+    """
+    threshold = int(settings.get("compact_threshold_tokens", 500000))
+    try:
+        from .providers import context_window_for, get_config, get_default_config
+
+        _cfg = get_config(get_default_config()) or {}
+        _win = context_window_for(_cfg)
+        if _win > 0:
+            threshold = min(threshold, int(_win * 0.75))
+    except Exception:
+        pass
+    return threshold
+
+
 async def maybe_compact_history(
     session: dict[str, Any],
     config: dict,
@@ -228,7 +249,7 @@ async def maybe_compact_history(
     if state is None or getattr(state, "next", None):
         return None  # nothing stored, or paused at an interrupt — leave alone
     messages = list((state.values or {}).get("messages", []))
-    threshold = int(settings.get("compact_threshold_tokens", 500000))
+    threshold = _effective_compact_threshold(settings)
     if not force and estimate_messages_tokens(messages) < threshold:
         return None
 
