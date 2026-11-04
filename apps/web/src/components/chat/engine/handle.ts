@@ -28,6 +28,77 @@ import { reconcileTurnFromHistory } from "./connect";
 import { flushSteerQueue, recallSteers } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
+import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
+
+// ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
+// reply 类完成通知经 30s 同会话合并窗口（5 步 workflow 只弹一条）；
+// askUser/failure/workflow 终态即时弹（等人/出事绝不合并）。所有通知过
+// shouldNotify 门（总开关 ∧ 分类型开关 ∧ watching ∧ DnD）。
+
+/** watching 三条件（可见 ∧ 工作区路由 ∧ 正盯该会话）——socket 回调闭包会
+ *  过期，只读 ref/即时值（与 message.end 的旧判定同一口径，抽公共）。 */
+function isWatching(ctx: EngineCtx, sid: string): boolean {
+  return (
+    document.visibilityState === "visible" &&
+    window.location.pathname === "/" &&
+    ctx.activeSidRef.current === sid
+  );
+}
+
+/** reply 合并条目：MergeItem + 多条时的计数文案（push 侧闭包捕获，
+ *  i18nRef 延迟求值——ctx 长存所以安全）。 */
+interface ReplyItem extends MergeItem {
+  trN: (n: number) => string;
+}
+
+/** reply 合并窗口：flush 时一条/多条分别成文并发送（含 HTML5 兜底）。 */
+const replyMerge = new ReplyMergeWindow<ReplyItem>({
+  onFlush: (sid, items) => {
+    if (items.length === 0) return;
+    const np = notifyPrefs();
+    const single = items.length === 1;
+    const title = items[0].title;
+    const rawBody = single
+      ? items[0].body
+      : items[0].trN(items.length);
+    const body = privacyBody(np, rawBody);
+    const focusSession = () => {
+      window.focus();
+      // stable setter 语义见 desktop fallback —— 通过 CustomEvent 让
+      // store 跳转（onFlush 里拿不到 ctx，走全局事件总线）。
+      window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
+    };
+    void notifyNative({
+      kind: "session",
+      id: sid,
+      title,
+      body,
+      sound: soundFor("reply"),
+    }).then((sent) => {
+      if (sent) return;
+      if (typeof Notification === "undefined") return;
+      if (Notification.permission === "default") {
+        try {
+          void Notification.requestPermission();
+        } catch {
+          /* unsupported */
+        }
+        return;
+      }
+      if (Notification.permission !== "granted") return;
+      try {
+        const n = new Notification(title, { body });
+        n.onclick = () => {
+          focusSession();
+          n.close();
+        };
+      } catch {
+        /* blocked/unsupported */
+      }
+    });
+  },
+});
+
 
 // Delivery confirmed (the server started or finished the turn) → clear the
 // "sending" marker off user bubbles.
@@ -218,14 +289,59 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     case "tool.end":
     // Transcript block, not a ref-based prompt like permission.request: the
     // card lives (and is merged by id) inside the live bubble's blocks.
-    case "user.question":
-    case "widget.emit":
-    case "ref.emit":
-    case "image.emit":
-    case "workflow.emit":
+    case "user.question": {
+      // V2：审批/提问挂起等人——最急的通知类，即时弹不合并（不看就永远卡着）。
+      const watching = isWatching(ctx, sid);
+      if (shouldNotify("askUser", watching)) {
+        const np = notifyPrefs();
+        const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+        void notifyNative({
+          kind: "session",
+          id: sid,
+          title: `⏸ ${sTitle}`,
+          body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
+          sound: soundFor("askUser"),
+        });
+      }
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
       break;
+    }
+    case "widget.emit":
+    case "ref.emit":
+    case "image.emit":
+      adoptOrphanStream(ctx, sid);
+      mutateLive(ctx, sid, ev);
+      break;
+    case "workflow.emit": {
+      adoptOrphanStream(ctx, sid);
+      mutateLive(ctx, sid, ev);
+      // V2：run 整体终态通知（step 级 turn 走 reply 合并；这里只在 run
+      // 落幕时响一声——多步 run 一条通知，不逐步刷屏）。
+      const run = (ev as { run?: { status?: string; id?: string; title?: string } }).run;
+      const st = run?.status;
+      if ((st === "done" || st === "failed" || st === "cancelled") && run?.id) {
+        const watching = isWatching(ctx, sid);
+        if (shouldNotify("workflow", watching)) {
+          const np = notifyPrefs();
+          const sTitle = run.title?.trim() || ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+          const failed = st === "failed";
+          void notifyNative({
+            kind: "workflow-run",
+            id: run.id,
+            title: failed ? `⚠️ ${sTitle}` : `✅ ${sTitle}`,
+            body: privacyBody(
+              np,
+              failed
+                ? ctx.i18nRef.current.tr("notify.workflowFailed")
+                : ctx.i18nRef.current.tr("notify.workflowDone"),
+            ),
+            sound: soundFor(failed ? "failure" : "reply"),
+          });
+        }
+      }
+      break;
+    }
     case "turn.start": {
       markDelivered(ctx, sid);
       ctx.seenTurnStartRef.current[sid] = true;
@@ -1147,56 +1263,23 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // switches) — read refs / live values only. The session title may be
       // stale too (rename after connect); cosmetic, accepted.
       {
-        // Settings → Notifications (settings.json; sync cache — see
-        // lib/notifyPrefs.ts for why this isn't React state).
-        const np = notifyPrefs();
-        const watching =
-          document.visibilityState === "visible" &&
-          window.location.pathname === "/" &&
-          ctx.activeSidRef.current === sid;
+        const watching = isWatching(ctx, sid);
         // 侧栏未读小圆点：没在盯这个会话时 turn 跑完 → 标记未读（与上面的
         // 桌面通知同一 watching 判定，但不受通知开关影响——点是无声的）。
         // 正在看则上报已读：服务端在 turn 收口时已写 last_finished，不压掉
         // 的话下一次 reloadSessions 会把眼前这个会话点亮。
         if (!watching) ctx.g.markSessionUnread(sid);
         else ctx.g.clearSessionUnread(sid);
-        if (np.enabled && !watching) {
+        // V2：reply 通知过 shouldNotify 门（总开关 ∧ kinds.reply ∧ DnD）后
+        // 进 30s 合并窗口——多条后台完成合成一条（防 workflow 逐步刷屏）。
+        if (shouldNotify("reply", watching)) {
           const title = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
           const raw = typeof ev.text === "string" ? ev.text.trim() : "";
           const body = raw || ctx.i18nRef.current.tr("notify.replyCompleted");
-          void notifyNative({
-            kind: "session",
-            id: sid,
+          replyMerge.push(sid, {
             title,
             body,
-            sound: np.sound ? np.soundName : undefined,
-          }).then((sent) => {
-            if (sent) return;
-            // Plain-browser dev fallback — WKWebView has no Notification API,
-            // so inside the packaged app this branch is a silent no-op.
-            if (typeof Notification === "undefined") return;
-            if (Notification.permission === "default") {
-              try {
-                void Notification.requestPermission();
-              } catch {
-                /* unsupported */
-              }
-              return;
-            }
-            if (Notification.permission !== "granted") return;
-            try {
-              const n = new Notification(title, { body });
-              n.onclick = () => {
-                window.focus();
-                ctx.g.setActiveSession(sid); // stable setter — stale closure safe
-                window.dispatchEvent(
-                  new CustomEvent("ginno:focus-latest", { detail: sid }),
-                );
-                n.close();
-              };
-            } catch {
-              /* blocked/unsupported */
-            }
+            trN: (n) => ctx.i18nRef.current.tr("notify.nCompleted", { n }),
           });
         }
       }
@@ -1277,6 +1360,21 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 在错误卡上，别让用户错过）；正盯着则上报已读压掉服务端的 last_finished。
       if (ctx.g.watchingSession(sid)) ctx.g.clearSessionUnread(sid);
       else ctx.g.markSessionUnread(sid);
+      // V2：失败即时通知（不合并）——⚠️ 前缀 + Basso 故障音，一眼分清出事/干完。
+      if (shouldNotify("failure", isWatching(ctx, sid))) {
+        const np = notifyPrefs();
+        const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+        const detail =
+          ctx.i18nRef.current.evText(ev, String(ev.message || "")) ||
+          ctx.i18nRef.current.tr("error.unknown");
+        void notifyNative({
+          kind: "session",
+          id: sid,
+          title: `⚠️ ${sTitle}`,
+          body: privacyBody(np, detail),
+          sound: soundFor("failure"),
+        });
+      }
       const liveMsgId = ctx.liveBySessionRef.current[sid];
       ctx.liveBySessionRef.current[sid] = null;
       ctx.streamAgentRef.current[sid] = null;

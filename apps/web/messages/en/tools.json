@@ -70,7 +70,26 @@
       "testBodyBrowser": "Browser notification (dev environment)",
       "testUnavailable": "Cannot send a test notification in this environment",
       "saved": "Saved",
-      "saveFailed": "Failed to save"
+      "saveFailed": "Failed to save",
+      "soundFailNote": "Failures always use Basso regardless of this choice.",
+      "kindsLabel": "Notify on",
+      "kindsHelp": "Each background event class can be muted independently (master switch still gates all).",
+      "kinds": {
+        "reply": "Turn / scheduled-task completed",
+        "askUser": "Waiting for your answer (approvals, questions)",
+        "failure": "Turn failed",
+        "workflow": "Workflow run finished",
+        "subagent": "Subagent result (reserved)"
+      },
+      "privacyLabel": "Notification body",
+      "privacy": {
+        "full": "Full summary",
+        "titleOnly": "Title only"
+      },
+      "privacyHelp": "Title-only hides content from banners — screen-share / lock-screen caution.",
+      "dndLabel": "Do-not-disturb window",
+      "dndWrapNote": "may wrap midnight",
+      "dndHelp": "Inside the window nothing is fired (banners and sounds). Default 22:00 → 08:00."
     },
     "floating": {
       "title": "Floating Window",

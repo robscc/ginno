@@ -246,7 +246,11 @@
       "compacted": "对话已压缩：较早的 {n} 条消息已被摘要替换，近期消息原样保留。"
     },
     "notify": {
-      "replyCompleted": "回复完成"
+      "replyCompleted": "回复完成",
+      "nCompleted": "{n} 个后台任务完成",
+      "askPending": "等你回答——任务已挂起",
+      "workflowDone": "工作流已跑完",
+      "workflowFailed": "工作流失败"
     },
     "tools": {
       "prefix": "工具 · ",

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { notifyNative } from "@/lib/desktop";
 import {
+  KINDS,
   loadNotifyPrefs,
   saveNotifyPrefs,
   SOUND_NAMES,
@@ -114,6 +115,69 @@ export function NotificationsSettings() {
               </option>
             ))}
           </select>
+          <p className="mt-1 text-xs text-faint">{t("soundFailNote")}</p>
+        </div>
+        <div>
+          <label className="field-label">{t("kindsLabel")}</label>
+          <p className="mt-1 text-xs text-faint">{t("kindsHelp")}</p>
+          <div className="mt-2 space-y-1.5">
+            {KINDS.map((k) => (
+              <label key={k} className="flex items-center gap-2 text-sm text-txt">
+                <input
+                  type="checkbox"
+                  checked={prefs.kinds[k]}
+                  onChange={(e) => void save({ kinds: { ...prefs.kinds, [k]: e.target.checked } })}
+                />
+                {t(`kinds.${k}`)}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="field-label">{t("privacyLabel")}</label>
+          <div className="mt-2 flex gap-4 text-sm text-txt">
+            {(["full", "titleOnly"] as const).map((mode) => (
+              <label key={mode} className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="notify-privacy"
+                  checked={prefs.privacy === mode}
+                  onChange={() => void save({ privacy: mode })}
+                />
+                {t(`privacy.${mode}`)}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-faint">{t("privacyHelp")}</p>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={prefs.dnd.enabled}
+              onChange={(e) => void save({ dnd: { ...prefs.dnd, enabled: e.target.checked } })}
+            />
+            {t("dndLabel")}
+          </label>
+          {prefs.dnd.enabled && (
+            <div className="mt-2 flex items-center gap-2 text-sm text-txt">
+              <input
+                type="time"
+                className="field w-28"
+                value={prefs.dnd.from}
+                onChange={(e) => void save({ dnd: { ...prefs.dnd, from: e.target.value } })}
+              />
+              <span className="text-faint">→</span>
+              <input
+                type="time"
+                className="field w-28"
+                value={prefs.dnd.to}
+                onChange={(e) => void save({ dnd: { ...prefs.dnd, to: e.target.value } })}
+              />
+              <span className="text-xs text-faint">{t("dndWrapNote")}</span>
+            </div>
+          )}
+          <p className="mt-1 text-xs text-faint">{t("dndHelp")}</p>
         </div>
         <div>
           <button

@@ -246,7 +246,11 @@
       "compacted": "Conversation compacted: {n} older messages were replaced with a summary; recent messages are kept verbatim."
     },
     "notify": {
-      "replyCompleted": "Reply completed"
+      "replyCompleted": "Reply completed",
+      "nCompleted": "{n} background tasks completed",
+      "askPending": "Waiting for your answer — the task is paused",
+      "workflowDone": "Workflow run completed",
+      "workflowFailed": "Workflow run failed"
     },
     "tools": {
       "prefix": "tool · ",

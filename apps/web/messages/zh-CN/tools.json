@@ -70,7 +70,26 @@
       "testBodyBrowser": "浏览器通知（开发环境）",
       "testUnavailable": "当前环境无法发送测试通知",
       "saved": "已保存",
-      "saveFailed": "保存失败"
+      "saveFailed": "保存失败",
+      "soundFailNote": "失败类固定用 Basso 故障音，不受此项影响。",
+      "kindsLabel": "通知哪些事件",
+      "kindsHelp": "每类后台事件可独立关闭（总开关仍然管全部）。",
+      "kinds": {
+        "reply": "回复 / 定时任务完成",
+        "askUser": "等你回答（审批、提问）",
+        "failure": "任务失败",
+        "workflow": "工作流跑完",
+        "subagent": "子代理结果（预留）"
+      },
+      "privacyLabel": "通知正文",
+      "privacy": {
+        "full": "完整摘要",
+        "titleOnly": "仅标题"
+      },
+      "privacyHelp": "仅标题可防投屏/锁屏时横幅泄露内容。",
+      "dndLabel": "免打扰时段",
+      "dndWrapNote": "可跨午夜",
+      "dndHelp": "时段内不弹横幅不响铃（默认 22:00 → 08:00）。"
     },
     "floating": {
       "title": "悬浮窗",

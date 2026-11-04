@@ -19,7 +19,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "."),
+      // 与 tsconfig paths 同口径（@/* → src/*）。曾错指仓库根：纯相对导入
+      // 的测试碰不到别名，一旦测试链拉进 provider.tsx（@/lib/runtime）即
+      // Cannot find module（2026-11-05 notifyHub 测试首现）。
+      "@": path.resolve(__dirname, "src"),
     },
   },
 });
