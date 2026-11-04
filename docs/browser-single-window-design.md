@@ -1,6 +1,6 @@
 # Browser Single-Window Design（单 CEF 窗口 + Session 绑定 + Tab 上移）
 
-> 状态：**设计稿（待实施）**。取代 `browser-embed-design.md` 的「内嵌子视图 / 多窗口 dock」路线。
+> 状态：**挂起（暂不实施，2026-11-04 拍板）**——当前双轨（扩展轨 + CDP）满足需求，CEF 单窗路线搁置。取代 `browser-embed-design.md` 的「内嵌子视图 / 多窗口 dock」路线（原状态：设计稿待实施）。
 >
 > 背景：CEF 151（Chrome runtime）的模型是 **一个 browser 实例 = 一个 OS 窗口**，且 macOS 上
 > `parent_view` 内嵌被上游禁用（`chrome_child_window.cc` `GetParentWidget()` 在 mac 返回空，
