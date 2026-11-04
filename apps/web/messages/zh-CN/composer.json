@@ -51,7 +51,8 @@
         "zoomOut": "缩小",
         "resetZoom": "重置缩放",
         "closeDialog": "关闭"
-      }
+      },
+      "frontmatterItems": "{count} 项"
     },
     "askUser": {
       "chosen": "已选择：{answer}",

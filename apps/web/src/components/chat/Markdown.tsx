@@ -13,6 +13,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useTranslations } from "next-intl";
 import { openLinkExternal } from "@/lib/runtime";
+import { splitFrontmatter, type FrontmatterEntry } from "@/lib/markdownFrontmatter";
 import { MermaidBlock } from "./MermaidBlock";
 
 // Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
@@ -29,8 +30,39 @@ function nodeText(n: ReactNode): string {
   return "";
 }
 
-function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
+/** Frontmatter 属性条（Obsidian properties 风格）：标量 `key: value`，
+ *  tags 等行内数组渲染成 chip，多行列表只显示条数。 */
+function FrontmatterBar({ entries }: { entries: FrontmatterEntry[] }) {
+  const t = useTranslations("composer");
+  return (
+    <div className="my-3 rounded-lg border border-line bg-card2/40 px-3 py-2 text-[11px] leading-relaxed">
+      {entries.map((e) =>
+        e.items && e.items.length > 0 ? (
+          <div key={e.key} className="flex flex-wrap items-center gap-1.5 py-0.5">
+            <span className="text-faint">{e.key}:</span>
+            {e.items.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full bg-violet/10 px-2 py-px text-[10px] text-violet"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div key={e.key} className="py-0.5">
+            <span className="text-faint">{e.key}: </span>
+            <span className="text-muted">
+              {e.list ? t("markdown.frontmatterItems", { count: e.value }) : e.value}
+            </span>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {  const [copied, setCopied] = useState(false);
   // composer 域 catalog（本组件也被其他域文件复用，文案统一收在 composer.markdown）
   const t = useTranslations("composer");
   const copy = async () => {
@@ -89,12 +121,15 @@ export const Markdown = memo(function Markdown({
   streaming?: boolean;
 }) {
   const t = useTranslations("composer");
+  // Frontmatter（Obsidian 属性块）：剥离正文交给属性条渲染——预览窗/知识库
+  // 页阅读视图里的 .md 原文以 `---\ntitle: …` 开头时，YAML 不再被当正文裸奔。
+  const { body: fmBody, entries: fmEntries } = splitFrontmatter(text);
   const src = onWikilink
-    ? text.replace(WIKILINK_RE, (_, target: string, alias?: string) => {
+    ? fmBody.replace(WIKILINK_RE, (_, target: string, alias?: string) => {
         const label = (alias || target).trim();
         return `[${label}](#wl:${encodeURIComponent(target.trim())})`;
       })
-    : text;
+    : fmBody;
   return (
     /* break-words (overflow-wrap: break-word) is inherited, so one class on
        this wrapper covers every prose node (p/li/td/blockquote/a/headings).
@@ -106,6 +141,7 @@ export const Markdown = memo(function Markdown({
        The CodeBlock <pre> re-asserts overflow-wrap:normal so fenced code
        keeps scrolling horizontally instead of wrapping mid-token. */
     <div className="selectable break-words">
+      {fmEntries.length > 0 && <FrontmatterBar entries={fmEntries} />}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         // plainText: mermaid 源码不是代码高亮对象——交给 MermaidBlock 出图。

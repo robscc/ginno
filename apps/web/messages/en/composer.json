@@ -51,7 +51,8 @@
         "zoomOut": "Zoom out",
         "resetZoom": "Reset zoom",
         "closeDialog": "Close"
-      }
+      },
+      "frontmatterItems": "{count} items"
     },
     "askUser": {
       "chosen": "Chosen: {answer}",
