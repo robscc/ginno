@@ -136,6 +136,11 @@ async def _stream_graph(
     # at the turn.start tap below (resumes keep the segment-entry stamp).
     _mods_t0 = time.monotonic()
     session_id = (config.get("configurable") or {}).get("thread_id", "")
+    # ContextRing 分子的 turn 级平滑基线：首个 usage 定基线（turn 间可降——
+    # 压缩/清空后正确变小），步间取 max（多步单调），漏报轮保旧值——修复
+    # 「占比一会儿 10% 以下一会儿 60%+」的锯齿（单次调用 input 上报抖动）。
+    _turn_ctx_tokens = 0
+    _turn_ctx_seen = False
     # turn-meta（docs/…「turn 右下角耗时+token」）：per-turn 用量累计与最后
     # 一条 assistant 消息 id——completed 收尾时随 message.end 下发实时值，
     # 并落 session 的 turns.jsonl 供 history 投影（reload 后仍在）。
@@ -776,6 +781,15 @@ async def _stream_graph(
                                 acc = _USAGE_BY_SESSION.setdefault(session_id, empty_usage())
                                 add_usage(acc, u)
                                 add_usage(_turn_usage, u)
+                                # ContextRing 平滑基线（见 _turn_ctx_tokens 声明处
+                                # 注释）：漏报轮（input=0）保旧值不动。
+                                _in_tok = u["input_tokens"] or 0
+                                if _in_tok > 0:
+                                    if _turn_ctx_seen:
+                                        _turn_ctx_tokens = max(_turn_ctx_tokens, _in_tok)
+                                    else:
+                                        _turn_ctx_tokens = _in_tok
+                                        _turn_ctx_seen = True
                                 # Persist the call into the global usage log
                                 # (usage-stats-design.md §4). Best-effort: the
                                 # store never raises, so this cannot break the
@@ -803,14 +817,16 @@ async def _stream_graph(
                                             "turn": u,
                                             "session": dict(acc),
                                             "cache_hit_ratio": cache_hit_ratio(acc),
-                                            # 上下文占用（TopBar 圆环）：本次调用的
-                                            # 全量 prompt 就是当前上下文大小
-                                            # （input_tokens 已含 cache 读/写），
-                                            # 窗口走 context_window_for 解析链。
-                                            # 占用是「当前状态」不是累计——前端
-                                            # 每轮直接替换（usage.stats-design）。
+                                            # 上下文占用（TopBar 圆环）：ContextRing 的
+                                            # 分子用 _turn_ctx_tokens（turn 级平滑：首
+                                            # 个 usage 定基线、步间取 max、漏报轮保旧），
+                                            # 而非单次调用的原始 input——修复「占比
+                                            # 一会儿 10% 以下一会儿 60%+」的锯齿。
+                                            # 窗口走 context_window_for 解析链不变；
+                                            # 占用是「当前状态」不是累计，前端每轮
+                                            # 直接替换（usage.stats-design）。
                                             "context": context_state(
-                                                u["input_tokens"],
+                                                _turn_ctx_tokens,
                                                 _sreg.get("model_provider") or "",
                                                 _sreg.get("model_name") or "",
                                             ),

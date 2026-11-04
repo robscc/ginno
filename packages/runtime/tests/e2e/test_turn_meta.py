@@ -56,3 +56,30 @@ def test_turn_meta_absent_for_old_sessions(client, create_session):
     assert not any(
         isinstance(b, dict) and b.get("kind") == "turn_meta" for m in hist for b in (m.get("blocks") or [])
     )
+
+
+def test_context_ring_monotonic_within_turn(client, create_session, ws_conv):
+    """ContextRing 分子 turn 级平滑：多步 turn 内 usage 事件的 context.tokens
+    单调不减（步间 max），首个 usage 定基线——修复「占比 10%↔60% 锯齿」
+    （engine.py _turn_ctx_tokens）。"""
+    from ginno_runtime.testing.fake_model import script, script_tool_call
+    from conftest import event_names
+
+    sid = create_session(
+        [
+            script(
+                tool_calls=[script_tool_call("read_file", {"path": "/tmp/ctx-flat-absent.txt"})],
+                usage={"input_tokens": 120, "output_tokens": 20, "total_tokens": 140},
+            ),
+            script(text="done", usage={"input_tokens": 200, "output_tokens": 15, "total_tokens": 215}),
+        ]
+    )
+    with ws_conv(sid) as conv:
+        conv.invoke("two-step please")
+        events = conv.recv_until("message.end", "error")
+
+    ctx_tokens = [e["context"]["tokens"] for e in events if e.get("event") == "usage" and "context" in e]
+    errs = [e for e in events if e.get("event") == "error"]
+    assert len(ctx_tokens) >= 2, f"usage={len(ctx_tokens)} err={errs[:1]!r} evs={event_names(events)}"
+    assert ctx_tokens == sorted(ctx_tokens), f"context tokens not monotonic: {ctx_tokens}"
+    assert ctx_tokens[-1] > 0, "final context must be positive"
