@@ -103,6 +103,9 @@ _CONTEXT_DEFAULTS = {
     "microcompact_min_chars": 500,
     "compaction_enabled": True,
     "compact_threshold_tokens": 500000,
+    # /dev-swap 默认 repo 路径（2026-11-04）：显式参数 > 此配置 > build-info
+    # 里打包时的源码树路径。桌面 dev 场景配一次即可裸发 /dev-swap。
+    "dev_swap_repo": "",
     "compact_keep_turns": 3,
     "checkpoint_mode": "delta",
     "skills_index_max_chars": DEFAULT_SKILLS_INDEX_MAX_CHARS,

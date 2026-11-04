@@ -1185,6 +1185,10 @@ async def _dev_swap_async_handler(
     sid = (session or {}).get("session_id") or ""
     repo = (args or "").strip()
     if not repo:
+        from ..world_state import context_settings
+
+        repo = str(context_settings().get("dev_swap_repo") or "")
+    if not repo:
         from .._build import build_info
 
         repo = str(build_info().get("repo") or "")
