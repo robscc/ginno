@@ -144,3 +144,23 @@ release 分支改为：
 | 6 | 构建机 ≠ 运行机（无工具链） | dev-swap 前置检查 uv/node/pyinstaller，缺则明错 |
 | 7 | 混搭窗口（旧进程+新 bundle） | 顺序强制「停旧→切→起新」；symlink 在 restart 内部解析，无窗口 |
 | 8 | web 前端与 runtime 版本错配（前端还是旧的） | 本设计明确只换 runtime；前端不兼容新 API 属正常开发迭代风险，e2e 拦 |
+
+## 附：2026-11-04 假阳性验证事故（已修）
+
+症状：dev-swap 报「verified」但 app 实际跑的还是 factory/旧 bundle。三因叠加：
+
+1. **symlink 切换从未生效**：`mv -f $LINK.tmp-link $LINK` 在 `$LINK` 是「指向目录的
+   符mlink」时遵循 BSD mv 语义——**跟着链接把源挪进目标目录里**（旧 bundle 目录里
+   躺着历次 run 的 `.tmp-link` 残骸即铁证），主链接从未被脚本替换。修复：改用
+   `os.replace`（rename(2)，不解引用，原子）+ 切后 `readlink` 复验；与壳侧
+   `flip_link` 的 `std::fs::rename` 同一语义。
+2. **指纹假阳性**：同一棵脏工作树连续构建 fingerprint 相同（`sha-dirty`），spawn
+   ladder 判 dev-override stale 落回 factory 后，`wait_fingerprint` 对着 factory
+   也能验过 → state=verified 是假的。修复：脚本把新 bundle 的 `built_at` 写进
+   state.json，壳验证 **fingerprint + built_at 双比对**。
+3. **ditto 残缺无兜底**：出现空 bundle 目录仍继续 switch。修复：ditto 后校验产物
+   二进制存在，缺即 die_stage。
+
+另两笔同案连带：pending 事件在 WS 重连后重放导致 `finish_dev_swap` 双跑（RestartLock
+内的 state 终态写入使第二次无害化，暂不改）；前端快照 GET 风暴（气泡级 hook 挂载即
+拉快照）收敛到卡片挂载 + WS onopen 两处。

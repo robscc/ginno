@@ -103,7 +103,18 @@ fn http_get_json(port: u16, path: &str, timeout: Duration) -> Option<Value> {
 
 /// Poll /api/health until `build.fingerprint` matches `want` (or timeout).
 /// Matching the fingerprint — not just `ok` — proves the NEW bundle is up.
-fn wait_fingerprint(port: u16, want: &str, budget: Duration) -> Option<String> {
+///
+/// `want_built`（来自 state.json 的 built_at，新脚本写入；旧 state 无此字段
+/// 传 None 退化为仅比指纹）：同一棵脏工作树连续构建 fingerprint 相同，
+/// spawn ladder 若落回 factory/旧 bundle，只比指纹会把错进程验成通过
+/// （2026-11-04 shell.log 实锤：stale 提示后紧跟 verified）。加验 built_at
+/// 才能证明起的就是这次构建的 bundle。
+fn wait_fingerprint(
+    port: u16,
+    want: &str,
+    want_built: Option<&str>,
+    budget: Duration,
+) -> Option<String> {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         if let Some(v) = http_get_json(port, "/api/health", Duration::from_secs(5)) {
@@ -111,8 +122,16 @@ fn wait_fingerprint(port: u16, want: &str, budget: Duration) -> Option<String> {
                 .pointer("/build/fingerprint")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            let built = v
+                .pointer("/build/built_at")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if let Some(fp) = fp {
-                if fp == want {
+                let built_ok = match want_built {
+                    Some(w) if !w.is_empty() => built == w,
+                    _ => true,
+                };
+                if fp == want && built_ok {
                     return Some(fp);
                 }
             }
@@ -204,7 +223,19 @@ pub(crate) fn run_finish(app: &tauri::AppHandle) -> DevSwapResult {
     // restart_sidecar's spawn resolves through it onto the NEW bundle.
     restart_sidecar(app);
 
-    if let Some(fp) = wait_fingerprint(port, &sha, Duration::from_secs(90)) {
+    // 新脚本把新 bundle 的 built_at 写进 state.json：与指纹一起严格比对，
+    // 堵住「同一脏树连续构建指纹相同 → 验了 factory/旧 bundle 也算通过」
+    // 的假阳性（2026-11-04 实锤）。旧 state 无此字段 → None → 仅比指纹。
+    let want_built = state
+        .get("built_at")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(fp) = wait_fingerprint(
+        port,
+        &sha,
+        want_built.as_deref(),
+        Duration::from_secs(90),
+    ) {
         let mut st = state;
         st["state"] = Value::from("verified");
         write_state(app, st);
@@ -227,6 +258,7 @@ pub(crate) fn run_finish(app: &tauri::AppHandle) -> DevSwapResult {
                 wait_fingerprint(
                     port,
                     old.split('.').next_back().unwrap_or(""),
+                    None,
                     Duration::from_secs(60),
                 )
                 .is_some()

@@ -42,6 +42,12 @@ export type Block =
   // t0Ms 仅 live 阶段存在（组件据此每秒自跳）；定格/投影版带 elapsedS。
   | { kind: "turn_meta"; elapsedS?: number; t0Ms?: number;
       inputTokens?: number; outputTokens?: number }
+  // dev-swap 结果行（dev-swap-progress-design.md §4.4）：run 终态时由 engine
+  // 追加为独立 system 消息（发起会话，live-only——同 subagent_spawn 先例，
+  // 不持久化；持久凭证是 TopBar 指纹黄条）。失败/回滚带 failedStage 与
+  // logTail（点开看尾 30 行，与 DevSwapCard 日志同源）。
+  | { kind: "devswap_result"; runId: string; state: "ok" | "fail" | "rolled_back";
+      failedStage?: string | null; elapsedS?: number | null; logTail?: string | null }
   // Answer provenance (docs/citations-design.md): wiki pages / web sources the
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).

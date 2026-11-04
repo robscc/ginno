@@ -411,8 +411,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // 会话切换 → 清空上一会话的 agent 改动徽标/变更列表（P1 2026-11-04）。
   // resetCodeChanges 是稳定 callback，只随 activeSessionId 变化触发。
   const resetCodeChanges = codeApi.resetCodeChanges;
+  // 只在 activeSessionId 真正变化时清理（2026-11-04 回归：初次挂载也执行，
+  // dev-swap 重启/重载后把本会话已积累的 M 标记/diff 徽标清空）。
+  const prevSessionRef = useRef<string | null>(activeSessionId);
   useEffect(() => {
-    resetCodeChanges();
+    if (prevSessionRef.current !== activeSessionId) {
+      prevSessionRef.current = activeSessionId;
+      resetCodeChanges();
+    }
   }, [activeSessionId, resetCodeChanges]);
   const {
     codeRootId,

@@ -900,13 +900,15 @@
           "cacheRead": "缓存读取",
           "hitRate": "命中率",
           "requests": "请求数",
-          "lastActive": "最近活跃"
+          "lastActive": "最近活跃",
+          "thCompact": "压缩次数"
         },
         "loading": "加载中…",
         "empty": "暂无会话用量记录",
         "rowTitle": "查看该会话的请求日志",
         "bg": "（后台/系统）",
-        "deleted": "已删除"
+        "deleted": "已删除",
+        "compactUnit": "次压缩"
       },
       "requests": {
         "dateLabel": "日期",

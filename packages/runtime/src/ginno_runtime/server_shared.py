@@ -249,6 +249,10 @@ def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
 # 悬了几分钟，turn 一结束突然变成新 turn).
 _MANAGED_TURNS: dict[str, str] = {}
 
+# dev-swap 热切换进度快照（api/devswap.py 落库，GET /api/devswap/progress 与
+# runtime.devswap_progress 广播的单一来源）。进程级单例 dict。
+_DEVSWAP_PROGRESS: dict[str, Any] = {}
+
 # Live RUN-scoped WebSockets (run_id -> [WebSocket]); design B P2. The Studio
 # observer (and any headless-run watcher) subscribes by run_id — independent of
 # which session the run is presented in, unlike _SESSION_WS. Self-cleans on send

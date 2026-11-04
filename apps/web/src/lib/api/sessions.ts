@@ -140,6 +140,8 @@ export interface DiagnosticsIssue {
   severity: "high" | "medium" | "low" | "info";
   count?: number;
   detail?: string;
+  /** 可修复标记（2026-11-04）：目前仅 shell-equals；诊断面板据此显示修复按钮。 */
+  fix?: string;
 }
 
 export interface DiagnosticsReport {
@@ -149,6 +151,7 @@ export interface DiagnosticsReport {
   issues: DiagnosticsIssue[];
   sections: {
     data: { issues: DiagnosticsIssue[] };
+    shell: { issues: DiagnosticsIssue[] };
     tasks: {
       total: number; ok: number; failed: number; caught_up: number;
       latest_failure: { run_id: string; task: string; error: string; hint?: string; kind?: string } | null;

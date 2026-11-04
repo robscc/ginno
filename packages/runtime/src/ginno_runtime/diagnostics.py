@@ -175,6 +175,43 @@ def _check_tasks() -> dict:
     }
 
 
+def check_shell_equals() -> list[dict]:
+    """zsh EQUALS 展开检测（2026-11-04）：非交互 zsh（agent shell）不读
+    .zshrc，若 EQUALS 仍开启（~/.zshenv 无 unsetopt），裸 ``==``/``===``
+    分隔符会报 ``zsh:1: == not found``。medium 级 issue + 可修复标记。"""
+    import shutil
+    import subprocess
+
+    if shutil.which("zsh") is None:
+        return []
+    try:
+        probe = subprocess.run(
+            ["zsh", "-c", "[[ -o equals ]] && echo on || echo off"],
+            capture_output=True, text=True, timeout=5,
+        )
+        enabled = probe.stdout.strip() == "on"
+    except Exception:  # noqa: BLE001 — 检测失败不阻塞诊断
+        return []
+    if not enabled:
+        return []
+    return [
+        {
+            "id": "shell_zsh_equals_expansion",
+            "severity": "medium",
+            "title": "zsh EQUALS expansion is on for non-interactive shells",
+            "detail": (
+                "Agent shells run as non-interactive zsh, which does not source "
+                "~/.zshrc. With EQUALS on, bare '==' separators fail with "
+                "zsh:1: == not found. Fix: append 'unsetopt EQUALS' to ~/.zshenv."
+            ),
+            "fix": "shell-equals",
+        }
+    ]
+
+
+_check_shell_equals = check_shell_equals
+
+
 def _check_runtime() -> dict:
     from . import runtime_watch
 
@@ -238,6 +275,7 @@ def run_diagnostics() -> dict:
         "data": {"issues": _check_data()},
         "tasks": _check_tasks(),
         "runtime": _check_runtime(),
+        "shell": {"issues": _check_shell_equals()},
         "contracts": _check_contracts(),
     }
     issues = [i for s in sections.values() for i in (s.get("issues") or [])]
@@ -256,6 +294,7 @@ def startup_check() -> None:
         issues = _check_data()
         runtime = _check_runtime()
         issues += runtime.get("issues") or []
+        issues += _check_shell_equals()
         warnings = [i for i in issues if i.get("severity") in ("high", "medium")]
         LAST_STARTUP.update({"at": time.time(), "warnings": len(warnings), "items": issues})
         if warnings:

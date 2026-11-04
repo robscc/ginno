@@ -3,6 +3,7 @@
 import React from "react";
 
 import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { fmtTokens } from "@/lib/format";
@@ -35,6 +36,7 @@ import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 import { TaskEventBand } from "./TaskCard";
 import { imageUrl, ImageGallery } from "./blocks/media";
 import { ContextBlocks } from "./blocks/sources";
+import { fmtClock } from "@/lib/devswap/stats";
 
 // ---- 原有导出整体保留：各内聚主题拆到 blocks/ 子模块，这里统一 re-export，
 // 保证所有现有 import 路径（@/components/chat/blocks）不变。 ----
@@ -88,7 +90,8 @@ export {
 export { FileChips, SkillChips } from "./blocks/chips";
 export { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 export { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
-export { imageUrl, Lightbox, ImageGallery } from "./blocks/media";
+export { imageUrl, ImageGallery } from "./blocks/media";
+import { Lightbox } from "./blocks/media";
 
 // Strip "[attached <kind>: <name>]" patterns that the LLM sometimes repeats in its text
 // (violating the "don't repeat tool results" instruction). These are shown as ref chips instead.
@@ -166,6 +169,62 @@ export function TurnMetaLine({ block }: { block: Extract<Block, { kind: "turn_me
   );
 }
 
+/** dev-swap run 终态结果行（§4.4）：与 turn_meta 同款角落 chrome 语言。
+ * 失败/回滚带失败阶段与可展开的尾日志（与 DevSwapCard 日志同源）。 */
+export function DevSwapResultLine({ block }: { block: Extract<Block, { kind: "devswap_result" }> }) {
+  const [open, setOpen] = React.useState(false);
+  // devswap 域动态 key（state 枚举）收敛转型，理由同 streamCards 的 tds。
+  const t = useTranslations("devswap") as unknown as (
+    key: string,
+    values?: Record<string, string | number>,
+  ) => string;
+  const ok = block.state === "ok";
+  const elapsed =
+    typeof block.elapsedS === "number" ? fmtClock(block.elapsedS) : null;
+  // runId 是完整目录名 ginno-runtime.v{sha}.{ts}——展示收敛到指纹段。
+  const fp = block.runId.startsWith("ginno-runtime.")
+    ? (block.runId.split(".")[1] ?? block.runId)
+    : block.runId;
+  const stageLabel = block.failedStage
+    ? t(`card.stage.${block.failedStage}`)
+    : "";
+  const label = ok
+    ? t("result.ok", { fp, elapsed: elapsed ?? "" })
+    : t(block.state === "rolled_back" ? "result.rolledBack" : "result.fail", {
+        stage: stageLabel,
+        elapsed: elapsed ?? "",
+      });
+  const logLines = (block.logTail ?? "").split("\n").filter(Boolean);
+  return (
+    <div className="mt-1 flex select-none flex-col items-end gap-1">
+      <div
+        className={`flex items-center gap-1.5 font-mono text-[11px] leading-4 ${
+          ok
+            ? "text-emerald-600 dark:text-emerald-400"
+            : "text-red-600 dark:text-red-400"
+        }`}
+        data-testid="devswap-result"
+      >
+        <span>{ok ? "✔" : "✖"}</span>
+        <span>{label}</span>
+        {!ok && !!logLines.length && (
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="text-muted underline decoration-line2 underline-offset-2 hover:text-txt"
+          >
+            {open ? t("result.hideLogs") : t("result.logs", { n: Math.min(logLines.length, 30) })}
+          </button>
+        )}
+      </div>
+      {open && !!logLines.length && (
+        <pre className="max-h-40 w-full overflow-auto rounded-md border border-line bg-base/60 p-2 text-left font-mono text-[10px] leading-snug text-muted">
+          {logLines.slice(-30).join("\n")}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 /** Blocks rendered INSIDE the assistant card (everything except refs).
  * onAnswerQuestion/questionLive thread ChatStream's ask_user resume channel
  * down to a pending question card; without them the card renders read-only. */
@@ -191,6 +250,10 @@ export function InnerBlocks({
   // 内容之后渲染，「turn 右下角」语义恒成立。
   const tmBlock = blocks.find(
     (b): b is Extract<Block, { kind: "turn_meta" }> => b.kind === "turn_meta",
+  );
+  // devswap_result 同为角落 chrome：循环里不占位，统一提到内容之后渲染。
+  const dsResult = blocks.find(
+    (b): b is Extract<Block, { kind: "devswap_result" }> => b.kind === "devswap_result",
   );
   // 流式光标/尾部判定的「最后一个内容块」：turn_meta 不占位（它在数组尾时，
   // 不能让真正的末尾 text 块失去光标与 partial-citation 掩码）。
@@ -279,6 +342,10 @@ export function InnerBlocks({
       // context 的消息于是显示成一张空白卡片（2026-10-26 联同底部空白一起
       // 排查）。历史重放会把它折成 system 行，两条路径现在都看得见。
       out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} />);
+    } else if (b.kind === "devswap_result") {
+      // 角落 chrome：不占流推进位（同 turn_meta），由 DevSwapResultLine 统一渲染。
+      i++;
+      continue;
     }
     // refs rendered outside
     i++;
@@ -287,6 +354,7 @@ export function InnerBlocks({
     <>
       {out}
       {tmBlock && <TurnMetaLine key="tm" block={tmBlock} />}
+      {dsResult && <DevSwapResultLine key="dsr" block={dsResult} />}
     </>
   );
 }
@@ -367,6 +435,12 @@ function steerImgUrl(img: SteerBandImage): string {
 export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> }) {
   const clock = steerClock(block.injectedAt);
   const { tc } = useChatT();
+  // 注入的图片/附件可点击（2026-11-04 用户反馈）：图片走 Lightbox（与普通
+  // 消息图集同一查看器），文件 chip 走 openInCode 打开代码面板（同 chips.tsx
+  // 既有惯例——session 根相对路径）。
+  const [lb, setLb] = React.useState<number | null>(null);
+  const g = useGinno();
+  const allImgUrls = (block.images ?? []).map(steerImgUrl).filter(Boolean);
   // Deliberately NOT the thinking block's shape or colour: that block is violet
   // with a header ROW of its own (blocks.tsx ThinkingBlock), and an early
   // version of this band copied both — it read as a second thinking panel and
@@ -404,7 +478,11 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
                 src={url}
                 alt={img.name ?? tc("steer.imageAlt")}
                 title={img.name}
-                className="h-4 w-4 shrink-0 rounded border border-orange/40 object-cover"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLb(allImgUrls.indexOf(url));
+                }}
+                className="h-4 w-4 shrink-0 cursor-zoom-in rounded border border-orange/40 object-cover transition-transform hover:scale-125"
               />
             ) : (
               <span key={`i${i}`} title={img.name} className="text-[11px] leading-none">
@@ -413,17 +491,23 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
             );
           })}
           {shownFiles.map((f, i) => (
-            <span
+            <button
+              type="button"
               key={`f${i}`}
               title={f.path ?? f.name}
+              onClick={(e) => {
+                e.stopPropagation();
+                const p = f.path;
+                if (p) g.openInCode({ rootId: g.codeRootId ?? "session", path: p });
+              }}
               className={cn(
-                "flex max-w-[96px] items-center gap-0.5 rounded bg-orange/10 px-1 py-px",
-                "text-[10px] leading-none text-orange",
+                "flex max-w-[96px] cursor-pointer items-center gap-0.5 rounded bg-orange/10 px-1 py-px",
+                "text-[10px] leading-none text-orange hover:bg-orange/25",
               )}
             >
               <span aria-hidden>{TABLE_KINDS.has(f.kind ?? "") ? "📊" : "📄"}</span>
               <span className="truncate">{f.name}</span>
-            </span>
+            </button>
           ))}
           {overflow > 0 && (
             <span
@@ -434,6 +518,14 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
             </span>
           )}
         </span>
+      )}
+      {lb !== null && allImgUrls.length > 0 && (
+        <Lightbox
+          urls={allImgUrls}
+          index={lb}
+          onClose={() => setLb(null)}
+          onNav={(i: number) => setLb(i)}
+        />
       )}
     </div>
   );

@@ -24,6 +24,12 @@ import { useSteerQueue } from "@/lib/steerQueue";
 import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
 import { useEventI18nText, type Block } from "@/components/chat/blocks";
 import { registerModPanePressSender } from "@/components/chat/mod/paneBus";
+import { resyncDevSwapRun } from "@/lib/devswap/bus";
+import {
+  getDevSwapRun,
+  markDevSwapResultDelivered,
+  subscribeDevSwap,
+} from "@/lib/devswap/bus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
 import type {
@@ -301,6 +307,49 @@ export function useChatStreamEngine(deps: EngineDeps) {
     syncDisplay,
   };
 
+  // dev-swap 结果落块（dev-swap-progress-design.md §4.4，live-only）：run 终态
+  // 一次性追加一条 system 消息到发起会话尾部（sid 门控 §4.5；持久凭证是
+  // TopBar 指纹黄条，同 subagent_spawn 的「live 追加、不持久化」先例）。
+  // 两个触发点：总线事件（用户正看着时实时落）；会话切换 store 就绪后直读
+  // 总线当前值（切走再切回 / 重载后补落）。markDevSwapResultDelivered 按
+  // run_id 全局去重——live 转移与快照回放看到同一终态只落一次。
+  const appendDevSwapResult = () => {
+    const run = getDevSwapRun();
+    if (!run || run.state === "running") return;
+    const sid = run.sid;
+    if (!sid || sid !== curSessionIdRef.current) return;
+    if (!(storeRef.current[sid]?.length)) return;
+    if (!markDevSwapResultDelivered(run.run_id)) return;
+    const elapsedS =
+      typeof run.startedAt === "number" && typeof run.ts === "number"
+        ? Math.max(0, Math.round(run.ts - run.startedAt))
+        : null;
+    storeRef.current[sid] = [
+      ...(storeRef.current[sid] ?? []),
+      {
+        id: `devswap-${run.run_id}`,
+        role: "system" as const,
+        blocks: [
+          {
+            kind: "devswap_result" as const,
+            runId: run.run_id,
+            state: run.state,
+            failedStage: run.state === "ok" ? null : run.stage,
+            elapsedS,
+            logTail: run.state === "ok" ? null : (run.log_tail ?? null),
+          },
+        ],
+        ts: Math.floor(Date.now() / 1000),
+      },
+    ];
+    syncDisplay(sid);
+  };
+
+  // 挂一次即可：回调只读 refs（curSessionIdRef/storeRef）+ 稳定 setter，
+  // 闭包语义与 connectSession 系同款。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => subscribeDevSwap(() => appendDevSwapResult()), []);
+
   // 运行中的委托回放页（P1 实时流前端侧）：后端 bg 每 3s 节流回填部分转录，
   // 这里同步轮询 history 替换消息——回放内容随委托进度"长"出来，终态即停。
   const delegationReplayLive =
@@ -432,6 +481,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
         probeSeqRef.current[sid] = ++ioSeqRef.current;
         sock.send(JSON.stringify({ type: "turn_state" }));
       } catch { /* ignore */ }
+      // dev-swap 进度续播（dev-swap-progress-design.md §5）：重连（典型是
+      // 壳收尾重启 sidecar 后整页回来）后先拉 GET /api/devswap/progress
+      // 快照，再由总线上的既有订阅继续吃 WS 事件。无进行中 run 时静默清空。
+      void resyncDevSwapRun();
       if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
         // A turn was in flight when this socket's predecessor dropped. Turn
         // events broadcast to EVERY socket of the session, so the running
@@ -655,7 +708,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
           storeRef.current[sid] = mapped;
         }
         syncDisplay(sid);
+        // store 就绪后补读总线：终态若在切走/重载期间到达，此处补落块。
+        appendDevSwapResult();
       });
+    } else {
+      // store 已存在（切走再切回）：直接补读总线当前值。
+      appendDevSwapResult();
     }
 
     // Load the session's goal snapshot for the TopBar chip (goal-design.md).

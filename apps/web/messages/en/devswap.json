@@ -1,0 +1,38 @@
+{
+  "devswap": {
+    "card": {
+      "title": "dev-swap",
+      "working": "working…",
+      "stage": {
+        "quiesce": "Quiesce check",
+        "unit": "Unit tests",
+        "build_runtime": "Build runtime",
+        "preflight": "Preflight",
+        "switch": "Switch symlink",
+        "finish": "Shell finish & verify"
+      },
+      "eta": "{time} left",
+      "slow": "slower than usual (P90 {time})",
+      "logs": "logs (last {n} lines)",
+      "hideLogs": "hide logs",
+      "rolledBack": "Failed — rolled back to the previous bundle.",
+      "finished": "All stages passed — sidecar restarting onto the new bundle.",
+      "hoverHint": "Hover for dev-swap progress",
+      "slowShort": "slow"
+    },
+    "badge": {
+      "hint": "dev-override runtime bundle · {fp} · built {time} — run make dev-swap-clean to return to the factory bundle"
+    },
+    "wait": {
+      "line": "dev-swap · {stage} {bar} {pct} · elapsed {elapsed} / {eta} left",
+      "slow": "dev-swap · {stage} — slower than usual (P90 {p90})"
+    },
+    "result": {
+      "ok": "dev-swap → {fp} · {elapsed}",
+      "fail": "dev-swap failed at {stage} · {elapsed}",
+      "rolledBack": "dev-swap rolled back (failed at {stage}) · {elapsed}",
+      "logs": "logs (last {n} lines)",
+      "hideLogs": "hide logs"
+    }
+  }
+}

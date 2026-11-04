@@ -224,6 +224,10 @@ def _acc() -> dict[str, int]:
         # 思考 token 拆分(thinking-effort-design §8,计入 output 的其中一部分;
         # 老记录无此键按 0 累加)。
         "reasoning_tokens": 0,
+        # 自动压缩次数（source=compaction 的调用数，2026-11-04 需求：
+        # usage 统计展示 compact 过几次；同时也是「上下文为什么变小了」的
+        # 解释口径）。老记录无 source 键不计。
+        "compactions": 0,
         "calls": 0,
         # V2 P1-1: money, when a pricing table is configured (0 otherwise).
         "est_cost": 0.0,
@@ -238,6 +242,8 @@ def _add(acc: dict[str, int], e: dict) -> None:
     acc["cache_creation_tokens"] += int(e.get("cache_creation_tokens") or 0)
     acc["reasoning_tokens"] += int(e.get("reasoning_tokens") or 0)
     acc["calls"] += 1
+    if e.get("source") == "compaction":
+        acc["compactions"] += 1
     try:
         from . import pricing
 
@@ -392,7 +398,7 @@ def aggregate_sessions(from_date: str | None, to_date: str | None, sort: str = "
             "project_slug": s.get("project_slug"),
             "agent_id": s.get("agent_id"),
             "last_active": s["last_ts"],
-            **_with_ratio({k: s[k] for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "calls")}),
+            **_with_ratio({k: s[k] for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "calls", "compactions")}),
         })
     keymap = {
         "total": lambda r: r["input_tokens"] + r["output_tokens"],

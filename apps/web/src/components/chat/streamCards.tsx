@@ -12,6 +12,8 @@ import { relTime } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { InnerBlocks, RefBlocks, subagentStatusMeta, SubagentKindBadges, useStatusLabel, type Block } from "@/components/chat/blocks";
 import { innerTail, isWaitingNextRound } from "./waitState";
+import { useDevSwapProgress } from "@/lib/useDevSwapProgress";
+import { expectationFor, waitLineData, fmtClock } from "@/lib/devswap/stats";
 import { copyText } from "./copyText";
 import { CopyBubbleButton } from "./stream/CopyBubbleButton";
 import { DiffView } from "@/components/workflow/DiffView";
@@ -260,6 +262,8 @@ onAnswerQuestion,
 questionLive,
 connState,
 parkedTurn,
+isTail,
+sessionKey,
 }: {
 agent: AgentConfig | null;
 agentName?: string;
@@ -287,8 +291,18 @@ connState?: "connecting" | "live" | "reconnecting" | "offline" | null;
  *  尾块往往也是已结束的工具，但「等待下一轮」会空转误导——停车由停靠卡
  *  自身当信号，等待行让位。pending 问题块已在 tail 判据里排除。 */
 parkedTurn?: boolean;
+/** 本气泡是否转录流中最后一个 assistant 气泡：dev-swap 进度行（§4）在
+ *  发起 turn 已结束（非 streaming）时也挂在尾部持续显示，靠它定位。 */
+isTail?: boolean;
+/** 当前会话 id：dev-swap 进度行/结果落块的会话门控（§4.5 B 会话不打扰）。 */
+sessionKey?: string | null;
 }) {
 const { tc } = useChatT();
+// devswap 域文案（动态阶段 key 收敛，cast 理由同 useChatT）。
+const tds = useTranslations("devswap") as unknown as (
+  key: string,
+  values?: Record<string, string | number>,
+) => string;
 const hex = agentHex(agent?.color);
 // 子会话的 persona 是继承父会话的（Dev Agent），标注没有信息量——子代理类型
 // 才是它的身份，与侧栏行/子会话顶栏/主对话卡片保持一致（用户反馈 2026-10-01）。
@@ -324,6 +338,56 @@ const waitText = useMemo(() => {
   if (statusOverride) return statusOverride;
   return tc("stream.waitNextRound", { seconds: waitElapsed });
 }, [connLost, connState, statusOverride, waitElapsed, tc]);
+
+// ── dev-swap 进度倒计时（dev-swap-progress-design.md §4）───────────────────
+// /dev-swap 是后台任务：发起 turn 秒结，进度行不能依赖 streaming——run 进行
+// 中挂在发起会话最后一个气泡尾部持续显示（isTail，不限 streaming），阶段
+// 推进原地刷新；该会话的 streaming 等待位也优先显示进度。其他会话不打扰
+// （§4.5 sid 门控，终端 make dev-swap 无 sid → 只看弹窗卡片）。
+// EMA/P90 来自 ginno:devswap-stats（前端 localStorage，devswap/stats.ts）。
+const { run: dsRun } = useDevSwapProgress();
+const dsActive = dsRun?.state === "running";
+const dsOwn =
+  !!dsActive && !!dsRun?.sid && sessionKey != null && dsRun.sid === sessionKey;
+const [dsTick, setDsTick] = useState(0);
+useEffect(() => {
+  if (!dsActive) return;
+  const timer = setInterval(() => setDsTick((n) => n + 1), 1000);
+  return () => clearInterval(timer);
+}, [dsActive]);
+const dsLine = useMemo(() => {
+  if (!dsActive || !dsRun) return null;
+  void dsTick; // 秒跳重渲染源
+  const stageElapsed = Math.max(
+    0,
+    Math.floor(Date.now() / 1000 - (dsRun.ts ?? Math.floor(Date.now() / 1000))),
+  );
+  const exp = expectationFor(dsRun.stage);
+  const d = waitLineData(stageElapsed, dsRun.pct ?? null, exp);
+  const stage = tds(`card.stage.${dsRun.stage}`);
+  return {
+    slow: d.slow,
+    text: d.slow
+      ? tds("wait.slow", { stage, p90: fmtClock(exp.p90) })
+      : tds("wait.line", {
+          stage,
+          bar: d.bar,
+          pct: d.pctLabel,
+          elapsed: d.elapsedLabel,
+          eta: d.etaLabel,
+        }),
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [dsActive, dsRun, dsTick]);
+// 尾部持续进度行：发起会话 + 最后一个气泡，run 进行中一直挂着；finish 阶段
+// 壳重启断 WS 属预期流程，此行不让位给断线文案。
+const dsTail = dsOwn && !!isTail && !!dsLine;
+const dsLabelOn = dsTail || (dsOwn && !connLost && streaming);
+const lineVisible =
+  (streaming && (connLost || waitingNextRound || !!statusOverride || dsActive)) || dsTail;
+// 优先级：进度行（dsOwn）> 连接中断 > 瞬态覆盖 > 泛化等待。
+const tailLabel = dsLabelOn ? (dsLine?.text ?? waitText) : waitText;
+const tailAmber = dsLabelOn && !!dsLine?.slow;
 
 // Track elapsed time for dynamic status text during TTFT wait
 const [elapsed, setElapsed] = useState(0);
@@ -398,17 +462,24 @@ return (
               questionLive={questionLive}
             />
             {/* 尾部等待行：右下角小字+wave dots（2026-11-04 二次反馈：去掉
-                外框胶囊，只留与 turn_meta 同语言的轻量文字）。 */}
-            {streaming && (connLost || waitingNextRound || !!statusOverride) && (
+                外框胶囊，只留与 turn_meta 同语言的轻量文字）。dev-swap 运行
+                期间升级为进度态（§4），超 P90 琥珀；发起 turn 已结束也由
+                dsTail 持续挂着，直到 run 终态。 */}
+            {lineVisible && (
               <div className="mt-1.5 flex justify-end">
                 <div className="flex items-center gap-2 px-1 py-0.5">
                 <div className="flex items-center gap-0.5">
-                  <WaveDot delay={0} color={connLost ? "#eab308" : hex} />
-                  <WaveDot delay={150} color={connLost ? "#eab308" : hex} />
-                  <WaveDot delay={300} color={connLost ? "#eab308" : hex} />
+                  <WaveDot delay={0} color={connLost && !dsTail ? "#eab308" : hex} />
+                  <WaveDot delay={150} color={connLost && !dsTail ? "#eab308" : hex} />
+                  <WaveDot delay={300} color={connLost && !dsTail ? "#eab308" : hex} />
                 </div>
-                <span key={waitText} className="animate-fade-in text-xs text-muted">
-                  {waitText}
+                <span
+                  key={tailLabel}
+                  className={`animate-fade-in text-xs ${
+                    tailAmber ? "text-amber-600 dark:text-amber-400" : "text-muted"
+                  }`}
+                >
+                  {tailLabel}
                 </span>
                 </div>
               </div>

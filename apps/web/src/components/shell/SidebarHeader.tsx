@@ -4,6 +4,8 @@ import { useTranslations } from "next-intl";
 import { Archive, Plus, Search } from "lucide-react";
 import { agentHex } from "@/lib/theme";
 import type { AgentConfig } from "@/lib/types";
+import { DevBuildBadge } from "@/components/devswap/DevBuildBadge";
+import { DevSwapCard } from "@/components/devswap/DevSwapCard";
 
 export interface SidebarHeaderProps {
   groupView: "time" | "project";
@@ -47,10 +49,14 @@ export function SidebarHeader({
   const t = useTranslations("shell");
   return (
     <>
-      {/* brand */}
-      <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
+      {/* brand：右侧挂 dev bundle 徽标 + dev-swap 进度 hover pill（2026-11-04
+          从 TopBar 迁来，devswap-progress-design §5）——非 dev bundle / 无
+          run 时各自渲染 null 不占位；flex-wrap 兜窄侧栏。 */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-2 pt-4">
         <img src="/icon.png" alt="" className="h-7 w-7" />
         <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
+        <DevBuildBadge />
+        <DevSwapCard />
       </div>
 
       {/* 侧栏工具条（P1-1/P1-2/P1-4）：时间/项目视图切换、一键归档、多选入口 */}

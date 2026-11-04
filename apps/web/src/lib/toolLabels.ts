@@ -78,7 +78,12 @@ function migrateLegacySeeded(user: Record<string, string>): Record<string, strin
 export async function loadToolLabels(): Promise<void> {
   try {
     const s = await getSettings();
-    _user = migrateLegacySeeded((s.tool_labels as Record<string, string>) || {});
+    let user = (s.tool_labels as Record<string, string>) || {};
+    // 旧版种子迁移只在英文 UI 下执行（2026-11-04 实案：用户在 zh-CN 下把
+    // edit_file 配成「编辑文件中」，被 LEGACY_SEEDED_LABELS 误判为旧种子而
+    // 强行迁成 "Editing file"——中文 locale 下中文值本就是正确值，迁移即破坏）。
+    if (_catalog === TOOL_CATALOGS.en) user = migrateLegacySeeded(user);
+    _user = user;
   } catch {
     // Settings API unavailable — keep the built-in defaults only.
     _user = {};

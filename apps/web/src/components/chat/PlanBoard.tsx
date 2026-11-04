@@ -130,7 +130,9 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
                   : "border-violet/30 bg-violet/[0.04]"
             }`}
           >
-            <div className="flex items-center gap-1.5">
+            {/* 窄会话框（2026-11-04 用户反馈）：允许换行，标题 truncate 收缩，
+                状态 chip 不缩不断行，避免挤压重叠。 */}
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
               <button
                 onClick={() => setCollapsed((c) => ({ ...c, [plan.plan_id]: !fold }))}
                 className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
@@ -146,11 +148,11 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
                   {plan.title}
                 </span>
               </button>
-              <span className="shrink-0 tabular-nums text-faint">
+              <span className="shrink-0 whitespace-nowrap tabular-nums text-faint">
                 {t("planBoard.progress", { done, total: plan.items.length })}
                 {failed > 0 && t("planBoard.failedCount", { count: failed })}
               </span>
-              <span className="shrink-0 rounded-md border border-line2 bg-card2/60 px-1.5 py-0.5 text-[10px] text-muted">
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-line2 bg-card2/60 px-1.5 py-0.5 text-[10px] text-muted">
                 {t(PLAN_STATUS_KEY[plan.status ?? "active"])}
               </span>
               {dismissable && (

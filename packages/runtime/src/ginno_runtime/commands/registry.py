@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -1127,6 +1128,10 @@ async def _think_async_handler(
 # /dev-swap 后台任务持有集：防 GC + 便于观测（完成后自动移出）。
 _DEV_SWAP_TASKS: set[asyncio.Task] = set()
 
+# 构建尾部输出里的 ANSI 转义（pytest/make/dev_swap.sh 的颜色码）——
+# 原样塞进聊天 notice 会显示成 [31m 这种乱码，推送前剥掉。
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
 
 async def _dev_swap_background(sid: str, repo: str) -> None:
     """后台跑 make dev-swap（构建 3-6 分钟）；完成即广播 finish 信号。
@@ -1134,6 +1139,11 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
     成功 → ``runtime.dev_swap_pending``（前端 invoke 壳 finish_dev_swap：
     重启+指纹验证+失败回滚，之后本进程被重启换掉——这就是闭环）。
     失败 → notice 带构建尾部输出（当前运行不受任何影响，未切换）。
+
+    进度可视化（docs/dev-swap-progress-design.md §2.3）：逐行读 stdout，
+    解析 dev_swap.sh 的 ``[devswap-progress] {json}`` 行直调
+    ``api.devswap.update_progress`` 回填同一进度通道（与 shell 的 curl
+    上报以签名去重）；notice 尾 600 字符逻辑不变。
     """
     import os as _os
 
@@ -1143,18 +1153,63 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
         proc = await asyncio.create_subprocess_exec(
             "bash", "scripts/dev_swap.sh",
             cwd=repo,
-            env={**_os.environ, "DEV_SWAP_REQUESTED_BY": "agent"},
+            env={
+                **_os.environ,
+                "DEV_SWAP_REQUESTED_BY": "agent",
+                # 发起会话随 env 传给 shell → state.json → 重启后新进程的
+                # finish 终态上报（api/devswap.watch_swap_finish）——前端
+                # §4.5 会话门控与结果落块都靠它。
+                "DEV_SWAP_SESSION_ID": sid,
+            },
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
     except FileNotFoundError:
         await _push_session_event(
             sid, "notice", {"message": "/dev-swap: repo path invalid: " + repo}
         )
         return
-    tail = (out or b"")[-600:].decode(errors="replace")
+
+    from ..api.devswap import ProgressReport, update_progress
+
+    tail_buf: list[bytes] = []
+    tail_len = 0
+    assert proc.stdout is not None
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        tail_buf.append(line)
+        tail_len += len(line)
+        while tail_len > 4096 and len(tail_buf) > 1:  # 只留尾 4KB 供 notice
+            tail_len -= len(tail_buf.pop(0))
+        text = line.decode(errors="replace").strip()
+        if not text.startswith("[devswap-progress]"):
+            continue
+        payload = text[len("[devswap-progress]"):].strip()
+        try:
+            import json as _json
+
+            data = _json.loads(payload)
+            if not data.get("run_id"):
+                continue
+            update_progress(
+                ProgressReport(
+                    run_id=str(data["run_id"]),
+                    stage=str(data["stage"]),
+                    state=str(data["state"]),
+                    detail=data.get("detail"),
+                    pct=data.get("pct"),
+                    log_tail=data.get("log_tail"),
+                    sid=sid or None,
+                )
+            )
+        except Exception:
+            continue  # 进度行解析失败绝不影响构建结果
+    await proc.wait()
+    tail = _ANSI_RE.sub("", b"".join(tail_buf)[-600:].decode(errors="replace"))
     if proc.returncode == 0:
+        # finish 阶段由 shell 已报 running；壳收尾终态由重启后的新进程接管。
         await _push_session_event(
             sid,
             "runtime.dev_swap_pending",
@@ -1184,6 +1239,14 @@ async def _dev_swap_async_handler(
     """
     sid = (session or {}).get("session_id") or ""
     repo = (args or "").strip()
+    if repo.startswith(("http://", "https://", "git@", "ssh://", "git://")):
+        # 传 git URL 是最高频误用——单独给提示，别落到泛泛的 usage 文案。
+        return t(
+            "(/dev-swap needs a *local* ginno checkout — a git URL won't work. "
+            "Clone it first (`git clone <url>`), then `/dev-swap /path/to/ginno`.)",
+            "（/dev-swap 需要**本地**源码树——git URL 不行。先 `git clone <url>`，"
+            "再 `/dev-swap /本地路径/ginno`。）",
+        )
     if not repo:
         from ..world_state import context_settings
 

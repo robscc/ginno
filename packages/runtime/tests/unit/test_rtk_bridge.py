@@ -113,7 +113,22 @@ def test_rewrite_empty_and_bad_quoting(rtk_installed):
 
 def test_no_rtk_returns_none(monkeypatch):
     monkeypatch.setattr(rtk_bridge.shutil, "which", lambda name: None)
+    # Homebrew 前缀兜底也要挡掉：本机 /opt/homebrew/bin/rtk 真实存在，
+    # 不 patch os.access 的话此用例只在「没装 rtk 的机器」上成立。
+    monkeypatch.setattr(rtk_bridge.os, "access", lambda p, m: False)
     assert rewrite("git status") is None
+
+
+def test_homebrew_fallback_found_when_which_fails(monkeypatch):
+    # GUI 最小 PATH 场景（2026-11-04 实案）：which 失败但 Homebrew 路径存在
+    def fake_run(args, **kw):
+        assert args[0].endswith("/rtk")
+        return subprocess.CompletedProcess(args, 0, stdout="rtk 0.42.1\n", stderr="")
+
+    monkeypatch.setattr(rtk_bridge.shutil, "which", lambda name: None)
+    monkeypatch.setattr(rtk_bridge.os, "access", lambda p, m: p == "/opt/homebrew/bin/rtk")
+    monkeypatch.setattr(rtk_bridge.subprocess, "run", fake_run)
+    assert rtk_bridge.detect_rtk() == "/opt/homebrew/bin/rtk"
 
 
 def test_wrong_rtk_binary_version_not_trusted(monkeypatch):
@@ -226,6 +241,9 @@ def test_bash_tool_executes_rewritten_command(monkeypatch, ws, tmp_path):
 def test_bash_tool_unaffected_without_rtk(monkeypatch, ws, tmp_path):
     """无 rtk：bash 工具行为与现状完全一致。"""
     monkeypatch.setattr(rtk_bridge.shutil, "which", lambda name: None)
+    # 本机 /opt/homebrew/bin/rtk 真实存在：连 Homebrew 兜底一起挡掉，
+    # 该用例才与「机器上没装 rtk」等价。
+    monkeypatch.setattr(rtk_bridge.os, "access", lambda p, m: False)
     captured = {}
 
     class FakeProc:

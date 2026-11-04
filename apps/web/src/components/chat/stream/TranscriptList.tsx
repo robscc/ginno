@@ -94,6 +94,12 @@ export function TranscriptList({
     (last, m) => ((m.status === "failed" || m.error) && m.sendPayload ? m.id : last),
     null,
   );
+  // 最后一个 assistant 气泡：dev-swap 进度行（§4）在发起 turn 已结束
+  // （非 streaming）时也挂在尾部持续显示，靠 isTail 定位。
+  const lastAssistantId = messages.reduce<string | null>(
+    (last, m) => (m.role === "assistant" && !m.error ? m.id : last),
+    null,
+  );
   // 委派状态 2026-10-13 上收为顶部 SubagentBoard（PlanBoard 同款）：转录流
   // 不再渲染 subagent_spawn 卡（组卡/单卡都不出）——清单模式的重复展示由此
   // 消除；结果卡/简报卡保留（职责不同）。
@@ -373,6 +379,8 @@ export function TranscriptList({
               turnId={m.turnId}
               failed={m.failed}
               ts={m.ts}
+              isTail={m.id === lastAssistantId}
+              sessionKey={session?.id ?? null}
               onAnswerQuestion={answerQuestion}
               // questionLive: is this session's turn actually alive? A
               // parked question keeps the server turn running WITHOUT a

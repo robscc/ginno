@@ -458,3 +458,57 @@ async def test_clear_async_live_parked_rejected(isolated_home, monkeypatch):
     assert calls["heal"] == 0 and calls["event"] == 0
     assert graph.wipes == []
     assert "/clear" in reply  # rejection wording names the command
+
+
+# --------------------------------------------------------------------------- #
+# /dev-swap — 参数校验与失败 notice 清理
+# --------------------------------------------------------------------------- #
+async def test_dev_swap_rejects_git_url_with_hint(isolated_home):
+    # git URL 是最高频误用（真机 2026-11-04：用户先发了 GitHub 地址）——
+    # 必须命中专门的 clone 提示，而不是泛泛的 usage 文案。
+    from ginno_runtime.commands.registry import _dev_swap_async_handler
+
+    for url in ("https://github.com/robscc/ginno", "git@github.com:robscc/ginno.git"):
+        reply = await _dev_swap_async_handler("default", {"session_id": "s1"}, url)
+        assert "clone" in reply  # en/zh 双语文案都含 "clone"
+
+
+async def test_dev_swap_failure_notice_strips_ansi(isolated_home, monkeypatch):
+    # 失败 notice 携带构建尾部输出；pytest/make/脚本的颜色码若不剥掉，
+    # 聊天气泡里就是 [31m[dev-swap][0m 这种乱码（2026-11-04 真机截图所见）。
+    import asyncio as _aio
+
+    from ginno_runtime.commands import registry as commands_registry
+
+    async def fake_exec(*args, **kw):
+        class FakeStdout:
+            def __init__(self):
+                self._lines = iter([
+                    b"\x1b[31m[dev-swap]\x1b[0m uv \xe4\xb8\x8d\xe5\x9c\xa8 PATH\n",
+                ])
+
+            async def readline(self):
+                try:
+                    return next(self._lines)
+                except StopIteration:
+                    return b""
+
+            async def wait(self):
+                return 1
+
+        proc = SimpleNamespace(returncode=1, stdout=FakeStdout())
+        proc.wait = lambda: _aio.sleep(0)  # 调用返回 coroutine，await 一次即完成
+        return proc
+
+    events = []
+
+    async def fake_push(session_id, event, data, turn_id=None):
+        events.append((event, data))
+
+    monkeypatch.setattr(_aio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
+    await commands_registry._dev_swap_background("s1", "/repo")
+    assert [e for e, _ in events] == ["notice"]
+    msg = events[0][1]["message"]
+    assert "\x1b" not in msg and "[31m" not in msg
+    assert "[dev-swap] uv" in msg and "exit 1" in msg

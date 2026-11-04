@@ -52,7 +52,8 @@
         "data": "数据完整性",
         "tasks": "定时任务",
         "runtime": "运行时",
-        "contracts": "接口契约"
+        "contracts": "接口契约",
+        "shell": "Shell 环境"
       },
       "taskStats": {
         "total": "执行 {n}",
@@ -93,7 +94,11 @@
         "contract": {
           "missing_routes": "缺少关键接口"
         }
-      }
+      },
+      "shellTitle": "Shell 环境",
+      "fixEquals": "一键修复（写入 ~/.zshenv）",
+      "fixEqualsConfirm": "将向 ~/.zshenv 追加 \"unsetopt EQUALS\"，消除非交互 zsh 的 =xx 报错。确认执行？",
+      "fixing": "修复中…"
     }
   }
 }

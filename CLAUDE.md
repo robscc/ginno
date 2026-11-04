@@ -65,7 +65,7 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
   `make dev-swap`（或会话里 `/dev-swap`）一条命令完成「单测 → PyInstaller 重建 →
   blue-green 预检 → symlink 原子切换」，随后壳自动重启 sidecar 到新 bundle 并
   验证 `/api/health` 的 build 指纹，失败自动回滚旧版本——**无需退出重开应用**。
-  回出厂：`make dev-swap-clean`。TopBar 出现琥珀 `dev·{指纹}` 黄条即在跑开发 bundle。
+  回出厂：`make dev-swap-clean`。侧栏品牌行（GinnoWork 右侧）出现琥珀 `dev·{指纹}` 黄条即在跑开发 bundle。
 - 生产 bundle 位于 `apps/desktop/target/release/bundle/macos/Ginno.app`，
   runtime bundle 位于 `packages/runtime/dist/ginno-runtime/`。
 

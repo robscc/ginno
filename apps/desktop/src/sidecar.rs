@@ -273,6 +273,11 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
             "ginno_runtime.server:app",
             "--port",
             &port.to_string(),
+            // 与 server.py main() 的 timeout_graceful_shutdown=3 对齐：dev 模式
+            // 同样给 SIGTERM 后的 in-flight 等待设上限，否则优雅关闭会无限
+            // 卡在 "Waiting for background tasks"（详见 main() 注释）。
+            "--timeout-graceful-shutdown",
+            "3",
         ]);
         cmd
     } else {
@@ -304,7 +309,8 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
                 )
             })
         };
-        let cmd = if override_exe.is_file() {
+        let mut used_override = false;
+        let mut cmd = if override_exe.is_file() {
             if let Some(reason) = stale() {
                 shell_log(app, &reason);
                 let runtime_exe = app
@@ -320,6 +326,7 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
                     app,
                     &format!("runtime: dev-override bundle ({})", override_exe.display()),
                 );
+                used_override = true;
                 Command::new(override_exe)
             }
         } else {
@@ -332,6 +339,12 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
                 .join("ginno-runtime");
             Command::new(runtime_exe)
         };
+        // 声明「本 sidecar 是 dev-override」：runtime 的 build_info() 以此把
+        // channel 从 build-info.json 写死的构建目标（app）改为 dev —— channel
+        // 是「进程从哪被拉起」的运行时事实，/api/health → 前端 dev·徽标靠它。
+        if used_override {
+            cmd.env("GINNO_RUNTIME_CHANNEL", "dev");
+        }
         cmd
     };
     // Both spawn paths must agree with the runtime's own env read: dev binds

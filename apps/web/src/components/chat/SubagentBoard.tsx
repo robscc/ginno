@@ -83,7 +83,7 @@ export function SubagentBoard({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="mx-auto mb-2 w-full max-w-3xl rounded-lg border border-line bg-card/60 px-3 py-2 text-xs">
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <button
           onClick={() => setCollapsed(!fold)}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
@@ -99,7 +99,7 @@ export function SubagentBoard({ sessionId }: { sessionId: string }) {
             {t("subagent.delegated", { count: children.length })}
           </span>
         </button>
-        <span className="shrink-0 text-faint">
+        <span className="shrink-0 whitespace-nowrap text-faint">
           {buckets.map((b) => `${statusLabel(b.bucket)} ${b.entries.length}`).join(" · ")}
         </span>
       </div>

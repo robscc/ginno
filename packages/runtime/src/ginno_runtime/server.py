@@ -314,11 +314,16 @@ async def lifespan(app: FastAPI):
         tasks_registry_started = True
     except Exception:
         _log.exception("tasks registry start failed (continuing)")
+    # dev-swap 壳收尾终态 watcher（api/devswap.py）：重启后的新进程盯
+    # dev-override/state.json 的 pending → verified/rolled_back 跳变，补报
+    # finish 终态（旧进程已被换掉，报不了这一笔）。
+    devswap_watch_task = asyncio.create_task(_devswap_api.watch_swap_finish())
     try:
         yield
     finally:
         if not mcp_connect_task.done():
             mcp_connect_task.cancel()
+        devswap_watch_task.cancel()
         # 取消调度循环 + 在途执行协程（契约同 Goal driver / _connect_mcp_background）。
         if scheduler_task is not None:
             try:
@@ -527,6 +532,7 @@ from .api import code as _code_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
 from .api import connectors as _connectors_api  # noqa: E402
+from .api import devswap as _devswap_api  # noqa: E402
 from .api import diagnostics as _diagnostics_api  # noqa: E402
 from .api import distill as _distill_api  # noqa: E402
 from .api import export as _export_api  # noqa: E402
@@ -549,6 +555,7 @@ from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
 app.include_router(_diagnostics_api.router)
+app.include_router(_devswap_api.router)
 app.include_router(_search_api.router)
 app.include_router(_export_api.router)
 app.include_router(_distill_api.router)
@@ -797,4 +804,17 @@ def main() -> None:
     import uvicorn
 
     port = int(os.environ.get("GINNO_RUNTIME_PORT", "8787"))
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    # timeout_graceful_shutdown：SIGTERM 后对 in-flight 连接/任务的等待设 3s
+    # 上限（uvicorn 默认无限等——2026-11-04 实锤：优雅关闭卡死在 "Waiting
+    # for background tasks to complete"，壳的 SIGTERM-first 6s 预算每次等满才
+    # SIGKILL，退出从瞬间变 ~7s，且 lifespan finally（stop_all 后台命令/MCP
+    # close/Chrome 随退）从未执行过）。到期 uvicorn 取消剩余任务并**继续走
+    # lifespan shutdown** → finally 真正跑、进程 ~3s 内自然退出；壳的 6s 预算
+    # 退化为纯兜底。dev 的 uv run uvicorn 同参数见 sidecar.rs spawn 梯子。
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="info",
+        timeout_graceful_shutdown=3,
+    )

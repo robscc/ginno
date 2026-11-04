@@ -790,6 +790,8 @@ export interface UsageCounters {
   cache_read_tokens: number;
   cache_creation_tokens: number;
   calls: number;
+  /** 自动压缩次数（usage 流水 source=compaction 计数；老记录/无压缩为 0）。 */
+  compactions?: number;
   cache_hit_ratio: number;
 }
 export interface UsageDailyPoint extends UsageCounters {

@@ -26,6 +26,8 @@ import { applyBlock, closePendingBlocks, mid, newTurnId, toolArgsPreview, type C
 import type { EngineCtx } from "./ctx";
 import { reconcileTurnFromHistory } from "./connect";
 import { flushSteerQueue, recallSteers } from "./steer";
+import { pushDevSwapRun } from "@/lib/devswap/bus";
+import { normalizeDevSwapRun } from "@/lib/devswap/types";
 
 // Delivery confirmed (the server started or finished the turn) → clear the
 // "sending" marker off user bubbles.
@@ -73,7 +75,10 @@ export function ensureLive(ctx: EngineCtx, sid: string, evTurn?: string): string
       id,
       role: "assistant",
       blocks: [{ kind: "turn_meta", t0Ms: Date.now() }],
-      agentId: ctx.streamAgentRef.current[sid],
+      // Turn 结束后 streamAgentRef 已被清空——晚到的事件（如 dev-swap 构建结果
+      // 数分钟后才回的 notice）走到这条新建路径，agentId=null 会把气泡头兜底成
+      // "Agent"。回填会话默认 agent，与 adoptOrphanStream 的同名修复同理。
+      agentId: ctx.streamAgentRef.current[sid] ?? ctx.session?.agent_id ?? null,
       turnId: evTurn || newTurnId(),
     },
   ];
@@ -707,6 +712,14 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         ctx.storeRef.current[sid] = nxt;
         ctx.syncDisplay(sid);
       }
+      break;
+    }
+    case "runtime.devswap_progress": {
+      // dev-swap 热切换进度（docs/dev-swap-progress-design.md §2.2）：sidecar
+      // 广播的阶段事件推入模块级总线，DevSwapCard / session 状态行订阅呈现。
+      // 不 markDelivered——这不是本会话 turn 的帧，只是路过本 socket。
+      const run = normalizeDevSwapRun(ev);
+      if (run) pushDevSwapRun(run);
       break;
     }
     case "runtime.dev_swap_pending": {

@@ -900,13 +900,15 @@
           "cacheRead": "Cache read",
           "hitRate": "Hit rate",
           "requests": "Requests",
-          "lastActive": "Last active"
+          "lastActive": "Last active",
+          "thCompact": "Compacts"
         },
         "loading": "Loading…",
         "empty": "No session usage records",
         "rowTitle": "View the request log of this session",
         "bg": "(background/system)",
-        "deleted": "deleted"
+        "deleted": "deleted",
+        "compactUnit": "compactions"
       },
       "requests": {
         "dateLabel": "Date",

@@ -52,7 +52,8 @@
         "data": "Data integrity",
         "tasks": "Scheduled tasks",
         "runtime": "Runtime",
-        "contracts": "API contracts"
+        "contracts": "API contracts",
+        "shell": "Shell environment"
       },
       "taskStats": {
         "total": "Total {n}",
@@ -93,7 +94,11 @@
         "contract": {
           "missing_routes": "Missing critical API routes"
         }
-      }
+      },
+      "shellTitle": "Shell environment",
+      "fixEquals": "Fix (append to ~/.zshenv)",
+      "fixEqualsConfirm": "Append \"unsetopt EQUALS\" to ~/.zshenv to stop =xx errors in non-interactive zsh. Proceed?",
+      "fixing": "Fixing…"
     }
   }
 }

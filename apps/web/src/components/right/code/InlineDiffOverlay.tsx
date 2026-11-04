@@ -29,6 +29,20 @@ import {
 } from "./MonacoEditor";
 
 type DiffEditor = import("monaco-editor").editor.IStandaloneDiffEditor;
+
+/** version 形如 "{mtime}:{inode}"（files/baselines.py）。整串太长太丑
+ *  （2026-11-04 用户反馈），只展示 mtime 段转成的 HH:MM:SS；解析不了
+ *  就退回前 8 位。 */
+function shortVersion(v?: string | null): string {
+  if (!v) return "—";
+  const mt = Number(v.split(":")[0]);
+  if (Number.isFinite(mt) && mt > 0) {
+    const d = new Date(mt * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  return v.slice(0, 8);
+}
 type TextModel = import("monaco-editor").editor.ITextModel;
 
 /** Diff-size caps (design §4.1: >4000 行或内容 >1MB 降级懒加载). */
@@ -163,6 +177,10 @@ export function InlineDiffOverlay({
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         fontSize: 12,
         lineNumbersMinChars: 3,
+        // inline diff 默认把「原始+修改」两个行号挤在一列（相同行显示 374374，
+        // 2026-11-04 用户反馈）。回调只给修改侧单号，消除重复；
+        // 删除行的原始行号仍由 diff 装饰（红色背景）表达位置。
+        lineNumbers: (n) => String(n),
         scrollBeyondLastLine: false,
         smoothScrolling: true,
         padding: { top: 8, bottom: 8 },
@@ -185,7 +203,10 @@ export function InlineDiffOverlay({
 
   const versionLabel =
     baseVersion || currentVersion
-      ? t("versionRange", { base: baseVersion || "—", current: currentVersion || "—" })
+      ? t("versionRange", {
+          base: shortVersion(baseVersion),
+          current: shortVersion(currentVersion),
+        })
       : null;
 
   return (

@@ -16,6 +16,7 @@ import {
   Plug,
   RefreshCw,
   ShieldCheck,
+  Terminal,
   type LucideIcon,
 } from "lucide-react";
 import * as api from "@/lib/runtime";
@@ -65,6 +66,40 @@ function fmtUptime(seconds: number): string {
   return `${s}s`;
 }
 
+/** zsh EQUALS 一键修复（2026-11-04）：写 ~/.zshenv 需用户确认；成功后
+ *  刷新诊断报告让 issue 消失。POST 幂等，失败显示后端 error。 */
+function ShellEqualsFixButton({ onFixed }: { onFixed: () => void }) {
+  const t = useTranslations("settings.diagnostics");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          if (!window.confirm(t("fixEqualsConfirm"))) return;
+          setBusy(true); setErr(null);
+          try {
+            const r = await fetch("/api/diagnostics/fix/shell-equals", { method: "POST" });
+            const j = (await r.json()) as { ok?: boolean; error?: string };
+            if (!j.ok) setErr(j.error || "recheck_failed");
+            else onFixed();
+          } catch (e) {
+            setErr(String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="rounded-md border border-line bg-card2 px-2 py-1 text-[11px] text-txt hover:bg-card2/70 disabled:opacity-50"
+      >
+        {busy ? t("fixing") : t("fixEquals")}
+      </button>
+      {err && <span className="text-[11px] text-red">{err}</span>}
+    </div>
+  );
+}
+
 function StatChip({ children }: { children: React.ReactNode }) {
   return (
     <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{children}</span>
@@ -75,10 +110,12 @@ function IssueList({
   issues,
   label,
   empty,
+  refresh,
 }: {
   issues: DiagnosticsIssue[];
   label: (id: string) => string;
   empty: string;
+  refresh: () => void;
 }) {
   if (issues.length === 0) {
     return (
@@ -105,6 +142,7 @@ function IssueList({
           {i.detail && (
             <div className="selectable mt-1 break-words text-[11px] leading-snug text-faint">{i.detail}</div>
           )}
+          {i.fix === "shell-equals" && <ShellEqualsFixButton onFixed={refresh} />}
           <div className="selectable mt-0.5 font-mono text-[10px] text-faint/70">{i.id}</div>
         </div>
       ))}
@@ -218,7 +256,7 @@ export function DiagnosticsSettings() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <SectionCard icon={Database} title={t("sections.data")}>
-              <IssueList issues={report.sections.data.issues} label={label} empty={t("emptySection")} />
+              <IssueList issues={report.sections.data.issues} label={label} empty={t("emptySection")} refresh={run} />
             </SectionCard>
 
             <SectionCard icon={Clock} title={t("sections.tasks")}>
@@ -228,7 +266,7 @@ export function DiagnosticsSettings() {
                 <StatChip>{t("taskStats.failed", { n: report.sections.tasks.failed })}</StatChip>
                 <StatChip>{t("taskStats.caughtUp", { n: report.sections.tasks.caught_up })}</StatChip>
               </div>
-              <IssueList issues={report.sections.tasks.issues} label={label} empty={t("emptySection")} />
+              <IssueList issues={report.sections.tasks.issues} label={label} empty={t("emptySection")} refresh={run} />
               {report.sections.tasks.latest_failure && (
                 <div className="selectable mt-2 rounded-lg border border-yellow/30 bg-yellow/10 px-2.5 py-1.5 text-[11px] leading-snug text-yellow">
                   <div>
@@ -257,11 +295,14 @@ export function DiagnosticsSettings() {
                   </span>
                 )}
               </div>
-              <IssueList issues={report.sections.runtime.issues} label={label} empty={t("emptySection")} />
+              <IssueList issues={report.sections.runtime.issues} label={label} empty={t("emptySection")} refresh={run} />
+            <SectionCard icon={Terminal} title={t("sections.shell")}>
+              <IssueList issues={report.sections.shell.issues} label={label} empty={t("emptySection")} refresh={run} />
+            </SectionCard>
             </SectionCard>
 
             <SectionCard icon={Plug} title={t("sections.contracts")}>
-              <IssueList issues={report.sections.contracts.issues} label={label} empty={t("emptySection")} />
+              <IssueList issues={report.sections.contracts.issues} label={label} empty={t("emptySection")} refresh={run} />
               {report.sections.contracts.missing_routes.length > 0 && (
                 <div className="selectable mt-2 break-words rounded-lg border border-red/30 bg-red/10 px-2.5 py-1.5 font-mono text-[11px] text-red">
                   {t("missingRoutes", { routes: report.sections.contracts.missing_routes.join(", ") })}

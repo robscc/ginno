@@ -31,7 +31,7 @@ const SORTS = [
 ] as const;
 
 // 表头文案（settings.usage.sessions.th.*）
-const HEADS = ["session", "model", "input", "output", "cacheRead", "hitRate", "requests", "lastActive"] as const;
+const HEADS = ["session", "model", "input", "output", "cacheRead", "hitRate", "requests", "thCompact", "lastActive"] as const;
 
 export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: string) => void }) {
   const t = useTranslations("settings.usage.sessions");
@@ -94,7 +94,7 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
               {HEADS.map((h, i) => (
                 <th
                   key={h}
-                  className={`whitespace-nowrap border-b border-line px-3 py-2 text-[11px] font-semibold tracking-wide text-faint ${i >= 2 && i <= 6 ? "text-right" : "text-left"}`}
+                  className={`whitespace-nowrap border-b border-line px-3 py-2 text-[11px] font-semibold tracking-wide text-faint ${i >= 2 && i <= 7 ? "text-right" : "text-left"}`}
                 >
                   {t(`th.${h}`)}
                 </th>
@@ -103,10 +103,10 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
           </thead>
           <tbody className="selectable">
             {!loaded && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
             )}
             {loaded && list.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">{t("empty")}</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">{t("empty")}</td></tr>
             )}
             {list.map((r) => (
               <tr
@@ -132,6 +132,7 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
                   {r.input_tokens > 0 ? `⚡ ${pct(r.cache_hit_ratio)}` : "—"}
                 </td>
                 <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted">{r.calls}</td>
+                <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted" title={t("th.thCompact")}>{r.compactions ? `${r.compactions}` : "—"}</td>
                 <td className="px-3 py-2 text-[12.5px] text-muted">{fmtTime(r.last_active)}</td>
               </tr>
             ))}
