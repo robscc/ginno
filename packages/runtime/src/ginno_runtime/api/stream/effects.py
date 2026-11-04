@@ -145,7 +145,7 @@ async def _tool_file_effects(
             )
 
 
-async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, content) -> None:
+async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, content, turn_id: str = "") -> None:
     """Broadcast ``code.changed`` for every file a tool result just wrote.
 
     ``write_file`` / ``edit_file`` append a
@@ -160,6 +160,7 @@ async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, conten
     to place it). Decoration must never break a turn, so the lookup is guarded.
     """
     from ...files.code_changes import match_root_id, parse_code_marker
+    from ...files.baselines import base_version_of
 
     changes = parse_code_marker(content)
     if not changes:
@@ -182,6 +183,14 @@ async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, conten
         roots = []
 
     for ch in changes:
+        # Live-diff contract (code-panel-diff-design.md §6.3): the event carries
+        # the pre-write baseline version (files/baselines.py) so the frontend
+        # knows which anchor to diff against. ``None`` when the agent never
+        # wrote this file in this session — old field set is untouched.
+        try:
+            base_version = base_version_of(session_id, Path(ch["path"]))
+        except Exception:  # noqa: BLE001 — decoration only
+            base_version = None
         await safe_send(
             emit(
                 "code.changed",
@@ -191,6 +200,11 @@ async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, conten
                     "op": ch["op"],
                     "version": ch.get("version") or "",
                     "root_id": match_root_id(ch["path"], roots),
+                    "base_version": base_version,
+                    # P1 (2026-11-04): per-turn grouping for the ChangesPanel's
+                    # Per-Turn view (design §6.3). Client-facing ui turn id; null
+                    # keeps the payload shape stable when the engine can't see one.
+                    "turn_id": turn_id or None,
                 },
             )
         )

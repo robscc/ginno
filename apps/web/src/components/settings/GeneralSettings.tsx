@@ -272,6 +272,9 @@ export function GeneralSettings() {
   // 日志保留天数：settings.context.log_retention_days（默认 7，0 = 不清理）。
   // runtime 启动 + 每日清一次 logs/ 下过期文件（maintenance.cleanup_old_logs）。
   const [logDays, setLogDays] = useState("7");
+  // rtk 输出压缩开关：settings.rtk.enabled（默认 true）。runtime 的 bash 工具
+  // 在执行白名单命令前读此键（tools/rtk_bridge.py），保存后下一次调用即生效。
+  const [rtk, setRtk] = useState(true);
   // 界面语言：settings.language（auto/en/zh-CN，i18n-design.md §2）。
   // 值由根部的 I18nProvider 加载/校正，这里只读 context + setLocale 写回。
   const { languageSetting } = useLocaleCtx();
@@ -302,6 +305,10 @@ export function GeneralSettings() {
           | undefined;
         if (typeof ctx?.log_retention_days === "number")
           setLogDays(String(ctx.log_retention_days));
+        const rtkCfg = (s as Record<string, unknown>).rtk as
+          | { enabled?: unknown }
+          | undefined;
+        if (typeof rtkCfg?.enabled === "boolean") setRtk(rtkCfg.enabled);
       })
       .catch(() => {});
   }, []);
@@ -365,6 +372,21 @@ export function GeneralSettings() {
       s.context = ctx;
       await api.putSettings(s);
       setMsg(tSettings("general.logSaved", { n: clamped }));
+    } catch {
+      setMsg(tSettings("general.saveFailed"));
+    }
+  }
+
+  // rtk 开关：同 get→改→put 链路，键 settings.rtk.enabled，其余 rtk 字段保留。
+  async function toggleRtk(v: boolean) {
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      const cfg = (s.rtk as Record<string, unknown> | undefined) ?? {};
+      cfg.enabled = v;
+      s.rtk = cfg;
+      await api.putSettings(s);
+      setRtk(v);
+      setMsg(v ? tSettings("general.rtkOn") : tSettings("general.rtkOff"));
     } catch {
       setMsg(tSettings("general.saveFailed"));
     }
@@ -472,6 +494,13 @@ export function GeneralSettings() {
             <span className="text-xs text-faint">{tSettings("general.logHint")}</span>
           </div>
           <p className="mt-1 text-xs text-faint">{tSettings("general.logHelp")}</p>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input type="checkbox" checked={rtk} onChange={(e) => void toggleRtk(e.target.checked)} />
+            {tSettings("general.rtkLabel")}
+          </label>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.rtkHelp")}</p>
         </div>
         <div>
           <label className="field-label">{tSettings("general.workingDirLabel")}</label>

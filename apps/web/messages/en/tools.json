@@ -464,6 +464,8 @@
       "injectionCapDesc": "Per-turn memory injection cap in chars, 0 = uncapped",
       "ttl": "Draft expiry",
       "ttlDesc": "Unreviewed longer than this → expires",
+      "pending": "Pending cap",
+      "pendingDesc": "Max pending drafts; oldest evicted beyond it; 0 = uncapped",
       "keep": "Keep",
       "keepDesc": "Drafts retained in the queue",
       "distillProvider": "Distillation provider",

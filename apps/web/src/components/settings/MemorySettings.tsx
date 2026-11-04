@@ -980,6 +980,7 @@ export function MemorySettings() {
                   ["memory_budget_chars", "budget", "budgetDesc", "number"],
                   ["injection_max_chars", "injectionCap", "injectionCapDesc", "number"],
                   ["draft_ttl_days", "ttl", "ttlDesc", "number"],
+                  ["draft_max_pending", "pending", "pendingDesc", "number"],
                   ["draft_keep", "keep", "keepDesc", "number"],
                 ] as const
               ).map(([key, label, desc, kind]) => (

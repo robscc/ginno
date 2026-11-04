@@ -493,6 +493,23 @@ def _code_marker(p: Path, op: str) -> str:
     return "\n" + encode_code_marker([{"path": str(p), "op": op, "version": version}])
 
 
+def _baseline_snapshot(p: Path, session_id: str | None) -> None:
+    """Code-panel live-diff baseline (docs/code-panel-diff-design.md §6.1).
+
+    Snapshot the pre-write content of ``p`` on this session's FIRST write to it
+    (files/baselines.py keeps the first-write-wins rule). Decoration only:
+    never break a tool call over the snapshot.
+    """
+    if not session_id:
+        return
+    try:
+        from ..files.baselines import snapshot_before_write
+
+        snapshot_before_write(session_id, p)
+    except Exception:  # noqa: BLE001 — best-effort decoration
+        pass
+
+
 def resolve_mounts(context_dirs: list[dict] | None) -> list[tuple[Path, str]]:
     """Turn serializable context-dir dicts into ``[(resolved_path, access)]``.
 
@@ -649,9 +666,14 @@ def build_builtin_tools(
     context_dirs: list[dict] | None = None,
     primary_path: str | None = None,
     observe_path: Callable[[Path], str | None] | None = None,
+    session_id: str | None = None,
 ) -> list:
     """Build the six file/shell tools with ``workspace`` (and optionally the
     session's mounted context dirs) bound in.
+
+    ``session_id`` (when given) keys the code-panel live-diff baselines
+    (files/baselines.py): write_file / edit_file snapshot the pre-write content
+    on a file's FIRST agent write of the session.
 
     Called per session (create_session / _ensure_session / mount changes) so
     each session's graph carries tools scoped to its own dirs. Callers
@@ -787,6 +809,7 @@ def build_builtin_tools(
             return _ro_write_msg(path)
         try:
             with _path_rw_lock(p).write_guard():
+                _baseline_snapshot(p, session_id)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 _atomic_write_text(p, content)
         except OSError as e:
@@ -1014,6 +1037,7 @@ def build_builtin_tools(
             if text.find(old, idx + len(old)) != -1:
                 return "[error] multiple matches"
             try:
+                _baseline_snapshot(p, session_id)
                 _atomic_write_text(p, text[:idx] + new + text[idx + len(old):])
             except OSError as e:
                 return f"[error] cannot write {path}: {type(e).__name__}: {e}"
@@ -1072,8 +1096,14 @@ def build_builtin_tools(
             # Finder and the sidecar inherited a bare GUI environment.
             # Fall back to /bin/sh -lc if $SHELL is missing.
             user_shell = os.environ.get("SHELL") or "/bin/sh"
+            # rtk 集成（tools/rtk_bridge.py）：白名单简单命令且本机装有 rtk 时
+            # 改写为 `rtk <命令>` 压缩输出；未命中/无 rtk/开关关闭时原样执行。
+            # 输出仍走下方 head+tail 采集链路，行为对模型透明。
+            from .rtk_bridge import rewrite as _rtk_rewrite
+
+            effective_command = _rtk_rewrite(command) or command
             proc = subprocess.Popen(
-                [user_shell, "-lc", command],
+                [user_shell, "-lc", effective_command],
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

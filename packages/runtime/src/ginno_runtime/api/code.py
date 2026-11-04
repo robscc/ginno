@@ -83,6 +83,10 @@ HIDDEN_COUNT_CAP = 9999
 EDITABLE_MAX_BYTES = 5 * 1024 * 1024
 PREVIEW_MAX_BYTES = 2 * 1024 * 1024
 PREVIEW_MAX_LINES = 5000
+# Content cap for the live-diff endpoint: beyond it the current content is not
+# returned (the frontend falls back to a whole-file view). Matches the
+# baseline's own MAX_FILE_BYTES so both sides of the diff share one bound.
+MAX_DIFF_BYTES = 2 * 1024 * 1024
 # Binary sniff window (a NUL byte anywhere here means "not text").
 BINARY_SNIFF_BYTES = 8 * 1024
 # Encoding probe order — utf-8, then gbk (Chinese files are the common miss),
@@ -1166,6 +1170,7 @@ async def code_git(
     project_slug: str = "default",
     session_id: str = "",
     root: str = "session",
+    numstat: int = 0,
 ) -> dict:
     """Working-tree git decoration for one root (design §4.2-5, brief §3.2).
 
@@ -1216,13 +1221,61 @@ async def code_git(
     # Branch comes from the toplevel's own `.git/HEAD` (no subprocess), so it is
     # right even when the root sits several levels down or HEAD is detached.
     _is_repo, branch = _git_info(toplevel)
-    return {
+    resp = {
         "ok": True,
         "is_repo": True,
         "toplevel": str(toplevel),
         "branch": branch,
         "entries": entries,
     }
+    if numstat:
+        # P2 (2026-11-04): per-file add/del counts, best-effort. Tracked
+        # changes only — untracked files have no HEAD counterpart; the flag
+        # tells the frontend not to expect them here. Any git failure or
+        # timeout simply omits the key (never an error — same contract as the
+        # rest of this endpoint).
+        ns = _git_numstat(toplevel, offset)
+        if ns is not None:
+            resp["numstat"] = {"tracked_only": True, "files": ns}
+    return resp
+
+
+def _git_numstat(toplevel: Path, offset: str | None) -> dict[str, dict] | None:
+    """``{path: {add, del}}`` for ``git diff HEAD --numstat``, ROOT-relative.
+
+    ``None`` on any git failure/timeout (caller omits the key). Binary files
+    report ``add``/``del`` as ``-`` in porcelain — kept as 0 with
+    ``binary: True`` so the key shape stays uniform for the frontend. Paths go
+    through the same ``_relocate`` offset as status entries so both maps share
+    one frame of reference.
+    """
+    r = _git_run(["diff", "HEAD", "--numstat"], str(toplevel))
+    if r is None or r.returncode != 0:
+        return None
+    files: dict[str, dict] = {}
+    text = r.stdout.decode("utf-8", "replace")
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        add_s, del_s, path = parts[0], parts[1], "\t".join(parts[2:])
+        entry: dict = {"add": 0, "del": 0, "binary": False}
+        try:
+            entry["add"] = int(add_s)
+            entry["del"] = int(del_s)
+        except ValueError:
+            entry["binary"] = True  # numstat prints "-" for binary files
+        files[path] = entry
+    return _relocate_numstat(files, offset) if offset else files
+
+
+def _relocate_numstat(files: dict[str, dict], offset: str) -> dict[str, dict]:
+    """Rewrite toplevel-relative keys as ROOT-relative (same rule as
+    ``_relocate`` for status entries)."""
+    pfx = offset + "/"
+    return {p[len(pfx):]: e for p, e in files.items() if p.startswith(pfx)}
 
 
 # ---- search (S4) -----------------------------------------------------------
@@ -1495,4 +1548,82 @@ async def code_search(
         "scanned": scanned,
         "truncated": truncated,
         "elapsed_ms": int((time.monotonic() - t0) * 1000),
+    }
+
+# ---- live diff (code-panel-diff-design.md §6.2) ---------------------------
+
+
+@router.get("/api/code/diff")
+async def code_diff(
+    project_slug: str = "default",
+    session_id: str = "",
+    root: str = "session",
+    path: str = "",
+) -> dict:
+    """Return the agent-session baseline vs. the current on-disk content.
+
+    The baseline is the pre-write snapshot ``files/baselines.py`` recorded at the
+    file's FIRST agent write of the session (works in non-git directories — the
+    design's S5). Response shape (goal contract)::
+
+        {ok, path, root,
+         base_content: str | null,    # null → frontend treats it as added /
+                                      # degraded (whole-file replace)
+         base_version: str,           # stat identity of the pre-write state
+         current_content: str | null, # null when absent/too large
+         current_version: str,        # stat identity NOW ("" when absent)
+         degraded: bool,              # baseline content unavailable (caps)
+         baseline_exists: bool}       # False → the agent never wrote this file
+                                      # in this session; no baseline fields mean
+                                      # anything
+
+    Read-only: same fence as ``read`` (roots/containment/deny), no writes, and
+    no git involvement — a non-git root answers exactly like a git one.
+    """
+    ctx = _session_ctx(project_slug, session_id)
+    if ctx is None:
+        return _unknown_session(session_id)
+    try:
+        target, _root_info = resolve_code_target(ctx, root, path, write=False)
+    except CodeAccessError as e:
+        return _err(e.code, e.message)
+
+    from ..files.baselines import get_baseline
+
+    base = get_baseline(session_id, target)
+    if base is None:
+        return {
+            "ok": True,
+            "path": _norm_rel(path),
+            "root": root,
+            "baseline_exists": False,
+            "base_content": None,
+            "base_version": "",
+            "current_content": None,
+            "current_version": "",
+            "degraded": False,
+        }
+
+    current_content: str | None = None
+    current_version = ""
+    if target.is_file():
+        try:
+            data = target.read_bytes()
+            if len(data) <= MAX_DIFF_BYTES and b"\x00" not in data[:BINARY_SNIFF_BYTES]:
+                text, _enc = _decode(data)
+                current_content = text
+            current_version = f"{len(data)}:{target.stat().st_mtime_ns}"
+        except OSError:
+            pass
+
+    return {
+        "ok": True,
+        "path": _norm_rel(path),
+        "root": root,
+        "baseline_exists": True,
+        "base_content": base.get("content"),
+        "base_version": base.get("base_version") or "",
+        "current_content": current_content,
+        "current_version": current_version,
+        "degraded": bool(base.get("degraded")),
     }

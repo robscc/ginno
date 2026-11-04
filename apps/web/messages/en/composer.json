@@ -173,6 +173,7 @@
         "data": "Data",
         "text": "Text",
         "image": "Image",
+        "html": "Web page",
         "unknown": "Unknown"
       },
       "nodeType": {

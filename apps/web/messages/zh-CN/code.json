@@ -66,7 +66,17 @@
       "conflictTip": "文件已在磁盘上被修改",
       "dirtyTip": "有未保存的更改：{name}",
       "close": "关闭",
-      "closeNamed": "关闭 {name}"
+      "closeNamed": "关闭 {name}",
+      "markModified": "Agent 修改过此文件",
+      "markAdded": "Agent 新建了此文件"
+    },
+    "changes": {
+      "title": "变更文件",
+      "empty": "本会话暂无改动文件",
+      "view.current": "当前",
+      "view.turn": "按轮次",
+      "view.all": "全部",
+      "turnUngrouped": "未分组"
     },
     "tree": {
       "label": "文件树",
@@ -119,6 +129,16 @@
     "diff": {
       "hintSide": "左：你的未保存更改 · 右：磁盘当前内容",
       "hintInline": "「−」为你的未保存更改，「+」为磁盘当前内容",
+      "layoutGroup": "差异视图布局",
+      "sideBySide": "并排视图",
+      "inline": "行内视图"
+    },
+    "inlineDiff": {
+      "hint": "Agent 已根据会话基线修改此文件；退出 diff 后恢复编辑",
+      "degradedHint": "基线内容过大未能完整保留，此处显示的是可用的部分基线",
+      "versionRange": "{base} → {current}",
+      "viewDiff": "查看差异",
+      "exit": "退出 diff",
       "layoutGroup": "差异视图布局",
       "sideBySide": "并排视图",
       "inline": "行内视图"

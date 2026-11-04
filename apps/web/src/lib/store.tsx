@@ -19,6 +19,7 @@ import {
   type CodeOpenRequest,
   type CodeTouch,
   type ComposerInsertRequest,
+  type SessionChange,
 } from "./store/useCodePanel";
 import { usePreview, type PreviewFile } from "./store/usePreview";
 import { useWorkflows, type RunToolActivity } from "./store/useWorkflows";
@@ -41,7 +42,12 @@ export {
   panelWidthMax,
 } from "./store/useRightPanel";
 export type { RightTab } from "./store/useRightPanel";
-export type { CodeTouch, CodeOpenRequest, ComposerInsertRequest } from "./store/useCodePanel";
+export type {
+  CodeTouch,
+  CodeOpenRequest,
+  ComposerInsertRequest,
+  SessionChange,
+} from "./store/useCodePanel";
 export type { PreviewFile } from "./store/usePreview";
 export type { RunToolActivity } from "./store/useWorkflows";
 export { LAST_SESSION_KEY } from "./store/useSessions";
@@ -126,11 +132,20 @@ interface GinnoState {
   /** Absolute path → the agent's last write/edit, from `code.changed`. Feeds
    *  the tree's agent marks (cumulative). */
   codeTouched: Record<string, CodeTouch>;
+  /** Absolute path → session change (baseline version + op), newest-wins
+   *  (code-panel-diff-design.md §B). Drives the inline diff and M/A marks. */
+  codeSessionChanges: Record<string, SessionChange>;
   /** Only the NEWEST change, so a consumer can react once per event instead of
    *  re-scanning the cumulative map (and without diffing it). */
   codeLastChange: (CodeTouch & { path: string; nonce: number }) | null;
   /** Called by the session socket handler when `code.changed` arrives. */
-  notifyCodeChange: (change: { path: string; op: "write" | "edit"; version: string }) => void;
+  notifyCodeChange: (change: {
+    path: string;
+    op: "write" | "edit";
+    version: string;
+    baseVersion?: string | null;
+    turnId?: string;
+  }) => void;
   openPreview: (f: PreviewFile) => void;
   closePreview: () => void;
   notifyPreviewInvalidate: (fileId: string) => void;
@@ -393,6 +408,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     rightPanelOpenRef,
     setRightPanelOpen,
   });
+  // 会话切换 → 清空上一会话的 agent 改动徽标/变更列表（P1 2026-11-04）。
+  // resetCodeChanges 是稳定 callback，只随 activeSessionId 变化触发。
+  const resetCodeChanges = codeApi.resetCodeChanges;
+  useEffect(() => {
+    resetCodeChanges();
+  }, [activeSessionId, resetCodeChanges]);
   const {
     codeRootId,
     codePanelMode,
@@ -402,6 +423,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setCodeTreeOpen,
     codeOpenRequest,
     codeTouched,
+    codeSessionChanges,
     codeLastChange,
     notifyCodeChange,
     clearCodeOpenRequest,
@@ -556,6 +578,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setCodeTreeOpen,
     codeOpenRequest,
     codeTouched,
+    codeSessionChanges,
     codeLastChange,
     notifyCodeChange,
     clearCodeOpenRequest,

@@ -254,6 +254,13 @@ async def maybe_compact_history(
         return None
 
     keep_turns = max(1, int(settings.get("compact_keep_turns", 3)))
+    # 观测（2026-11-04）：自动压缩触发曾在 sidecar.log 零痕迹，排障全靠猜
+    # （本日 890e49866 138k→71k 一案）。在决策点与完成点各打一条 INFO。
+    log.info(
+        "compaction_triggered session=%s force=%s est_tokens=%d threshold=%d",
+        str(session.get("session_id") or ""), force,
+        estimate_messages_tokens(messages), threshold,
+    )
     split = find_split_index(messages, keep_turns)
     if split <= 0:
         return None
@@ -364,6 +371,11 @@ async def maybe_compact_history(
     new_messages.append(summary_msg)
     new_messages.extend(_copy_with_new_id(m) for m in keep)
     await graph.aupdate_state(config, {"messages": new_messages}, as_node="agent")
+    log.info(
+        "compaction_done session=%s old_msgs=%d new_msgs=%d est_tokens_after=%d",
+        session_id, len(messages), len(new_messages),
+        estimate_messages_tokens(new_messages),
+    )
 
     # E4 — re-assert the world after compression.
     reinject_text = None

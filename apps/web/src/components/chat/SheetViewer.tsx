@@ -92,14 +92,18 @@ export function SheetViewer() {
     if (!file) return;
     // Images are served raw by the sidecar (no extraction step) — the body
     // renders them directly from the download URL, so skip the preview fetch.
-    if (file.kind === "image") {
+    if (file.kind === "image" || file.kind === "html") {
       setErr(null);
-      setPv(null);
+      setPv(file.kind === "html" ? ({ ok: true, kind: "html" } as FilePreview) : null);
       setMissing(false);
       return;
     }
     setLoading(true);
     setErr(null);
+    // Reset the previous file's payload — switching targets must not leave
+    // the old document rendered below the new file's error/placeholder
+    // (seen with .md → .html, 2026-11-04).
+    setPv(null);
     try {
       const r = await api.getFilePreview(file.id, { sheet, offset, limit: PAGE });
       if (!r.ok) {
@@ -139,6 +143,7 @@ export function SheetViewer() {
 
   const isTable = pv?.kind === "spreadsheet" || pv?.kind === "table";
   const isImage = file?.kind === "image";
+  const isHtml = file?.kind === "html" || /\.html?$/i.test(file?.name ?? "");
   // 服务端数据徽标兜底词：pv.kind 分类法值 → 本地化徽标（composer.badges.fileKind）；
   // 未知值仍回退英文原值（服务端新增 kind 无需前端同步）。
   const FILE_KINDS = [
@@ -150,6 +155,7 @@ export function SheetViewer() {
     "data",
     "text",
     "image",
+    "html",
     "unknown",
   ] as const;
   const fileKindBadge = (kind: string): string =>
@@ -261,8 +267,16 @@ export function SheetViewer() {
             </div>
           )}
           {!missing && err && <div className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {!missing && !err && !pv && !isImage && (
+          {!missing && !err && !pv && !isImage && !isHtml && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
+          )}
+          {isHtml && !missing && (
+            <iframe
+              src={api.fileInlineUrl(file.id)}
+              title={file.name}
+              sandbox="allow-scripts"
+              className="h-full min-h-[60vh] w-full border-0 bg-white"
+            />
           )}
           {isImage && !missing && (
             <div className="flex min-h-full items-center justify-center px-5 py-4">

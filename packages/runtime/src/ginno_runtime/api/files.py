@@ -464,6 +464,49 @@ async def file_preview_endpoint(
     }
 
 
+_CSP_SANDBOX = (
+    "sandbox allow-scripts; "
+    "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; "
+    "connect-src 'none'; form-action 'none'"
+)
+
+
+@router.get("/api/files/{file_id}/inline")
+async def file_inline_endpoint(file_id: str) -> Any:
+    """Serve an html file for in-app iframe preview — the SheetViewer twin of
+    the code panel's HtmlPreview. Sandboxed twice on purpose: the CSP header
+    here (opaque origin, no network) AND the iframe attribute in the client.
+    No Content-Disposition so the browser renders instead of downloading."""
+    from starlette.responses import Response as _Resp
+
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": f"file not found: {file_id}"}
+        )
+    p = Path(entry["path"])
+    if not p.is_file():
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "File has been moved or deleted"}
+        )
+    if entry.get("kind") != "html":
+        raise HTTPException(
+            status_code=415,
+            detail={"ok": False, "error": f"not previewable inline: {entry.get('kind')}"},
+        )
+    try:
+        body = p.read_bytes()
+    except OSError as e:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "File has been moved or deleted"}
+        ) from e
+    return _Resp(
+        content=body,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Security-Policy": _CSP_SANDBOX, "Cache-Control": "no-store"},
+    )
+
+
 def _attachment_headers(filename: str) -> dict[str, str]:
     """Content-Disposition for downloads; RFC 5987 filename* for UTF-8 names."""
     from urllib.parse import quote

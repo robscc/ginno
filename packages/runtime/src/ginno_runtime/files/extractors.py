@@ -38,6 +38,10 @@ _KIND_BY_EXT = {
     ".webp": "image",
     ".bmp": "image",
     ".svg": "image",
+    # Rendered-page previews in the file modal (SheetViewer iframe) — the
+    # same double-sandbox treatment as the code panel's HtmlPreview.
+    ".html": "html",
+    ".htm": "html",
 }
 
 PREVIEWABLE_KINDS = {"spreadsheet", "table", "document", "presentation", "pdf"}

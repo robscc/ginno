@@ -1192,6 +1192,14 @@ async def delete_session(
             )
     s = _SESSIONS.pop(session_id, None)
     slug = s["project_slug"] if s else None
+    # 代码面板实时 diff 的 session 基线随会话删除清理（design §6.1，内存 map，
+    # 不清理就是唯一的常驻增长点）。
+    try:
+        from ..files.baselines import clear_session
+
+        clear_session(session_id)
+    except Exception:
+        _log.exception("baselines_clear_failed session=%s", session_id)
     # 渠道会话（wecom/dingtalk）删除前先取 channel 标记：meta 马上要没了，
     # 之后要靠它找到对应适配器解绑映射并通知 IM 侧。
     chan = None

@@ -724,7 +724,7 @@ export function ChatStream({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {isHome ? (
         <HomeView
           agents={g.agents}
@@ -746,8 +746,17 @@ export function ChatStream({
       ) : (
         <>
       {session.type === "subagent" && <SubagentTopBar session={session} />}
-      {session.type !== "subagent" && <PlanBoard sessionId={session.id} />}
-      {session.type !== "subagent" && <SubagentBoard sessionId={session.id} />}
+      {/* Plan/子代理看板悬浮在消息流上方，不占会话高度（2026-11-04）：
+          外层 pointer-events-none 让点击穿透到下面的消息，板卡自身
+          pointer-events-auto 保持可交互；max-h+overflow 防展开后遮满。 */}
+      {session.type !== "subagent" && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 max-h-[60%] overflow-y-auto">
+          <div className="pointer-events-auto">
+            <PlanBoard sessionId={session.id} />
+            <SubagentBoard sessionId={session.id} />
+          </div>
+        </div>
+      )}
       {/* V2 P1-2 「沉淀为…」: turn this session into a reusable skill / KB card
           / workflow. Kept out of the subagent and delegation (read-only) views
           ——渠道会话同属只读家族。 */}

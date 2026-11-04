@@ -28,6 +28,9 @@ export interface EditorTab {
   dirty?: boolean;
   /** Save was rejected: the file changed on disk since it was read. */
   conflict?: boolean;
+  /** Agent-change mark (code-panel-diff-design.md §5): "M" modified / "A"
+   *  added by the agent this session. Shown as a small letter badge. */
+  mark?: "M" | "A";
 }
 
 export interface EditorTabsProps {
@@ -97,6 +100,21 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
           >
             <FileText size={12} className="shrink-0 opacity-70" />
             <span className="truncate">{tabLabel(tab)}</span>
+            {/* Agent M/A mark, then conflict badge, then the dirty dot — at
+               most two badges ever show. */}
+            {tab.mark ? (
+              <span
+                role="img"
+                aria-label={t(tab.mark === "A" ? "markAdded" : "markModified")}
+                title={t(tab.mark === "A" ? "markAdded" : "markModified")}
+                className={cn(
+                  "w-[10px] shrink-0 text-center font-mono text-[10px] leading-none",
+                  tab.mark === "A" ? "text-[#4caf7d]" : "text-[#d19a66]",
+                )}
+              >
+                {tab.mark}
+              </span>
+            ) : null}
             {/* Conflict badge outranks the dirty dot: both set → conflict only. */}
             {tab.conflict ? (
               <span

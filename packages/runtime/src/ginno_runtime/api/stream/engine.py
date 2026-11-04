@@ -1013,7 +1013,7 @@ async def _stream_graph(
                                 # write_file / edit_file append to their own
                                 # result; there is no Hook for this — its
                                 # PostToolUse is declared but never dispatched).
-                                await _emit_code_changes(safe_send, emit, slug, session_id, raw)
+                                await _emit_code_changes(safe_send, emit, slug, session_id, raw, ui_turn_id)
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
                         # tools_allow / hooks / policy / user (not streamed)

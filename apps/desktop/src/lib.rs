@@ -662,8 +662,12 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<RuntimeProcess>() {
                     if let Ok(mut guard) = state.0.lock() {
                         if let Some(child) = guard.as_mut() {
-                            let _ = child.kill();
-                            let _ = child.wait();
+                            // SIGTERM-first（sidecar.rs::stop_child_gracefully）:
+                            // 让 uvicorn 的 lifespan 收尾真正跑起来——后台命令
+                            // SIGTERM 回收、MCP 关闭、profile Chrome 收口；超时
+                            // 才升级 SIGKILL。此前直接 kill()（=SIGKILL）会把
+                            // 不读 stdin 的后台命令孤儿化。
+                            crate::sidecar::stop_child_gracefully(child);
                         }
                     }
                 }

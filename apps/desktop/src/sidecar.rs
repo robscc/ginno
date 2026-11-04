@@ -372,6 +372,29 @@ pub(crate) fn wait_for_sidecar(timeout: Duration) -> bool {
     sidecar_listening()
 }
 
+/// Stop the tracked runtime child gracefully: SIGTERM first so uvicorn runs
+/// its lifespan shutdown (server.py finally: bg tasks SIGTERM'd and reaped,
+/// MCP stdio servers closed, profile Chrome shut down), bounded wait, then
+/// SIGKILL. Plain `child.kill()` is SIGKILL — the graceful path never ran on
+/// desktop quit/restart, orphaning non-detached background commands (they
+/// don't read stdin, so no EOF self-heal). Typical exit is a few hundred ms;
+/// the 6s ceiling covers stop_all's 2s grace (tasks STOP_GRACE_S) plus
+/// MCP/mods teardown. `uv run` (dev) forwards SIGTERM to uvicorn.
+pub(crate) fn stop_child_gracefully(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let _ = Command::new("kill").args(["-15", &pid]).status();
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while std::time::Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Kill the tracked child (and any leftover listener on our port), then
 /// spawn a fresh sidecar. Reloads the webview onto splash → app once the
 /// port accepts.
@@ -397,8 +420,7 @@ pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<RuntimeProcess>() {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_child_gracefully(&mut child);
             }
         }
     }

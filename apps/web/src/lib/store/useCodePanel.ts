@@ -13,6 +13,19 @@ export interface CodeTouch {
   at: number;
 }
 
+/** One entry of the session change map (code-panel-diff-design.md §B): which
+ *  baseline the agent's last write to this file was anchored on. Feeds the
+ *  inline diff (`GET /api/code/diff`) and the tab M/A marks. */
+export interface SessionChange {
+  /** Baseline version the agent's write was diffed against (WS event's
+   *  `base_version`); null when runtime did not provide one. */
+  baseVersion: string | null;
+  op: "write" | "edit";
+  /** Turn grouping label from the event, when present. */
+  turnId?: string;
+  at: number;
+}
+
 /** A pending "open this file in the code panel" request, published by the chat
  *  jump path (openInCode) and consumed by the panel (docs/code-panel-design.md
  *  §3.4). The nonce bumps on every call so re-opening the same path still
@@ -58,17 +71,40 @@ export function useCodePanel({
   const [codeLastChange, setCodeLastChange] = useState<
     (CodeTouch & { path: string; nonce: number }) | null
   >(null);
+  /** Absolute path → session change (baseline version + op), newest-wins
+   *  (code-panel-diff-design.md §B). Drives the inline diff and M/A marks. */
+  const [codeSessionChanges, setCodeSessionChanges] = useState<Record<string, SessionChange>>({});
   const codeChangeNonceRef = useRef(0);
   const notifyCodeChange = useCallback(
-    (change: { path: string; op: "write" | "edit"; version: string }) => {
+    (change: {
+      path: string;
+      op: "write" | "edit";
+      version: string;
+      baseVersion?: string | null;
+      turnId?: string;
+    }) => {
       const touch: CodeTouch = { op: change.op, version: change.version, at: Date.now() };
       setCodeTouched((prev) => ({ ...prev, [change.path]: touch }));
+      const sess: SessionChange = {
+        baseVersion: change.baseVersion ?? null,
+        op: change.op,
+        turnId: change.turnId,
+        at: touch.at,
+      };
+      setCodeSessionChanges((prev) => ({ ...prev, [change.path]: sess }));
       codeChangeNonceRef.current += 1;
       setCodeLastChange({ ...touch, path: change.path, nonce: codeChangeNonceRef.current });
     },
     [],
   );
   const codeOpenNonceRef = useRef(0);
+  /** Session switch must not leak the previous session's marks/change list
+   *  into the next one (P1 2026-11-04, found in diff acceptance review). */
+  const resetCodeChanges = useCallback(() => {
+    setCodeTouched({});
+    setCodeSessionChanges({});
+    setCodeLastChange(null);
+  }, []);
   // ---- composer insert (tree → composer drag) ----
   const [composerInsert, setComposerInsert] = useState<ComposerInsertRequest | null>(null);
   const composerInsertNonceRef = useRef(0);
@@ -118,8 +154,10 @@ export function useCodePanel({
     codeTreeOpen,
     codeOpenRequest,
     codeTouched,
+    codeSessionChanges,
     codeLastChange,
     notifyCodeChange,
+    resetCodeChanges,
     composerInsert,
     composerDragOver,
     setComposerDragOver,

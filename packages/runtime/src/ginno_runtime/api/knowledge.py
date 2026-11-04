@@ -657,6 +657,9 @@ def kb_wiki_backlinks(title: str = "") -> dict:
 
 @router.put("/api/kb/wiki/config")
 async def kb_wiki_put_config(data: dict) -> dict:
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
     from dataclasses import fields as _fields
 
     from ..knowledge.config import save_knowledge_config as _save_kb_cfg
@@ -671,4 +674,12 @@ async def kb_wiki_put_config(data: dict) -> dict:
 
     _reset_kb()  # pick up a changed vault_path on the next call
     _reset_kb_semantic()  # embeddings are keyed by vault path
+    # Apply the new draft budget immediately: shrink the pending queue right
+    # away instead of waiting for the next periodic sweep (2026-11-04).
+    try:
+        from ..memory import expire_stale_drafts as _expire_drafts
+
+        _expire_drafts()
+    except Exception:
+        _log.exception("draft sweep after config save failed (continuing)")
     return {"ok": True, "config": merged}

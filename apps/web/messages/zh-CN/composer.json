@@ -173,6 +173,7 @@
         "data": "数据",
         "text": "文本",
         "image": "图片",
+        "html": "网页",
         "unknown": "未知"
       },
       "nodeType": {

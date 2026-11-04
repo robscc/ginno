@@ -349,6 +349,16 @@ async def lifespan(app: FastAPI):
                 await _get_tasks_registry().stop_all()
             except Exception:
                 _log.exception("tasks registry shutdown failed")
+        # B-track profile Chrome 随 sidecar 退（2026-11-03 进程泄露盘点）：此前
+        # shutdown() 只挂在连接器页的「停止」按钮上，sidecar 退出（无论优雅
+        # 与否）都不收——桌面退出改 SIGTERM-first 后这条路径真正可达了。
+        # 单例构造不 spawn；从未启动过时 conn/proc 均为 None，安全 no-op。
+        try:
+            from .browser.executor import get_profile_backend as _gpb
+
+            await _gpb().shutdown()
+        except Exception:
+            _log.exception("browser_profile_shutdown_failed")
         if shared._mcp:
             await shared._mcp.close_all()
         # Mods bus teardown (§5.2): stop the channel and any dev-spawned

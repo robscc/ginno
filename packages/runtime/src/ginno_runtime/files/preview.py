@@ -66,6 +66,10 @@ def build_preview(
     """
     p = Path(path).expanduser()
     kind = ex.classify(p)
+    if kind == "html":
+        # No extraction: the frontend streams the bytes into a sandboxed
+        # iframe via GET /api/files/{id}/inline (same CSP as code panel).
+        return {"kind": "html"}
     if kind in ("spreadsheet", "table"):
         return _table_payload(p, kind, sheet, offset, limit)
     if kind in ("document", "presentation", "pdf", "data", "text"):

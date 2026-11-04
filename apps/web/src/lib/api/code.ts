@@ -240,6 +240,46 @@ export async function writeCodeFile(
   throw new CodeApiError(r.code ?? "not-text", r.message ?? "Save failed");
 }
 
+// ---- live diff (code-panel-diff-design.md §B / §6.2) ------------------------
+
+/** Shape of `GET /api/code/diff` — session baseline vs current disk content.
+ *  The baseline is the pre-write snapshot recorded at the file's FIRST agent
+ *  write of the session, so a non-git root answers exactly like a git one. */
+export interface CodeDiff {
+  baselineExists: boolean;
+  /** null → treat as added / degraded (whole-file replace). */
+  baseContent: string | null;
+  baseVersion: string;
+  /** null when absent / too large / binary. */
+  currentContent: string | null;
+  currentVersion: string;
+  /** Baseline content unavailable (size caps) — only base_version is trusted. */
+  degraded: boolean;
+}
+
+/** Fetch the agent-session baseline diff for one file. Same fence as
+ *  `readCodeFile`; `baseline_exists: false` is a NORMAL answer (the agent never
+ *  wrote this file this session) — the caller falls back, it is not an error. */
+export async function codeDiff(
+  projectSlug: string,
+  sessionId: string,
+  root: string,
+  path: string,
+): Promise<CodeDiff> {
+  const r = await json<CodeFail & Record<string, unknown>>(
+    `${BASE}/code/diff?${codeQuery(projectSlug, sessionId, { root, path })}`,
+  );
+  if (!r.ok) throw new CodeApiError(r.code ?? "unknown-root", r.message ?? "");
+  return {
+    baselineExists: !!r.baseline_exists,
+    baseContent: (r.base_content as string | null) ?? null,
+    baseVersion: (r.base_version as string) ?? "",
+    currentContent: (r.current_content as string | null) ?? null,
+    currentVersion: (r.current_version as string) ?? "",
+    degraded: !!r.degraded,
+  };
+}
+
 /** Git status for one root.
  *
  *  "Not a repo" is a NORMAL answer (`is_repo: false`), not an error: the tree

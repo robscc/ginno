@@ -117,6 +117,12 @@ cd apps/web && pnpm test          # vitest（src/lib/*.test.ts，node 环境，�
 - 打包 UI 的 playwright e2e（`test_packaged_ui_*`）需要运行中的 dist sidecar——
   本地 8787 被 Ginno/dev 占着会挂，CI 干净环境自动 skip。跑它们前先退出 Ginno。
 
+## 文档归档规范
+
+- 设计/方案文档一律放进本仓库 `docs/`（如 `docs/code-panel-diff-design.md`），深度设计放 `docs/design/`；不要只留在会话或 Obsidian 里。
+- 交互式 HTML 原型/mockup 参照仓库根 `mcp-server-ui-prototype.html` 先例放仓库根，或放 `design-mocks/`。
+- 调研报告类产物可同时存 Obsidian `/Users/songchenshuan/Documents/Obsidian Vault/Ginno/Research/`。
+
 ## 代码结构速查
 
 - `packages/runtime/src/ginno_runtime/` — Python 运行时全部源码

@@ -62,6 +62,8 @@ import {
 } from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
 import type { CodeRead, CodeRoot } from "@/lib/codeTypes";
+import { codeDiff } from "@/lib/runtime";
+import { InlineDiffScheduler, type ScheduledChange } from "@/lib/inlineDiffScheduler";
 import { cn } from "@/lib/utils";
 import { RootBar } from "./RootBar";
 import { FileTree } from "./FileTree";
@@ -71,6 +73,8 @@ import { ImagePreview } from "./ImagePreview";
 import { HtmlPreview } from "./HtmlPreview";
 import { isRenderableHtml } from "./language";
 import { ConflictDiff } from "./ConflictDiff";
+import { InlineDiffOverlay } from "./InlineDiffOverlay";
+import { ChangesPanel } from "./ChangesPanel";
 import { QuickOpen } from "./QuickOpen";
 import { SearchView, type CodeSearchFn } from "./SearchView";
 
@@ -223,6 +227,17 @@ export function CodePanel() {
   const [tabMeta, setTabMeta] = useState<Record<string, TabMeta>>({});
   const [pendingClose, setPendingClose] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  // Inline diff (code-panel-diff-design.md §B): a CLEAN tab the agent rewrote
+  // shows base-vs-current through InlineDiffOverlay until the user exits.
+  // Keyed to the tab key, so switching tabs away (and back) keeps the state.
+  const [inlineDiff, setInlineDiff] = useState<{
+    key: string;
+    base: string;
+    current: string;
+    baseVersion: string;
+    currentVersion: string;
+    degraded: boolean;
+  } | null>(null);
   const tabMetaRef = useRef<Record<string, TabMeta>>({});
   useEffect(() => {
     tabMetaRef.current = tabMeta;
@@ -479,8 +494,14 @@ export function CodePanel() {
       recencyRef.current = recencyRef.current.filter((k) => k !== key);
       delete latestTextRef.current[key];
       setShowDiff(false);
+      // Closing the tab exits diff mode (design §4.1) and drops any pending
+      // debounced diff for the file.
+      setInlineDiff((cur) => (cur?.key === key ? null : cur));
+      const closedTab = tabs.find((tb) => codeTabKey(tb) === key);
+      const closedAbs = closedTab ? absPathOf(closedTab) : null;
+      if (closedAbs) inlineDiffSchedulerRef.current?.cancel(closedAbs);
     },
-    [tabs, activeKey, pendingClose, dropRead, t],
+    [tabs, activeKey, pendingClose, dropRead, absPathOf, t],
   );
 
   const selectTab = useCallback((key: string) => {
@@ -510,6 +531,7 @@ export function CodePanel() {
         savedNonce: m.savedNonce + 1,
       }));
       setShowDiff(false);
+      setInlineDiff((cur) => (cur?.key === key ? null : cur));
     },
     [patchMeta],
   );
@@ -569,6 +591,7 @@ export function CodePanel() {
       dropRead(key);
       patchMeta(key, (m) => ({ ...m, dirty: false, conflict: null, rev: m.rev + 1 }));
       setShowDiff(false);
+      setInlineDiff((cur) => (cur?.key === key ? null : cur));
       setReadNonce((n) => n + 1);
       setNotice(notice ?? t("notice.reloaded"));
     },
@@ -635,9 +658,101 @@ export function CodePanel() {
       }));
       setNotice(t("notice.agentChangedDirty"));
     } else {
-      reloadTab(key, t("notice.agentChangedReloaded"));
+      // CLEAN tab → inline diff mode (code-panel-diff-design.md §B). The
+      // 500ms scheduler coalesces bursts; each fire fetches the session
+      // baseline diff and only THEN swaps the editor for the overlay. A file
+      // with no usable baseline (never agent-written / degraded / binary)
+      // falls back to the plain reload follow.
+      inlineDiffSchedulerRef.current?.schedule(last.path, last.version, { rootId: hit.rootId });
     }
-  }, [g.codeLastChange, sessionId, absPathOf, patchMeta, reloadTab, t]);
+  }, [g.codeLastChange, sessionId, absPathOf, patchMeta, t]);
+
+  // ---- inline diff (code-panel-diff-design.md §B) ---------------------------
+  // One scheduler per panel, created once; the handler lives in a ref so it
+  // always sees the current sessionId/roots without re-arming timers.
+  const inlineDiffSchedulerRef = useRef<InlineDiffScheduler<{ rootId: string }> | null>(null);
+  useEffect(() => {
+    inlineDiffSchedulerRef.current = new InlineDiffScheduler<{ rootId: string }>(500, (ch) =>
+      inlineDiffFireRef.current(ch),
+    );
+    return () => {
+      inlineDiffSchedulerRef.current?.dispose();
+      inlineDiffSchedulerRef.current = null;
+    };
+  }, []);
+
+  const exitInlineDiff = useCallback(() => {
+    setInlineDiff(null);
+  }, []);
+
+  const handleInlineDiffFire = useCallback(
+    async (ch: ScheduledChange<{ rootId: string }>) => {
+      if (!sessionId) return;
+      const tab = tabsRef.current.find((tb) => absPathOf(tb) === ch.path);
+      if (!tab) return;
+      const key = codeTabKey(tab);
+      // The user may have started typing inside the debounce window: a dirty
+      // tab never auto-enters diff (design §8), the conflict path owns it.
+      if (tabMetaRef.current[key]?.dirty) return;
+      try {
+        const d = await codeDiff(PROJECT_SLUG, sessionId, ch.data.rootId, tab.path);
+        if (!d.baselineExists || d.degraded || d.baseContent == null || d.currentContent == null) {
+          // No usable baseline (agent never wrote it this session / caps /
+          // binary): keep the old "reload and show a notice" follow.
+          reloadTab(key, t("notice.agentChangedReloaded"));
+          return;
+        }
+        // Adopt the current content as the tab's clean buffer BEFORE showing
+        // the overlay, so exiting the diff lands on a fresh editable editor
+        // (bumping `rev` makes Monaco rebuild its model with the new text).
+        const currentText = d.currentContent;
+        setReads((prev) => {
+          const cur = prev[key];
+          if (!cur?.data) return prev;
+          return {
+            ...prev,
+            [key]: {
+              ...cur,
+              data: { ...cur.data, text: currentText, version: d.currentVersion || cur.data.version },
+            },
+          };
+        });
+        patchMeta(key, (m) => ({ ...m, dirty: false, conflict: null, rev: m.rev + 1 }));
+        setInlineDiff({
+          key,
+          base: d.baseContent,
+          current: currentText,
+          baseVersion: d.baseVersion,
+          currentVersion: d.currentVersion,
+          degraded: d.degraded,
+        });
+      } catch {
+        reloadTab(key, t("notice.agentChangedReloaded"));
+      }
+    },
+    [sessionId, absPathOf, patchMeta, reloadTab, t],
+  );
+  const inlineDiffFireRef = useRef<(ch: ScheduledChange<{ rootId: string }>) => void>(() => {});
+  useEffect(() => {
+    inlineDiffFireRef.current = (ch) => void handleInlineDiffFire(ch);
+  }, [handleInlineDiffFire]);
+
+  /**
+   * ChangesPanel 联动（code-panel-diff-design.md §A）：点变更列表里的一行 →
+   * 打开该文件并进入 inline diff。复用 S3 的 500ms 调度器：openFile 先落地
+   * tab，500ms 后 handleInlineDiffFire 在 tabsRef 里能找到它并拉取基线 diff。
+   * 没有可用基线时该 handler 自行降级为 reload + 提示，无需此处的额外分支。
+   */
+  const openDiffForPath = useCallback(
+    (rootId: string, rel: string) => {
+      openFile(rootId, rel);
+      const base = roots.find((r) => r.id === rootId)?.path;
+      if (!base) return;
+      const abs = rel ? `${base}/${rel}` : base;
+      inlineDiffSchedulerRef.current?.schedule(abs, "0", { rootId });
+    },
+    [openFile, roots],
+  );
 
   /**
    * 「强制覆盖」 — re-send the buffer against the version the 409 reported.
@@ -1182,7 +1297,12 @@ export function CodePanel() {
           <EditorTabs
             tabs={tabs.map((tab) => {
               const m = tabMeta[codeTabKey(tab)];
-              return m ? { ...tab, dirty: m.dirty, conflict: !!m.conflict } : tab;
+              // Agent M/A mark from the session change map (§5): the abs-path
+              // key the store uses; "write" = created by the agent → "A".
+              const abs = absPathOf(tab);
+              const touch = abs ? g.codeTouched[abs] : undefined;
+              const mark = touch ? touch.op === "write" ? ("A" as const) : ("M" as const) : undefined;
+              return m ? { ...tab, dirty: m.dirty, conflict: !!m.conflict, mark } : { ...tab, mark };
             })}
             activeKey={activeKey}
             onSelect={selectTab}
@@ -1226,7 +1346,22 @@ export function CodePanel() {
 
           <div className="min-h-0 flex-1">
             {activeTab && activeRead?.status === "ok" && activeRead.data ? (
-              showDiff && activeMeta?.conflict ? (
+              inlineDiff && inlineDiff.key === codeTabKey(activeTab) ? (
+                /* Inline diff (code-panel-diff-design.md §B): session baseline
+                   vs current disk content for a CLEAN tab the agent rewrote.
+                   Takes priority — it replaces the plain editor entirely until
+                   the user exits (or edits, which clears the state above). */
+                <InlineDiffOverlay
+                  path={activeTab.path}
+                  base={inlineDiff.base}
+                  current={inlineDiff.current}
+                  baseVersion={inlineDiff.baseVersion}
+                  currentVersion={inlineDiff.currentVersion}
+                  degraded={inlineDiff.degraded}
+                  onExit={exitInlineDiff}
+                  className="h-full"
+                />
+              ) : showDiff && activeMeta?.conflict ? (
                 <ConflictDiff
                   path={activeTab.path}
                   mine={activeMeta.conflict.mine}
@@ -1286,6 +1421,8 @@ export function CodePanel() {
                     // Monaco compares alternative version ids, so an undo back to
                     // the saved text reports clean again (design §4.5).
                     if (activeKey) patchMeta(activeKey, (m) => (m.dirty === dirty ? {} : { dirty }));
+                    // The user started editing → leave diff mode (design §4.1).
+                    if (dirty) setInlineDiff((cur) => (cur?.key === activeKey ? null : cur));
                   }}
                   onSave={(text) => {
                     if (activeKey) void saveTab(activeKey, text);
@@ -1349,6 +1486,17 @@ export function CodePanel() {
           </div>
         ) : null}
       </div>
+
+      {/* §A: bottom collapsible session-changes sub-window. Self-hides its
+          body when empty (a slim one-line hint remains). */}
+      <ChangesPanel
+        sessionId={sessionId ?? ""}
+        roots={roots}
+        sessionChanges={g.codeSessionChanges}
+        gitStatus={gitStatus}
+        gitRootId={effectiveRootId}
+        onOpenDiff={openDiffForPath}
+      />
 
       {/* ⌘P quick-open — its own fixed-position dialog. */}
       {quickOpen ? (

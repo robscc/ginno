@@ -515,6 +515,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           path: ev.path,
           op: ev.op as "write" | "edit",
           version: typeof ev.version === "string" ? ev.version : "",
+          // Live-diff contract (code-panel-diff-design.md §6.3): the baseline
+          // version the agent's write was anchored on; null when absent.
+          baseVersion: typeof ev.base_version === "string" ? ev.base_version : null,
+          turnId: typeof ev.turn_id === "string" ? ev.turn_id : undefined,
         });
       }
       break;

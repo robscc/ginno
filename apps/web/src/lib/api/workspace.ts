@@ -199,6 +199,12 @@ export function fileDownloadUrl(
   return `${BASE}/files/${fileId}/download${q ? `?${q}` : ""}`;
 }
 
+// Sandbox-rendered html preview for the SheetViewer iframe (mirrors the code
+// panel's HtmlPreview): CSP header server-side + sandbox attr client-side.
+export function fileInlineUrl(fileId: string) {
+  return `${BASE}/files/${fileId}/inline`;
+}
+
 // Browser-side save: fetch as blob → object URL → anchor click. Used in dev /
 // plain browsers; the Tauri webview can't trigger downloads this way, so the
 // desktop UI calls saveFileToDownloads instead.

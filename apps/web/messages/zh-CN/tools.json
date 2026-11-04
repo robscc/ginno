@@ -464,6 +464,8 @@
       "injectionCapDesc": "每轮注入记忆的字符上限，0 = 不截断",
       "ttl": "草稿过期",
       "ttlDesc": "超过天数未审 → 自动过期",
+      "pending": "待审额度",
+      "pendingDesc": "待审草稿队列上限，超出逐出最旧的；0 = 不限",
       "keep": "保留份数",
       "keepDesc": "队列最多保留的草稿",
       "distillProvider": "蒸馏供应商",

@@ -787,6 +787,7 @@ def build_all_tools(
             context_dirs=context_dirs,
             primary_path=primary_path,
             observe_path=_project_observer(project_slug, session_id),
+            session_id=session_id,
         )
         # bg_* 后台任务工具（background-tasks-design.md §4）：与文件/shell
         # 工具同 workspace/挂载绑定；session_id 是完成注入的 origin。
