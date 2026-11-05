@@ -598,6 +598,8 @@ export interface RunningWork {
   sessions: Array<{ id: string; title: string }>;
   tasks: Array<{ id: string; title: string; command: string }>;
   count: number;
+  /** 停在 interrupt 等用户应答的会话（ask_user/权限卡）。 */
+  waiting?: Array<{ id: string; kind: string }>;
 }
 
 export async function listRunning(): Promise<RunningWork> {

@@ -18,7 +18,11 @@
       "rolledBack": "已失败——自动回滚到旧 bundle。",
       "finished": "全部阶段通过——sidecar 正在重启到新 bundle。",
       "hoverHint": "悬停查看 热切换 进度",
-      "slowShort": "慢"
+      "slowShort": "慢",
+      "confirmHint": "新版本构建完成",
+      "confirmSwap": "确认切换",
+      "postpone": "暂不",
+      "swapping": "切换中…"
     },
     "badge": {
       "hint": "dev-override 运行时 bundle · {fp} · 构建于 {time} —— make dev-swap-clean 回出厂"

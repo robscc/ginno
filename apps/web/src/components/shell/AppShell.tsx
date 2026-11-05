@@ -411,6 +411,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 侧栏行据此渲染边缘条+脉冲点。与连接器状态点同一模式;tasks 部分不进
   // 本特性(/tasks 页徽标已有归属)。轮询粒度 5s:turn 起收不是亚秒级事件。
   const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(new Set());
+  // 停在 ask_user/权限 interrupt 等待应答的会话（2026-11-05 用户需求：侧栏
+  // 明确图标提示）→ sid → kind（user_question | *_decision）。
+  const [waitingMap, setWaitingMap] = useState<Record<string, string>>({});
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -423,6 +426,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               return prev; // 集合不变时保引用,避免全行无谓重渲染
             }
             return next;
+          });
+          const wm: Record<string, string> = {};
+          for (const w of r.waiting ?? []) wm[w.id] = w.kind ?? "unknown";
+          setWaitingMap((prev) => {
+            const pk = JSON.stringify(prev), nk = JSON.stringify(wm);
+            return pk === nk ? prev : wm;
           });
         }
       } catch { /* sidecar 未起时静默 */ }
@@ -721,6 +730,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       selected={selected}
       unreadSessions={g.unreadSessions}
       runningIds={runningIds}
+      waitingMap={waitingMap}
       treeCollapsed={g.treeCollapsed}
       editingId={editingId}
       editTitle={editTitle}

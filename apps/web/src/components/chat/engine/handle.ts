@@ -847,20 +847,13 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     }
     case "runtime.dev_swap_pending": {
       // 开发热切换（docs/runtime-hot-swap-design.md §3.4）：CLI 已把 symlink
-      // 切到新 bundle，剩下的「重启 + 指纹验证 + 失败回滚」只有壳能做
-      // （它持有 child handle 与 webview 导航）——前端只做中转 invoke。
-      // 结果：restart 会整页 reload，回来后 TopBar 的 dev 指纹黄条即状态。
+      // 切到新 bundle。2026-11-05 用户需求：切换需用户确认——不再自动 invoke
+      // finish_dev_swap，改为点亮确认条（DevSwapCard 确认区，TopBar 常驻可见）。
+      // 「暂不」= 不重启，老 sidecar 继续跑，下次重启自然吃到新 bundle。
       markDelivered(ctx, sid);
       void (async () => {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const res = await invoke<{ ok: boolean; rolled_back?: boolean; detail?: string }>(
-            "finish_dev_swap",
-          );
-          console.info("[dev-swap] finished:", res);
-        } catch (e) {
-          console.warn("[dev-swap] finish_dev_swap unavailable:", e);
-        }
+        const { setDevSwapPendingConfirm } = await import("@/lib/devswap/bus");
+        setDevSwapPendingConfirm(true);
       })();
       break;
     }

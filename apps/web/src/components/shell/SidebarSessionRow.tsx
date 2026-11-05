@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { BotOff, Check, ChevronDown, Square, Trash2 } from "lucide-react";
+import { BotOff, Check, ChevronDown, Hand, Square, Trash2 } from "lucide-react";
 import { RowFanMenu } from "@/components/shell/RowFanMenu";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -32,6 +32,9 @@ export interface SidebarSessionRowProps {
   /** 运行中 turn 的会话 id 集（running-indicator-design §1，/api/running
    *  5s 轮询，AppShell 持有）。子会话行不叠加（已有状态 emoji 强标识）。 */
   runningIds?: ReadonlySet<string>;
+  /** 停在 ask_user/权限 interrupt 等应答的会话（sid → kind）。侧栏行按 kind
+   *  渲染琥珀「等待回答」图标——运行指示之外的最高优先级提示。 */
+  waitingMap?: Record<string, string>;
   treeCollapsed: Record<string, boolean>;
   editingId: string | null;
   editTitle: string;
@@ -79,6 +82,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     selected,
     unreadSessions,
     runningIds,
+    waitingMap,
     treeCollapsed,
     editingId,
     editTitle,
@@ -118,6 +122,8 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
   // 主会话行的运行中强提示（§2 A 强视觉）：边缘条 + 脉冲点。归档区行照常
   // 显示（运行中被手动归档是合法态，§4）；子会话行不叠加。
   const running = !!runningIds?.has(s.id) && !isSub;
+  const waitingKind = !isSub ? waitingMap?.[s.id] : undefined;
+  const waiting = !!waitingKind;
   const subStatus = s.subagent?.status;
   const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
   const subActive = subStatus === "running" || subStatus === "waiting";
@@ -172,6 +178,17 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
             className="absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 animate-pulse rounded-full"
             style={{ background: "var(--st-running)" }}
           />
+        )}
+        {/* ask_user/权限 interrupt 等待应答（2026-11-05）：琥珀 Hand 图标 +
+            title 提示，优先级高于运行态——泊着等你，不点就走不下去。 */}
+        {waiting && (
+          <span
+            aria-label={statusT("waiting")}
+            title={statusT("waiting")}
+            className="absolute right-1.5 top-1/2 z-10 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full bg-amber-500 text-white shadow-sm ring-1 ring-background"
+          >
+            <Hand className="h-2.5 w-2.5" strokeWidth={2.5} />
+          </span>
         )}
         {editing ? (
           <input

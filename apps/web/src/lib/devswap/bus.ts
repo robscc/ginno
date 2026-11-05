@@ -88,3 +88,22 @@ export async function resyncDevSwapRun(): Promise<DevSwapRun | null> {
   else clearDevSwapRun();
   return run;
 }
+
+// ---- 切换确认门（2026-11-05 用户需求：确认完才能正式切换） ----
+// 构建成功后 CLI 已切 symlink，但「重启 sidecar + 验证」要等用户确认；
+// runtime.dev_swap_pending 不再自动 invoke finish_dev_swap。
+let pendingConfirm = false;
+const confirmSubs = new Set<(v: boolean) => void>();
+
+export function setDevSwapPendingConfirm(v: boolean): void {
+  if (pendingConfirm === v) return;
+  pendingConfirm = v;
+  for (const fn of confirmSubs) fn(v);
+}
+export function subscribeDevSwapConfirm(fn: (v: boolean) => void): () => void {
+  confirmSubs.add(fn);
+  return () => confirmSubs.delete(fn);
+}
+export function isDevSwapConfirmPending(): boolean {
+  return pendingConfirm;
+}

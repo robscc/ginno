@@ -107,3 +107,25 @@ def test_report_counts_sessions_and_tasks_together(seeded_home, monkeypatch):
 def teardown_function() -> None:
     # _FakeRegistry 不碰真单例,但保险起见隔离测试间的 registry 状态。
     reset_registry()
+    server_shared._PENDING_RESUME.discard("sess-wait")
+    server_shared._PENDING_RESUME.discard("sess-wait2")
+    server_shared._PENDING_KIND.pop("sess-wait", None)
+
+
+def test_report_includes_waiting_sessions(monkeypatch) -> None:
+    """停在 interrupt 等应答的会话（_PENDING_RESUME）进 waiting 列表，
+    kind 从 _PENDING_KIND 取；running 与 waiting 互不吞并（2026-11-05
+    侧栏 ask_user 图标的数据源）。"""
+    from ginno_runtime import server_shared
+    from ginno_runtime.running_work import running_work_report
+
+    monkeypatch.setitem(server_shared._RUNNING_TURNS, "sess-run", "turn-1")
+    server_shared._PENDING_RESUME.add("sess-wait")
+    monkeypatch.setitem(server_shared._PENDING_KIND, "sess-wait", "user_question")
+    rep = running_work_report()
+    assert {"id": "sess-wait", "kind": "user_question"} in rep["waiting"]
+    assert {"id": "sess-run", "title": ""} in rep["sessions"]
+    # 无 kind 记录时兜底 unknown，不抛
+    server_shared._PENDING_RESUME.add("sess-wait2")
+    rep2 = running_work_report()
+    assert {"id": "sess-wait2", "kind": "unknown"} in rep2["waiting"]

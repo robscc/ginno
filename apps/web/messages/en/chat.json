@@ -2,7 +2,7 @@
   "chat": {
     "status": {
       "running": "Running",
-      "waiting": "Waiting on subtask",
+      "waiting": "Waiting for your answer",
       "summarizing": "Compressing report",
       "done": "Completed",
       "ok": "Completed",

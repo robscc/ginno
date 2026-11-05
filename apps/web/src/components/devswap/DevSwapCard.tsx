@@ -7,6 +7,7 @@
 // dev·{指纹} 即终态凭证）。
 
 import { useEffect, useMemo, useState } from "react";
+import { subscribeDevSwapConfirm, setDevSwapPendingConfirm, isDevSwapConfirmPending } from "@/lib/devswap/bus";
 import { useTranslations } from "next-intl";
 import { useDevSwapProgress } from "@/lib/useDevSwapProgress";
 import { resyncDevSwapRun } from "@/lib/devswap/bus";
@@ -59,6 +60,24 @@ export function DevSwapCard() {
   const [logOpen, setLogOpen] = useState(false);
   // 交互形态（2026-11-04 二次反馈）：改为内联小徽标 + hover 弹出（见 return），
   // 无需折叠/关闭状态。
+  const [confirmPending, setConfirmPending] = useState(isDevSwapConfirmPending());
+  const [swapping, setSwapping] = useState(false);
+  useEffect(() => subscribeDevSwapConfirm(setConfirmPending), []);
+  const doSwap = async () => {
+    setSwapping(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const res = await invoke<{ ok: boolean; rolled_back?: boolean; detail?: string }>(
+        "finish_dev_swap",
+      );
+      console.info("[dev-swap] finished:", res);
+    } catch (e) {
+      console.warn("[dev-swap] finish_dev_swap unavailable:", e);
+    } finally {
+      setSwapping(false);
+      setDevSwapPendingConfirm(false);
+    }
+  };
   // 当前阶段已耗时（秒）：卡片自身重渲染太便宜，1s 一跳即可。
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -98,7 +117,31 @@ export function DevSwapCard() {
   // 展开等），离开即收起。
   const compactPct = typeof run.pct === "number" ? `${Math.round(run.pct)}%` : "";
   return (
-    <div className="group/devswap relative flex items-center" data-testid="devswap-Card-root">
+    <div className="relative flex items-center gap-2" data-testid="devswap-Card-root">
+      {/* 切换确认门（2026-11-05）：构建成功后常驻琥珀条，确认才重启切换。
+          不随 hover 收起——这是需要用户决断的状态。 */}
+      {confirmPending && (
+        <div className="flex items-center gap-2 rounded-full border border-amber-500/60 bg-amber-500/10 px-2.5 py-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+          <span>{tr("card.confirmHint")}</span>
+          <button
+            type="button"
+            disabled={swapping}
+            onClick={doSwap}
+            className="rounded-full bg-amber-500 px-2 py-px text-[11px] font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+          >
+            {swapping ? tr("card.swapping") : tr("card.confirmSwap")}
+          </button>
+          <button
+            type="button"
+            disabled={swapping}
+            onClick={() => setDevSwapPendingConfirm(false)}
+            className="text-faint hover:text-txt disabled:opacity-50"
+          >
+            {tr("card.postpone")}
+          </button>
+        </div>
+      )}
+      <div className="group/devswap relative flex items-center" data-testid="devswap-Card-root">
       <button
         type="button"
         className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${accent} ${
@@ -201,6 +244,7 @@ export function DevSwapCard() {
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
