@@ -853,7 +853,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       markDelivered(ctx, sid);
       void (async () => {
         const { setDevSwapPendingConfirm } = await import("@/lib/devswap/bus");
-        setDevSwapPendingConfirm(true);
+        setDevSwapPendingConfirm("pending");
       })();
       break;
     }

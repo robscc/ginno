@@ -5,13 +5,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Flame } from "lucide-react";
+import { Flame, X } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useDevSwapProgress } from "@/lib/useDevSwapProgress";
 
 export function HotSwapButton() {
   const t = useTranslations("shell");
   const [repo, setRepo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // toggle 态（2026-11-05）：构建中显示「更新中」（pulse），二击 = 取消
+  //（kill 构建进程，switch 前取消零风险）。
+  const { run } = useDevSwapProgress();
+  const running = run?.state === "running";
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -28,30 +33,39 @@ export function HotSwapButton() {
     };
   }, []);
   if (!repo) return null;
+  const act = async (path: string) => {
+    setBusy(true);
+    try {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) console.warn("[dev-swap]", path, r.status, await r.text());
+    } catch (e) {
+      console.warn("[dev-swap]", path, e);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <button
       type="button"
       disabled={busy}
-      onClick={async () => {
-        setBusy(true);
-        try {
-          const r = await fetch("/api/devswap/start", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({}),
-          });
-          if (!r.ok) console.warn("[dev-swap] start failed:", r.status, await r.text());
-        } catch (e) {
-          console.warn("[dev-swap] start unavailable:", e);
-        } finally {
-          setBusy(false); // 进行中状态由 DevSwapCard 徽标表达
-        }
-      }}
-      className="flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-0.5 text-[10px] text-amber-600 hover:bg-amber-500/15 disabled:opacity-50 dark:text-amber-400"
-      title={repo}
+      onClick={() =>
+        running
+          ? void (window.confirm(t("nav.hotSwapCancelConfirm")) && act("/api/devswap/cancel"))
+          : void act("/api/devswap/start")
+      }
+      className={`flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] transition-all disabled:opacity-50 ${
+        running
+          ? "animate-devswap-in border-amber-500/60 bg-amber-500/20 text-amber-600 hover:bg-red-500/20 dark:text-amber-400"
+          : "border-amber-500/40 bg-amber-500/[0.08] text-amber-600 hover:bg-amber-500/15 dark:text-amber-400"
+      }`}
+      title={running ? t("nav.hotSwapCancel") : repo}
     >
-      <Flame className="h-3 w-3" />
-      {t("nav.hotSwap")}
+      {running ? <X className="h-3 w-3 animate-pulse" /> : <Flame className="h-3 w-3" />}
+      {running ? t("nav.hotSwapRunning") : t("nav.hotSwap")}
     </button>
   );
 }

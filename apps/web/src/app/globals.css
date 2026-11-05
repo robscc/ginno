@@ -348,6 +348,14 @@ html.light .hljs-name {
 }
 
 /* New run card entrance: slide up + violet pulse ×2 (run.bind / trigger / retry). */
+@keyframes ginno-devswap-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-devswap-in {
+  animation: ginno-devswap-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @keyframes ginno-slide-in {
   from {
     opacity: 0;

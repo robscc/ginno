@@ -22,7 +22,8 @@
       "confirmHint": "New build is ready",
       "confirmSwap": "Switch now",
       "postpone": "Not now",
-      "swapping": "Switching…"
+      "swapping": "Switching…",
+      "postponedLabel": "Swap pending"
     },
     "badge": {
       "hint": "dev-override runtime bundle · {fp} · built {time} — run make dev-swap-clean to return to the factory bundle"

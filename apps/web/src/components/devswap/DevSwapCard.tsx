@@ -60,9 +60,9 @@ export function DevSwapCard() {
   const [logOpen, setLogOpen] = useState(false);
   // 交互形态（2026-11-04 二次反馈）：改为内联小徽标 + hover 弹出（见 return），
   // 无需折叠/关闭状态。
-  const [confirmPending, setConfirmPending] = useState(isDevSwapConfirmPending());
+  const [confirmState, setConfirmState] = useState(isDevSwapConfirmPending());
   const [swapping, setSwapping] = useState(false);
-  useEffect(() => subscribeDevSwapConfirm(setConfirmPending), []);
+  useEffect(() => subscribeDevSwapConfirm(setConfirmState), []);
   const doSwap = async () => {
     setSwapping(true);
     try {
@@ -75,7 +75,7 @@ export function DevSwapCard() {
       console.warn("[dev-swap] finish_dev_swap unavailable:", e);
     } finally {
       setSwapping(false);
-      setDevSwapPendingConfirm(false);
+      setDevSwapPendingConfirm(null);
     }
   };
   // 当前阶段已耗时（秒）：卡片自身重渲染太便宜，1s 一跳即可。
@@ -116,136 +116,154 @@ export function DevSwapCard() {
   // 宽度，pointer-events 天然只落在徽标上；卡片仅 hover 可见，可交互（日志
   // 展开等），离开即收起。
   const compactPct = typeof run.pct === "number" ? `${Math.round(run.pct)}%` : "";
+  /* 形态终版（2026-11-05 五改）：整个 dev-swap 生命周期都是右下角悬浮窗，
+   * 状态间平滑动画——进度 pill（hover 向上弹六阶段卡）→ 构建完成淡入确认
+   * 对话框 → 暂不缩为待切换 pill（点击原位重开）→ 确认后进度态淡出。
+   * 品牌行只留入口（热更新按钮 + dev 指纹），视线全程不搬家。 */
+  const showProgress = run.state === "running" || failed;
   return (
-    <div className="relative flex items-center gap-2" data-testid="devswap-Card-root">
-      {/* 切换确认门（2026-11-05）：构建成功后常驻琥珀条，确认才重启切换。
-          不随 hover 收起——这是需要用户决断的状态。 */}
-      {confirmPending && (
-        <div className="flex items-center gap-2 rounded-full border border-amber-500/60 bg-amber-500/10 px-2.5 py-0.5 text-[11px] text-amber-600 dark:text-amber-400">
-          <span>{tr("card.confirmHint")}</span>
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
+      {/* 确认对话框：构建完成淡入（fade+slide-up），单行 nowrap */}
+      {confirmState === "pending" && (
+        <div
+          className="animate-devswap-in flex items-center gap-3 rounded-xl border border-amber-500/60 bg-card px-4 py-3 text-[12.5px] shadow-2xl"
+          data-testid="devswap-confirm"
+        >
+          <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500" aria-hidden />
+          <span className="whitespace-nowrap text-amber-600 dark:text-amber-400">{tr("card.confirmHint")}</span>
+          <span className="whitespace-nowrap font-mono text-[10px] text-faint">{run?.run_id ?? ""}</span>
           <button
             type="button"
             disabled={swapping}
             onClick={doSwap}
-            className="rounded-full bg-amber-500 px-2 py-px text-[11px] font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+            className="rounded-full bg-amber-500 px-3 py-1 text-[12px] font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
           >
             {swapping ? tr("card.swapping") : tr("card.confirmSwap")}
           </button>
           <button
             type="button"
             disabled={swapping}
-            onClick={() => setDevSwapPendingConfirm(false)}
-            className="text-faint hover:text-txt disabled:opacity-50"
+            onClick={() => setDevSwapPendingConfirm("postponed")}
+            className="whitespace-nowrap text-faint transition-colors hover:text-txt disabled:opacity-50"
           >
             {tr("card.postpone")}
           </button>
         </div>
       )}
-      <div className="group/devswap relative flex items-center" data-testid="devswap-Card-root">
-      <button
-        type="button"
-        className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${accent} ${
-          run.state === "running" ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-card text-muted"
-        }`}
-        title={tr("card.hoverHint")}
-      >
-        <span className={`inline-block h-1.5 w-1.5 rounded-full ${run.state === "running" ? "animate-pulse bg-amber-500" : failed ? "bg-red-500" : "bg-emerald-500"}`} aria-hidden />
-        <span className="font-medium">{tr(`card.stage.${run.stage}`)}</span>
-        {compactPct && <span className="font-mono text-faint">{compactPct}</span>}
-        {slow && <span className="font-mono text-faint">· {tr("card.slowShort")}</span>}
-      </button>
 
-      {/* hover 弹出：默认不占布局、不可交互；组内 hover 才显示。
-          left-0（从 pill 向右弹出）：挂在侧栏品牌行（2026-11-04 迁自 TopBar），
-          弹层向右覆盖聊天区——aside 无 overflow-hidden 不会被裁。 */}
-      <div
-        className={`pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-80 rounded-xl border ${accent} bg-card text-sm opacity-0 shadow-xl transition-opacity duration-150 group-hover/devswap:pointer-events-auto group-hover/devswap:block group-hover/devswap:opacity-100`}
-        data-testid="devswap-card"
-      >
-        <div className="flex items-center justify-between border-b border-line px-3 py-2">
-          <span className="font-medium text-txt">
-            {tr("card.title")} <span className="font-mono text-[10px] text-faint">{run.run_id}</span>
-          </span>
-          {slow && (
-            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
-              {tr("card.slow", { time: fmtClock(exp.p90) })}
-            </span>
-          )}
-        </div>
+      {/* 暂不后的收起态：右下角原地小 pill，点击原位重开确认框 */}
+      {confirmState === "postponed" && (
+        <button
+          type="button"
+          onClick={() => setDevSwapPendingConfirm("pending")}
+          className="animate-devswap-in flex items-center gap-2 rounded-full border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-[11.5px] text-amber-600 shadow-lg transition-all hover:scale-105 hover:bg-amber-500/20 dark:text-amber-400"
+          data-testid="devswap-postponed-pill"
+        >
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" aria-hidden />
+          <span className="whitespace-nowrap">⏳ {tr("card.postponedLabel")}</span>
+        </button>
+      )}
 
-        <div className="px-3 py-2">
-          {DEVSWAP_STAGES.map((stage: DevSwapStage, i: number) => {
-            const cell = cells[i];
-            const isCurrent = cell === "active" || cell === "fail";
-            return (
-              <div key={stage} className="flex items-start gap-2 py-0.5">
-                <span className={`w-4 shrink-0 text-center font-mono ${dotColor(cell)}`}>
-                  {dot(cell)}
+      {/* 进度态：运行/失败显示 pill（hover 向上弹六阶段卡，fade 过渡） */}
+      {showProgress && (
+        <div className="group/devswap relative flex items-center" data-testid="devswap-Card-root">
+          <div
+            className={`animate-devswap-in flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] ${accent} ${
+              run.state === "running"
+                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : "bg-card text-muted"
+            }`}
+            title={tr("card.hoverHint")}
+          >
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                run.state === "running" ? "animate-pulse bg-amber-500" : failed ? "bg-red-500" : "bg-emerald-500"
+              }`}
+              aria-hidden
+            />
+            <span className="font-medium">{tr(`card.stage.${run.stage}`)}</span>
+            {typeof run.pct === "number" && <span className="font-mono text-faint">{Math.round(run.pct)}%</span>}
+            {slow && <span className="font-mono text-faint">· {tr("card.slowShort")}</span>}
+          </div>
+
+          <div
+            className={`pointer-events-none absolute bottom-full right-0 z-50 mb-1.5 hidden w-80 rounded-xl border ${accent} bg-card text-sm opacity-0 shadow-xl transition-all duration-200 group-hover/devswap:pointer-events-auto group-hover/devswap:block group-hover/devswap:translate-y-0 group-hover/devswap:opacity-100 translate-y-1`}
+            data-testid="devswap-card"
+          >
+            <div className="flex items-center justify-between border-b border-line px-3 py-2">
+              <span className="font-medium text-txt">
+                {tr("card.title")} <span className="font-mono text-[10px] text-faint">{run.run_id}</span>
+              </span>
+              {slow && (
+                <span className="animate-pulse rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                  {tr("card.slow", { time: fmtClock(exp.p90) })}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span
-                      className={
-                        cell === "pending"
-                          ? "text-faint"
-                          : isCurrent
-                            ? "font-medium text-txt"
-                            : "text-muted"
-                      }
-                    >
-                      {tr(`card.stage.${stage}`)}
-                    </span>
-                    {isCurrent && run.state === "running" && (
-                      <span className="ml-auto font-mono text-[10px] text-faint">
-                        {fmtClock(stageElapsed)}
-                        {exp.ema - stageElapsed > 1 ? ` / ${tr("card.eta", { time: fmtClock(exp.ema - stageElapsed) })}` : ""}
-                      </span>
-                    )}
-                  </div>
-                  {isCurrent && (
-                    <div className="mt-0.5 text-[11px] leading-snug text-muted">
-                      {run.detail || tr("card.working")}
-                      {typeof run.pct === "number" && (
-                        <span className="ml-1 font-mono">
-                          {progressBar(run.pct)} {Math.round(run.pct)}%
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-
-          {run.state === "rolled_back" && (
-            <div className="mt-2 rounded-md border border-red/40 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
-              {tr("card.rolledBack")}
-            </div>
-          )}
-          {run.state === "ok" && (
-            <div className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">
-              {tr("card.finished")}
-            </div>
-          )}
-
-          {failed && !!logLines.length && (
-            <div className="mt-2">
-              <button
-                onClick={() => setLogOpen((o) => !o)}
-                className="text-[11px] text-muted underline decoration-line2 underline-offset-2 hover:text-txt"
-              >
-                {logOpen ? tr("card.hideLogs") : tr("card.logs", { n: Math.min(logLines.length, 30) })}
-              </button>
-              {logOpen && (
-                <pre className="mt-1 max-h-40 overflow-auto rounded-md border border-line bg-base/60 p-2 font-mono text-[10px] leading-snug text-muted">
-                  {logLines.slice(-30).join("\n")}
-                </pre>
               )}
             </div>
-          )}
+            <div className="px-3 py-2">
+              {DEVSWAP_STAGES.map((stage: DevSwapStage, i: number) => {
+                const cell = cells[i];
+                const isCurrent = cell === "active" || cell === "fail";
+                return (
+                  <div key={stage} className="flex items-start gap-2 py-0.5">
+                    <span className={`w-4 shrink-0 text-center font-mono ${dotColor(cell)}`}>{dot(cell)}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className={cell === "pending" ? "text-faint" : isCurrent ? "font-medium text-txt" : "text-muted"}>
+                          {tr(`card.stage.${stage}`)}
+                        </span>
+                        {isCurrent && run.state === "running" && (
+                          <span className="ml-auto font-mono text-[10px] text-faint">
+                            {fmtClock(stageElapsed)}
+                            {exp.ema - stageElapsed > 1 ? ` / ${tr("card.eta", { time: fmtClock(exp.ema - stageElapsed) })}` : ""}
+                          </span>
+                        )}
+                      </div>
+                      {isCurrent && (
+                        <div className="animate-fade-in mt-0.5 text-[11px] leading-snug text-muted">
+                          {run.detail || tr("card.working")}
+                          {typeof run.pct === "number" && (
+                            <span className="ml-1 font-mono">
+                              {progressBar(run.pct)} {Math.round(run.pct)}%
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {run.state === "rolled_back" && (
+                <div className="animate-fade-in mt-2 rounded-md border border-red/40 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+                  {tr("card.rolledBack")}
+                </div>
+              )}
+              {run.state === "ok" && (
+                <div className="animate-fade-in mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">
+                  {tr("card.finished")}
+                </div>
+              )}
+
+              {failed && !!logLines.length && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => setLogOpen((o) => !o)}
+                    className="text-[11px] text-muted underline decoration-line2 underline-offset-2 transition-colors hover:text-txt"
+                  >
+                    {logOpen ? tr("card.hideLogs") : tr("card.logs", { n: Math.min(logLines.length, 30) })}
+                  </button>
+                  {logOpen && (
+                    <pre className="animate-fade-in mt-1 max-h-40 overflow-auto rounded-md border border-line bg-base/60 p-2 font-mono text-[10px] leading-snug text-muted">
+                      {logLines.slice(-30).join("\n")}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
-      </div>
+      )}
     </div>
   );
 }

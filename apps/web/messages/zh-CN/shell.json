@@ -17,7 +17,10 @@
       "kb": "知识库",
       "workflows": "工作流",
       "settings": "设置",
-      "hotSwap": "热更新"
+      "hotSwap": "热更新",
+      "hotSwapRunning": "更新中",
+      "hotSwapCancel": "取消热更新（kill 构建，未切换零风险）",
+      "hotSwapCancelConfirm": "取消进行中的热更新？构建进程将被终止（尚未切换，零风险）。"
     },
     "navDots": {
       "connectorError": "连接器出错",

@@ -246,7 +246,24 @@ async def devswap_start(request: Request, body: dict | None = None) -> dict:
     task = asyncio.create_task(_dev_swap_background("", repo))
     _DEV_SWAP_TASKS.add(task)
     task.add_done_callback(_DEV_SWAP_TASKS.discard)
+    # 记住当前 run 的 task（cancel 用）；同 run 只有一个。
+    server_shared._DEVSWAP_PROGRESS["task"] = task
     return {"ok": True, "repo": repo}
+
+
+@router.post("/api/devswap/cancel")
+async def devswap_cancel(request: Request) -> dict:
+    """取消进行中的热更新（2026-11-05：左上按钮二击取消）。kill 构建子进程
+    树并把进度标 cancelled；未到 switch 阶段取消零风险（symlink 未动）。"""
+    client = request.client
+    host = client.host if client else ""
+    if host not in ("127.0.0.1", "::1"):
+        return {"ok": False, "error": "local-only"}
+    task = server_shared._DEVSWAP_PROGRESS.get("task")
+    if not task or task.done():
+        return {"ok": False, "error": "not_running"}
+    task.cancel()
+    return {"ok": True}
 
 
 @router.post("/api/devswap/progress")

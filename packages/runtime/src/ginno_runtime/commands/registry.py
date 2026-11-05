@@ -1175,37 +1175,60 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
     tail_buf: list[bytes] = []
     tail_len = 0
     assert proc.stdout is not None
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        tail_buf.append(line)
-        tail_len += len(line)
-        while tail_len > 4096 and len(tail_buf) > 1:  # 只留尾 4KB 供 notice
-            tail_len -= len(tail_buf.pop(0))
-        text = line.decode(errors="replace").strip()
-        if not text.startswith("[devswap-progress]"):
-            continue
-        payload = text[len("[devswap-progress]"):].strip()
-        try:
-            import json as _json
-
-            data = _json.loads(payload)
-            if not data.get("run_id"):
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            tail_buf.append(line)
+            tail_len += len(line)
+            while tail_len > 4096 and len(tail_buf) > 1:  # 只留尾 4KB 供 notice
+                tail_len -= len(tail_buf.pop(0))
+            text = line.decode(errors="replace").strip()
+            if not text.startswith("[devswap-progress]"):
                 continue
-            update_progress(
-                ProgressReport(
-                    run_id=str(data["run_id"]),
-                    stage=str(data["stage"]),
-                    state=str(data["state"]),
-                    detail=data.get("detail"),
-                    pct=data.get("pct"),
-                    log_tail=data.get("log_tail"),
-                    sid=sid or None,
+            payload = text[len("[devswap-progress]"):].strip()
+            try:
+                import json as _json
+
+                data = _json.loads(payload)
+                if not data.get("run_id"):
+                    continue
+                update_progress(
+                    ProgressReport(
+                        run_id=str(data["run_id"]),
+                        stage=str(data["stage"]),
+                        state=str(data["state"]),
+                        detail=data.get("detail"),
+                        pct=data.get("pct"),
+                        log_tail=data.get("log_tail"),
+                        sid=sid or None,
+                    )
                 )
+            except Exception:
+                continue  # 进度行解析失败绝不影响构建结果
+    except asyncio.CancelledError:
+        from ..server_shared import _DEVSWAP_PROGRESS as _DEVSWAP_SNAPSHOT
+
+        # 用户取消（2026-11-05：左上热更新按钮二击 → /api/devswap/cancel）。
+        # kill 构建子进程树（start_new_session 语义，kill 整组），进度标
+        # cancelled；未切 symlink 前取消零风险。
+        try:
+            _os.killpg(_os.getpgid(proc.pid), _os.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        update_progress(
+            ProgressReport(
+                run_id=str(
+                    (_DEVSWAP_SNAPSHOT().get("snapshot") or {}).get("run_id") or "cancelled"
+                ),
+                stage="build_runtime",
+                state="fail",
+                detail="cancelled by user",
+                sid=sid or None,
             )
-        except Exception:
-            continue  # 进度行解析失败绝不影响构建结果
+        )
+        raise
     await proc.wait()
     tail = _ANSI_RE.sub("", b"".join(tail_buf)[-600:].decode(errors="replace"))
     if proc.returncode == 0:

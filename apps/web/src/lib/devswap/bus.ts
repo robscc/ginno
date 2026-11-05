@@ -92,18 +92,23 @@ export async function resyncDevSwapRun(): Promise<DevSwapRun | null> {
 // ---- 切换确认门（2026-11-05 用户需求：确认完才能正式切换） ----
 // 构建成功后 CLI 已切 symlink，但「重启 sidecar + 验证」要等用户确认；
 // runtime.dev_swap_pending 不再自动 invoke finish_dev_swap。
-let pendingConfirm = false;
-const confirmSubs = new Set<(v: boolean) => void>();
+// 三态（2026-11-05）：null 无待切换 | "pending" 弹确认框 | "postponed"
+// 用户点了暂不——确认框收起，但切换并未完成；进度徽标转为可点的
+// 「待切换」态（点击 = 补执行 finish_dev_swap），不让用户只能靠重启。
+let pendingConfirm: "pending" | "postponed" | null = null;
+const confirmSubs = new Set<(v: "pending" | "postponed" | null) => void>();
 
-export function setDevSwapPendingConfirm(v: boolean): void {
+export function setDevSwapPendingConfirm(v: "pending" | "postponed" | null): void {
   if (pendingConfirm === v) return;
   pendingConfirm = v;
   for (const fn of confirmSubs) fn(v);
 }
-export function subscribeDevSwapConfirm(fn: (v: boolean) => void): () => void {
+export function subscribeDevSwapConfirm(
+  fn: (v: "pending" | "postponed" | null) => void,
+): () => void {
   confirmSubs.add(fn);
   return () => confirmSubs.delete(fn);
 }
-export function isDevSwapConfirmPending(): boolean {
+export function isDevSwapConfirmPending(): "pending" | "postponed" | null {
   return pendingConfirm;
 }

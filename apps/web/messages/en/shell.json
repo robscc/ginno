@@ -17,7 +17,10 @@
       "kb": "Knowledge Base",
       "workflows": "Workflows",
       "settings": "Settings",
-      "hotSwap": "Hot swap"
+      "hotSwap": "Hot swap",
+      "hotSwapRunning": "Swapping",
+      "hotSwapCancel": "Cancel hot swap (kill build; nothing swapped)",
+      "hotSwapCancelConfirm": "Cancel the running hot swap? The build process will be killed (nothing swapped yet)."
     },
     "navDots": {
       "connectorError": "Connector error",
