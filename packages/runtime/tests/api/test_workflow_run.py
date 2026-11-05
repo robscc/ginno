@@ -190,3 +190,50 @@ def test_dep_failure_error_detail_has_traceback_no_node(client, monkeypatch):
     assert detail.get("node_id") is None
     assert detail.get("traceback"), "driver failures must still capture a traceback"
     assert "Traceback" in detail["traceback"]
+
+
+def test_run_failed_error_names_agent_and_fix_when_provider_unavailable(
+    client, monkeypatch, isolated_home
+):
+    """2026-11-05 国际新闻工作流实录：节点未绑 agent → 回退 dev →
+    dev.provider='' 且默认 provider 不可用 → 裸 "unknown provider: " 无从下手。
+    修复：报错必须点名 workflow / 回退到的 agent / 修法（绑 agent 或配 provider）。
+    """
+    import ginno_runtime.api.workflows as wf_api
+    import ginno_runtime
+
+    # 无任何启用 provider：build_model 抛 unknown provider
+    monkeypatch.setattr(
+        "ginno_runtime.providers.get_default_provider", lambda: ""
+    )
+    monkeypatch.setattr(
+        ginno_runtime.api.workflows, "build_model",
+        lambda provider, *a, **k: (_ for _ in ()).throw(ValueError(f"unknown provider: {provider}")),
+    )
+    r = client.post(
+        "/api/workflows",
+        json={"name": "wf-noagent", "dsl": {
+            "entry": "s1",
+            "nodes": [{"id": "s1", "type": "step", "goal": "g"}],
+            "edges": [],
+        }},
+    )
+    assert r.status_code == 200
+    wf_id = r.json()["workflow"]["id"]
+    r2 = client.post("/api/workflow_runs", json={"workflow_id": wf_id})
+    assert r2.status_code == 200
+    run_id = r2.json()["run"]["id"]
+    # bg driver marks the run failed with the actionable message（_await 收口）
+    import time as _t
+    from ginno_runtime.workflows import store as wf_store_mod
+
+    for _ in range(50):
+        row = wf_store_mod.get_run(run_id) or {}
+        if row.get("status") == "failed":
+            break
+        _t.sleep(0.1)
+    err = str(row.get("error") or "")
+    assert "wf-noagent" in err
+    assert "agent" in err
+    assert "provider" in err
+    assert "unknown provider" in err  # 原始错误保留

@@ -137,7 +137,20 @@ def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = N
         _base.wf_events.append_event(run_id, "warning", message=agent_warn)
     fork = _base.agents_reg.fork_agent(resolved.id, f"wf-{run_id[:8]}-{resolved.id}")
     provider = _wf_resolve_provider(fork)
-    model = _base.build_model(provider, fork.model or None)
+    try:
+        model = _base.build_model(provider, fork.model or None)
+    except ValueError as e:
+        # 2026-11-05 国际新闻工作流实录：节点未绑 agent → 回退 dev →
+        # dev.provider='' 且默认 provider 也不可用 → 裸 "unknown provider: "
+        # 让人无从下手。包上「哪个工作流/回退到谁/provider 是什么/怎么修」，
+        # 错误才可操作（绑定节点 agent 或配置默认 provider）。
+        wf_name = (wf or {}).get("name") or workflow_id
+        raise ValueError(
+            f"workflow '{wf_name}' cannot start: node(s) resolved to agent "
+            f"'{resolved.id}' whose provider is unavailable ({e}). Fix: bind an "
+            f"agent with a configured provider on the workflow's nodes, or "
+            f"enable a default provider in Settings."
+        ) from e
     # Bind the run's file tools to a REAL workspace. With no workspace the
     # builtin tools fall back to the process cwd — for a packaged app that is
     # "/" and an agent's glob_files then walked the ENTIRE filesystem
