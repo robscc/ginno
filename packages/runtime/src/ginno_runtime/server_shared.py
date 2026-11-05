@@ -330,6 +330,25 @@ _STEER_STASH: dict[str, list[dict]] = {}
 STEER_CONTEXT_KEY = "ginno_steer_context"
 
 
+def steer_recall(session_id: str, steer_ids: list[str]) -> list[str]:
+    """↑ 取回编辑（2026-11-05 用户反馈「按了 uparrow 还是注入进去了」）：
+    从服务端 stash 删除尚未吸收的 steer——只删还在的（已被工具边界吸收的
+    无从撤回，返回列表即真实删除集，前端据此决定哪些能弹回 composer）。"""
+    ids = set(steer_ids)
+    if not ids:
+        return []
+    stash = _STEER_STASH.get(session_id) or []
+    removed = [e.get("steer_id") for e in stash if e.get("steer_id") in ids]
+    kept = [e for e in stash if e.get("steer_id") not in ids]
+    if kept:
+        _STEER_STASH[session_id] = kept
+    else:
+        _STEER_STASH.pop(session_id, None)
+    if removed:
+        _log.info("steer_recalled session=%s count=%d", session_id, len(removed))
+    return removed
+
+
 def steer_enqueue(session_id: str, entry: dict) -> None:
     """Stash one steered message, keyed by steer_id (idempotent re-send)."""
     if not session_id:

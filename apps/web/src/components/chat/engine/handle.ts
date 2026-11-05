@@ -25,7 +25,7 @@ import type {
 import { applyBlock, closePendingBlocks, mid, newTurnId, toolArgsPreview, type ChatMsg } from "../streamCore";
 import type { EngineCtx } from "./ctx";
 import { reconcileTurnFromHistory } from "./connect";
-import { flushSteerQueue, recallSteers } from "./steer";
+import { flushSteerQueue, recallSteers, settleRecalled } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
@@ -667,6 +667,37 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // SheetViewer refetches if that file is the one being viewed.
       if (ev.file_id) ctx.g.notifyPreviewInvalidate(ev.file_id as string);
       break;
+    case "linked.done": {
+      // 订阅的会话 turn 完成（2026-11-06 闭环）：📡 前缀 OS 通知 + 点击直达
+      // 目标会话。正盯着自己会话时不弹（chip 徽标可见）；origin=schedule/
+      // subagent 的完成已有专属通道，服务端已过滤、此处不再判。
+      {
+        const targetSid = typeof ev.session_id === "string" ? ev.session_id : "";
+        if (targetSid && shouldNotify("reply", isWatching(ctx, sid))) {
+          const np = notifyPrefs();
+          const title =
+            ctx.g.sessions.find((x) => x.id === targetSid)?.title?.trim() || "…";
+          const raw = typeof ev.text === "string" ? ev.text.trim() : "";
+          void notifyNative({
+            kind: "session",
+            id: targetSid,
+            title: `📡 ${title}`,
+            body: privacyBody(np, raw || ctx.i18nRef.current.tr("notify.replyCompleted")),
+            sound: soundFor("reply"),
+          });
+        }
+      }
+      break;
+    }
+    case "steer.recalled": {
+      // ↑ 取回对账（steering 取回协议 2026-11-05）：服务端真实删除集
+      // 回传——命中的条目此刻才弹回 composer；未命中的已被吸收，照常注入。
+      const ids = Array.isArray(ev.steer_ids)
+        ? ev.steer_ids.map(String)
+        : [];
+      settleRecalled(ctx, sid, ids);
+      break;
+    }
     case "steer.accepted":
       // The server stashed the entry (design §3.1). It stays in the queue bar
       // until it is absorbed; this only flips it out of "sending" (the shared

@@ -810,6 +810,21 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     await _push_session_event(
                         session_id, "error", {**turn_error_fields(e)}
                     )
+            elif kind == "steer.recall":
+                # ↑ 取回编辑（steering 取回协议 2026-11-05）：撤回尚未吸收的
+                # steer。已吸收的不在 stash、无从撤回——真实删除集随事件回传，
+                # 前端只弹回真正删掉的（用户按 ↑ 的瞬间恰被工具边界吸收的
+                # 极窄竞态下，那条照常注入、composer 不出现重复文本）。
+                _recall_ids = [str(x) for x in (msg.get("steer_ids") or []) if x]
+                _removed = shared.steer_recall(session_id, _recall_ids)
+                if _removed:
+                    await _push_session_event(
+                        session_id,
+                        "steer.recalled",
+                        {"steer_ids": _removed},
+                        _RUNNING_TURNS.get(session_id) or "",
+                    )
+                continue
             elif kind == "steer":
                 # A message the user sent while a turn was running
                 # (docs/steering-design.md §3.2). NOT a turn: it is stashed and

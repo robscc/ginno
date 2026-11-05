@@ -775,3 +775,20 @@ def test_injected_subagent_result_multi_envelope(isolated_home):
         b for g in ui for b in g.get("blocks", []) if b["kind"] == "subagent_result"
     ]
     assert [c["sessionId"] for c in cards] == ["c1", "c2"]
+
+
+def test_steer_recall_removes_unabsorbed_only(isolated_home):
+    """↑ 取回协议（2026-11-05）：steer_recall 只删 stash 里未吸收的条目，
+    已吸收的返回集合不含——前端据真实删除集弹回 composer。"""
+    from ginno_runtime import server_shared as shared
+
+    shared._STEER_STASH.clear()
+    shared.steer_enqueue("s1", {"steer_id": "a", "turn_id": "t1", "text": "x", "injected_at": 0})
+    shared.steer_enqueue("s1", {"steer_id": "b", "turn_id": "t1", "text": "y", "injected_at": 0})
+    # 模拟 a 已被吸收（工具边界取走）
+    shared._STEER_STASH["s1"] = [e for e in shared._STEER_STASH["s1"] if e["steer_id"] != "a"]
+    removed = shared.steer_recall("s1", ["a", "b"])
+    assert removed == ["b"]  # 只有 b 真正删掉；a 已吸收无从撤回
+    assert shared._STEER_STASH.get("s1") is None
+    # 幂等：再来一次空手而归
+    assert shared.steer_recall("s1", ["b"]) == []

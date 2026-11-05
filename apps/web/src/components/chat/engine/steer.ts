@@ -2,6 +2,7 @@
 // useChatStreamEngine.ts 机械拆出，函数体逐字一致；原闭包引用改为经 ctx 取用）。
 
 import type { Attachment, ChatMsg, FileAttachment } from "../streamCore";
+import type { SteerItem } from "@/lib/steerQueue";
 import type { EngineCtx } from "./ctx";
 
 // ─── Mid-turn steering (docs/steering-design.md) ──────────────────────────────
@@ -55,20 +56,14 @@ export function requeueSteersOnResume(ctx: EngineCtx, sid: string) {
   ctx.steerQ.onResume(sid, steerFrameSender(ctx, sid));
 }
 
-/** ⏹ means stop: hand what is still queued back to the composer — multi-line,
- *  in order, ABOVE whatever is already typed (the ↑ recall's placement) —
- *  rather than silently discarding what the user wrote (design §4.1). */
-export function recallSteers(ctx: EngineCtx, sid: string) {
-  const items = ctx.steerQ.recall(sid);
+/** 把取回的条目恢复进 composer（文本按序置顶 + 附件/文件回归）。
+ *  本地未发送与服务端已撤回（steer.recalled）共用。 */
+export function restoreSteerItems(ctx: EngineCtx, sid: string, items: SteerItem[]): void {
   if (!items.length) return;
   const recalled = items.map((i) => i.text).join("\n");
-  // Attachments come back too — a recalled steer must not lose its pictures
-  // or file chips (the whole reason they are kept on the entry, brief §5.1).
   const recalledImgs = items.flatMap((i) => i.images);
   const recalledFiles = items.flatMap((i) => i.files);
   if (sid !== ctx.curSessionIdRef.current) {
-    // Background session: park it in that session's draft, so switching back
-    // shows it in the composer instead of dropping it on the floor.
     const d = ctx.draftCacheRef.current[sid] ?? { input: "", attachments: [] };
     ctx.draftCacheRef.current[sid] = {
       ...d,
@@ -81,6 +76,45 @@ export function recallSteers(ctx: EngineCtx, sid: string) {
   ctx.setInput((cur) => (cur ? `${recalled}\n${cur}` : recalled));
   if (recalledImgs.length) ctx.setAttachments((a) => [...recalledImgs, ...a]);
   if (recalledFiles.length) ctx.setFileAttachments((f) => [...recalledFiles, ...f]);
+}
+
+/** ↑ 取回的「已发送」条目暂存：发 steer.recall 后等服务端 steer.recalled
+ *  对账——真实删除集里有的才弹回（竞态下已被吸收的那条照常注入，不重复）。 */
+const recallPending = new Map<string, SteerItem[]>();
+
+/** ⏹ / ↑ 取回（2026-11-05 协议升级）：未发送条目立即弹回；已发送的必须
+ *  走服务端撤回（steer.recall → steer.recalled 确认 → 才弹回）——此前
+ *  只清本地队列，服务端 stash 里的照常被工具边界吸收（用户实录「按了
+ *  uparrow 还是注入进去了」）。 */
+export function recallSteers(ctx: EngineCtx, sid: string): void {
+  const items = ctx.steerQ.recall(sid);
+  if (!items.length) return;
+  const sent = items.filter((i) => i.steerId);
+  const local = items.filter((i) => !i.steerId);
+  restoreSteerItems(ctx, sid, local);
+  if (sent.length) {
+    steerFrameSender(ctx, sid)({
+      type: "steer.recall",
+      steer_ids: sent.map((i) => i.steerId),
+    });
+    recallPending.set(
+      sid,
+      [...(recallPending.get(sid) ?? []), ...sent],
+    );
+  }
+}
+
+/** steer.recalled 事件到账：对账真实删除集，弹回其中命中者。 */
+export function settleRecalled(ctx: EngineCtx, sid: string, ids: Array<string>): void {
+  const pend = recallPending.get(sid) ?? [];
+  if (!pend.length) return;
+  const hit = new Set(ids);
+  const restored = pend.filter((i) => i.steerId && hit.has(i.steerId));
+  const keep = pend.filter((i) => !i.steerId || !hit.has(i.steerId));
+  // 未命中的（已被吸收）不再弹回；也没有继续挂账的意义（服务端已删或已吸收）
+  if (keep.length) recallPending.set(sid, keep);
+  else recallPending.delete(sid);
+  if (restored.length) restoreSteerItems(ctx, sid, restored);
 }
 
 /** The turn ended with entries still unacknowledged: the OLDEST becomes the

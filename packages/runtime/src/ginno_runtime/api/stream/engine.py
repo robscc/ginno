@@ -1205,6 +1205,35 @@ async def _stream_graph(
                     },
                 )
             )
+            # ── linked 完成推送（2026-11-06 用户实录：c79b49cd 手动挂载
+            # 16aef0a3，后者 turn 完成后前者毫无感知——「订阅」的核心价值
+            # 缺失）。向所有 incoming 订阅方（watch/assign/手动挂载）广播
+            # linked.done；schedule/subagent origin 已有专属通知通道，跳过
+            # 防双弹。订阅方前端弹 OS 通知（📡 前缀）+ 点击直达本会话。
+            _origin = (config.get("configurable") or {}).get(
+                "ginno_turn_origin", "interactive"
+            )
+            if _origin in ("interactive", "deliver"):
+                try:
+                    from ..session_links import linked_report
+
+                    _inc = (linked_report(session_id) or {}).get("incoming") or []
+                    if _inc:
+                        _t = _clean_text.strip()[:160]
+                        for _w in _inc:
+                            if isinstance(_w, dict) and _w.get("id"):
+                                await _push_session_event(
+                                    str(_w["id"]),
+                                    "linked.done",
+                                    {
+                                        "session_id": session_id,
+                                        "text": _t,
+                                        "origin": _origin,
+                                    },
+                                    turn_id,
+                                )
+                except Exception:
+                    pass  # 推送失败不影响本会话收口
         else:
             _log.info(
                 "turn_done session=%s turn=%s status=paused_at_interrupt",

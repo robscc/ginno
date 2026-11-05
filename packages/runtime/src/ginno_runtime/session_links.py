@@ -21,6 +21,7 @@ detach 只解除视野关联。派生为主、存储最小:
 
 from __future__ import annotations
 
+import json
 import time
 
 from . import paths
@@ -168,6 +169,26 @@ def linked_report(session_id: str) -> dict:
     for e in meta.get("in_links") or []:
         if isinstance(e, dict) and e.get("id"):
             incoming.setdefault(str(e["id"]), "assigned_me")
+    # 手动挂载(P2/2026-11-06 完成推送闭环):订阅方 linked_user 含我 →
+    # 它在看我。方向戳只存订阅方,目标视角须反查——扫全项目索引(挂载可跨
+    # 项目;会话量数百级,每项目一次索引 IO,linked_report 时机=chip 打开/
+    # 收口推送,频率低可接受)。
+    try:
+        for proj_dir in (paths.home() / "projects").iterdir():
+            idx = proj_dir / "sessions" / "_index.json"
+            if not idx.exists():
+                continue
+            try:
+                rows_ = json.loads(idx.read_text() or "[]")
+            except Exception:
+                continue
+            for other in rows_:
+                if session_id in (other.get("linked_user") or []):
+                    incoming.setdefault(
+                        str(other.get("session_id") or other.get("id")), "watching_me"
+                    )
+    except Exception:
+        pass  # 反查失败只少一类 incoming,不阻断主视图
     inc_rows: list[dict] = []
     for tid, rel in incoming.items():
         if tid == session_id:

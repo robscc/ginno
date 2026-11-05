@@ -262,3 +262,17 @@ async def test_assign_flow_stamps_both_sides(monkeypatch):
     assert [m["rel"] for m in rep["members"] if m["id"] == "w1"] == ["assigned"]
     inc = {m["id"]: m["rel"] for m in linked_report("w1")["incoming"]}
     assert inc["sender"] == "assigned_me"
+
+
+def test_manual_mount_counts_as_incoming(isolated_home, monkeypatch):
+    """2026-11-06 完成推送闭环：手动挂载（订阅方 linked_user）必须出现在
+    目标的 incoming 里——否则挂载方永远收不到 linked.done（用户实录
+    c79b49cd 挂 16aef0a3 完成无推送）。"""
+    # 订阅方手动挂载目标：linked_user 含目标 id（挂载 API 的存储形态）
+    _put("main-watcher", title="watcher", linked_user=["target-x"])
+    _put("target-x", title="target")
+    from ginno_runtime.session_links import linked_report
+
+    rep = linked_report("target-x")
+    inc = {r["id"]: r["rel"] for r in (rep.get("incoming") or [])}
+    assert inc.get("main-watcher") == "watching_me"
