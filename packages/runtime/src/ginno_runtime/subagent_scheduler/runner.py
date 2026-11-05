@@ -166,6 +166,17 @@ async def _inject_result(
             parent_id, child_id,
         )
         return
+    # digest 分流语义（2026-11-06 用户拍板"1"）：订阅方存在 channel 绑定
+    # 残留（如企微 fork 历史）时，digest **注入桌面会话为主**——本函数的
+    # steer/coalesce 两路本来就是桌面 checkpoint/steer（spawn_bg turn 无
+    # 渠道 tap，不推企微），这里显式声明语义并留日志，防止未来有人把
+    # channel 会话的注入接到渠道发送管道上。
+    _pfound = _NS._find_meta(parent_id)
+    if _pfound and str(_pfound[0].get("type") or "").startswith("channel"):
+        _NS._log.info(
+            "channeled session, injecting desktop sub=%s type=channel(legacy binding)",
+            parent_id,
+        )
     task = _NS._TURN_TASKS.get(parent_id)
     parent_live = parent_id in _NS._RUNNING_TURNS or (
         task is not None and not task.done()
@@ -259,6 +270,17 @@ async def _flush_injections(parent_id: str) -> None:
             parent_id, ",".join(e["child_id"] for e in entries),
         )
         return
+    # digest 分流语义（2026-11-06 用户拍板"1"）：订阅方存在 channel 绑定
+    # 残留（如企微 fork 历史）时，digest **注入桌面会话为主**——本函数的
+    # steer/coalesce 两路本来就是桌面 checkpoint/steer（spawn_bg turn 无
+    # 渠道 tap，不推企微），这里显式声明语义并留日志，防止未来有人把
+    # channel 会话的注入接到渠道发送管道上。
+    _pfound = _NS._find_meta(parent_id)
+    if _pfound and str(_pfound[0].get("type") or "").startswith("channel"):
+        _NS._log.info(
+            "channeled session, injecting desktop sub=%s type=channel(legacy binding)",
+            parent_id,
+        )
     task = _NS._TURN_TASKS.get(parent_id)
     parent_live = parent_id in _NS._RUNNING_TURNS or (
         task is not None and not task.done()

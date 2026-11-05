@@ -832,3 +832,42 @@ def test_digest_steer_into_channel_session_warns(isolated_home, caplog, monkeypa
         "digest_absorbed_into_channel_session" in r.message for r in caplog.records
     )
     shared._SESSIONS.pop("chan-1", None)
+
+
+def test_digest_channel_legacy_binding_injects_desktop(isolated_home, caplog, monkeypatch):
+    """digest 分流语义（2026-11-06 用户拍板"1"）：channel 绑定残留的订阅方
+    收到 digest 时注入桌面会话（不静默分流到渠道）——日志必须显式声明。"""
+    import logging
+
+    from ginno_runtime import server_shared as shared
+    from ginno_runtime.subagent_scheduler import runner as _runner
+
+    _NS = _runner._NS
+
+    caplog.set_level(logging.INFO, logger="ginno_runtime")
+    # monkeypatch fixture 自动还原——裸赋值会泄漏给后续测试（TestClient
+    # lifespan 的 _find_meta 拿到假对象 → 全量卡死，2026-11-06 实录）
+    monkeypatch.setattr(
+        _NS, "_find_meta",
+        lambda sid: ({"id": sid, "type": "channel", "title": "企微 fork"}, "default"),
+    )
+    _NS._TURN_TASKS.pop("sub-chan", None)
+    _NS._RUNNING_TURNS.pop("sub-chan", None)
+    from ginno_runtime.subagent_scheduler.runner import _inject_result
+
+    import asyncio
+
+    loop = asyncio.new_event_loop()  # 前面测试可能关掉主线程 loop（TestClient）
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            _inject_result("sub-chan", "[digest] body", "target-1", None)
+        )
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+    assert any(
+        "channeled session, injecting desktop" in r.message for r in caplog.records
+    )
+    # 桌面路径：idle 订阅方 → coalesce 注入（spawn_bg flush 消费 pending，
+    # 不进渠道）——pending 已被正确消费，断言落在日志声明上。
