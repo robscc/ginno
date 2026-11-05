@@ -582,3 +582,27 @@ def test_bash_pipeline_masks_rg_error_gets_hint(tools, ws):
     assert out.startswith("[exit 0]")  # head 的退出码，掩盖了 rg 的失败
     assert "[hint]" in out
     assert "--pcre2" in out
+
+
+def test_grep_files_context_lines(tools, ws):
+    """context=N（rg -C 语义，2026-11-05）：命中行前后各 N 行随行返回，
+    行号带 "-" 区分；max_hits 只数命中不数陪同行。"""
+    (Path(ws) / "code.txt").write_text(
+        "line1\nline2 TARGET here\nline3\nline4\nline5 TARGET again\nline6\n", encoding="utf-8"
+    )
+    out = tools["grep_files"].invoke({"pattern": "TARGET", "context": 1})
+    assert "code.txt:2:line2 TARGET here" in out
+    assert "code.txt:1-:line1" in out and "code.txt:3-:line3" in out
+    assert "code.txt:5:line5 TARGET again" in out and "code.txt:6-:line6" in out
+    # context=0（默认）：无陪同行（回归保护）
+    out0 = tools["grep_files"].invoke({"pattern": "TARGET"})
+    assert "1-:line1" not in out0 and "2:line2 TARGET here" in out0
+
+
+def test_grep_files_context_python_fallback(tools, ws, monkeypatch):
+    """回退路径（无 rg）同样支持 context 窗口——双路径行为一致。"""
+    (Path(ws) / "fb.txt").write_text("a\nfindme\nb\n", encoding="utf-8")
+    monkeypatch.setattr("ginno_runtime.tools.builtin.shutil.which", lambda _: None)
+    out = tools["grep_files"].invoke({"pattern": "findme", "context": 1})
+    assert "fb.txt:2:findme" in out
+    assert "fb.txt:1-:a" in out and "fb.txt:3-:b" in out

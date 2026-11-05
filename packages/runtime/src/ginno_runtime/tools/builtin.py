@@ -553,7 +553,7 @@ def mount_access(p: Path, mounts: list[tuple[Path, str]]) -> str | None:
 
 
 def _grep_via_rg(
-    pattern: str, search_root: Path, max_hits: int, include_ignored: bool
+    pattern: str, search_root: Path, max_hits: int, include_ignored: bool, context: int = 0
 ) -> list[str] | None:
     """Delegate grep_files' search to ripgrep when it is on PATH.
 
@@ -583,6 +583,8 @@ def _grep_via_rg(
         "--no-ignore",
         "--max-filesize", f"{GREP_MAX_FILE_BYTES // (1024 * 1024)}M",
     ]
+    if context > 0:
+        cmd += ["-C", str(context)]
     if not include_ignored:
         for d in sorted(_WALK_IGNORE_DIRS):
             cmd += ["-g", f"!{d}/**"]
@@ -614,6 +616,7 @@ def _grep_via_rg(
 
     threading.Thread(target=_pump, daemon=True).start()
     hits: list[str] = []
+    match_count = 0
     truncated = False
     t0 = time.monotonic()
     try:
@@ -632,7 +635,8 @@ def _grep_via_rg(
                 obj = json.loads(raw)
             except ValueError:
                 continue
-            if obj.get("type") != "match":
+            evtype = obj.get("type")
+            if evtype not in ("match", "context"):
                 continue
             data = obj.get("data") or {}
             ptext = (data.get("path") or {}).get("text")
@@ -644,10 +648,15 @@ def _grep_via_rg(
                 rel = str(Path(ptext).relative_to(search_root))
             except ValueError:
                 rel = ptext
-            hits.append(f"{rel}:{lnum}:{ltext}")
-            if len(hits) >= max_hits:
-                truncated = True
-                break
+            # context 行（rg -C）：行号后缀 "-" 与 match 区分（rg 文本风格）
+            mark = "-" if evtype == "context" else ""
+            hits.append(f"{rel}:{lnum}{mark}:{ltext}")
+            # max_hits 只数 match——context 行是陪同不是命中，不占配额
+            if evtype == "match":
+                match_count += 1
+                if match_count >= max_hits:
+                    truncated = True
+                    break
     finally:
         proc.kill()
         proc.wait()
@@ -852,7 +861,9 @@ def build_builtin_tools(
         ``target``, ``dist``, ``__pycache__``, …) are skipped unless
         ``include_ignored`` is true. Never raises — a bad base dir or pattern
         yields an ``[error]`` string. Hard-denied dirs (runtime data /
-        credentials) are pruned and never scanned (master-plan §2.3)."""
+        credentials) are pruned and never scanned (master-plan §2.3).
+        Prefer this over `bash ls/find` when locating files: scoped root,
+        match caps, dependency dirs already pruned."""
         import fnmatch
 
         try:
@@ -931,7 +942,11 @@ def build_builtin_tools(
 
     @tool
     def grep_files(
-        pattern: str, max_hits: int = 50, root: str = "", include_ignored: bool = False
+        pattern: str,
+        max_hits: int = 50,
+        root: str = "",
+        include_ignored: bool = False,
+        context: int = 0,
     ) -> str:
         """Grep (regex) files under the session working directory (recursive),
         or under an explicit ``root`` (must be the workspace or a mounted
@@ -941,7 +956,12 @@ def build_builtin_tools(
         ``include_ignored`` is true; binary files, files over 5 MB and
         symlinked files are never read. When ripgrep (``rg``) is installed
         the search is delegated to it. Never raises — a bad pattern or base
-        dir yields an ``[error]`` string."""
+        dir yields an ``[error]`` string.
+        Prefer this over `bash grep` when scanning the workspace: scoped
+        root, hit caps, no shell-quoting pitfalls, output already compact.
+        ``context=N`` (0–10) includes N surrounding lines per hit (like
+        ``rg -C`` / ``grep -C``), marked ``file:line-:text`` — read code
+        around a hit directly here instead of a follow-up bash call."""
         import re
 
         try:
@@ -961,7 +981,8 @@ def build_builtin_tools(
             if guarded:
                 return guarded
             header = f"(root: {search_root})" if str(search_root) != str(base_dir) else ""
-            rg_hits = _grep_via_rg(pattern, search_root, max_hits, include_ignored)
+            ctx_n = max(0, min(10, int(context or 0)))
+            rg_hits = _grep_via_rg(pattern, search_root, max_hits, include_ignored, ctx_n)
             if rg_hits is not None:
                 body = "\n".join(rg_hits) or "(no matches)"
                 return (header + "\n" + body) if header else body
@@ -1003,12 +1024,26 @@ def build_builtin_tools(
                     if b"\x00" in data:
                         continue  # binary — never searched
                     text = data.decode("utf-8", errors="ignore")
-                    for i, line in enumerate(text.splitlines(), 1):
-                        if rx.search(line):
-                            out.append(f"{f.relative_to(search_root)}:{i}:{line}")
-                            if len(out) >= max_hits:
-                                out.append("... (truncated)")
-                                return (header + "\n" if header else "") + "\n".join(out)
+                    all_lines = text.splitlines()
+                    emitted: set[int] = set()
+                    hits_in_file = 0
+                    for i, line in enumerate(all_lines, 1):
+                        if not rx.search(line):
+                            continue
+                        hits_in_file += 1
+                        # context 窗口（rg -C 语义）：前后各 ctx_n 行，
+                        # 行号带 "-" 与 match 区分；连续命中的窗口自然合并
+                        lo = max(1, i - ctx_n)
+                        hi = min(len(all_lines), i + ctx_n)
+                        for j in range(lo, hi + 1):
+                            if j in emitted:
+                                continue
+                            emitted.add(j)
+                            mark = "" if j == i else "-"
+                            out.append(f"{f.relative_to(search_root)}:{j}{mark}:{all_lines[j - 1]}")
+                        if hits_in_file >= max_hits:
+                            out.append("... (truncated)")
+                            return (header + "\n" if header else "") + "\n".join(out)
             body = "\n".join(out) or "(no matches)"
             return (header + "\n" + body) if header else body
         except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
