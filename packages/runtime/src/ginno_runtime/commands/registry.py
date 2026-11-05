@@ -621,7 +621,7 @@ async def _compact_async_handler(
     try:
         # 「压缩中…」状态事件（与 turn 入口的自动压缩同一条 UI 契约）：
         # 只在真正决定压缩（过完所有早退检查）后、总结 LLM 调用前发出。
-        from ..server_shared import _push_session_event
+        from ..server_shared import _push_global_event, _push_session_event
 
         async def _announce_compacting() -> None:
             await _push_session_event(sid, "context.compacting", {})
@@ -753,7 +753,7 @@ async def _clear_async_handler(
         {"messages": [RemoveMessage(id=m.id) for m in msgs]},
         as_node="agent",
     )
-    from ..server_shared import _push_session_event
+    from ..server_shared import _push_global_event, _push_session_event
 
     await _push_session_event(sid, "history.cleared", {})
     return (
@@ -1147,7 +1147,7 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
     """
     import os as _os
 
-    from ..server_shared import _push_session_event
+    from ..server_shared import _push_global_event, _push_session_event
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1210,17 +1210,30 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
     tail = _ANSI_RE.sub("", b"".join(tail_buf)[-600:].decode(errors="replace"))
     if proc.returncode == 0:
         # finish 阶段由 shell 已报 running；壳收尾终态由重启后的新进程接管。
-        await _push_session_event(
-            sid,
-            "runtime.dev_swap_pending",
-            {"message": "dev-swap build ready; finishing swap (restart + verify)"},
-        )
+        # 空 sid（侧栏热更新按钮等无会话发起方，2026-11-05）→ 全局广播，
+        # 保证任意会话的前端都能收到确认门事件。
+        if sid:
+            await _push_session_event(
+                sid,
+                "runtime.dev_swap_pending",
+                {"message": "dev-swap build ready; finishing swap (restart + verify)"},
+            )
+        else:
+            await _push_global_event(
+                "runtime.dev_swap_pending",
+                {"message": "dev-swap build ready; finishing swap (restart + verify)"},
+            )
     else:
-        await _push_session_event(
-            sid,
-            "notice",
-            {"message": f"/dev-swap failed (exit {proc.returncode}), nothing swapped:\n{tail}"},
-        )
+        if sid:
+            await _push_session_event(
+                sid, "notice",
+                {"message": f"/dev-swap failed (exit {proc.returncode}), nothing swapped:\n{tail}"},
+            )
+        else:
+            await _push_global_event(
+                "notice",
+                {"message": f"dev-swap failed (exit {proc.returncode}), nothing swapped:\n{tail}"},
+            )
 
 
 async def _dev_swap_async_handler(

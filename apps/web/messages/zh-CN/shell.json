@@ -16,7 +16,8 @@
       "tasksRunning": "{n} 个后台任务运行中",
       "kb": "知识库",
       "workflows": "工作流",
-      "settings": "设置"
+      "settings": "设置",
+      "hotSwap": "热更新"
     },
     "navDots": {
       "connectorError": "连接器出错",

@@ -12,6 +12,7 @@ import {
   Workflow as WorkflowIcon,
   Users,
 } from "lucide-react";
+import { Flame } from "lucide-react";
 import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
 import { listTasks, TASK_TERMINAL, type TaskRecord } from "@/lib/runtime";
 import { notifyTaskTransitions } from "@/lib/store/notifications";
@@ -49,6 +50,24 @@ export function SidebarFooter({
   // 内单实例，5s 一拉——角标与完成通知（仅后台标签页）都从这里驱动；任务
   // 中心页/聊天 TaskCard 另有自己的 2s 轮询取明细。
   const [tasksRunning, setTasksRunning] = useState(0);
+  const [devSwapRepo, setDevSwapRepo] = useState<string | null>(null);
+  const [swapping, setSwapping] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const s = (await (await import("@/lib/runtime")).getSettings()) as {
+          context?: { dev_swap_repo?: string };
+        };
+        if (alive) setDevSwapRepo(s.context?.dev_swap_repo || null);
+      } catch {
+        /* sidecar 未起——按钮不显示 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
   useEffect(() => {
     let alive = true;
     const poll = async () => {
@@ -131,6 +150,38 @@ export function SidebarFooter({
       </Link>
 
       <div className="px-2.5 pt-2 text-[10px] text-faint">© 2026 GinnoWork</div>
+
+      {/* 热更新（2026-11-05）：settings context.dev_swap_repo 配置后才显示。
+          点击 POST /api/devswap/start（无会话发起）→ 进度走 TopBar 徽标 +
+          hover 卡片，构建完成后全局广播确认门。 */}
+      {devSwapRepo && (
+        <button
+          type="button"
+          disabled={swapping}
+          onClick={async () => {
+            setSwapping(true);
+            try {
+              const r = await fetch("/api/devswap/start", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({}),
+              });
+              if (!r.ok) console.warn("[dev-swap] start failed:", r.status, await r.text());
+            } catch (e) {
+              console.warn("[dev-swap] start unavailable:", e);
+            } finally {
+              // 立即恢复可点：真正的进行中状态由 TopBar 进度徽标表达，
+              // 重复点击有后端 409 already_running 兜底。
+              setSwapping(false);
+            }
+          }}
+          className="mx-2.5 mb-1.5 flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-2 py-1 text-[11px] text-amber-600 hover:bg-amber-500/15 disabled:opacity-50 dark:text-amber-400"
+          title={devSwapRepo}
+        >
+          <Flame className="h-3.5 w-3.5" />
+          {t("nav.hotSwap")}
+        </button>
+      )}
     </div>
   );
 }

@@ -16,7 +16,8 @@
       "tasksRunning": "{n} background task(s) running",
       "kb": "Knowledge Base",
       "workflows": "Workflows",
-      "settings": "Settings"
+      "settings": "Settings",
+      "hotSwap": "Hot swap"
     },
     "navDots": {
       "connectorError": "Connector error",

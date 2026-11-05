@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .. import server_shared
@@ -204,6 +205,48 @@ def get_snapshot() -> dict:
     if snap is None:
         return {"ok": True, "run": None}
     return {"ok": True, "run": _flat_view(snap)}
+
+
+@router.post("/api/devswap/start")
+async def devswap_start(request: Request, body: dict | None = None) -> dict:
+    """侧栏「热更新」按钮入口（2026-11-05）：无会话发起的 dev-swap。
+
+    repo 解析顺序与 /dev-swap 命令一致：body.repo 显式 > settings
+    context.dev_swap_repo > build-info.repo。运行中（当前 run 处于 running
+    态）返回 409。构建进度经既有 progress 通道广播；完成事件由
+    _dev_swap_background 以**全局广播**发出（无 sid），确认门照常弹出。
+    """
+    client = request.client
+    host = client.host if client else ""
+    if host not in ("127.0.0.1", "::1"):
+        return {"ok": False, "error": "local-only"}
+
+    cur = server_shared._DEVSWAP_PROGRESS.get("snapshot") or {}
+    if cur.get("state") == "running":
+        return JSONResponse({"ok": False, "error": "already_running"}, status_code=409)
+
+    import asyncio
+    from pathlib import Path as _P
+
+    from ..commands.registry import _dev_swap_background, _DEV_SWAP_TASKS
+    from ..world_state import context_settings
+
+    body = body or {}
+    repo = str(body.get("repo") or "").strip()
+    if not repo:
+        repo = str(context_settings().get("dev_swap_repo") or "")
+    if not repo:
+        from .._build import build_info
+
+        repo = str(build_info().get("repo") or "")
+    if not repo or not (_P(repo) / "scripts" / "dev_swap.sh").exists():
+        return JSONResponse(
+            {"ok": False, "error": "repo_not_found"}, status_code=422
+        )
+    task = asyncio.create_task(_dev_swap_background("", repo))
+    _DEV_SWAP_TASKS.add(task)
+    task.add_done_callback(_DEV_SWAP_TASKS.discard)
+    return {"ok": True, "repo": repo}
 
 
 @router.post("/api/devswap/progress")
