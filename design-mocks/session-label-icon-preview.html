@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Label/Icon — UI 设计预览</title>
+<style>
+  :root{
+    --bg:#0f1115;--bg2:#161a21;--card:#1b202a;--line:#2a3140;--line2:#39424f;
+    --txt:#e6e9ef;--muted:#9aa3b2;--faint:#6b7484;
+    --accent:#5b8cff;--red:#f87171;--green:#4ade80;--amber:#fbbf24;--gold:#f59e0b;--purple:#a78bfa;--blue:#60a5fa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:13px/1.5 -apple-system,"SF Pro Text","PingFang SC",sans-serif;display:flex;gap:28px;padding:28px;flex-wrap:wrap}
+  .col{display:flex;flex-direction:column;gap:10px}
+  .col>h2{font-size:13px;color:var(--muted);font-weight:600;margin-bottom:2px}
+  .hint{font-size:11px;color:var(--faint);max-width:320px}
+  /* 侧栏 */
+  .sidebar{width:320px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px}
+  .row{display:flex;align-items:center;gap:7px;padding:7px 8px;border-radius:8px;cursor:pointer;position:relative}
+  .row:hover{background:rgba(255,255,255,.04)}
+  .row.active{background:rgba(91,140,255,.12)}
+  .row .ic{width:15px;height:15px;flex-shrink:0;display:inline-flex}
+  .row .title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+  .chip{font-size:10px;line-height:1;padding:3px 6px;border-radius:999px;border:1px solid var(--line2);color:var(--muted);background:rgba(255,255,255,.03);white-space:nowrap}
+  .chip.more{padding:3px 5px}
+  .chev{font-size:10px;color:var(--faint)}
+  .running-dot{position:absolute;left:-3px;top:50%;transform:translateY(-50%);width:3px;height:14px;border-radius:2px;background:var(--accent)}
+  .wait-dot{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:14px;height:14px;border-radius:50%;background:var(--amber);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center}
+  .more-btn{opacity:0;font-size:13px;color:var(--faint);padding:0 3px}
+  .row:hover .more-btn{opacity:1}
+  /* 面板 */
+  .panel{width:320px;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:14px;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+  .panel h3{font-size:12.5px;font-weight:600;margin-bottom:10px}
+  .panel .sub{font-size:11px;color:var(--faint);margin:10px 0 6px}
+  .icon-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+  .icon-cell{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 2px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:10px;color:var(--muted);background:transparent}
+  .icon-cell:hover{border-color:var(--line2);background:rgba(255,255,255,.03)}
+  .icon-cell.sel{border-color:var(--accent);background:rgba(91,140,255,.12);color:var(--txt)}
+  .icon-cell .swatch{width:16px;height:16px}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;padding:7px;border:1px solid var(--line);border-radius:8px;min-height:36px;align-items:center}
+  .chips input{flex:1;min-width:80px;background:none;border:none;outline:none;color:var(--txt);font-size:12px}
+  .chip .x{margin-left:4px;cursor:pointer;opacity:.6}
+  .chip .x:hover{opacity:1}
+  .meta{font-size:10.5px;color:var(--faint)}
+  .btnrow{display:flex;gap:8px;margin-top:12px;justify-content:flex-end}
+  .btn{font-size:11.5px;padding:5px 12px;border-radius:7px;border:1px solid var(--line2);background:transparent;color:var(--muted);cursor:pointer}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* 搜索条 */
+  .searchbox{display:flex;align-items:center;gap:6px;border:1px solid var(--line2);border-radius:8px;padding:6px 9px;margin-bottom:6px}
+  .searchbox input{flex:1;background:none;border:none;outline:none;color:var(--txt);font-size:12px}
+  .tok{color:var(--purple);font-weight:600}
+  code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px;font-size:11px}
+  .callout{border-left:3px solid var(--amber);padding:6px 10px;font-size:11px;color:var(--muted);background:rgba(251,191,36,.06);border-radius:0 6px 6px 0;max-width:320px}
+</style>
+</head>
+<body>
+
+<!-- ═══ 场景 1：侧栏行展示 ═══ -->
+<div class="col">
+  <h2>① 侧栏行 · icon + label 展示态</h2>
+  <div class="sidebar">
+    <div class="row active"><span class="running-dot"></span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#9aa3b2" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+      <span class="title">dev-swap 进度可视化实现</span>
+      <span class="chip">dev</span>
+      <span class="more-btn">⋯</span>
+    </div>
+    <div class="row">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><rect x="8" y="6" width="8" height="14" rx="4"/><path d="M19 7l-3 2 3 2M5 7l3 2-3 2M10 9h.01M14 9h.01"/></svg></span>
+      <span class="title">Magpie reasoning_effort 400 排障</span>
+      <span class="chip">p0</span>
+      <span class="wait-dot">✋</span>
+    </div>
+    <div class="row">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></span>
+      <span class="title">v0.1.2 发版</span>
+      <span class="chip">release</span><span class="chip">v0.1.2</span>
+      <span class="more-btn">⋯</span>
+    </div>
+    <div class="row">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+      <span class="title">10+/50+ 并发架构评估</span>
+      <span class="chip">调研</span><span class="chip more">+2</span>
+      <span class="more-btn">⋯</span>
+    </div>
+    <div class="row">
+      <!-- 无 icon：不占位，与现状一致 -->
+      <span class="title">泡泡玛特公司调研（无标签会话）</span>
+      <span class="chev">▸ 3</span>
+    </div>
+  </div>
+  <div class="hint">icon 置于标题左（无 icon 不占位）；label chip 靠右，最多 2 个 + <code>+N</code>（hover title 全量）；与运行条 / ✋等待图标不冲突。</div>
+</div>
+
+<!-- ═══ 场景 2：打标面板 ═══ -->
+<div class="col">
+  <h2>② 行内 ⋯ 菜单 → 标签与图标面板</h2>
+  <div class="panel">
+    <h3>标签与图标 · dev-swap 进度可视化实现</h3>
+    <div class="sub">图标（单选，语义色）</div>
+    <div class="icon-grid" id="grid"></div>
+    <div class="sub">标签（≤3 个，回车添加）</div>
+    <div class="chips" id="chips">
+      <span class="chip">dev<span class="x" onclick="this.parentElement.remove()">✕</span></span>
+      <input placeholder="输入后回车…">
+    </div>
+    <div class="meta" style="margin-top:6px">标签会显示在会话列表行；搜索时输入 <code>#标签名</code> 可过滤。</div>
+    <div class="btnrow">
+      <button class="btn">清除</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </div>
+  <div class="hint">8 宫格 + 「无」（第一格）；点选即时高亮，保存才落库（PUT /api/sessions/{id}/tags），失败 toast 重开面板回滚。</div>
+</div>
+
+<!-- ═══ 场景 3：# 前缀搜索 ═══ -->
+<div class="col">
+  <h2>③ 搜索框 # 前缀过滤</h2>
+  <div class="searchbox">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6b7484" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input value="#release">
+  </div>
+  <div class="sidebar">
+    <div class="row">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg></span>
+      <span class="title">v0.1.2 发版</span>
+      <span class="chip"><span class="tok">#</span>release</span><span class="chip">v0.1.2</span>
+    </div>
+    <div class="row">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg></span>
+      <span class="title">v0.1.1 发版</span>
+      <span class="chip"><span class="tok">#</span>release</span>
+    </div>
+  </div>
+  <div class="callout">边界：# 过滤在前端会话列表内存执行（不分页请求）；混合输入 <code>#release dmg</code> = label 过滤 ∩ 关键词搜索，MVP 支持单一 # 前缀即可。</div>
+</div>
+
+<script>
+  // 8 宫格（受控枚举 + 语义色），联动演示
+  const ICONS=[
+    ["无",null,null],["工程","#9aa3b2","M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"],
+    ["排障","#f87171","M8 6h8v14a4 4 0 0 1-8 0V6zM19 7l-3 2 3 2M5 7l3 2-3 2M10 9h.01M14 9h.01"],
+    ["文档","#60a5fa","M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"],
+    ["发版","#4ade80","M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09zM12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"],
+    ["调研","#a78bfa","M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM21 21l-4.3-4.3"],
+    ["风险","#fbbf24","M12 2 1 21h22L12 2zM12 10v4M12 18h.01"],
+    ["收藏","#f59e0b","M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"],
+  ];
+  const g=document.getElementById("grid");let sel=1;
+  ICONS.forEach(([name,color,d],i)=>{
+    const c=document.createElement("div");c.className="icon-cell"+(i===sel?" sel":"");
+    c.innerHTML=color?`<svg class="swatch" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><path d="${d}"/></svg>`:`<svg class="swatch" viewBox="0 0 24 24" fill="none" stroke="#6b7484" stroke-width="2"><path d="M5 12h14"/></svg>`+`<span>${name}</span>`;
+    c.onclick=()=>{sel=i;[...g.children].forEach((x,j)=>x.classList.toggle("sel",j===i))};
+    g.appendChild(c);
+  });
+  // 回车加 chip（≤3）
+  const chips=document.getElementById("chips"),inp=chips.querySelector("input");
+  inp.addEventListener("keydown",e=>{
+    if(e.key==="Enter"&&inp.value.trim()){
+      if(chips.querySelectorAll(".chip").length>=3){inp.placeholder="最多 3 个";return}
+      const s=document.createElement("span");s.className="chip";
+      s.innerHTML=inp.value.trim()+'<span class="x">✕</span>';
+      s.querySelector(".x").onclick=()=>s.remove();
+      chips.insertBefore(s,inp);inp.value="";
+    }
+  });
+</script>
+</body>
+</html>

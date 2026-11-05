@@ -336,6 +336,25 @@ export function useSessions({
     }
   }, []);
 
+  /** Session label/icon（session-label-icon-design.md §3.2）：乐观写 + PUT
+   *  tags 全量覆盖；失败 toast 由面板负责（这里静默，下次 reload 对齐）。 */
+  const setSessionTags = useCallback(
+    async (id: string, icon: string | null, labels: string[]) => {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, label_icon: icon, labels } : s)),
+      );
+      try {
+        const r = await api.setSessionTags(id, icon, labels);
+        if (r?.session) {
+          setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...r.session } : s)));
+        }
+      } catch {
+        /* ignore — reconcile on next reload */
+      }
+    },
+    [],
+  );
+
   const applySessionPatch = useCallback((id: string, patch: Partial<SessionMeta>) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
@@ -343,6 +362,7 @@ export function useSessions({
   return {
     sessions,
     setSessions,
+    setSessionTags,
     activeSessionId,
     activeSessionRef,
     unreadSessions,

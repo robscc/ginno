@@ -5,8 +5,9 @@
 // 点击后沿左上弧扇形展开（带 stagger 弹出动画）。置顶态本身由侧栏「置顶」
 // 分组表达，不需要常驻 pin 图标。
 
-import { Bot, BotOff, GitFork, MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Bot, BotOff, GitFork, MoreHorizontal, Pencil, Pin, PinOff, Tags, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { SessionTagsPanel } from "./SessionTagsPanel";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -20,6 +21,7 @@ const RADIUS = 52;
 const ANGLES_3 = [100, 140, 180];
 const ANGLES_4 = [45, 90, 135, 180];
 const ANGLES_5 = [30, 67, 104, 142, 180];
+const ANGLES_6 = [12, 45, 78, 111, 145, 178];
 const fanOffset = (deg: number) => ({
   dx: Math.round(RADIUS * Math.cos((deg * Math.PI) / 180)),
   dy: -Math.round(RADIUS * Math.sin((deg * Math.PI) / 180)),
@@ -34,6 +36,10 @@ export function RowFanMenu({
   onWorker,
   forkSid,
   onFork,
+  title,
+  tagsIcon,
+  tagsLabels,
+  onTags,
 }: {
   pinned: boolean;
   onPin: (pinned: boolean) => void;
@@ -46,6 +52,13 @@ export function RowFanMenu({
    * 「fork from <sid 前 8 位>」——扇叶伸在行外，明示复制源是哪一行。 */
   forkSid?: string;
   onFork?: () => void;
+  /** Session label/icon（session-label-icon-design.md §3.2）：传 onTags 才
+   *  渲染「标签与图标」扇叶，点击打开 SessionTagsPanel（portal 弹层）。 */
+  tagsIcon?: string | null;
+  tagsLabels?: string[];
+  onTags?: (icon: string | null, labels: string[]) => void;
+  /** 面板头展示的会话标题（由行组件传入）。 */
+  title: string;
 }) {
   const t = useTranslations("shell");
   const [open, setOpen] = useState(false);
@@ -126,6 +139,18 @@ export function RowFanMenu({
           },
         ]
       : []),
+    ...(onTags
+      ? [
+          {
+            key: "tags",
+            label: t("sessionTags.menu"),
+            title: t("sessionTags.menuHint"),
+            icon: <Tags className="h-3.5 w-3.5" />,
+            cls: "text-muted hover:text-txt hover:border-violet/40",
+            run: () => setTagsOpen(true),
+          },
+        ]
+      : []),
     {
       key: "pin",
       label: pinned ? t("session.unpin") : t("session.pin"),
@@ -151,7 +176,11 @@ export function RowFanMenu({
       run: onDelete,
     },
   ];
-  const angles = items.length >= 5 ? ANGLES_5 : items.length === 4 ? ANGLES_4 : ANGLES_3;
+  const angles =
+    items.length >= 6 ? ANGLES_6 : items.length === 5 ? ANGLES_5 : items.length === 4 ? ANGLES_4 : ANGLES_3;
+
+  // 标签与图标面板（SessionTagsPanel）：独立于扇叶展开态，锚点复用触发钮中心。
+  const [tagsOpen, setTagsOpen] = useState(false);
 
   return (
     <span ref={rootRef} className="relative inline-flex">
@@ -206,6 +235,16 @@ export function RowFanMenu({
           })}
         </div>,
         document.body,
+      )}
+      {onTags && tagsOpen && anchor && (
+        <SessionTagsPanel
+          anchor={anchor}
+          title={title}
+          initialIcon={tagsIcon ?? null}
+          initialLabels={tagsLabels ?? []}
+          onClose={() => setTagsOpen(false)}
+          onSave={onTags}
+        />
       )}
     </span>
   );

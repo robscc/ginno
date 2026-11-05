@@ -8,6 +8,7 @@ import * as api from "@/lib/runtime";
 import type { SearchMessageHit } from "@/lib/runtime";
 import type { SessionMeta } from "@/lib/types";
 import { hiddenSessionIds } from "@/lib/sessionVisibility";
+import { parseLabelQuery, sessionMatchesLabel } from "@/lib/sessionTags";
 import {
   MessageHitRow,
   SessionHitRow,
@@ -52,8 +53,15 @@ export function SessionSearchModal({
 
   // 非空查询走防抖 200ms 的统一搜索；每次查询变化先清掉上一轮结果，避免在
   // 防抖窗内按 Enter 打开一个已经不属于当前关键词的会话。
+  // #label 前缀（label-icon-design §4）：前端按 label 过滤（子串、忽略大
+  // 小写、命中任一 label），不打服务端——labels 本来就在列表数据里。
+  const { isLabel: isLabelQuery, label: labelNeedle } = useMemo(
+    () => parseLabelQuery(needle),
+    [needle],
+  );
+
   useEffect(() => {
-    if (!needle) {
+    if (!needle || isLabelQuery) {
       setServer(null);
       setLoading(false);
       setFailed(false);
@@ -84,7 +92,7 @@ export function SessionSearchModal({
       alive = false;
       clearTimeout(timer);
     };
-  }, [needle]);
+  }, [needle, isLabelQuery]);
 
   // 影子/团队空间会话整类不进搜索（scheduled-tasks-design §3.6/§10 决议 5），
   // 其子树（定时任务拉起的 subagent 等）随父级一并排除（sessionVisibility）。
@@ -104,6 +112,12 @@ export function SessionSearchModal({
   // 标题 ∪ Agent 名过滤（C+ 方案⑤，与旧行为一致）。
   const titleHits = useMemo<SessionMeta[]>(() => {
     if (!needle) return [];
+    // # 前缀：按 label 本地过滤（# 后整串当作 label，混合语法 MVP 不支持）
+    if (isLabelQuery) {
+      return [...g.sessions]
+        .filter((s) => !hidden.has(s.id) && sessionMatchesLabel(s.labels, labelNeedle))
+        .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+    }
     if (server) return server.sessions.filter((s) => !hidden.has(s.id));
     if (!failed) return []; // 首次请求在飞
     const agentName = (s: SessionMeta) =>
@@ -116,7 +130,7 @@ export function SessionSearchModal({
         (s) =>
           (s.title || "").toLowerCase().includes(ql) || agentName(s).includes(ql),
       );
-  }, [needle, server, failed, hidden, g.sessions, g.agents]);
+  }, [needle, isLabelQuery, labelNeedle, server, failed, hidden, g.sessions, g.agents]);
 
   const messageHits = useMemo<SearchMessageHit[]>(
     () => (server ? server.messages.filter((m) => !hidden.has(m.session_id)) : []),
@@ -170,7 +184,7 @@ export function SessionSearchModal({
   const noHits =
     !!needle &&
     !loading &&
-    (!!server || failed) &&
+    (!!server || failed || isLabelQuery) &&
     !server?.indexing &&
     titleHits.length === 0 &&
     messageHits.length === 0;

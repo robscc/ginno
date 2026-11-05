@@ -157,6 +157,44 @@ def _resolve_session_meta(session_id: str) -> dict | None:
     return None
 
 
+def _session_meta_set_tags(
+    slug: str,
+    session_id: str,
+    icon: str | None,
+    labels: list[str],
+    *,
+    touch: bool = False,
+) -> dict | None:
+    """Session label/icon（session-label-icon-design.md §1）——两字段全量覆盖。
+
+    meta 存储键用 ``tag_icon``：meta 的 ``icon`` 键自创建起就是 agent 图标
+    快照（usage 展示 / 会话重建等消费方），不能被用户打标覆盖；API/list 面
+    统一透出为 ``label_icon``。``labels`` 直接存字符串数组（≤3、单个 ≤20
+    字符的校验在 api/sessions.py 端点做）。写路径与 _session_meta_patch 同
+    通道（_IDX_LOCK 串行 + 原子落盘）；``touch=False``：打标是纯视觉操作，
+    不得改变侧栏排序。
+    """
+    with _IDX_LOCK:
+        items = _session_meta_list(slug)
+        for m in items:
+            if m.get("id") == session_id:
+                if icon is None:
+                    m.pop("tag_icon", None)  # null = 清除（键整个移除）
+                else:
+                    m["tag_icon"] = icon
+                m["labels"] = list(labels)
+                if touch:
+                    m["updated"] = time.time()
+                _write_index(slug, items)
+                return m
+        return None
+
+
+def _tags_fields(meta: dict) -> dict:
+    """List/get 响应统一装饰：老会话缺字段时透出 null/[]（前端免判空）。"""
+    return {"label_icon": meta.get("tag_icon"), "labels": meta.get("labels") or []}
+
+
 def _session_slug(session_id: str) -> str | None:
     s = _SESSIONS.get(session_id)
     if s:

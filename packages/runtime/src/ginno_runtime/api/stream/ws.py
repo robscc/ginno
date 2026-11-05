@@ -982,7 +982,21 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         "files": [],
                         "images": [],
                     }
-                shared.steer_enqueue(
+                # 未吸收注入合并（2026-11-05）：同 turn 连发修正型注入只落
+                # 一条消息/一条带——并入前一条 pending 纯文本注入。带附件
+                #（图片/文件/context）不合并，保持原独立语义。
+                _merged_into = None
+                if not _steer_imgs and not _steer_files and not _payload.get("context_text"):
+                    _merged_into = shared.steer_merge_pending(
+                        session_id, steer_text or "", _steer_turn
+                    )
+                if _merged_into:
+                    _log.info(
+                        "steer_merged session=%s into=%s turn=%s text=%r",
+                        session_id, _merged_into, _steer_turn, (steer_text or "")[:120],
+                    )
+                else:
+                    shared.steer_enqueue(
                     session_id,
                     {
                         "steer_id": steer_id,

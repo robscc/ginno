@@ -750,6 +750,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       onRename={(id, title) => void g.renameSession(id, title)}
       onPin={(id, pinned) => void g.pinSession(id, pinned)}
       onWorker={(id, worker) => void g.setSessionWorker(id, worker)}
+      onSetTags={(id, icon, labels) => void g.setSessionTags(id, icon, labels)}
       onForkSession={(id) => void forkAndOpen(id)}
       onRemoveSession={(id) => {
         // 行内删除同样要回报失败：先快照标题（乐观移除后行就没了）。

@@ -8,6 +8,8 @@ import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
 import { AgentIcon } from "@/components/icons";
 import type { AgentConfig, SessionMeta, WorkflowRun } from "@/lib/types";
+import { foldLabels } from "@/lib/sessionTags";
+import { SessionTagIcon } from "@/components/shell/sessionTagIcons";
 import {
   SUBAGENT_BUCKET_ORDER,
   SUBAGENT_STATUS_META,
@@ -57,6 +59,9 @@ export interface SidebarSessionRowProps {
   onWorker?: (id: string, worker: boolean) => void;
   /** Fork 扇叶：复制会话为新会话（POST /fork），成功后打开新会话。 */
   onForkSession?: (id: string) => void;
+  /** Session label/icon（session-label-icon-design.md §3.2）：扇形菜单「标签
+   *  与图标」面板的保存回调（PUT tags 全量覆盖；不传则不渲染该扇叶）。 */
+  onSetTags?: (id: string, icon: string | null, labels: string[]) => void;
   onRemoveSession: (id: string) => void;
   onSetTreeCollapsed: (id: string, collapsed: boolean) => void;
   /** 子会话分节折叠：显式传当前展开态（默认值由本组件决定）。 */
@@ -100,6 +105,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     onPin,
     onWorker,
     onForkSession,
+    onSetTags,
     onRemoveSession,
     onSetTreeCollapsed,
     onToggleSubGroupFold,
@@ -259,7 +265,32 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                   <AgentIcon name={rowAgent?.icon} className="h-4 w-4" />
                 </span>
               )}
+              {/* Session label icon（label-icon-design §3.1）：标题前 14px 语义色
+                  图标；子会话/worker 派生行不渲染；无 icon 不占位。 */}
+              {!isSub && <SessionTagIcon id={s.label_icon} />}
               <span className="truncate">{s.title || t("session.untitled")}</span>
+              {/* label chips：标题右、靠右收敛之前；最多 2 个 + "+N" 折叠，
+                  hover title 展示全量；子会话行不渲染；无标签不占位。 */}
+              {!isSub && (s.labels?.length ?? 0) > 0 && (
+                <span
+                  className="flex shrink-0 items-center gap-1"
+                  title={(s.labels ?? []).join(", ")}
+                >
+                  {foldLabels(s.labels).shown.map((l) => (
+                    <span
+                      key={l}
+                      className="max-w-[72px] truncate rounded-full border border-line2 bg-white/[0.03] px-1.5 py-px text-[10px] leading-4 text-muted"
+                    >
+                      {l}
+                    </span>
+                  ))}
+                  {foldLabels(s.labels).extra > 0 && (
+                    <span className="text-[10px] leading-4 text-faint">
+                      +{foldLabels(s.labels).extra}
+                    </span>
+                  )}
+                </span>
+              )}
               {/* Worker 协议「停止接活」角标（worker-protocol-design §2）：仅
                   main 行且显式关掉时渲染——接活是缺省态不标（满屏角标是
                   噪音），关掉是例外态要让状态在行内常驻可见（扇形菜单之外
@@ -394,6 +425,14 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                   {/* 置顶/改名/删除收进扇形菜单（RowFanMenu）：行尾只留一个
                       hover 出现的 ⋯，给标题腾宽度；置顶态由「置顶」分组表达。 */}
                   <RowFanMenu
+                    title={s.title || t("session.untitled")}
+                    tagsIcon={s.label_icon}
+                    tagsLabels={s.labels}
+                    onTags={
+                      onSetTags
+                        ? (icon, labels) => onSetTags(s.id, icon, labels)
+                        : undefined
+                    }
                     pinned={!!s.pinned}
                     onPin={(pinned) => onPin(s.id, pinned)}
                     onRename={() => onStartRename(s)}

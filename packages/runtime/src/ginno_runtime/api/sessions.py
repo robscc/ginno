@@ -45,8 +45,10 @@ from ..session_meta import (
     _session_meta_list,
     _session_meta_patch,
     _session_meta_remove,
+    _session_meta_set_tags,
     _session_meta_upsert,
     _session_slug,
+    _tags_fields,
     subagent_depth_of,
 )
 from ..session_unread import is_unread as _session_is_unread
@@ -780,9 +782,13 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     on_disk = _session_meta_list(slug)
     if on_disk:
         # unread 装饰：服务端收件箱语义（session_unread），侧栏紫点的单一事实源
-        return [{**m, "unread": _session_is_unread(m)} for m in on_disk]
+        return [{**m, "unread": _session_is_unread(m), **_tags_fields(m)} for m in on_disk]
     return [
-        {**{k: v for k, v in s.items() if k != "graph"}, "unread": _session_is_unread(s)}
+        {
+            **{k: v for k, v in s.items() if k != "graph"},
+            "unread": _session_is_unread(s),
+            **_tags_fields(s),
+        }
         for s in _SESSIONS.values()
         if s.get("project_slug") == slug
     ]
@@ -803,7 +809,8 @@ async def page_sessions(
     """
     slug = project_slug or "default"
     rows = [
-        {**m, "unread": _session_is_unread(m)} for m in _session_meta_list(slug)
+        {**m, "unread": _session_is_unread(m), **_tags_fields(m)}
+        for m in _session_meta_list(slug)
     ]
     if not include_archived:
         rows = [r for r in rows if not r.get("archived")]
@@ -836,7 +843,8 @@ async def search_sessions(
     """
     slug = project_slug or "default"
     rows = [
-        {**m, "unread": _session_is_unread(m)} for m in _session_meta_list(slug)
+        {**m, "unread": _session_is_unread(m), **_tags_fields(m)}
+        for m in _session_meta_list(slug)
     ]
     needle = (q or "").strip().lower()
     if needle:
@@ -869,7 +877,76 @@ async def get_session(session_id: str) -> dict:
         raise HTTPException(
             status_code=404, detail={"ok": False, "error": "unknown session"}
         )
-    return {k: v for k, v in m.items() if k != "graph"} | {"unread": _session_is_unread(m)}
+    return {k: v for k, v in m.items() if k != "graph"} | {"unread": _session_is_unread(m)} | _tags_fields(m)
+
+
+# ── Session label/icon（session-label-icon-design.md §1/§2）──────────────────
+# icon 受控枚举 8 个；labels ≤3 个、strip 后非空且 ≤20 字符、去重。
+SESSION_TAG_ICONS = frozenset(
+    {"wrench", "bug", "doc", "release", "research", "chat", "warn", "star"}
+)
+
+
+@router.put("/api/sessions/{session_id}/tags")
+async def set_session_tags(session_id: str, req: dict) -> dict:
+    """全量覆盖会话的 icon/labels（null/[] 即清除）。纯视觉操作：touch=False
+    不改变侧栏排序。非法值 422（带 message）。"""
+    icon = req.get("icon")
+    if icon is not None and icon not in SESSION_TAG_ICONS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "ok": False,
+                "error": f"invalid icon '{icon}'; must be one of {sorted(SESSION_TAG_ICONS)} or null",
+            },
+        )
+    raw_labels = req.get("labels")
+    if raw_labels is None:
+        raw_labels = []
+    if not isinstance(raw_labels, list) or not all(isinstance(x, str) for x in raw_labels):
+        raise HTTPException(
+            status_code=422,
+            detail={"ok": False, "error": "labels must be an array of strings"},
+        )
+    labels: list[str] = []
+    for raw in raw_labels:
+        label = raw.strip()
+        if not label:
+            raise HTTPException(
+                status_code=422,
+                detail={"ok": False, "error": "labels must be non-empty after trimming whitespace"},
+            )
+        if len(label) > 20:
+            raise HTTPException(
+                status_code=422,
+                detail={"ok": False, "error": f"label too long (max 20 chars): '{label}'"},
+            )
+        if label not in labels:  # 去重（strip 后比较）
+            labels.append(label)
+    if len(labels) > 3:
+        raise HTTPException(
+            status_code=422,
+            detail={"ok": False, "error": f"too many labels (max 3): got {len(raw_labels)}"},
+        )
+    slug = _session_slug(session_id)
+    if slug is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
+    updated = _session_meta_set_tags(slug, session_id, icon, labels)
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
+    # 内存条目同步（免得 list 内存兜底分支透出旧值）
+    s = _SESSIONS.get(session_id)
+    if s is not None:
+        if icon is None:
+            s.pop("tag_icon", None)
+        else:
+            s["tag_icon"] = icon
+        s["labels"] = list(labels)
+    return {"ok": True, "session": {**updated, **_tags_fields(updated)}}
 
 
 @router.post("/api/sessions/{session_id}/seen")

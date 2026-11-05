@@ -230,6 +230,11 @@ export interface SessionMeta {
   channel?: string;
   /** delegation 专用：running | success | error | timeout（bg 终态/启动对账写入） */
   stop_reason?: string;
+  /** Session label/icon（session-label-icon-design.md §1）：用户手打的视觉
+   *  分类——icon ∈ 8 受控枚举（null = 未设置），labels ≤3 个（[] = 未设置）。
+   *  注意：这与 agent 图标的 meta.icon 无关（后端存 tag_icon，透出为 label_icon）。 */
+  label_icon?: string | null;
+  labels?: string[];
   backend?: string;
   mode?: string;
   // 影子会话所属的执行记录 run_id（§4.3）；普通会话缺省。

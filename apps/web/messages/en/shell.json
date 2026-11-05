@@ -235,6 +235,29 @@
       "mountPlaceholder": "Mount a session… (search by title)",
       "searching": "Searching…",
       "clearSearch": "× clear results"
+    },
+    "sessionTags": {
+      "menu": "Tags & icon",
+      "menuHint": "Set a label icon and up to 3 labels for this session",
+      "subtitle": "Icon and labels are visual only — they never change sorting or grouping",
+      "iconSection": "Icon (single choice)",
+      "labelSection": "Labels (max 3)",
+      "labelPlaceholder": "Type a label, press Enter",
+      "limitHint": "Up to {max} labels",
+      "removeLabel": "Remove label",
+      "clear": "Clear",
+      "save": "Save",
+      "none": "None",
+      "icon": {
+        "wrench": "Build",
+        "bug": "Debug",
+        "doc": "Doc",
+        "release": "Release",
+        "research": "Research",
+        "chat": "Chat",
+        "warn": "Risk",
+        "star": "Star"
+      }
     }
   }
 }

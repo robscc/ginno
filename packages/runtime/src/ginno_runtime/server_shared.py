@@ -343,6 +343,46 @@ def steer_enqueue(session_id: str, entry: dict) -> None:
     _STEER_STASH[session_id] = lst
 
 
+def steer_merge_pending(session_id: str, text: str, turn_id: str) -> str | None:
+    """把新注入文本并入同 turn 尚未吸收的上一条用户注入（2026-11-05）。
+
+    用户连发修正型注入（如先 issue 后 pr）会弹两条「运行中注入」带、落两条
+    消息；意图实为一条。这里在入队前合并：命中「同 turn + 纯文本 + 用户来
+    源 + 无附件 + 非系统 recursion-warn」的最新一条，文本以空行拼接、
+    content_blocks 追加文本块，返回被并入条目的 steer_id——调用方对新
+    steer_id 照常 ack（前端队列条目要收），但不再入队，因此只产生一条带、
+    一条消息。带附件的注入不合并（payload 语义不清，宁多勿错）。"""
+    if not session_id or not text:
+        return None
+    from difflib import SequenceMatcher
+
+    lst = _STEER_STASH.get(session_id) or []
+    if not lst:
+        return None
+    e = lst[-1]  # 只看最后一条：合并的是"刚才那条的修正"，不是历史批次
+    prev = e.get("text") or ""
+    a, b = prev.strip(), text.strip()
+    # 短文本公共子串比例天然虚高（"第一件事"/"第二件事"=0.75）：长度门槛 +
+    # 0.8 阈值双保险，修正型注入通常整句复述（~0.95）。
+    similar = min(len(a), len(b)) >= 6 and SequenceMatcher(None, a, b).ratio() >= 0.7
+    if (
+        e.get("turn_id") == turn_id
+        and e.get("injected_at")
+        and not e.get("origin")
+        and not e.get("files")
+        and not e.get("images")
+        and not e.get("context_text")
+        and not str(e.get("steer_id", "")).startswith("recursion-warn-")
+        and similar
+    ):
+        e["text"] = prev + "\n\n" + text
+        cb = e.get("content_blocks")
+        if isinstance(cb, list):
+            cb.append({"type": "text", "text": text})
+        return str(e.get("steer_id"))
+    return None
+
+
 def steer_drain(session_id: str) -> list[dict]:
     """Pop every steered message awaiting absorption (graph.agent_node entry)."""
     return _STEER_STASH.pop(session_id, None) or []

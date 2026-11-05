@@ -223,6 +223,19 @@ export async function patchSession(id: string, patch: Partial<SessionMeta>) {
   });
 }
 
+/** Session label/icon（session-label-icon-design.md §1）：PUT 全量覆盖
+ *  icon/labels（null/[] 即清除）。icon ∈ 8 受控枚举。 */
+export async function setSessionTags(id: string, icon: string | null, labels: string[]) {
+  return json<{ ok: boolean; session: SessionMeta | null; error?: string }>(
+    `${BASE}/sessions/${id}/tags`,
+    {
+      method: "PUT",
+      headers: H,
+      body: JSON.stringify({ icon, labels }),
+    },
+  );
+}
+
 export async function deleteSession(id: string, cascade = false) {
   // cascade=1（subagent-design.md §5.8）：删除父会话时由后端沿 parent_session_id
   // 级联删除全部后代（先协作式停止运行中的，再删 checkpoint）。前端只负责传参，

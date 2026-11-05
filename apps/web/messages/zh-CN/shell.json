@@ -235,6 +235,29 @@
       "mountPlaceholder": "挂载会话…(按标题搜索)",
       "searching": "搜索中…",
       "clearSearch": "× 清除结果"
+    },
+    "sessionTags": {
+      "menu": "标签与图标",
+      "menuHint": "为会话设置标签图标与最多 3 个标签",
+      "subtitle": "图标与标签仅作视觉分类，不改变排序与分组",
+      "iconSection": "图标（单选）",
+      "labelSection": "标签（最多 3 个）",
+      "labelPlaceholder": "输入标签，回车添加",
+      "limitHint": "最多 {max} 个标签",
+      "removeLabel": "移除标签",
+      "clear": "清除",
+      "save": "保存",
+      "none": "无",
+      "icon": {
+        "wrench": "构建",
+        "bug": "排障",
+        "doc": "文档",
+        "release": "发版",
+        "research": "调研",
+        "chat": "闲聊",
+        "warn": "风险",
+        "star": "收藏"
+      }
     }
   }
 }

@@ -73,6 +73,10 @@ export function SidebarFooter({
       <Link href="/team" className={`nav-item ${onTeam ? "nav-item-active" : ""}`}>
         <Users className="h-4 w-4 shrink-0" />
         <span className="truncate">{t("nav.team")}</span>
+        {/* Beta 标（2026-11-05）：AgentTeam 功能未达稳定，入口明示。 */}
+        <span className="ml-auto shrink-0 rounded border border-amber-500/50 bg-amber-500/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-amber-600 dark:text-amber-400">
+          Beta
+        </span>
       </Link>
       <Link href="/connectors" className={`nav-item ${onConnectors ? "nav-item-active" : ""}`}>
         <Cable className="h-4 w-4 shrink-0" />

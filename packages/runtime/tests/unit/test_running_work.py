@@ -129,3 +129,31 @@ def test_report_includes_waiting_sessions(monkeypatch) -> None:
     server_shared._PENDING_RESUME.add("sess-wait2")
     rep2 = running_work_report()
     assert {"id": "sess-wait2", "kind": "unknown"} in rep2["waiting"]
+
+
+def test_steer_merge_pending() -> None:
+    """修正型注入合并（2026-11-05）：仅「最后一条 + 纯文本 + 同 turn +
+    文本相似(ratio>=0.7)」并入；不同意图/附件/不同 turn 保持独立。"""
+    from ginno_runtime import server_shared as ss
+
+    ss._STEER_STASH["s-merge"] = [
+        {"steer_id": "st-1", "turn_id": "t-1", "text": "审计一下 PR#4 这个 issue",
+         "injected_at": 1.0, "content_blocks": None},
+    ]
+    try:
+        # 相似修正 → 并入同一条
+        assert ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 pr", "t-1") == "st-1"
+        e = ss._STEER_STASH["s-merge"][0]
+        assert "这个 pr" in e["text"] and len(ss._STEER_STASH["s-merge"]) == 1
+        # 完全不同意图 → 不合并
+        assert ss.steer_merge_pending("s-merge", "顺便看下 CI 日志", "t-1") is None
+        # 不同 turn → 不合并
+        assert ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 issue 啊", "t-9") is None
+        # 带附件的最后一条 → 不合并
+        ss._STEER_STASH["s-merge"].append(
+            {"steer_id": "st-2", "turn_id": "t-1", "text": "审计一下 PR#4 这个 issue2",
+             "injected_at": 2.0, "images": [{"name": "a.png"}]},
+        )
+        assert ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 issue3", "t-1") is None
+    finally:
+        ss._STEER_STASH.pop("s-merge", None)
