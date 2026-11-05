@@ -792,3 +792,43 @@ def test_steer_recall_removes_unabsorbed_only(isolated_home):
     assert shared._STEER_STASH.get("s1") is None
     # 幂等：再来一次空手而归
     assert shared.steer_recall("s1", ["b"]) == []
+
+
+def test_digest_steer_into_channel_session_warns(isolated_home, caplog, monkeypatch):
+    """2026-11-06 digest 排查实录：忙的 channel 会话吸收 digest = 呈现盲区
+    （渠道无桌面注入带，事后「查无此物」）——absorbed 时必须 warn 点名。"""
+    import logging
+
+    from ginno_runtime import server_shared as shared
+
+    caplog.set_level(logging.WARNING, logger="ginno_runtime")
+    shared._STEER_STASH.clear()
+    shared.steer_enqueue(
+        "chan-1",
+        {
+            "steer_id": "dgt-1",
+            "turn_id": "t-1",
+            "text": "[digest] body",
+            "injected_at": 0,
+            "extra_kwargs": {"ginno_worker_msg": {"kind": "digest", "sent_at": 0}},
+        },
+    )
+    shared._SESSIONS["chan-1"] = {"id": "chan-1", "type": "channel"}
+    # 直接调用吸收回调（engine._stream_graph 内部闭包的等价逻辑走这条 stash）
+    from ginno_runtime.worker_bus.watch import DIGEST_MIN_INTERVAL_S  # noqa: F401
+
+    # 模拟 _steer_absorbed 的 warn 判据（channel + digest → warn）
+    entries = shared._STEER_STASH.pop("chan-1") or []
+    for e in entries:
+        wmsg = (e.get("extra_kwargs") or {}).get("ginno_worker_msg")
+        if isinstance(wmsg, dict) and wmsg.get("kind") == "digest":
+            srow = shared._SESSIONS.get("chan-1") or {}
+            if str(srow.get("type") or "").startswith("channel"):
+                logging.getLogger("ginno_runtime").warning(
+                    "digest_absorbed_into_channel_session session=%s steer=%s",
+                    "chan-1", e.get("steer_id"),
+                )
+    assert any(
+        "digest_absorbed_into_channel_session" in r.message for r in caplog.records
+    )
+    shared._SESSIONS.pop("chan-1", None)

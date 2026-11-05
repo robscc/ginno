@@ -185,7 +185,16 @@ async def _inject_result(
                 "extra_kwargs": {"ginno_subagent_result": child_id, **(extra_kwargs or {})},
             },
         )
-        _NS._log.info("subagent_result_steer parent=%s child=%s", parent_id, child_id)
+        _kind = str((extra_kwargs or {}).get("ginno_worker_msg", {}).get("kind") or "result")
+        _chan = (pfound[0].get("type") or "").startswith("channel") if pfound else False
+        # 去向可观测（2026-11-06 digest 排查）：channel 目标的 steer 注入
+        # 不会产生独立消息（企微侧无桌面注入带），事后核实「查无此物」——
+        # 日志点名这一形态，排查时直接可见分流去向与呈现盲区。
+        _NS._log.info(
+            "subagent_result_steer parent=%s child=%s via=steer kind=%s%s",
+            parent_id, child_id, _kind,
+            " channel_target=present_via_channel_only" if _chan else "",
+        )
     else:
         _queue_injection(parent_id, text, child_id, extra_kwargs)
 
@@ -196,6 +205,10 @@ def _queue_injection(
     """Idle-parent result: coalesce (see the merged-injection note above)."""
     _NS._PENDING_INJECTIONS.setdefault(parent_id, []).append(
         {"text": text, "child_id": child_id, "extra": extra_kwargs or {}}
+    )
+    _NS._log.info(
+        "subagent_result_coalesce parent=%s child=%s pending=%d",
+        parent_id, child_id, len(_NS._PENDING_INJECTIONS[parent_id]),
     )
     if parent_id in _NS._INJECTION_FLUSH_TASKS:
         return  # already scheduled — this entry rides the pending flush

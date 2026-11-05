@@ -277,6 +277,19 @@ async def _stream_graph(
                     _e.get("steer_id"),
                     turn_id,
                 )
+                # digest 吸收进 channel 会话 = 呈现盲区（渠道无桌面注入带，
+                # 事后「查无此物」——2026-11-06 digest 排查实录）：
+                # 点名 warn，提示该 digest 仅存在于 turn 上下文。
+                _wmsg = (_e.get("extra_kwargs") or {}).get("ginno_worker_msg")
+                if isinstance(_wmsg, dict) and _wmsg.get("kind") == "digest":
+                    _srow = _SESSIONS.get(session_id) or {}
+                    if str(_srow.get("type") or "").startswith("channel"):
+                        _log.warning(
+                            "digest_absorbed_into_channel_session session=%s "
+                            "steer=%s — visible only in turn context, no "
+                            "standalone message will exist",
+                            session_id, _e.get("steer_id"),
+                        )
                 await safe_send(
                     emit(
                         "steer.absorbed",

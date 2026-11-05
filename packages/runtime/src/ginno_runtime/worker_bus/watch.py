@@ -170,9 +170,6 @@ async def notify_settled(target_id: str) -> None:
         if keep != subs:
             _session_meta_patch(slug, target_id, {"subscribers": keep})
         return
-        if keep != subs:
-            _session_meta_patch(slug, target_id, {"subscribers": keep})
-        return
     _session_meta_patch(slug, target_id, {"subscribers": keep})
     text = _worker_result_text(target_id, meta, st)
     _log.info("worker_notify_settled target=%s status=%s subs=%s",
@@ -200,6 +197,10 @@ async def on_turn_settled_hook(session_id: str) -> None:
     字——仅对被订阅的会话付这一次 IO）。
     """
     if session_id not in _WATCHED:
+        # 诊断（2026-11-06 digest 丢失排查）：_WATCHED 是进程内存表，sidecar
+        # 重启后靠 reconcile_subscriptions 重建——若此处持续缺席且日志无
+        # worker_watch/worker_reconcile，说明对账遗漏了该订阅。
+        _log.info("worker_digest_skip_watched_absent session=%s", session_id)
         return
     found = _find_meta(session_id)
     if not found:
@@ -215,6 +216,11 @@ async def on_turn_settled_hook(session_id: str) -> None:
         if now - int(s.get("last_digest") or 0) >= DIGEST_MIN_INTERVAL_S
     ]
     if not due:
+        _last = max(int(s.get("last_digest") or 0) for s in digests)
+        _log.info(
+            "digest suppressed by throttle (last=%d s ago) session=%s",
+            now - _last, session_id,
+        )
         return
     st = project_status(session_id, meta)
     excerpt = await _last_assistant_excerpt(slug, session_id)
