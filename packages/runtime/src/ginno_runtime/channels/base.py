@@ -279,9 +279,17 @@ async def run_channel_turn(
         # Early-arm（仅真 turn）：preamble 期间到达的 channel `stop` 必须
         # 能看到活的 turn。
         shared._RUNNING_TURNS[session_id] = turn_id
-        await _stream_api._run_stream(
-            None, session["graph"], config, text, session, agent,
-            images=images, skill_name=skill_name)
+        # Serialize behind the session's turn lock (issue #14): the desktop WS
+        # invoke path holds `_turn_lock(session_id)` around _run_stream; the
+        # channel path used to bypass it, letting a WS invoke and an inbound
+        # channel message drive two concurrent graph.astream runs on the SAME
+        # thread_id → interleaved checkpoint appends, steer entries and stop
+        # state crossing between turns. asyncio.Lock is not reentrant and
+        # engine._run_stream never re-acquires, so this is safe.
+        async with shared._turn_lock(session_id):
+            await _stream_api._run_stream(
+                None, session["graph"], config, text, session, agent,
+                images=images, skill_name=skill_name)
     finally:
         # Parked-at-interrupt turns STAY registered (resume hasn't happened).
         if (

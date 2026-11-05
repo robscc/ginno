@@ -31,7 +31,7 @@
 
 - **Claude-Code-inspired**：skills、slash commands、@mentions、hooks、permissions、MCP、多 Agent、会话与记忆均对齐 Claude Code 的形态。
 - **Codex-harness 纪律**：WorldState 分节上下文工程（§6.4）、Goal 长程自主推进（§6.12）、自动压缩（§6.5）借鉴 Codex/Claude 的 harness 实践并适配 LangGraph。
-- **No database**：所有状态是 `~/.ginno/` 下的 JSON / JSONL / Markdown 文件；LangGraph checkpointer 是自研**文件式**实现（§6.6），原子写（temp + `os.replace`）。
+- **No database**：所有状态是 `~/.ginno/` 下的 JSON / JSONL / Markdown 文件；LangGraph checkpointer 是自研**文件式**实现（§6.6），提交是 append-only 单行追加（仅迁移/克隆走 temp + `os.replace` 整日志写）。
 - **Local-first**：单用户、单机；用户产物在会话工作目录，agent 元数据在 `~/.ginno/projects/<slug>/`。
 - **同源架构**：打包后 **sidecar 同时托管 UI 静态产物、REST 与 WebSocket**，webview 直接加载 `http://127.0.0.1:8787`（§3），彻底回避 Tauri 跨协议/混合内容问题。
 - **动态图**：聊天主图用 LangGraph `Command(goto=…)` + `interrupt()` 做 HITL；Workflow 则把版本化 DSL **编译成 LangGraph StateGraph** 执行（§6.11）。拓扑编译期确定、运行期分支。
@@ -304,7 +304,11 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
 
 - 位置 `projects/<slug>/sessions/<sid>.jsonl`，**追加式 JSONL 事件日志**（`header` / `cp` / `writes` /
   `truncate`，一行一个事件，写入是 `O_APPEND` 单行追加，不再整文件重写）；读取时按行 fold 成
-  `{"session_id", "checkpoints":[…]}`。旧版 `<sid>.json`（单文档）仍可读，首次写入时自动迁移。
+  `{"session_id", "checkpoints":[…]}`。旧版 `<sid>.json`（单文档，含 `checkpoints` 列表）仍可读
+  （日志不存在时才作为回退），首次写入时自动迁移：fold 成 JSONL 事件后经 `tempfile` +
+  `os.replace` 整日志原子写，旧文件随后尽力删除（失败仅告警，读端有日志时永远优先日志）。
+  —— 以上行为对照 `checkpointer.py` 核实：`_append()` 是单次 `O_APPEND` 写（per-path RLock
+  + flock + fsync，见 issue #15 锁定契约）；`_write_events_atomic()` 仅用于迁移与 clone。
 - serde 用 LangGraph `JsonPlusSerializer`（typed 值 `{type, data:base64}`）。
 - **full / delta 双模式**（`settings.context.checkpoint_mode` 默认 `"delta"`）：
   - delta 仅当新历史是父历史按消息 id 的**纯前缀追加**；`messages` 通道 `{mode:"append"}`，其余通道 full。
@@ -317,7 +321,10 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
   - **channel_values 只由 delta 自身重建**，不从 base 继承：langgraph 会在后续 checkpoint
     丢弃已消费的 trigger 通道（`__start__` / `branch:to:*`）；若从锚点继承会复活陈旧 trigger，
     使 `StateSnapshot.next` 误报有待执行节点（曾导致 microcompact/compaction 的 interrupt 守卫误跳过）。
-- **原子写**：`RLock` 串行化读改写 + tempfile + `os.replace`。
+- **写路径**（核实 `checkpointer.py:383` `_append` / `:156` `_write_events_atomic`）：提交 =
+  单次 `O_APPEND` 多事件批量追加（per-path RLock 串行化同进程、`flock` 防第二进程、`fsync`
+  限制崩溃丢失窗口，尾部撕裂行由读端 tail-repair 兜底）；只有**迁移/克隆**才走 tempfile +
+  `os.replace` 整日志原子写。
 - `put_writes` 记录每 superstep 的 writes 到 `pending_writes[]`（崩溃取证；**尚未用于 mid-step resume**）。
 - **`ABANDONED_TURNS`**：stall 看门狗放弃的 turn，其迟到的 `aput` 被拒，防"复活"的挂起 run 回滚。
 - 聊天用 `thread_id=session_id`，Workflow run 用 `thread_id=run_id`，同一实现。
@@ -724,8 +731,19 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 - **前端 vitest**（`apps/web`，2026-11-03 起）：`src/lib/*.test.ts`，node 环境纯逻辑单测
   （token 格式化 / 会话可见性 / classname 合并 / chat 等待态）；`pnpm test` 跑，进 CI。
 - **CI 三栈**（`.github/workflows/ci.yml`，2026-11-03 全绿）：
-  `runtime-tests`（pytest + coverage → Codecov）· `web`（lint + typecheck + vitest + build）·
-  `rust`（fmt --check + cargo check，macos runner）。release 另有 tag 触发的发布流水线（§15.1）。
+  `runtime-tests`（pytest + coverage + **ruff correctness 门禁** → Codecov）· `web`（lint +
+  typecheck + vitest + build）· `rust`（fmt --check + cargo check + **cargo test --lib
+  (mod-broker)**，macos runner）· `mod-runner`（typecheck + vitest，2026-11-05 增设）。
+  release 另有 tag 触发的发布流水线（§15.1）。
+
+**测试欠账清单（issue #22，暂缓：需真机/重基建，本批不做）**：
+
+- **React 组件 / DOM 测试**：`apps/web` 目前只有 `src/lib/*.test.ts` 纯逻辑单测（node 环境
+  无 DOM）。补齐需要 jsdom + @testing-library/react 基建；候选对象：ChatPanel 气泡渲染、
+  widget/ref 卡片（render_widget / attach_ref → stat_list / chart / chip）、会话列表交互。
+- **桌面 E2E（Tauri webview）**：打包 UI 的 playwright e2e（`test_packaged_ui_*`）依赖运行中的
+  dist sidecar（本地 8787 被 Ginno/dev 占用即挂，CI 干净环境自动 skip）；真正的 Tauri 窗口级
+  e2e（tauri-driver / WebDriver）未建。需要：独立端口 + 临时 `~/.ginno` 隔离 + 签名豁免。
 
 **测试基建红线**（都踩过坑）：
 

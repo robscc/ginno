@@ -1736,3 +1736,81 @@ async fn real_runner_draws_the_token_weather_band() {
         redrawn
     );
 }
+
+// Issue #18 (2026-11-05): the op entry grant check ran on the ORIGINAL args
+// only — a middleware `next` could rewrite them in flight. The broker now
+// re-runs the authorization decision on the FINAL args at the chain core.
+// Contract: (a) unchanged args still pass, (b) a rewrite that stays inside
+// the grant passes, (c) a rewrite that widens the scope is denied, with the
+// denial naming the final (rewritten) value.
+#[tokio::test(flavor = "multi_thread")]
+async fn rewritten_args_are_rechecked_against_grants() {
+    needs_node!();
+
+    async fn run(name: &str, patch: Value, grant: Value, asked: String) -> Value {
+        let env = Env::new(name).await;
+        env.scenario(
+            "mid",
+            json!({ "hooks": [{ "event": "env.get", "behavior": "next", "ePatch": patch }] }),
+        );
+        env.scenario(
+            "worker",
+            json!({ "hooks": [{ "event": "turn.complete", "behavior": "calls_collect", "calls": [
+                ["env", "get", { "name": asked }],
+            ] }] }),
+        );
+        let items = json!({
+            "mid": env.spec("mid", json!({})),
+            "worker": env.spec("worker", grant),
+        });
+        let _ready = env.hello_with(items, default_budgets()).await;
+        let settled = env
+            .runtime
+            .raise("turn.complete", Some("s1"), json!({}))
+            .await;
+        let results = settled.as_array().expect("collect results");
+        results[0].clone()
+    }
+
+    // (a) middleware passes the args through unchanged: normal call.
+    let result = run(
+        "recheck-plain",
+        json!({}),
+        json!({ "env.get": ["PATH"] }),
+        "PATH".to_string(),
+    )
+    .await;
+    assert_eq!(result["ok"], true, "unchanged args: {result}");
+
+    // (b) a legal rewrite — the new args are still inside the grant.
+    let result = run(
+        "recheck-legal",
+        json!({ "name": "HOME" }),
+        json!({ "env.get": ["PATH", "HOME"] }),
+        "PATH".to_string(),
+    )
+    .await;
+    assert_eq!(result["ok"], true, "legal rewrite: {result}");
+    assert_eq!(
+        result["value"],
+        json!(std::env::var("HOME").unwrap_or_default()),
+        "legal rewrite: {result}"
+    );
+
+    // (c) a scope-widening rewrite — denied at the core, with the FINAL
+    // value in the reason (the entry check had passed on the original).
+    let result = run(
+        "recheck-widen",
+        json!({ "name": "AWS_SECRET" }),
+        json!({ "env.get": ["PATH"] }),
+        "PATH".to_string(),
+    )
+    .await;
+    assert_eq!(result["code"], "denied", "widening rewrite: {result}");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("AWS_SECRET"),
+        "the denial must audit the final args: {message}"
+    );
+    assert!(message.contains("Mods settings page"), "{message}");
+}

@@ -252,6 +252,176 @@ async def test_relay_invoke_without_extension(ginno_home):
     assert "not connected" in str(ei.value)
 
 
+# ---- relay endpoint: frame parse / response routing / disconnect cleanup ------
+# (issue #19 — 可本地验证的扩展轨纯逻辑；真实 Chrome 端到端见
+#  docs/browser-extension-manual-test-checklist.md)
+
+
+class _FakeExtWS:
+    """Duck-typed FastAPI WebSocket fed from an asyncio.Queue."""
+
+    def __init__(self):
+        self.incoming: asyncio.Queue[str] = asyncio.Queue()
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def accept(self):
+        pass
+
+    async def send_text(self, raw: str):
+        if self.closed:
+            raise RuntimeError("connection closed")
+        self.sent.append(json.loads(raw))
+
+    async def receive_text(self) -> str:
+        raw = await self.incoming.get()
+        if raw == "__EOF__":
+            from fastapi import WebSocketDisconnect
+
+            raise WebSocketDisconnect()
+        return raw
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.fixture()
+def fresh_relay_state(monkeypatch):
+    from ginno_runtime.browser import relay as relay_mod
+
+    st = relay_mod.RelayState()
+    monkeypatch.setattr(relay_mod, "_state", st, raising=False)
+    if hasattr(relay_mod, "relay_state"):
+        monkeypatch.setattr(relay_mod, "relay_state", lambda: st)
+    yield st
+    if st._worker and not st._worker.done():
+        st._worker.cancel()
+
+
+@pytest.mark.asyncio()
+async def test_relay_endpoint_extension_info_and_snapshot(ginno_home, fresh_relay_state):
+    from ginno_runtime.browser import relay as relay_mod
+
+    ws = _FakeExtWS()
+    await ws.incoming.put(json.dumps({
+        "method": "extensionInfo",
+        "params": {"version": "1.2.3", "browserType": "chrome",
+                   "browserClientId": "cid-1", "capabilities": ["mcp-tools", "x"]},
+    }))
+    task = asyncio.create_task(relay_mod.extension_endpoint(ws))
+    # extensionInfo 处理是顺序 await 之前的同步段——轮询等 snapshot 生效
+    for _ in range(50):
+        if fresh_relay_state.version == "1.2.3":
+            break
+        await asyncio.sleep(0.02)
+    snap = fresh_relay_state.snapshot()
+    assert snap["connected"] is True
+    assert snap["version"] == "1.2.3"
+    assert snap["browserType"] == "chrome"
+    assert snap["browserClientId"] == "cid-1"
+    assert "x" in snap["capabilities"]
+    assert snap["transport"] == "websocket"
+    # 连接即下发 tab scope（configChanged）——尽力而为，帧类型核对
+    assert any(f.get("method") == "configChanged" for f in ws.sent)
+    await ws.incoming.put("__EOF__")
+    await asyncio.wait_for(task, 5)
+
+
+@pytest.mark.asyncio()
+async def test_relay_invoke_roundtrip_and_response_routing(ginno_home, fresh_relay_state):
+    from ginno_runtime.browser import relay as relay_mod
+
+    ws = _FakeExtWS()
+    await ws.incoming.put(json.dumps({"method": "extensionInfo", "params": {}}))
+    task = asyncio.create_task(relay_mod.extension_endpoint(ws))
+    for _ in range(50):
+        if fresh_relay_state.connected:
+            break
+        await asyncio.sleep(0.02)
+
+    invoke = asyncio.create_task(
+        relay_mod.invoke_tool("browser_navigate", {"url": "https://x"})
+    )
+    # FIFO worker 把 tools/invoke 发给扩展
+    frame = None
+    for _ in range(50):
+        hits = [f for f in ws.sent if f.get("method") == "tools/invoke"]
+        if hits:
+            frame = hits[0]
+            break
+        await asyncio.sleep(0.02)
+    assert frame is not None and frame["params"] == {
+        "tool": "browser_navigate", "arguments": {"url": "https://x"}}
+    # 扩展回包：按 id 路由回 pending future（response routing 纯逻辑）
+    await ws.incoming.put(json.dumps({"id": frame["id"], "result": {"ok": True}}))
+    assert await asyncio.wait_for(invoke, 5) == {"ok": True}
+
+    # 错误回包：转成 RelayError
+    invoke2 = asyncio.create_task(relay_mod.invoke_tool("t2", {}))
+    frame2 = None
+    for _ in range(50):
+        hits = [f for f in ws.sent if f.get("method") == "tools/invoke"]
+        if len(hits) >= 2:
+            frame2 = hits[1]
+            break
+        await asyncio.sleep(0.02)
+    await ws.incoming.put(json.dumps(
+        {"id": frame2["id"], "error": {"code": "NO_TAB", "message": "no tab"}}))
+    with pytest.raises(relay_mod.RelayError) as ei:
+        await asyncio.wait_for(invoke2, 5)
+    assert "NO_TAB" in str(ei.value)
+
+    await ws.incoming.put("__EOF__")
+    await asyncio.wait_for(task, 5)
+
+
+@pytest.mark.asyncio()
+async def test_relay_disconnect_fails_pending_and_resets_state(ginno_home, fresh_relay_state):
+    from ginno_runtime.browser import relay as relay_mod
+
+    ws = _FakeExtWS()
+    await ws.incoming.put(json.dumps({"method": "extensionInfo", "params": {}}))
+    task = asyncio.create_task(relay_mod.extension_endpoint(ws))
+    for _ in range(50):
+        if fresh_relay_state.connected:
+            break
+        await asyncio.sleep(0.02)
+
+    invoke = asyncio.create_task(relay_mod.invoke_tool("t", {}))
+    for _ in range(50):
+        if any(f.get("method") == "tools/invoke" for f in ws.sent):
+            break
+        await asyncio.sleep(0.02)
+    # 未回包即断连 → pending future 收 RelayError，状态复位
+    await ws.incoming.put("__EOF__")
+    await asyncio.wait_for(task, 5)
+    with pytest.raises(relay_mod.RelayError) as ei:
+        await asyncio.wait_for(invoke, 5)
+    assert "断开" in str(ei.value) or "lost" in str(ei.value)
+    assert fresh_relay_state.connected is False
+    assert fresh_relay_state.snapshot()["connected"] is False
+
+
+@pytest.mark.asyncio()
+async def test_relay_malformed_frames_ignored(ginno_home, fresh_relay_state):
+    """坏 JSON / 未知 method 静默忽略，连接保持。"""
+    from ginno_runtime.browser import relay as relay_mod
+
+    ws = _FakeExtWS()
+    await ws.incoming.put("not-json{{")
+    await ws.incoming.put(json.dumps({"method": "unknownMethod"}))
+    await ws.incoming.put(json.dumps({"method": "extensionInfo", "params": {}}))
+    task = asyncio.create_task(relay_mod.extension_endpoint(ws))
+    for _ in range(50):
+        if fresh_relay_state.connected:
+            break
+        await asyncio.sleep(0.02)
+    assert fresh_relay_state.connected is True
+    await ws.incoming.put("__EOF__")
+    await asyncio.wait_for(task, 5)
+
+
+
 # ---- executor helpers ---------------------------------------------------------
 
 

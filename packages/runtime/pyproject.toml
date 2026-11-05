@@ -55,7 +55,34 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+# Correctness-only gate (issue #22): rules that catch real bugs. Formatting /
+# style (E5xx, I, B9xx, UP) is deliberately not enforced — the codebase predates
+# a style gate and adoption would be pure churn. Explicit rule list, no
+# umbrella selectors, so a ruff version bump cannot silently add new checks.
+#   F401/F402/F403/F404/F405 unused/ambiguous imports — excluded: the codebase
+#   uses namespace re-export blocks (`# noqa: F401`) heavily; noise, not bugs.
+#   F841 unused local — excluded: noise.
+select = [
+    "F501", # percent-format-invalid-format
+    "F502", # percent-format-expected-mapping
+    "F503", # percent-format-expected-sequence
+    "F504", # percent-format-extra-named-arguments
+    "F505", # percent-format-missing-argument
+    "F601", # multi-value-repeated-key-literal
+    "F632", # string-literal-comparison (str/bytes `is` comparison)
+    "F633", # invalid-print-syntax
+    "F702", # continue-outside-loop
+    "F706", # return-outside-function
+    "F811", # redefinition-of-unused-name
+    "F821", # undefined-name
+    "F823", # local-variable-referenced-before-assignment
+    "E711", # comparison-with-none
+    "E712", # comparison-with-true-false
+    "E713", # not-in-test (`not x in y`)
+    "E714", # not-is-test (`not x is y`)
+    "E721", # type-comparison (== instead of is)
+    "E722", # bare-except
+]
 
 [tool.ruff.lint.per-file-ignores]
 # browser/executor.py: %-formatting deliberately builds JS literals for
@@ -77,6 +104,8 @@ test = [
     # 模式 WebSocket 接入（事件推送 + 机器人消息 + 卡片回调）。
     "dingtalk-stream>=0.20",
     "playwright>=1.45",
+    # correctness lint gate (issue #22) — CI `ruff check` runs in this env
+    "ruff>=0.14",
 ]
 
 [tool.pytest.ini_options]

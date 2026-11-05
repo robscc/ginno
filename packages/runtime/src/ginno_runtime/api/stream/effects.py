@@ -275,7 +275,6 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> i
     Returns the number of verified citations — a quality signal for the
     memory pool (cited turns carry more evidence weight when distilling).
     """
-    from ...knowledge import citations as cit
     from ...knowledge import usage as kb_usage
     from ...knowledge import web_usage
     from ...knowledge.config import load_knowledge_config

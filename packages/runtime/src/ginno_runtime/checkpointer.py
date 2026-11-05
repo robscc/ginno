@@ -53,9 +53,15 @@ import tempfile
 import threading
 import time
 import uuid
+
+try:  # POSIX only (runtime targets macOS/Linux desktop builds)
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 from pathlib import Path
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
     ChannelVersions,
@@ -280,11 +286,32 @@ def _msg_id(m: Any) -> Any:
     return getattr(m, "id", None)
 
 
+# Issue #15: the instance-level ``_write_lock`` only serializes writers that
+# share one FileCheckpointer object. The runtime is a single process, but a
+# session can legitimately be touched by several instances (API + workflow
+# engine + tests); those must not interleave their read-modify-write / append
+# cycles on the same log file. Key the lock by resolved log path so every
+# instance converges on the same mutex. Cross-PROCESS locking (fcntl.flock)
+# is applied at write time in ``_append`` — multi-process writers are not a
+# supported runtime topology, but a stray second process can no longer tear
+# the log either.
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.RLock:
+    key = str(path)
+    with _PATH_LOCKS_GUARD:
+        lk = _PATH_LOCKS.get(key)
+        if lk is None:
+            lk = _PATH_LOCKS[key] = threading.RLock()
+        return lk
+
+
 class FileCheckpointer(BaseCheckpointSaver):
     """One append-only JSONL log per session (see module docstring)."""
 
     serde = JsonPlusSerializer()
-
     def __init__(self, project_slug: str, surface_pending_writes: bool = False) -> None:
         super().__init__()
         self.project_slug = project_slug
@@ -354,10 +381,20 @@ class FileCheckpointer(BaseCheckpointSaver):
             _log.warning("checkpoint_tail_repair_failed path=%s", log)
 
     def _append(self, session_id: str, events: list[dict]) -> None:
-        """Commit events as one O_APPEND write — never a full-file rewrite."""
-        with self._write_lock:
+        """Commit events as one O_APPEND write — never a full-file rewrite.
+
+        Locking contract (issue #15): the per-path lock serializes all
+        instances in this process; ``flock`` extends that to a stray second
+        process (POSIX only); ``fsync`` bounds the loss window of a hard
+        crash to the events not yet flushed (the tail-repair pass in readers
+        covers any line that still ends up torn)."""
+        log = checkpoint_path(self.project_slug, session_id)
+        # Lock order is ALWAYS instance → path (put/put_writes already hold
+        # _write_lock when they call _append; the RLock re-enters cleanly).
+        # Acquiring in the opposite order anywhere would deadlock one writer
+        # holding the path lock while another holds the instance lock.
+        with self._write_lock, _path_lock(log):
             self._migrate_legacy(session_id)
-            log = checkpoint_path(self.project_slug, session_id)
             payload = "".join(_event_line(e) for e in events)
             if log.exists():
                 self._repair_tail(log)
@@ -365,7 +402,15 @@ class FileCheckpointer(BaseCheckpointSaver):
                 payload = _event_line(_header_event(session_id)) + payload
             log.parent.mkdir(parents=True, exist_ok=True)
             with open(log, "a", encoding="utf-8") as fh:
-                fh.write(payload)
+                if fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     # ---- reconstruction helpers ------------------------------------------- #
     def _entries_by_id(self, record: dict) -> dict[str, dict]:
@@ -425,6 +470,10 @@ class FileCheckpointer(BaseCheckpointSaver):
         static["channel_values"] = values
         return static
 
+    def _msgs_fingerprint(self, msgs: list) -> list:
+        """Byte fingerprint of a message list (issue #13 rewrite detection)."""
+        return [self.serde.dumps_typed(m) for m in msgs]
+
     def _try_messages_delta(
         self, record: dict, parent_id: str, checkpoint: Checkpoint
     ) -> dict | None:
@@ -446,16 +495,23 @@ class FileCheckpointer(BaseCheckpointSaver):
         new_msgs = list(new_values.get(_MESSAGES_CHANNEL) or [])
         if len(new_msgs) < len(parent_msgs):
             return None
-        # Rewrite detection is by message ID only (content is not diffed — that
-        # would cost an O(prefix) serialize per put, the very quadratic blow-up
-        # delta mode exists to avoid). INVARIANT: any writer that edits an
-        # existing message's content MUST give it a new id so the mismatch here
-        # forces a full snapshot. Compaction and microcompact both honor this
-        # (they re-add every message with a fresh id); a same-id in-place edit
-        # would be silently lost when the delta chain is reconstructed.
+        # Rewrite detection is by message ID plus a byte-exact fingerprint of
+        # the shared prefix (issue #13). ID-only comparison silently DROPPED
+        # same-ID in-place edits: graph.py's tools node rewrites the pending
+        # AIMessage via ``model_copy(update=…)`` (mod arg-rewrite / result
+        # takeover) and re-commits it under the SAME message id — langgraph's
+        # add_messages replaces by id, so the folded delta never carries the
+        # edited content and a restart resurrected the pre-edit tool_calls.
+        # The fingerprint costs one O(prefix) serialize per put, the same
+        # order as the parent reconstruction this code path already performs.
         for a, b in zip(parent_msgs, new_msgs):
             if _msg_id(a) != _msg_id(b):
                 return None  # history rewritten (compaction/rollback) → full
+        shared_len = min(len(parent_msgs), len(new_msgs))
+        if shared_len and self._msgs_fingerprint(parent_msgs[:shared_len]) != self._msgs_fingerprint(
+            new_msgs[:shared_len]
+        ):
+            return None  # same-ID in-place edit → full snapshot
 
         channels: dict[str, dict] = {
             _MESSAGES_CHANNEL: {

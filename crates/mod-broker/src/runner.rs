@@ -51,8 +51,11 @@ pub struct RunnerConn {
 }
 
 /// Host mode routing: stamp a frame with the owning mod so the JS host can
-/// deliver it to this mod's worker. Event/CatchCall/Result leave their
-/// factories as None; a Call may already carry one from the chain.
+/// deliver it to this mod's worker. The connection identity is authoritative
+/// (issue #17): a non-empty `mod_name` that disagrees with the conn is
+/// overwritten, so a caller can never steer a frame onto another mod's
+/// worker. Event/CatchCall/Result leave their factories as None; a Call may
+/// already carry one from the chain.
 fn stamp_mod(frame: &mut Frame, name: &str) {
     match frame {
         Frame::Call { mod_name, .. }
@@ -60,11 +63,28 @@ fn stamp_mod(frame: &mut Frame, name: &str) {
         | Frame::Event { mod_name, .. }
         | Frame::Next { mod_name, .. }
         | Frame::CatchCall { mod_name, .. } => {
-            if mod_name.is_none() {
-                *mod_name = Some(name.to_string());
-            }
+            *mod_name = Some(name.to_string());
         }
         _ => {}
+    }
+}
+
+/// Issue #17: the connection is the mod's identity — a frame claiming to act
+/// for another mod (missing → the conn itself; equal → fine; any other value,
+/// including a forged peer name → refused) never runs under someone else's
+/// grants. Conservative: mismatch is refused with a clear error, not silently
+/// rewritten, so a routing bug on either side is visible.
+fn resolve_caller<'a>(conn_name: &'a str, frame_mod: Option<&'a str>) -> Result<&'a str, RpcError> {
+    match frame_mod {
+        None => Ok(conn_name),
+        Some(name) if name == conn_name => Ok(name),
+        Some(other) => Err(RpcError::new(
+            crate::protocol::CODE_DENIED,
+            format!(
+                "frame claims mod {other:?} but arrived on runner {conn_name:?}; the connection \
+                 identity is authoritative and mismatched frames are refused"
+            ),
+        )),
     }
 }
 
@@ -406,18 +426,14 @@ async fn handle_runner_frame(broker: &Arc<Broker>, conn: &Arc<RunnerConn>, frame
             method,
             args,
             session,
-            mod_name,
             ..
         } => match method.as_str() {
             "ping" => {}
             _ => {
-                // Unknown notifications are forwarded to Python with the mod named.
-                broker.runtime_notify(
-                    &method,
-                    session,
-                    mod_name.or_else(|| Some(conn.name.clone())),
-                    args,
-                );
+                // Unknown notifications are forwarded to Python with the mod
+                // named — by the connection, never by a claim in the frame
+                // (issue #17: forged identity must not reach the runtime).
+                broker.runtime_notify(&method, session, Some(conn.name.clone()), args);
             }
         },
         _ => {}
@@ -474,7 +490,16 @@ async fn handle_runner_call(
         return;
     }
     let op = format!("{ns}.{method}");
-    let caller = mod_name.unwrap_or_else(|| conn.name.clone());
+    // Issue #17: a frame naming another mod must not run ops under that mod's
+    // identity/grants — the connection is the authority.
+    let caller = match resolve_caller(&conn.name, mod_name.as_deref()) {
+        Ok(caller) => caller.to_string(),
+        Err(e) => {
+            broker.report(&format!("{}: $.{op} refused: {}", conn.name, e.message));
+            conn.send_result(id, &Err(e));
+            return;
+        }
+    };
     let pauses_clock = invocation.is_some() && op != "clock.sleep";
     let budget = if pauses_clock {
         let invocation = invocation.clone().unwrap_or_default();
@@ -819,4 +844,95 @@ async fn load_hosted(
         .await
         .insert(name.to_string(), conn.clone());
     Ok(conn)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    //! Issue #17: the runner connection is the mod's identity. Outbound
+    //! frames are force-stamped with the conn's mod; inbound `$` calls that
+    //! claim another mod's name are refused.
+
+    use super::*;
+    use serde_json::json;
+
+    fn call_frame(mod_name: Option<String>) -> Frame {
+        Frame::Call {
+            v: PROTOCOL_VERSION,
+            id: 1,
+            ns: "env".to_string(),
+            method: "get".to_string(),
+            args: json!({"name": "PATH"}),
+            session: None,
+            mod_name,
+            invocation: None,
+            extra: Value::Null,
+        }
+    }
+
+    fn mod_name_of(frame: &Frame) -> Option<String> {
+        match frame {
+            Frame::Call { mod_name, .. }
+            | Frame::Result { mod_name, .. }
+            | Frame::Event { mod_name, .. }
+            | Frame::Next { mod_name, .. }
+            | Frame::CatchCall { mod_name, .. } => mod_name.clone(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn outbound_stamp_fills_a_missing_mod_name() {
+        let mut frame = call_frame(None);
+        stamp_mod(&mut frame, "alpha");
+        assert_eq!(mod_name_of(&frame), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn outbound_stamp_keeps_the_matching_mod_name() {
+        let mut frame = call_frame(Some("alpha".to_string()));
+        stamp_mod(&mut frame, "alpha");
+        assert_eq!(mod_name_of(&frame), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn outbound_stamp_overwrites_a_mismatched_mod_name() {
+        let mut frame = call_frame(Some("beta".to_string()));
+        stamp_mod(&mut frame, "alpha");
+        assert_eq!(mod_name_of(&frame), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn outbound_stamp_overwrites_a_forged_mod_name() {
+        // A forged peer name never rides out of the broker onto another
+        // mod's worker: the connection identity wins.
+        let mut frame = call_frame(Some("secret-mod".to_string()));
+        stamp_mod(&mut frame, "alpha");
+        assert_eq!(mod_name_of(&frame), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn resolve_caller_defaults_to_the_connection() {
+        assert_eq!(resolve_caller("alpha", None).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn resolve_caller_accepts_the_matching_name() {
+        assert_eq!(resolve_caller("alpha", Some("alpha")).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn resolve_caller_refuses_a_mismatched_name() {
+        let error = resolve_caller("alpha", Some("beta")).unwrap_err();
+        assert_eq!(error.code, "denied");
+        assert!(error.message.contains("beta"), "{}", error.message);
+        assert!(error.message.contains("alpha"), "{}", error.message);
+        assert!(error.message.contains("authoritative"), "{}", error.message);
+    }
+
+    #[test]
+    fn resolve_caller_refuses_a_forged_peer_name() {
+        let error = resolve_caller("alpha", Some("secret-mod")).unwrap_err();
+        assert_eq!(error.code, "denied");
+        assert!(error.message.contains("secret-mod"), "{}", error.message);
+    }
 }

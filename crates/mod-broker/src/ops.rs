@@ -51,6 +51,26 @@ const UNSERVED_OPS: &[&str] = &[
     // next-steps 这类「fork 会话上下文问下一步」的 mod 依赖它。
 ];
 
+/// The grant gate shared by the op entry and the chain core (issue #18):
+/// middleware may rewrite the args on the way down, so the FINAL arguments
+/// are re-checked against the caller's grants right before the op runs.
+/// Both the check and any audit/denial reason use the final values.
+pub fn ensure_granted(
+    broker: &Broker,
+    caller: &str,
+    op: &str,
+    args: &Value,
+) -> Result<(), RpcError> {
+    if let Some(reason) = broker.grants_for(caller).check(op, args) {
+        // Point at the fix: grants live in settings, on the Mods page (§8).
+        return Err(RpcError::new(
+            CODE_DENIED,
+            format!("{reason} (grants for a mod are configured on the Mods settings page)"),
+        ));
+    }
+    Ok(())
+}
+
 /// One `$` call from a runner: grant gate, middleware chain through the mods
 /// loaded before the caller, then the op — with the `{value}`/`{deny}`
 /// unwrapping DSH's `engine.invoke` does.
@@ -63,13 +83,7 @@ pub async fn invoke_op(
     invocation: Option<String>,
     depth: usize,
 ) -> Result<Value, RpcError> {
-    if let Some(reason) = broker.grants_for(caller).check(op, &args) {
-        // Point at the fix: grants live in settings, on the Mods page (§8).
-        return Err(RpcError::new(
-            CODE_DENIED,
-            format!("{reason} (grants for a mod are configured on the Mods settings page)"),
-        ));
-    }
+    ensure_granted(&broker, caller, op, &args)?;
     if depth > MAX_OP_DEPTH {
         return Err(RpcError::new(
             CODE_ERROR,

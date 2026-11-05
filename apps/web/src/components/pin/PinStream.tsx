@@ -38,6 +38,7 @@ import {
 } from "@/components/chat/inputHistory";
 import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
+import { mergeHistoryWithLive } from "@/lib/historyMerge";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
 import { useSteerQueue, type SteerItem } from "@/lib/steerQueue";
 import {
@@ -382,7 +383,11 @@ export function PinStream({
 
   function reconcileFromHistory() {
     getSessionHistory(sessionId)
-      .then((res) => setMessages(mapHistory(res, evText)))
+      .then((res) =>
+        // Same merge discipline as the mount-time load: the reconcile runs
+        // after live frames were rendered on this socket.
+        setMessages((prev) => mergeHistoryWithLive(mapHistory(res, evText), prev)),
+      )
       .catch(() => {
         /* sidecar down — the reconnect loop will retry */
       });
@@ -662,7 +667,10 @@ export function PinStream({
     connect();
     getSessionHistory(sessionId)
       .then((res) => {
-        if (alive) setMessages(mapHistory(res, evText));
+        if (alive)
+          // Issue #16: the snapshot resolved AFTER connect() — real-time frames
+          // may already be rendered. Merge (fill-what's-missing), never overwrite.
+          setMessages((prev) => mergeHistoryWithLive(mapHistory(res, evText), prev));
       })
       .catch(() => {
         /* sidecar down — events will populate once it returns */

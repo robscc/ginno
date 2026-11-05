@@ -135,7 +135,7 @@ from .ws import (  # noqa: F401  (re-export of the historical namespace)  # noqa
     _start_goal_driver,
     _touch_session_title,
     _turn_lock,
-    files_mod,
+    files_mod,  # noqa: F811  (re-export of the historical namespace)
     goal_store,
     router,
     session_ws,

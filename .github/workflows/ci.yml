@@ -37,6 +37,11 @@ jobs:
       - name: Run tests (with coverage)
         run: uv run --group test --extra docs pytest -q --cov=ginno_runtime --cov-report=term --cov-report=xml
 
+      # Correctness-only lint gate (issue #22): ruff with an explicit rule
+      # list in pyproject.toml [tool.ruff.lint] — no style/format rules.
+      - name: Ruff (correctness rules)
+        run: uv run --group test --extra docs ruff check .
+
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
@@ -122,5 +127,34 @@ jobs:
       - name: cargo check (mod-broker)
         run: cargo check --manifest-path crates/mod-broker/Cargo.toml
 
+      # Fast lib-only test pass (issue #22) — no `cargo test` on the desktop
+      # shell: it needs the materialized Tauri bundle resources and would
+      # duplicate the check above.
+      - name: cargo test --lib (mod-broker)
+        run: cargo test --lib --manifest-path crates/mod-broker/Cargo.toml
+
       - name: cargo check (desktop shell)
         run: cargo check --manifest-path apps/desktop/Cargo.toml
+
+  mod-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: packages/mod-runner
+        run: pnpm typecheck
+
+      - name: Unit tests (vitest)
+        working-directory: packages/mod-runner
+        run: pnpm test

@@ -377,6 +377,11 @@ async fn run_core(ctx: &Arc<ChainCtx>, input: Value) -> Result<Value, RpcError> 
         // DSH's invoke wraps the op's answer as `{ value }` (or `{ deny }`
         // via OpDenied); hooks answer in the same shape.
         ChainCore::Op { op, caller } => {
+            // Issue #18: a middleware `next` may have rewritten the args on
+            // the way down — re-run the authorization decision against the
+            // FINAL args before the op executes, so a rewrite that widens
+            // the call's scope is refused here.
+            crate::ops::ensure_granted(&ctx.broker, caller, op, &input)?;
             let value = crate::ops::op_core(ctx, op, caller, input).await?;
             Ok(serde_json::json!({ "value": value }))
         }

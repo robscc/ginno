@@ -116,9 +116,12 @@ export interface ModDefinition {
 // ---- Drawn surfaces, as a Client receives them ----
 
 /** A serialized element: callbacks replaced by the action id the host holds for them. */
+/** Scalar prop values that survive serialization (arrays of scalars too — issue #10, e.g. Select.options). */
+export type SerializedScalar = string | number | boolean | (string | number | boolean)[]
+
 export interface SerializedElement {
   readonly type: 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Markdown' | 'Code'
-  readonly props: Readonly<Record<string, string | number | boolean>>
+  readonly props: Readonly<Record<string, SerializedScalar>>
   readonly children: readonly SerializedNode[]
   /** Set on a `Button` whose `onPress` the host holds. */
   readonly actionId?: string
