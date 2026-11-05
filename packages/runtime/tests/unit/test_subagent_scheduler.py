@@ -873,7 +873,7 @@ async def test_wake_turn_usage_source_follows_session_kind(monkeypatch, isolated
     subagent session's usage is tagged ``subagent``."""
     seen: list[str] = []
 
-    async def fake_run_stream(ws, graph, config, text, session, agent_id, user_extra_kwargs=None):
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, user_extra_kwargs=None, origin="interactive"):
         seen.append(config["configurable"]["usage_source"])
 
     async def fake_settled(session_id, stop_evt=None, turn_id=""):
@@ -911,7 +911,7 @@ async def test_wake_turn_echoes_injected_text_locally(monkeypatch, isolated_home
     落气泡/折卡，不再等 history 重载补上。两个入口都要带标记。"""
     seen: list[dict] = []
 
-    async def fake_run_stream(ws, graph, config, text, session, agent_id, user_extra_kwargs=None):
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, user_extra_kwargs=None, origin="interactive"):
         seen.append(dict(config["configurable"]))
 
     async def fake_settled(session_id, stop_evt=None, turn_id=""):

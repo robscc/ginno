@@ -6,6 +6,8 @@ import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { loadToolLabels } from "@/lib/toolLabels";
 import * as api from "@/lib/runtime";
+import { getLinkedSessions } from "@/lib/api/sessions";
+import type { LinkedMentionEntry } from "@/components/chat/commandMenu";
 import { pushNotice } from "@/lib/notice";
 import { useTranslations } from "next-intl";
 import { agentHex } from "@/lib/theme";
@@ -80,8 +82,41 @@ export function ChatStream({
   const tc = useTranslations("chat");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
+  // @session/@result 候选（LinkedSessionsChip 同款投影，mention 菜单数据源）：
+  // 会话切换拉一次 + 30s 静默刷新（菜单打字路径只读 state，绝不发请求）。
+  const [linkedMembers, setLinkedMembers] = useState<LinkedMentionEntry[]>([]);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
+
+  // @session/@result 候选拉取（见上 state 注释）。
+  useEffect(() => {
+    if (!session?.id) return;
+    let alive = true;
+    const sid = session.id;
+    const pull = async () => {
+      try {
+        const r = await getLinkedSessions(sid);
+        if (!alive || !r?.ok) return;
+        setLinkedMembers(
+          (r.members ?? []).map((m) => ({
+            id: m.id,
+            title: m.title,
+            type: m.type,
+            rel: m.rel,
+            liveStatus: m.live_status,
+          })),
+        );
+      } catch {
+        /* sidecar 不可达：保留上次候选 */
+      }
+    };
+    void pull();
+    const t = setInterval(() => void pull(), 30_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [session?.id]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -587,7 +622,9 @@ export function ChatStream({
     const items = buildMenuItems(trigger, {
       skills: g.skills,
       agents: g.agents,
-      workflows: g.workflows,
+      // @session/@result 候选：LinkedSessionsChip 同款 members 投影
+      // （linkedMembers state，见顶部 useEffect——打字路径零请求）。
+      linkedSessions: linkedMembers,
       artifacts: [...g.artifacts, ...others].filter(inTeamScope),
       sessionId: session?.id ?? null,
       teamMembers,

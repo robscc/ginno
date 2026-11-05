@@ -12,8 +12,8 @@ Semantics per kind:
 - artifact: file-backed artifacts ride ``attached_files`` (``files_extra``);
   non-file artifacts (empty/missing ``ref``) become a text context section.
 - agent: routing override only — no persona context injection.
-- workflow: name/description/steps injected as ``<mentioned_workflow>``.
-- memory: MEMORY.md content injected as ``<mentioned_memory>`` (skip if empty).
+- session: delivery plan (WS-layer short-circuit, at-session-design §5.1).
+- result: target session's last assistant reply as ``<mentioned_result>``.
 """
 
 from __future__ import annotations
@@ -26,21 +26,19 @@ from typing import Any
 
 from .. import agents as agents_reg
 from .. import artifacts as art_store
-from .. import workflows as wf_store
 from ..lang import t
 from ..skills.loader import SkillLoader, wrap_skill_body
-from ..workflows import dsl as wf_dsl
 from .registry import BUILTINS
 
 _log = logging.getLogger("ginno.commands")
 
-MENTION_KINDS = ("artifact", "agent", "workflow", "memory")
+MENTION_KINDS = ("artifact", "agent", "session", "result")
 
 # Lookbehind keeps emails (`a@artifact.io`) and paths (`/x/@y`) from matching.
 # Labels are single tokens — whitespace-containing labels only work through the
 # structured `mentions` list (documented).
 _MENTION_TOKEN_RE = re.compile(
-    r"(?<![\w/.])@(artifact|agent|workflow|memory)(?::([^\s@:]+))?",
+    r"(?<![\w/.])@(artifact|agent|session|result)(?::([^\s@:]+))?",
     re.IGNORECASE,
 )
 
@@ -59,6 +57,9 @@ class TurnPlan:
     builtin_async: str | None = None
     builtin_args: str = ""
     mention_ctx: list[dict] = field(default_factory=list)  # {kind,id,name,summary}
+    # @session 投递计划（at-session-design §5.1）：mentions 全为 session 且有
+    # 正文时 WS 层短路投递（不开本会话 turn）。[{id,label}]
+    deliveries: list[dict] = field(default_factory=list)
     agent_override: str | None = None  # first resolved @agent mention
     files_extra: list[dict] = field(default_factory=list)  # [{"artifact_id": id}]
     skill_name: str | None = None
@@ -135,13 +136,63 @@ def _agent_by_unique_name(name: str):
     return None
 
 
-def _workflow_by_unique_name(name: str) -> dict | None:
-    hits = [w for w in wf_store.list_defs() if w.get("name") == name]
-    if len(hits) == 1:
-        return hits[0]
-    if len(hits) > 1:
-        _log.warning("mention: workflow name %r is ambiguous (%d hits) — ignored", name, len(hits))
+
+def _linked_member(cur_session_id: str | None, sid: str | None = None, label: str | None = None) -> dict | None:
+    """@session/@result 的目标解析：在当前会话的 linked members 内按 id 或
+    标题精确命中（at-session-design §5.5——集合 ≤32，标题在集合内唯一）。
+    排除自身；渠道/subagent 类型在菜单层已挡，这里兜底再排一次。"""
+    if not cur_session_id:
+        return None
+    from ..session_links import linked_report
+
+    rep = linked_report(cur_session_id)
+    members = [m for m in (rep.get("members") or []) if m.get("id") != cur_session_id]
+    for m in members:
+        if (m.get("type") or "").startswith("channel") or m.get("type") == "subagent":
+            continue
+        if sid is not None and m.get("id") == sid:
+            return m
+        if label is not None and (m.get("title") or "") == label:
+            return m
+    if sid or label:
+        _log.info("mention: session %r not in linked set — ignored", sid or label)
     return None
+
+
+def _last_assistant_text_sync(session_id: str, slug: str) -> str:
+    """目标会话最后一条 assistant 正文（@result 取数，§5.2：倒序跳过
+    tool-only/空文本；同步 checkpoint 读——resolve_turn 是 sync 路径）。
+    checkpoint 消息可能是 dict 或 LangChain 对象（get/aget 序列化差异），
+    双形态兼容。"""
+    try:
+        from ..checkpointer import FileCheckpointer
+
+        tup = FileCheckpointer(slug).get_tuple({"configurable": {"thread_id": session_id}})
+        messages = (
+            (tup.checkpoint.get("channel_values") or {}).get("messages")
+            if tup and tup.checkpoint else []
+        )
+        for m in reversed(messages or []):
+            is_dict = isinstance(m, dict)
+            mtype = m.get("type") if is_dict else getattr(m, "type", None)
+            if mtype != "ai":
+                continue
+            content = m.get("content") if is_dict else getattr(m, "content", "")
+            if isinstance(content, str):
+                if content.strip():
+                    return content.strip()
+                continue
+            texts = [
+                (b.get("text") if isinstance(b, dict) else getattr(b, "text", "")) or ""
+                for b in content
+                if isinstance(b, dict) or hasattr(b, "text")
+            ]
+            joined = "\n".join(t for t in texts if t).strip()
+            if joined:
+                return joined
+        return ""
+    except Exception:
+        return ""
 
 
 def _artifact_by_name(slug: str, name: str) -> dict | None:
@@ -154,7 +205,7 @@ def _artifact_by_name(slug: str, name: str) -> dict | None:
 
 
 def resolve_mentions(
-    structured: list[dict] | None, text: str, slug: str
+    structured: list[dict] | None, text: str, slug: str, cur_session_id: str | None = None
 ) -> tuple[list[dict], str | None]:
     """Resolve mentions to ``[{kind, id, label, _obj}]`` + first agent override.
 
@@ -170,10 +221,7 @@ def resolve_mentions(
             continue
         kind = m.get("kind")
         mid = m.get("id")
-        if kind == "memory":
-            add("memory", "global", "MEMORY.md", None)
-            continue
-        if not mid:
+        if not mid and kind not in ("session", "result"):
             continue
         if kind == "artifact":
             art = art_store.get_artifact(slug, mid)
@@ -187,12 +235,12 @@ def resolve_mentions(
                 add("agent", agent.id, agent.name, agent)
             else:
                 _log.warning("mention: agent id %s not found", mid)
-        elif kind == "workflow":
-            wf = wf_store.get_def(mid)
-            if wf:
-                add("workflow", wf.get("id") or mid, wf.get("name") or mid, wf)
+        elif kind in ("session", "result"):
+            m = _linked_member(cur_session_id, sid=mid)
+            if m:
+                add(kind, m["id"], m.get("title") or m["id"], m)
             else:
-                _log.warning("mention: workflow id %s not found", mid)
+                _log.warning("mention: session id %s not in linked set", mid)
         else:
             _log.warning("mention: unknown kind %r ignored", kind)
 
@@ -201,10 +249,6 @@ def resolve_mentions(
     for tok in parse_mention_tokens(text):
         kind, label = tok["kind"], tok.get("label")
         if kind in covered:
-            continue
-        if kind == "memory":
-            add("memory", "global", "MEMORY.md", None)
-            covered.add("memory")
             continue
         if not label:
             continue
@@ -218,29 +262,16 @@ def resolve_mentions(
             if agent:
                 add("agent", agent.id, agent.name, agent)
                 covered.add("agent")
-        elif kind == "workflow":
-            wf = _workflow_by_unique_name(label)
-            if wf:
-                add("workflow", wf.get("id") or "", wf.get("name") or "", wf)
-                covered.add("workflow")
+        elif kind in ("session", "result"):
+            m = _linked_member(cur_session_id, label=label)
+            if m:
+                add(kind, m["id"], m.get("title") or m["id"], m)
+                covered.add(kind)
 
     agent_override = next((r["id"] for r in resolved if r["kind"] == "agent"), None)
     return resolved, agent_override
 
 
-def _workflow_summary(wf: dict) -> str:
-    lines = []
-    if wf.get("description"):
-        lines.append(f"{t('Description:', '描述：')} {wf['description']}")
-    steps = wf.get("steps") or []
-    if not steps and wf.get("dsl"):
-        steps = wf_dsl.steps_from_dsl(wf.get("dsl") or {})
-    if steps:
-        lines.append(t("Steps:", "步骤："))
-        for s in steps:
-            title = s.get("title") or s.get("id") or ""
-            lines.append(f"- {title}")
-    return "\n".join(lines)
 
 
 def resolve_turn(msg: dict, session: dict) -> TurnPlan:
@@ -277,7 +308,11 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
             return TurnPlan(text=text, mod_command=(name, (m.group(2) or "").strip()))
 
     # 2) Mentions (structured authoritative + text fallback).
-    resolved, agent_override = resolve_mentions(msg.get("mentions"), text, slug)
+    # 内存条目键是 session_id（s_entry），meta 视图是 id——两形态都取。
+    resolved, agent_override = resolve_mentions(
+        msg.get("mentions"), text, slug,
+        cur_session_id=session.get("session_id") or session.get("id"),
+    )
 
     # 3) Skill substitution on the raw text (tokens in the tail survive).
     new_text, skill_name = substitute_skill(text, slug)
@@ -306,31 +341,36 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
                 {"kind": "artifact", "id": r["id"], "name": r["label"], "summary": summary}
             )
             continue
-        if kind == "workflow":
-            plan.mention_ctx.append(
-                {
-                    "kind": "workflow",
-                    "id": r["id"],
-                    "name": r["label"],
-                    "summary": _workflow_summary(r["_obj"] or {}),
-                }
-            )
+        if kind == "session":
+            # 投递计划：不在本会话组 mention_ctx——WS 层短路投递（§5.1）。
+            plan.deliveries.append({"id": r["id"], "label": r["label"]})
             continue
-        if kind == "memory":
-            # Lazy import: knowledge.injection drags in the knowledge subpackage;
-            # graph.py keeps it out of the startup import graph the same way.
-            from ..knowledge.injection import read_global_memory
-
-            content = read_global_memory()
-            if content:
+        if kind == "result":
+            # 引用目标会话最后结论（§5.2）：>4000 字截断 + 尾注；快照语义。
+            target = r["_obj"] or {}
+            raw = _last_assistant_text_sync(r["id"], slug)
+            if raw:
+                CUT = 4000
+                body = raw if len(raw) <= CUT else raw[:CUT] + "\n…（已截断，全文在原会话）"
                 plan.mention_ctx.append(
                     {
-                        "kind": "memory",
-                        "id": "global",
-                        "name": "MEMORY.md",
-                        "summary": content,
+                        "kind": "result",
+                        "id": r["id"],
+                        "name": r["label"],
+                        "summary": body,
                     }
                 )
             else:
-                _log.info("mention: global memory empty — nothing to inject")
+                plan.mention_ctx.append(
+                    {
+                        "kind": "result",
+                        "id": r["id"],
+                        "name": r["label"],
+                        "summary": t(
+                            "(that session has no assistant reply yet)",
+                            "（该会话尚无助手回复）",
+                        ),
+                    }
+                )
+            continue
     return plan

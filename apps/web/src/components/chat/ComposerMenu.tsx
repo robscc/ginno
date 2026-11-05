@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
-import { Bot, Brain, FileText, Sparkles, Terminal, Workflow } from "lucide-react";
+import { ArrowRightCircle, Bot, FileText, MessageSquareQuote, Sparkles, Terminal } from "lucide-react";
 import type { MenuItem } from "./commandMenu";
 
 const KIND_ICON: Record<MenuItem["kind"], typeof Terminal> = {
@@ -10,8 +10,8 @@ const KIND_ICON: Record<MenuItem["kind"], typeof Terminal> = {
   skill: Sparkles,
   artifact: FileText,
   agent: Bot,
-  workflow: Workflow,
-  memory: Brain,
+  session: ArrowRightCircle,
+  result: MessageSquareQuote,
 };
 
 const KIND_COLOR: Record<MenuItem["kind"], string> = {
@@ -19,8 +19,8 @@ const KIND_COLOR: Record<MenuItem["kind"], string> = {
   skill: "#a78bfa",
   artifact: "#60a5fa",
   agent: "#34d399",
-  workflow: "#fbbf24",
-  memory: "#f472b6",
+  session: "#fbbf24",
+  result: "#f472b6",
 };
 
 /**

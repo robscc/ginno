@@ -1189,7 +1189,19 @@ async def _stream_graph(
             except Exception:
                 _log.debug("turn_meta_write_failed session=%s", session_id, exc_info=True)
             await safe_send(
-                emit("message.end", {"text": _clean_text.strip()[:200], "meta": _tm})
+                emit(
+                    "message.end",
+                    {
+                        "text": _clean_text.strip()[:200],
+                        "meta": _tm,
+                        # turn 发起者标记（interactive/schedule/subagent）：
+                        # 前端据此跳过非交互 turn 的 OS 通知（完成通知由
+                        # schedule-run/workflow-run 通道统一发，防双弹）。
+                        "origin": (config.get("configurable") or {}).get(
+                            "ginno_turn_origin", "interactive"
+                        ),
+                    },
+                )
             )
         else:
             _log.info(

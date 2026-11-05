@@ -17,7 +17,15 @@ from ginno_runtime import artifacts as art_store
 from ginno_runtime import compaction as compaction_mod
 from ginno_runtime import microcompact as microcompact_mod
 from ginno_runtime import paths, server_shared
-from ginno_runtime import workflows as wf_store
+from ginno_runtime import session_links
+from ginno_runtime.session_links import stamp_link
+from ginno_runtime.session_meta import _session_meta_upsert as _meta_upsert
+
+
+def _put_session(sid: str, title: str) -> None:
+    import time as _t
+    _meta_upsert("default", {"id": sid, "title": title, "type": "main",
+                             "created": _t.time(), "updated": _t.time()})
 from ginno_runtime.api import stream as api_stream
 from ginno_runtime.commands.registry import BUILTINS
 from ginno_runtime.commands.resolver import (
@@ -134,14 +142,16 @@ def test_substitute_skill_unknown_passthrough(isolated_home):
 # --------------------------------------------------------------------------- #
 def test_mention_tokens_basic(isolated_home):
     toks = parse_mention_tokens(
-        "hey @artifact:report.csv and @agent:Dev plus @workflow:triage and @memory"
+        "hey @artifact:report.csv and @agent:Dev plus @session:雷达 and @result"
     )
     assert toks == [
         {"kind": "artifact", "label": "report.csv"},
         {"kind": "agent", "label": "Dev"},
-        {"kind": "workflow", "label": "triage"},
-        {"kind": "memory", "label": None},
+        {"kind": "session", "label": "雷达"},
+        {"kind": "result", "label": None},
     ]
+    # 旧类别已退役（2026-11-05 @ 范围整理）：token 层不再识别
+    assert parse_mention_tokens("run @workflow:triage and @memory") == []
 
 
 def test_mention_tokens_no_false_positives(isolated_home):
@@ -201,26 +211,35 @@ def test_resolve_mentions_ambiguous_agent_name_skipped(isolated_home):
     assert resolved == []
 
 
-def test_resolve_mentions_workflow_name_fallback(isolated_home):
-    wf_store.create_def(
-        {"name": "triage", "description": "d", "steps": [{"id": "a", "title": "A"}]}
-    )
-    resolved, _ = resolve_mentions(None, "run @workflow:triage please", "default")
-    assert [r["kind"] for r in resolved] == ["workflow"]
-    assert resolved[0]["label"] == "triage"
+def test_resolve_mentions_session_label_fallback(isolated_home):
+    # linked 集合内按标题精确命中（at-session-design §5.5）
+    s1 = "sess-main-1"; _put_session(s1, "主会话")
+    s2 = "sess-radar-2"; _put_session(s2, "雷达任务")
+    stamp_link(s1, s2, "watching")
+    resolved, _ = resolve_mentions(None, "run @session:雷达任务 please", "default", cur_session_id=s1)
+    assert [r["kind"] for r in resolved] == ["session"]
+    assert resolved[0]["label"] == "雷达任务"
+    assert resolved[0]["id"] == s2
+    # 集合外标题不命中（quiet ignore）
+    resolved2, _ = resolve_mentions(None, "@session:不存在的", "default", cur_session_id=s1)
+    assert resolved2 == []
 
 
 def test_resolve_mentions_text_fallback_skips_covered_kinds(isolated_home):
-    wf_store.create_def({"name": "triage", "description": "", "steps": [{"id": "a", "title": "A"}]})
-    wf_store.create_def({"name": "other", "description": "", "steps": [{"id": "a", "title": "A"}]})
-    wf = wf_store.get_def(wf_store.list_defs()[0]["id"])
+    s1 = "sess-main-1"; _put_session(s1, "主会话")
+    s2 = "sess-radar-2"; _put_session(s2, "甲")
+    s3 = "sess-other-3"; _put_session(s3, "乙")
+    stamp_link(s1, s2, "watching")
+    stamp_link(s1, s3, "watching")
     resolved, _ = resolve_mentions(
-        [{"kind": "workflow", "id": wf["id"]}],
-        "@workflow:other and @memory",
+        [{"kind": "session", "id": s2}],
+        "@session:乙 and @result:甲",
         "default",
+        cur_session_id=s1,
     )
     kinds = [r["kind"] for r in resolved]
-    assert kinds == ["workflow", "memory"]  # token fallback added memory only
+    # structured session 已覆盖 → token 兜底只补 result（同 kind 不重复）
+    assert kinds == ["session", "result"]
 
 
 # --------------------------------------------------------------------------- #
@@ -268,32 +287,51 @@ def test_resolve_turn_link_artifact_becomes_context(isolated_home):
     assert len(arts) == 1 and arts[0]["name"] == "my-link"
 
 
-def test_resolve_turn_workflow_and_memory(isolated_home):
-    wf_store.create_def(
-        {"name": "triage", "description": "PR triage", "steps": [{"id": "a", "title": "Fetch"}]}
-    )
-    paths.memory_index_path().write_text("用户喜欢喝茶。", encoding="utf-8")
-    wf_id = wf_store.list_defs()[0]["id"]
+def test_resolve_turn_session_delivery_and_result_cite(isolated_home):
+    # @session → deliveries（无 mention_ctx）；@result → 目标最后 assistant
+    # 正文注入 <mentioned_result>（空目标 → 「尚无回复」占位）
+    s1 = "sess-main-1"; _put_session(s1, "主会话")
+    s2 = "sess-radar-2"; _put_session(s2, "雷达")
+    stamp_link(s1, s2, "watching")
     plan = resolve_turn(
         {
             "message": "hi",
-            "mentions": [{"kind": "workflow", "id": wf_id}, {"kind": "memory"}],
+            "mentions": [{"kind": "session", "id": s2}, {"kind": "result", "id": s2}],
         },
-        SESSION,
+        {**SESSION, "id": s1},
     )
-    kinds = {m["kind"] for m in plan.mention_ctx}
-    assert kinds == {"workflow", "memory"}
-    wf_item = next(m for m in plan.mention_ctx if m["kind"] == "workflow")
-    assert "Fetch" in wf_item["summary"] and "PR triage" in wf_item["summary"]
-    mem_item = next(m for m in plan.mention_ctx if m["kind"] == "memory")
-    assert "用户喜欢喝茶" in mem_item["summary"]
+    assert plan.deliveries == [{"id": s2, "label": "雷达"}]
+    assert [m["kind"] for m in plan.mention_ctx] == ["result"]
+    assert "no assistant reply yet" in plan.mention_ctx[0]["summary"]
 
 
-def test_resolve_turn_memory_empty_skipped(isolated_home):
-    # default boilerplate MEMORY.md (created by ensure_layout) → nothing injected
-    paths.ensure_layout()
-    plan = resolve_turn({"message": "hi", "mentions": [{"kind": "memory"}]}, SESSION)
-    assert plan.mention_ctx == []
+def test_resolve_turn_result_cites_last_reply(isolated_home):
+    s1 = "sess-main-1"; _put_session(s1, "主会话")
+    s2 = "sess-radar-2"; _put_session(s2, "雷达")
+    stamp_link(s1, s2, "watching")
+    # 直接落一个含 assistant 消息的 checkpoint（同步 put 接口）
+    from ginno_runtime.checkpointer import FileCheckpointer
+    cp = FileCheckpointer("default")
+    cp.put(
+        {"configurable": {"thread_id": s2}},
+        checkpoint={
+            "id": "ckpt-1",
+            "channel_values": {
+                "messages": [
+                    {"type": "human", "content": "跑一期"},
+                    {"type": "ai", "content": ""},
+                    {"type": "ai", "content": [{"type": "text", "text": "第 8 期结论：OK"}]},
+                ]
+            },
+        },
+        metadata={},
+        new_versions={},
+    )
+    plan = resolve_turn(
+        {"message": "总结下", "mentions": [{"kind": "result", "id": s2}]},
+        {**SESSION, "id": s1},
+    )
+    assert "第 8 期结论：OK" in plan.mention_ctx[0]["summary"]
 
 
 def test_resolve_turn_agent_override(isolated_home):

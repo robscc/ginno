@@ -233,27 +233,31 @@ def test_bound_workflow_injects_current_dsl(create_session, ws_conv):
     assert "cluster_checklist_review" in turn_ctx
 
 
-def test_workflow_mention_injects_context(create_session, ws_conv):
-    wf_store.create_def(
-        {
-            "name": "triage",
-            "description": "PR triage flow",
-            "steps": [{"id": "a", "title": "Fetch PRs"}],
-        }
-    )
-    wf_id = wf_store.list_defs()[0]["id"]
+def test_result_mention_injects_last_reply(create_session, ws_conv, isolated_home):
+    """@result：目标会话最后 assistant 正文注入 <mentioned_result>（设计 §5.2）。
+    目标走真 turn 产生回复（纯 e2e，不手写 checkpoint）。"""
+    from ginno_runtime.session_links import stamp_link
+
     model = CapturingModel(reply="ok")
-    sid = create_session(model, agent_id="dev")
-    with ws_conv(sid) as conv:
-        conv.invoke("跑一下", mentions=[{"kind": "workflow", "id": wf_id}])
+    main = create_session(model, agent_id="dev")
+    target = create_session(CapturingModel(reply="第 8 期结论：候选 9 项"), agent_id="dev")
+    stamp_link(main, target, "watching")
+    # 目标先跑一轮，落一条真实 assistant 回复
+    with ws_conv(target) as conv:
+        conv.invoke("跑一期")
+        conv.recv_until("message.end", "error")
+    # 主会话 @result 引用
+    with ws_conv(main) as conv:
+        conv.invoke("结合结论挑 3 个", mentions=[{"kind": "result", "id": target}])
         conv.recv_until("message.end", "error")
     turn_ctx = turn_context_of(model)
-    assert "<mentioned_workflow>" in turn_ctx
-    assert "PR triage flow" in turn_ctx
-    assert "Fetch PRs" in turn_ctx
+    assert "<mentioned_result>" in turn_ctx
+    assert "第 8 期结论：候选 9 项" in turn_ctx
 
 
-def test_memory_mention_injects_memory(create_session, ws_conv, isolated_home):
+def test_memory_mention_retired(create_session, ws_conv, isolated_home):
+    """@memory 已退役（2026-11-05 @ 范围整理）：world_state 每轮自动注入，
+    mention 不再有专门通道——旧 payload 静默忽略且不注入重复段。"""
     paths.memory_index_path().write_text("用户偏好：先给结论再给细节。", encoding="utf-8")
     model = CapturingModel(reply="ok")
     sid = create_session(model, agent_id="dev")
@@ -261,8 +265,7 @@ def test_memory_mention_injects_memory(create_session, ws_conv, isolated_home):
         conv.invoke("hi", mentions=[{"kind": "memory"}])
         conv.recv_until("message.end", "error")
     turn_ctx = turn_context_of(model)
-    assert "<mentioned_memory>" in turn_ctx
-    assert "先给结论再给细节" in turn_ctx
+    assert "<mentioned_memory>" not in turn_ctx
 
 
 def test_memory_mention_empty_skipped(create_session, ws_conv):
@@ -290,15 +293,84 @@ def test_agent_mention_overrides_routing(create_session, ws_conv, client):
 
 
 def test_mention_token_fallback_without_structured_list(create_session, ws_conv):
-    wf_store.create_def(
-        {"name": "deploy", "description": "d", "steps": [{"id": "a", "title": "Ship it"}]}
-    )
+    """raw token（无 structured mentions）：@result:标题 在 linked 集合内命中。"""
+    from ginno_runtime.session_links import stamp_link
+
     model = CapturingModel(reply="ok")
     sid = create_session(model, agent_id="dev")
+    target = create_session(CapturingModel(reply="raw 结论"), agent_id="dev", title="雷达任务")
+    stamp_link(sid, target, "watching")
+    with ws_conv(target) as conv:
+        conv.invoke("跑")
+        conv.recv_until("message.end", "error")
     with ws_conv(sid) as conv:
         # raw API style: token in text, no structured mentions key
-        conv.send({"type": "invoke", "message": "@workflow:deploy run it"})
+        conv.send({"type": "invoke", "message": "@result:雷达任务 总结下"})
         conv.recv_until("message.end", "error")
     turn_ctx = turn_context_of(model)
-    assert "<mentioned_workflow>" in turn_ctx
-    assert "Ship it" in turn_ctx
+    assert "<mentioned_result>" in turn_ctx
+    assert "raw 结论" in turn_ctx
+
+
+# --------------------------------------------------------------------------- #
+# @session 投递（at-session-and-mention-scope-design §5.1）——ws 层短路：
+# idle 目标后台 headless turn；working 目标 steer 队列；本会话不开 turn。
+# --------------------------------------------------------------------------- #
+def test_session_mention_delivers_to_idle_target(create_session, ws_conv):
+    model_t = CapturingModel(reply="收到，开跑")
+    main = create_session(CapturingModel(reply="ok"), agent_id="dev")
+    target = create_session(model_t, agent_id="dev")
+    from ginno_runtime.session_links import stamp_link
+    stamp_link(main, target, "watching")
+    import time as _t
+    _t.sleep(0.05)
+
+    with ws_conv(main) as conv:
+        conv.invoke("去跑一期", mentions=[{"kind": "session", "id": target}])
+        events = conv.recv_until("message.end", "error")
+        # 来源会话：deliver.report + message.end，无 turn.start（不开本会话 turn）
+        reports = events_of(events, "deliver.report")
+        assert len(reports) == 1
+        assert reports[0]["targets"][0]["state"] == "started"
+        assert not events_of(events, "turn.start")
+        # 目标后台 turn 落盘——必须在本 WS 生命周期内轮询（TestClient loop
+        # 存活，spawn_bg 的任务才能被调度；连接断开后 loop 停转任务饿死）
+        from ginno_runtime.checkpointer import FileCheckpointer
+        cp = FileCheckpointer("default")
+        msgs = []
+        for _ in range(50):
+            tup = cp.get_tuple({"configurable": {"thread_id": target}})
+            msgs = (tup.checkpoint.get("channel_values") or {}).get("messages") if tup else []
+            humans_now = [getattr(m, "content", "") for m in msgs]
+            if any(h.startswith("[来自") for h in humans_now) and any(
+                getattr(m, "type", "") == "ai" for m in msgs
+            ):
+                break
+            _t.sleep(0.2)
+    humans = [getattr(m, "content", "") for m in msgs]
+    assert any(h.startswith("[来自") and "去跑一期" in h for h in humans)
+    assert any(h == "收到，开跑" for h in humans)
+
+
+def test_session_mention_busy_target_queues_steer(create_session, ws_conv):
+    """working 目标：steer 队列（本用例用 _RUNNING_TURNS 模拟占用）。"""
+    main = create_session(CapturingModel(reply="ok"), agent_id="dev")
+    target = create_session(CapturingModel(reply="ok"), agent_id="dev")
+    from ginno_runtime.session_links import stamp_link
+    from ginno_runtime import server_shared as shared
+    stamp_link(main, target, "watching")
+    shared._RUNNING_TURNS[target] = "turn-occupied"
+    try:
+        with ws_conv(main) as conv:
+            conv.invoke("插个队", mentions=[{"kind": "session", "id": target}])
+            events = conv.recv_until("message.end", "error")
+        reports = events_of(events, "deliver.report")
+        assert reports[0]["targets"][0]["state"] == "queued"
+        stash = shared._STEER_STASH.get(target) or []
+        entry = next(e for e in stash if e.get("text", "").startswith("[来自"))
+        assert "插个队" in entry["text"]
+    finally:
+        shared._RUNNING_TURNS.pop(target, None)
+        # 投递留下的 stash（等目标 turn 吸收——生产语义正确）是本用例
+        # 自己造的占用态产物，清掉防跨测试污染（stash 断言全 dict 空）。
+        shared._STEER_STASH.pop(target, None)

@@ -345,9 +345,10 @@ async def test_prompt_target_dispatch(isolated_home, monkeypatch):
         _session_meta_upsert(req.project_slug, {"id": sid, "type": req.type, "title": req.title})
         return {"id": sid, "ok": True, "type": req.type}
 
-    async def fake_run_stream(ws, graph, config, text, session, agent_id):
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, origin="interactive"):
         captured["config"] = config
         captured["text"] = text
+        captured["origin"] = origin
 
     monkeypatch.setattr("ginno_runtime.api.sessions.create_session", fake_create_session)
     monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
@@ -367,7 +368,9 @@ async def test_prompt_target_dispatch(isolated_home, monkeypatch):
     meta = next(m for m in metas if m["id"] == sid)
     assert meta["type"] == "scheduled"
     assert meta["schedule_run_id"] == rid
-    # headless 协议：usage_source=schedule、user_text=任务提示词
+    # headless 协议：usage_source=schedule、user_text=任务提示词、origin 标记
+    # （前端据此跳过 schedule turn 的 reply 通知——防双弹，见 origin 机制）
+    assert captured["origin"] == "schedule"
     assert captured["config"]["configurable"]["usage_source"] == "schedule"
     assert captured["text"] == "p"
     # 执行记录：running → ok 两行，末行胜出带 summary
@@ -398,7 +401,7 @@ async def test_prompt_target_model_passthrough(isolated_home, monkeypatch):
         _session_meta_upsert(req.project_slug, {"id": sid, "type": req.type, "title": req.title})
         return {"id": sid, "ok": True, "type": req.type}
 
-    async def fake_run_stream(ws, graph, config, text, session, agent_id):
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, origin="interactive"):
         pass
 
     async def fake_last_text(session_id, slug):
@@ -436,7 +439,7 @@ async def test_prompt_running_row_has_session_id(isolated_home, monkeypatch):
         _session_meta_upsert(req.project_slug, {"id": sid, "type": req.type, "title": req.title})
         return {"id": sid, "ok": True, "type": req.type}
 
-    async def fake_run_stream(ws, graph, config, text, session, agent_id):
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, origin="interactive"):
         # 执行仍在跑：此刻落盘的末行应已带 session_id 且 status=running
         rows = store.dedupe_runs(store.load_day(store._today()))
         seen["row"] = next(r for r in rows if r.get("session_id") == sid)

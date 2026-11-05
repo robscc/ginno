@@ -8,8 +8,8 @@
         "skills": "技能",
         "artifacts": "产物",
         "agents": "代理",
-        "workflows": "工作流",
-        "memory": "记忆"
+        "sessions": "会话（投递）",
+        "results": "结论（引用）"
       }
     },
     "commands": {
@@ -23,8 +23,8 @@
     "mentions": {
       "artifactDesc": "引用产物文件作为本轮上下文",
       "agentDesc": "让该代理回答当前这一轮",
-      "workflowDesc": "引用工作流定义以执行或参考",
-      "memoryDesc": "注入长期记忆 MEMORY.md"
+      "sessionDesc": "把本轮输入投递到该会话（空闲→新 turn，忙→注入）",
+      "resultDesc": "引用该会话最后一条回复作为上下文"
     },
     "markdown": {
       "codeLabel": "code",

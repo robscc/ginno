@@ -45,6 +45,9 @@ function isWatching(ctx: EngineCtx, sid: string): boolean {
   );
 }
 
+/** 已通知过的 ask_user 问题 id（tool_call id，全局唯一）——重连重放不二次弹。 */
+const notifiedQuestionIds = new Set<string>();
+
 /** reply 合并条目：MergeItem + 多条时的计数文案（push 侧闭包捕获，
  *  i18nRef 延迟求值——ctx 长存所以安全）。 */
 interface ReplyItem extends MergeItem {
@@ -291,17 +294,27 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     // card lives (and is merged by id) inside the live bubble's blocks.
     case "user.question": {
       // V2：审批/提问挂起等人——最急的通知类，即时弹不合并（不看就永远卡着）。
-      const watching = isWatching(ctx, sid);
-      if (shouldNotify("askUser", watching)) {
-        const np = notifyPrefs();
-        const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
-        void notifyNative({
-          kind: "session",
-          id: sid,
-          title: `⏸ ${sTitle}`,
-          body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
-          sound: soundFor("askUser"),
-        });
+      // 去重（2026-11-05 真机回归）：WS 重连时服务端会把 parked 的挂起问题
+      // 重发一遍（ws.py:244，给前端重建问题卡用，id 不变）——不按 id 去重
+      // 的话每次重连/切会话都弹一遍「等你回答」（用户报：没有 ask_user 也弹）。
+      {
+        const qid = typeof ev.id === "string" ? ev.id : `${sid}:${Date.now()}`;
+        if (!notifiedQuestionIds.has(qid)) {
+          notifiedQuestionIds.add(qid);
+          if (notifiedQuestionIds.size > 1000) notifiedQuestionIds.clear(); // 防泄漏兜底
+          const watching = isWatching(ctx, sid);
+          if (shouldNotify("askUser", watching)) {
+            const np = notifyPrefs();
+            const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+            void notifyNative({
+              kind: "session",
+              id: sid,
+              title: `⏸ ${sTitle}`,
+              body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
+              sound: soundFor("askUser"),
+            });
+          }
+        }
       }
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
@@ -313,35 +326,13 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
       break;
-    case "workflow.emit": {
+    // workflow.emit：run 终态通知由 store/notifications.ts 统一发
+    // （kind: workflow-run，先于本 V2 实现且带点击跳转 Workflows 面板）——
+    // 此处不再重复弹（2026-11-05 触发点盘点：双通道同事件双弹）。
+    case "workflow.emit":
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
-      // V2：run 整体终态通知（step 级 turn 走 reply 合并；这里只在 run
-      // 落幕时响一声——多步 run 一条通知，不逐步刷屏）。
-      const run = (ev as { run?: { status?: string; id?: string; title?: string } }).run;
-      const st = run?.status;
-      if ((st === "done" || st === "failed" || st === "cancelled") && run?.id) {
-        const watching = isWatching(ctx, sid);
-        if (shouldNotify("workflow", watching)) {
-          const np = notifyPrefs();
-          const sTitle = run.title?.trim() || ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
-          const failed = st === "failed";
-          void notifyNative({
-            kind: "workflow-run",
-            id: run.id,
-            title: failed ? `⚠️ ${sTitle}` : `✅ ${sTitle}`,
-            body: privacyBody(
-              np,
-              failed
-                ? ctx.i18nRef.current.tr("notify.workflowFailed")
-                : ctx.i18nRef.current.tr("notify.workflowDone"),
-            ),
-            sound: soundFor(failed ? "failure" : "reply"),
-          });
-        }
-      }
       break;
-    }
     case "turn.start": {
       markDelivered(ctx, sid);
       ctx.seenTurnStartRef.current[sid] = true;
@@ -418,28 +409,44 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (srvTurn && (echoText || echoImgs.length)) {
         const store = ctx.storeRef.current[sid] ?? [];
         if (!store.some((m) => m.role === "user" && m.turnId === srvTurn)) {
-          const echo: ChatMsg = {
-            id: srvTurn,
-            role: "user",
-            // 与 mapHistory 同折（foldSubagentResultBlocks）：调度器 wake turn
-            // 的注入信封（<ginno_worker_assign>/result）live 落卡而非裸 XML；
-            // 纯文本渠道回显原样透传（fold 是 no-op）。
-            blocks: foldSubagentResultBlocks([
-              ...(echoText ? [{ kind: "text" as const, text: echoText }] : []),
-              ...echoImgs.map((i) => ({
-                kind: "image" as const,
-                url: `data:${i.media_type || "image/png"};base64,${i.data}`,
-              })),
-            ]),
-            turnId: srvTurn,
-          };
-          const at = (() => {
-            const liveIdx = store.findIndex((m) => m.id === id);
-            return liveIdx === -1 ? store.length : liveIdx;
-          })();
-          const next = [...store];
-          next.splice(at, 0, echo);
-          ctx.storeRef.current[sid] = next;
+          // 信封折卡（<ginno_subagent_result>/<ginno_worker_result> 等）与
+          // steer.absorbed 路径按 sessionId 互斥（2026-11-05 双卡修复：子代理
+          // 回传先经 steer 注入折卡，wake turn echo 再折一次 → 同一结果
+          // 两张卡；absorb 侧已有同款幂等，这里对齐——已存在同 sessionId 的
+          // 结果卡时，echo 只保留非信封内容（纯文本渠道回显不受影响））。
+          const echoBlocks = foldSubagentResultBlocks([
+            ...(echoText ? [{ kind: "text" as const, text: echoText }] : []),
+            ...echoImgs.map((i) => ({
+              kind: "image" as const,
+              url: `data:${i.media_type || "image/png"};base64,${i.data}`,
+            })),
+          ]).filter((b) => {
+            const csid = (b as { sessionId?: string }).sessionId;
+            if (!csid) return true;
+            if (b.kind !== "subagent_result" && b.kind !== "worker_result") return true;
+            return !store.some((m) =>
+              m.blocks.some(
+                (ob) =>
+                  (ob.kind === "subagent_result" || ob.kind === "worker_result") &&
+                  (ob as { sessionId?: string }).sessionId === csid,
+              ),
+            );
+          });
+          if (echoBlocks.length) {
+            const echo: ChatMsg = {
+              id: srvTurn,
+              role: "user",
+              blocks: echoBlocks,
+              turnId: srvTurn,
+            };
+            const at = (() => {
+              const liveIdx = store.findIndex((m) => m.id === id);
+              return liveIdx === -1 ? store.length : liveIdx;
+            })();
+            const next = [...store];
+            next.splice(at, 0, echo);
+            ctx.storeRef.current[sid] = next;
+          }
         }
       }
       break;
@@ -857,6 +864,29 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       })();
       break;
     }
+    case "deliver.report": {
+      // @session 投递回执（at-session-design §5.1）：系统提示条，非气泡——
+      // 各目标状态 started/queued/missing/no_body + 「附件未随投递」注明。
+      const targets: Array<{ label?: string; state?: string }> = Array.isArray(ev.targets)
+        ? ev.targets
+        : [];
+      const stateText = (st: string, label: string) => {
+        if (st === "started") return ctx.i18nRef.current.tr("deliver.started", { label });
+        if (st === "queued") return ctx.i18nRef.current.tr("deliver.queued", { label });
+        if (st === "missing") return ctx.i18nRef.current.tr("deliver.missing", { label });
+        return ctx.i18nRef.current.tr("deliver.noBody", { label });
+      };
+      const lines = targets.map((t) => stateText(String(t.state), String(t.label ?? "")));
+      if (ev.context_skipped) lines.push(ctx.i18nRef.current.tr("deliver.ctxSkipped"));
+      markDelivered(ctx, sid);
+      // notice 同款：live 气泡内一段 system 文本（无 graph turn，非 delta 流）。
+      ensureLive(ctx, sid, typeof ev.turn_id === "string" ? ev.turn_id : undefined);
+      mutateLive(ctx, sid, {
+        event: "token.delta",
+        content: lines.join("\n"),
+      });
+      break;
+    }
     case "notice":
       // Built-in command reply (e.g. /help): no graph turn ran, so the server
       // pushes the rendered text directly into the live bubble as one delta.
@@ -1272,7 +1302,11 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         else ctx.g.clearSessionUnread(sid);
         // V2：reply 通知过 shouldNotify 门（总开关 ∧ kinds.reply ∧ DnD）后
         // 进 30s 合并窗口——多条后台完成合成一条（防 workflow 逐步刷屏）。
-        if (shouldNotify("reply", watching)) {
+        // origin 门（2026-11-05 通知触发点盘点）：schedule/subagent 起的
+        // headless turn 完成已有专属通道（schedule-run / workflow-run store
+        // 侧通知），这里跳过防双弹——未读点保留（侧栏仍亮）。
+        const turnOrigin = typeof ev.origin === "string" ? ev.origin : "interactive";
+        if (shouldNotify("reply", watching) && turnOrigin === "interactive") {
           const title = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
           const raw = typeof ev.text === "string" ? ev.text.trim() : "";
           const body = raw || ctx.i18nRef.current.tr("notify.replyCompleted");

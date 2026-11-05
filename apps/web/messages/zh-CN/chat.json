@@ -584,6 +584,11 @@
       "viewWorker": "查看员工对话",
       "senderLabel": "派发方"
     },
-    "jumpLatest": "跳到最新一条信息"
+    "jumpLatest": "跳到最新一条信息",
+    "deliver.started": "→ 已投递到「{label}」（新 turn）",
+    "deliver.queued": "→ 「{label}」正忙，将在下个工具边界注入",
+    "deliver.missing": "→ 「{label}」已不存在",
+    "deliver.noBody": "→ 「{label}」：正文为空，未投递",
+    "deliver.ctxSkipped": "（其余 @ 引用未随投递）"
   }
 }

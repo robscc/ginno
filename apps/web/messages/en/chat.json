@@ -584,6 +584,11 @@
       "viewWorker": "View worker conversation",
       "senderLabel": "Assigned by"
     },
-    "jumpLatest": "Jump to latest message"
+    "jumpLatest": "Jump to latest message",
+    "deliver.started": "→ delivered to {label} (new turn)",
+    "deliver.queued": "→ {label} is busy; will inject at next tool boundary",
+    "deliver.missing": "→ {label} no longer exists",
+    "deliver.noBody": "→ {label}: empty prompt, nothing delivered",
+    "deliver.ctxSkipped": "(other @-mentions did not ride the delivery)"
   }
 }

@@ -76,7 +76,7 @@ async def _run_managed_turn(
         async with _turn_lock_of(session_id):
             await _run_stream(
                 None, session["graph"], config, text, session, agent_id,
-                user_extra_kwargs=extra_kwargs,
+                user_extra_kwargs=extra_kwargs, origin="subagent",
             )
     finally:
         if _NS._MANAGED_TURNS.get(session_id) == turn_id:
@@ -135,7 +135,7 @@ async def _run_managed_turn_locked(
     try:
         await _run_stream(
             None, session["graph"], config, text, session, agent_id,
-            user_extra_kwargs=extra_kwargs,
+            user_extra_kwargs=extra_kwargs, origin="subagent",
         )
     finally:
         if _NS._RUNNING_TURNS.get(session_id) == turn_id and session_id not in _NS._PENDING_RESUME:

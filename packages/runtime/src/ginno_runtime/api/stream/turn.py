@@ -333,6 +333,7 @@ async def _run_stream(
     mention_context: list | None = None,
     skill_name: str | None = None,
     user_extra_kwargs: dict | None = None,
+    origin: str = "interactive",
 ) -> None:
     """Append a HumanMessage and stream the agent loop until end or interrupt.
 
@@ -349,8 +350,19 @@ async def _run_stream(
     ``additional_kwargs`` — the subagent scheduler's result-injection wake turn
     tags its message with ``ginno_subagent_result`` (contract 3); user turns
     never set it.
+
+    ``origin`` tags WHO started the turn: "interactive" (user in the
+    composer), "schedule" (scheduler headless), "subagent" (subagent session
+    turn). It rides the config into the message.end payload so the frontend
+    can skip OS notifications for non-interactive turns — those completions
+    are already reported by their own channels (schedule-run / workflow-run
+    notices), avoiding double notifications (2026-11-05 盘点).
     """
     content: Any = user_text
+    # origin 标记进 config（engine 收口随 message.end 下发——见 docstring）
+    _conf = config.get("configurable") or {}
+    _conf["ginno_turn_origin"] = origin
+    config["configurable"] = _conf
     imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
     if imgs:
         parts: list[dict] = []

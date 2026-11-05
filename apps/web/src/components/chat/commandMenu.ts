@@ -3,7 +3,7 @@
  *
  * Two trigger modes (see docs/commands-and-mentions-design.md):
  *  - "/" at the start of the input → slash commands (builtins + skills)
- *  - "@" after whitespace/start     → mentions (@artifact/@agent/@workflow/@memory)
+ *  - "@" after whitespace/start     → mentions (@artifact/@agent/@session/@result)
  *
  * The server is authoritative for resolution; the menu only improves
  * discoverability and carries the selected mention ids in the invoke payload.
@@ -12,7 +12,7 @@
 import type { AgentConfig, Artifact, SkillSummary, WorkflowDef } from "@/lib/types";
 import { composerCatalog } from "./composerT";
 
-export type MentionKind = "artifact" | "agent" | "workflow" | "memory";
+export type MentionKind = "artifact" | "agent" | "session" | "result";
 
 export interface ResolvedMention {
   kind: MentionKind;
@@ -58,14 +58,14 @@ function mentionKindMeta(kind: MentionKind): { group: string; description: strin
       return { group: cat.menu.groups.artifacts, description: cat.mentions.artifactDesc };
     case "agent":
       return { group: cat.menu.groups.agents, description: cat.mentions.agentDesc };
-    case "workflow":
-      return { group: cat.menu.groups.workflows, description: cat.mentions.workflowDesc };
-    case "memory":
-      return { group: cat.menu.groups.memory, description: cat.mentions.memoryDesc };
+    case "session":
+      return { group: cat.menu.groups.sessions, description: cat.mentions.sessionDesc };
+    case "result":
+      return { group: cat.menu.groups.results, description: cat.mentions.resultDesc };
   }
 }
 
-export const MENTION_KINDS: MentionKind[] = ["artifact", "agent", "workflow", "memory"];
+export const MENTION_KINDS: MentionKind[] = ["artifact", "agent", "session", "result"];
 
 /** Detect an active trigger at the caret. Returns null when no menu applies. */
 export function detectTrigger(text: string, caret: number): Trigger | null {
@@ -113,10 +113,23 @@ function matches(haystack: string, needle: string): boolean {
   return haystack.toLowerCase().includes(needle.toLowerCase());
 }
 
+/** LinkedSessionsChip 的 members 投影（@session/@result 候选源，
+ *  at-session-and-mention-scope-design §2.4/§5.5）。 */
+export interface LinkedMentionEntry {
+  id: string;
+  title: string;
+  /** session type：subagent 排除（P0 边界矩阵）、channel 渠道会话 ⛔。 */
+  type?: string | null;
+  rel?: string | null;
+  /** live_status：waiting（ask_user 挂起）⛔ 禁选——「点击前往」语义。 */
+  liveStatus?: string | null;
+}
+
 export interface MenuSources {
   skills: SkillSummary[];
   agents: AgentConfig[];
-  workflows: WorkflowDef[];
+  /** @session（投递）/ @result（引用结论）候选：linked 会话成员。 */
+  linkedSessions?: LinkedMentionEntry[];
   artifacts: Artifact[];
   /** 当前会话 id：非本会话的 artifact 在菜单里标注来源（跨会话选择）。 */
   sessionId?: string | null;
@@ -218,8 +231,26 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     push("artifact", a.id, a.name, detail);
   }
   for (const a of src.agents) push("agent", a.id, a.name);
-  for (const w of src.workflows) push("workflow", w.id, w.name, w.description);
-  push("memory", "global", "MEMORY.md", mentionKindMeta("memory").description);
+  // @session（投递）/ @result（引用最后结论）——linked members，禁选矩阵见设计稿
+  // §2.2/§5.4：waiting ⛔（在等人）、渠道会话 ⛔、subagent 会话 P0 不显示、
+  // 自身排除。label=会话标题（服务端按标题在 linked 集合内精确命中）。
+  const relLabels: Record<string, string> = {
+    spawned: "派生", delegated: "委托", assigned: "派活", watching: "订阅", mounted: "挂载",
+  };
+  for (const l of src.linkedSessions ?? []) {
+    if (l.id === src.sessionId) continue;
+    if ((l.type ?? "") === "subagent") continue;
+    const isChannel = (l.type ?? "").startsWith("channel");
+    const waiting = l.liveStatus === "waiting";
+    const blocked = isChannel || waiting;
+    const detail = [
+      relLabels[l.rel ?? ""] ?? l.rel ?? "",
+      waiting ? "⛔ 等你回答" : "",
+      isChannel ? "⛔ 渠道会话" : "",
+    ].filter(Boolean).join(" · ");
+    push("session", l.id, l.title, detail, blocked);
+    push("result", l.id, l.title, l.title ? "" : "", false);
+  }
   return items;
 }
 

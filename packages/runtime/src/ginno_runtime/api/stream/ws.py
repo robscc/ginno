@@ -38,6 +38,7 @@ from ...server_shared import (
     spawn_bg,
 )
 from ...session_meta import _find_meta, _session_meta_patch
+from .. import sessions as sessions_mod
 from ...subagent_plan import BACKGROUND_ASYNC_COMMANDS as _BACKGROUND_ASYNC_COMMANDS
 from ..messages_ui import skill_display_text
 from ..sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
@@ -77,6 +78,41 @@ def _parked_user_question(session: dict, session_id: str) -> dict | None:
         if isinstance(value, dict) and value.get("kind") == "user_question":
             return value
     return None
+
+
+async def _deliver_turn(
+    target_id: str, tsession: dict, text: str, src_turn: str, label: str
+) -> None:
+    """@session idle 投递的后台 turn（at-session-design §5.1）——scheduler 的
+    headless 同款协议：早置 running 标志 + 关交互 ask_user + finally 清理。
+    事件广播目标会话 sockets（无 WS 也落 checkpoint，重连可恢复）。"""
+    from .turn import _run_stream
+    from ...tools.ask_tools import reset_interactive as _reset_interactive_turn
+    from ...tools.ask_tools import set_interactive as _set_interactive_turn
+
+    tslug = tsession.get("project_slug") or "default"
+    cfg = {
+        "configurable": {
+            "thread_id": target_id,
+            "project_slug": tslug,
+            "agent_id": tsession.get("agent_id"),
+            "turn_id": str(uuid.uuid4()),
+            "user_text": text[:200],
+            "usage_source": "deliver",
+        }
+    }
+    tok = _set_interactive_turn(False)
+    try:
+        await _run_stream(
+            None, tsession["graph"], cfg, text, tsession,
+            tsession.get("agent_id"), origin="deliver",
+        )
+    except Exception:
+        _log.exception("deliver_turn_failed session=%s src_turn=%s", target_id, src_turn)
+    finally:
+        _reset_interactive_turn(tok)
+        if _RUNNING_TURNS.get(target_id) == src_turn or target_id in _RUNNING_TURNS:
+            _RUNNING_TURNS.pop(target_id, None)
 
 
 async def _touch_session_title(
@@ -323,6 +359,55 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                     # Slash commands + @mentions → TurnPlan (docs §commands).
                     plan = _commands.resolve_turn(msg, session)
+                    if plan.deliveries:
+                        # @session 投递短路（at-session-design §5.1）：prompt 属于
+                        # 目标会话，本会话不开 graph turn。目标 working → steer
+                        # 注入（[来自 X 的投递] 前缀）；idle → 后台 headless turn
+                        # （create_task——接收循环绝不 await 长任务，/compact 老坑）。
+                        # P0：投递模式下其余 mention 不随行（回执注明）。
+                        _body = (user_text or "").strip()
+                        _src_title = str(session.get("title") or session_id)[:48]
+                        _report: list[dict] = []
+                        for _d in plan.deliveries:
+                            _tid = _d["id"]
+                            if not _body:
+                                _report.append({"id": _tid, "label": _d["label"], "state": "no_body"})
+                                continue
+                            _ts = sessions_mod._ensure_session(_tid)
+                            if not _ts:
+                                _report.append({"id": _tid, "label": _d["label"], "state": "missing"})
+                                continue
+                            _payload_text = f"[来自 {_src_title} 的投递]\n{_body}"
+                            if _tid in _RUNNING_TURNS:
+                                _steer_id = f"deliver-{turn_id[:8]}-{_tid[:8]}"
+                                shared.steer_enqueue(
+                                    _tid,
+                                    {
+                                        "steer_id": _steer_id,
+                                        "turn_id": _RUNNING_TURNS.get(_tid) or "",
+                                        "text": _payload_text,
+                                        "injected_at": time.time(),
+                                    },
+                                )
+                                _report.append({"id": _tid, "label": _d["label"], "state": "queued"})
+                            else:
+                                _RUNNING_TURNS[_tid] = turn_id
+                                spawn_bg(
+                                    _deliver_turn(_tid, _ts, _payload_text, turn_id, _d["label"])
+                                )
+                                _report.append({"id": _tid, "label": _d["label"], "state": "started"})
+                        _log.info(
+                            "deliver_report session=%s turn=%s targets=%d ctx_skipped=%d",
+                            session_id, turn_id, len(_report), len(plan.mention_ctx),
+                        )
+                        await _push_session_event(
+                            session_id,
+                            "deliver.report",
+                            {"targets": _report, "context_skipped": len(plan.mention_ctx) > 0},
+                            turn_id,
+                        )
+                        await _push_session_event(session_id, "message.end", {}, turn_id)
+                        continue
                     if plan.builtin_async is not None:
                         # Async builtin (e.g. /compact): awaits real server
                         # work (LLM summary + thread-state rewrite) then

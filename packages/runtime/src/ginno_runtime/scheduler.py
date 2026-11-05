@@ -695,7 +695,7 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
     shared._RUNNING_TURNS[session_id] = turn_id
     ask_tok = _set_interactive_turn(False)
     try:
-        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
+        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id, origin="schedule")
     finally:
         _reset_interactive_turn(ask_tok)
         from .server_shared import _PENDING_RESUME, _RUNNING_TURNS
@@ -797,7 +797,7 @@ async def _resume_prompt_target(task: dict, row: dict) -> dict:
     shared._RUNNING_TURNS[session_id] = turn_id
     ask_tok = _set_interactive_turn(False)
     try:
-        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
+        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id, origin="schedule")
     finally:
         _reset_interactive_turn(ask_tok)
         from .server_shared import _PENDING_RESUME, _RUNNING_TURNS

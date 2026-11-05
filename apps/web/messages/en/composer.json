@@ -8,8 +8,8 @@
         "skills": "Skills",
         "artifacts": "Artifacts",
         "agents": "Agents",
-        "workflows": "Workflows",
-        "memory": "Memory"
+        "sessions": "Sessions (deliver)",
+        "results": "Results (cite)"
       }
     },
     "commands": {
@@ -23,8 +23,8 @@
     "mentions": {
       "artifactDesc": "Reference an artifact file as context for this turn",
       "agentDesc": "Let this agent answer the current turn",
-      "workflowDesc": "Reference a workflow definition for execution/reference",
-      "memoryDesc": "Inject long-term memory MEMORY.md"
+      "sessionDesc": "Deliver this prompt to that session (idle→new turn, busy→steer)",
+      "resultDesc": "Cite the session's last assistant reply as context"
     },
     "markdown": {
       "codeLabel": "code",
