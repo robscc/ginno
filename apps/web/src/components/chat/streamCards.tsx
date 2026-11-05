@@ -71,6 +71,11 @@ const meta = subagentStatusMeta(sub.status);
 const active = sub.status === "running" || sub.status === "waiting";
 const back = () => {
   if (live.parent_session_id) g.setActiveSession(live.parent_session_id);
+  // 2026-11-05：无 parent（Workflows 页入口）时回最近会话——不再禁用死路
+  else {
+    const last = g.sessions.find((s) => s.id === g.activeSessionId) ?? g.sessions[0];
+    if (last) g.setActiveSession(last.id);
+  }
 };
 return (
   <div className="border-b border-line bg-panel/60 px-6 py-2 text-xs">
@@ -99,9 +104,9 @@ return (
           {tc("subagent.acceptanceLabel")}{sub.acceptance}
         </span>
       )}
+      {/* 2026-11-05：无 parent（Workflows 入口）时 back 内部兜底回最近会话 */}
       <button
         onClick={back}
-        disabled={!live.parent_session_id}
         className="ml-auto shrink-0 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet disabled:opacity-40"
       >
         {tc("subagent.backToMain")}

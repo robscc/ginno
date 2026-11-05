@@ -278,25 +278,39 @@ export function LinkedSessionsChip({ session }: { session: SessionMeta | null })
               )}
             </div>
 
-            {/* 手动挂载(P2):搜索任意会话挂入视野 */}
+            {/* 手动挂载(P2)：搜索任意会话挂入视野。输入框常驻（2026-11-06
+                修复：此前 results>0 时输入框被结果列表替换——敲一个字符就
+                “出结果”且无法继续输入/调整关键词，用户实录）。结果在下，
+                关键词随时可改。 */}
             <div className="border-t border-line px-2.5 py-2">
-              {results.length === 0 ? (
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
-                  <input
-                    value={search}
-                    onChange={(e) => void runSearch(e.target.value)}
-                    placeholder={tr("links.mountPlaceholder")}
-                    className="field w-full py-1 pl-7 pr-2 text-xs"
-                  />
-                </div>
-              ) : (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+                <input
+                  value={search}
+                  onChange={(e) => void runSearch(e.target.value)}
+                  placeholder={tr("links.mountPlaceholder")}
+                  className="field w-full py-1 pl-7 pr-6 text-xs"
+                />
+                {search && (
+                  <button
+                    aria-label="clear"
+                    onClick={() => {
+                      setSearch("");
+                      setResults([]);
+                    }}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1 text-[11px] text-faint hover:text-txt"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              {results.length > 0 && (
                 <div className="max-h-40 overflow-y-auto">
                   {results.map((s) => (
                     <button
                       key={s.id}
                       onClick={() => void mount(s.id)}
-                      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-card2"
+                      className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-card2"
                     >
                       <Plus className="h-3 w-3 shrink-0 text-faint" />
                       <div className="min-w-0 flex-1">
@@ -305,17 +319,12 @@ export function LinkedSessionsChip({ session }: { session: SessionMeta | null })
                       </div>
                     </button>
                   ))}
-                  <button
-                    onClick={() => {
-                      setSearch("");
-                      setResults([]);
-                    }}
-                    className="mt-0.5 w-full px-2 text-left text-[10.5px] text-faint hover:text-txt"
-                  >
-                    {searching ? tr("links.searching") : tr("links.clearSearch")}
-                  </button>
                 </div>
               )}
+              {search.trim() && results.length === 0 && !searching && (
+                <div className="px-2 py-1 text-[10.5px] text-faint">{tr("links.noHits")}</div>
+              )}
+              {searching && <div className="px-2 py-1 text-[10.5px] text-faint">{tr("links.searching")}</div>}
             </div>
           </div>
         </>

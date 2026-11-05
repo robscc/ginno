@@ -49,6 +49,7 @@ export function TranscriptList({
   retryFailed,
   retryError,
   retryFromCheckpoint,
+  dismissContext,
 }: {
   messages: ChatMsg[];
   session: SessionMeta | null;
@@ -73,6 +74,8 @@ export function TranscriptList({
   retryFailed: (msgId: string) => void;
   retryError: (msgId: string) => void;
   retryFromCheckpoint: (msgId: string) => void;
+  /** 系统提示条（context chips）逐条关闭（2026-11-05）：从 store 移除该块。 */
+  dismissContext?: (msgId: string, blockIndex: number) => void;
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
@@ -197,6 +200,11 @@ export function TranscriptList({
           <div key={m.id} className="flex flex-col items-center gap-2">
             <ContextBlocks
               blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
+              onDismiss={
+                dismissContext
+                  ? (bi) => dismissContext(m.id, bi)
+                  : undefined
+              }
             />
             {/* 拆分方案卡片（P2）与子代理结果卡：与 context chips 同层——不是
                 任何一方的气泡，是事件驱动的系统行。subagent_spawn 卡已停渲染

@@ -382,7 +382,8 @@
       "fallbackName": "Workflow run",
       "steps": "{done}/{total} steps",
       "backTitle": "Back to the main session bound to this run",
-      "backTitleDeleted": "The original session has been deleted; cannot go back"
+      "backTitleDeleted": "The original session has been deleted; cannot go back",
+      "backTitleNoParent": "Back to chat (no bound session; returns to the most recent one)"
     },
     "lightbox": {
       "aria": "Image preview",

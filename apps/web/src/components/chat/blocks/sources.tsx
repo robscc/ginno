@@ -111,8 +111,16 @@ export function maskPartialSources(text: string): string {
   return m ? text.slice(0, m.index).replace(/\s+$/, "") : text;
 }
 
-/** Centered, de-emphasized system row for context chips. */
-export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "context" }>[] }) {
+/** Centered, de-emphasized system row for context chips.
+ *  `onDismiss`（可选）：逐条 × 关闭（2026-11-05 用户反馈「已清理 N 条」横幅
+ *  一直杵着没法关）——不传则与旧行为完全一致（PinStream 等调用方）。 */
+export function ContextBlocks({
+  blocks,
+  onDismiss,
+}: {
+  blocks: Extract<Block, { kind: "context" }>[];
+  onDismiss?: (index: number) => void;
+}) {
   const evText = useEventI18nText();
   if (!blocks.length) return null;
   return (
@@ -120,10 +128,19 @@ export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "cont
       {blocks.map((b, i) => (
         <div
           key={i}
-          className="selectable max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
+          className="group relative selectable max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
         >
           {/* 事件契约：i18n_key 命中即翻译，否则原样直显 text（历史会话兼容） */}
           {evText(b, b.text)}
+          {onDismiss && (
+            <button
+              onClick={() => onDismiss(i)}
+              aria-label="dismiss"
+              className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-line bg-base text-[9px] leading-none text-faint hover:text-txt group-hover:flex"
+            >
+              ×
+            </button>
+          )}
         </div>
       ))}
     </div>

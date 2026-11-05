@@ -20,7 +20,8 @@
       "hotSwap": "热更新",
       "hotSwapRunning": "更新中",
       "hotSwapCancel": "取消热更新（kill 构建，未切换零风险）",
-      "hotSwapCancelConfirm": "取消进行中的热更新？构建进程将被终止（尚未切换，零风险）。"
+      "hotSwapCancelConfirm": "取消进行中的热更新？构建进程将被终止（尚未切换，零风险）。",
+      "hotSwapFailed": "热更新失败"
     },
     "navDots": {
       "connectorError": "连接器出错",
@@ -238,7 +239,8 @@
       "incomingHeader": "谁在派我",
       "mountPlaceholder": "挂载会话…(按标题搜索)",
       "searching": "搜索中…",
-      "clearSearch": "× 清除结果"
+      "clearSearch": "× 清除结果",
+      "noHits": "无匹配会话"
     },
     "sessionTags": {
       "menu": "标签与图标",

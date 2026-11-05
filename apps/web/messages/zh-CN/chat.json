@@ -382,7 +382,8 @@
       "fallbackName": "工作流运行",
       "steps": "{done}/{total} 步",
       "backTitle": "返回绑定本运行的主会话",
-      "backTitleDeleted": "原会话已被删除，无法返回"
+      "backTitleDeleted": "原会话已被删除，无法返回",
+      "backTitleNoParent": "返回主对话（本次运行未绑定会话，回到最近会话）"
     },
     "lightbox": {
       "aria": "图片预览",

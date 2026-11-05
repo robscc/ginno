@@ -20,7 +20,8 @@
       "hotSwap": "Hot swap",
       "hotSwapRunning": "Swapping",
       "hotSwapCancel": "Cancel hot swap (kill build; nothing swapped)",
-      "hotSwapCancelConfirm": "Cancel the running hot swap? The build process will be killed (nothing swapped yet)."
+      "hotSwapCancelConfirm": "Cancel the running hot swap? The build process will be killed (nothing swapped yet).",
+      "hotSwapFailed": "Hot-swap failed"
     },
     "navDots": {
       "connectorError": "Connector error",
@@ -238,7 +239,8 @@
       "incomingHeader": "Incoming",
       "mountPlaceholder": "Mount a session… (search by title)",
       "searching": "Searching…",
-      "clearSearch": "× clear results"
+      "clearSearch": "× clear results",
+      "noHits": "No matching sessions"
     },
     "sessionTags": {
       "menu": "Tags & icon",

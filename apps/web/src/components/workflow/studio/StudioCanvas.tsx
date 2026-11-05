@@ -254,9 +254,12 @@ export function StudioCanvas({
               {/* decorative ports — topology is edited in the DSL, not by dragging */}
               <span className="absolute -left-[5px] top-1/2 h-2 w-2 -translate-y-1/2 rounded-full border border-line2 bg-card2" />
               <span className="absolute -right-[5px] top-1/2 h-2 w-2 -translate-y-1/2 rounded-full border border-line2 bg-card2" />
-              <div className="flex items-center gap-1.5">
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
-                <span className="truncate text-[12px] font-semibold text-txt">
+              <div className="flex items-start gap-1.5">
+                <span className="mt-1 h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+                {/* 标题两行完整显示（不截断不溢出框）；超两行才省略。
+                    卡片尺寸不变——fit 缩放不受影响（宽度自适应方案已否，
+                    会把整图缩小看不清）。 */}
+                <span className="line-clamp-2 break-words text-[12px] font-semibold leading-snug text-txt">
                   {n.title || n.id}
                 </span>
               </div>
@@ -265,7 +268,7 @@ export function StudioCanvas({
                 {n.agent ? ` · ${n.agent}` : ""}
               </div>
               {n.goal && (
-                <div className="mt-0.5 line-clamp-2 text-[10.5px] leading-tight text-muted">{n.goal}</div>
+                <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-tight text-muted">{n.goal}</div>
               )}
             </div>
           );

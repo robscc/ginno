@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X, Check, ArrowDown } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
@@ -87,6 +87,33 @@ export function ChatStream({
   const [linkedMembers, setLinkedMembers] = useState<LinkedMentionEntry[]>([]);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
+
+  // 系统提示条（microcompact 清理等）逐条关闭（2026-11-05）：从该 system
+  // 消息里移除对应 context 块；块删空则整条消息移除。会话内存态操作——
+  // 重载后投影会重建（turns 投影的 system 行），再点一次即可，可接受。
+  const dismissContextChip = useCallback(
+    (msgId: string, blockIndex: number) => {
+      setMessages((cur) => {
+        const idx = cur.findIndex((m) => m.id === msgId);
+        if (idx < 0) return cur;
+        const m = cur[idx];
+        if (m.role !== "system") return cur;
+        const ctxBlocks = m.blocks.filter((b) => b.kind === "context");
+        const target = ctxBlocks[blockIndex];
+        if (!target) return cur;
+        const kept = m.blocks.filter((b) => b !== target);
+        if (!kept.length) {
+          const next = [...cur];
+          next.splice(idx, 1);
+          return next;
+        }
+        const next = [...cur];
+        next[idx] = { ...m, blocks: kept };
+        return next;
+      });
+    },
+    [setMessages],
+  );
 
   // @session/@result 候选拉取（见上 state 注释）。
   useEffect(() => {
@@ -870,6 +897,7 @@ export function ChatStream({
             retryFailed={retryFailed}
             retryError={retryError}
             retryFromCheckpoint={retryFromCheckpoint}
+            dismissContext={dismissContextChip}
           />
 
           {runs.map((r) => (

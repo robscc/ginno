@@ -89,15 +89,22 @@ export function RunSubSessionView({ runId }: { runId: string }) {
         : null
     : null;
 
-  // 返回主对话：回「绑定本 run 的会话」。原会话被删时按钮禁用（跳过去只会
-  // 落到空会话或报错）。
+  // 返回主对话：优先回「绑定本 run 的会话」；从 Workflows 页直接打开的 run
+  // 没有 parent（present_in_session_id 空）——2026-11-05 用户反馈按钮点不动
+  // （disabled 死路）。改为：无 parent 时关闭 run 视图回到聊天主界面，若侧栏
+  // 有上一个活跃会话则顺带选中它——「返回主对话」永远有路可走。
   const parentExists =
     !!run?.present_in_session_id &&
     g.sessions.some((s) => s.id === run.present_in_session_id);
   const back = () => {
-    if (!run?.present_in_session_id) return;
     g.closeRunView();
-    g.setActiveSession(run.present_in_session_id);
+    if (run?.present_in_session_id && parentExists) {
+      g.setActiveSession(run.present_in_session_id);
+      return;
+    }
+    // 无 parent（Workflows 页入口）：回侧栏最近的会话，一个都没有就停在主界面
+    const last = g.sessions.find((s) => s.id === g.activeSessionId) ?? g.sessions[0];
+    if (last) g.setActiveSession(last.id);
   };
 
   const onChanged = () => {
@@ -134,8 +141,7 @@ export function RunSubSessionView({ runId }: { runId: string }) {
           )}
           <button
             onClick={back}
-            disabled={!parentExists}
-            title={parentExists ? tc("runView.backTitle") : tc("runView.backTitleDeleted")}
+            title={parentExists ? tc("runView.backTitle") : tc("runView.backTitleNoParent")}
             className="ml-auto shrink-0 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet disabled:opacity-40"
           >
             {tc("subagent.backToMain")}
