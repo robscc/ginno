@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import time as _time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -431,3 +432,37 @@ def test_lead_tools_bound_only_to_team_main(client, patch_build_model):
     }).json()["id"]
     assert build_team_tools(sid) == []
     assert build_team_tools(None) == []
+
+
+async def test_lead_tools_deliver_and_assign(
+    client, patch_build_model, monkeypatch
+):
+    """真实 Lead 工具必须把消息/简报投递到成员，而非在解析团队时崩溃。"""
+    from ginno_runtime.teams import deliver as team_deliver
+    from ginno_runtime.tools.team import build_team_tools
+
+    patch_build_model(script(text="ok"))
+    team = _create_team(client)
+    member = _add_member(client, team["id"], "dev")
+    deliver = AsyncMock(return_value={"ok": True, "receipt": "delivered"})
+    monkeypatch.setattr(team_deliver, "deliver", deliver)
+    tools = {t.name: t for t in build_team_tools(team["main_session_id"])}
+
+    result = await tools["deliver_to_member"].ainvoke({
+        "instance_id": member["instance_id"], "text": "请检查登录页",
+    })
+    assert json.loads(result)["receipt"] == "delivered"
+    assert deliver.await_args_list[0].args == (
+        team["id"], member["instance_id"], "请检查登录页",
+    )
+
+    result = await tools["assign_task"].ainvoke({
+        "agent_id": "dev", "goal": "修复登录页",
+        "constraints": "只改登录模块", "acceptance": "相关测试通过",
+    })
+    assert json.loads(result)["receipt"] == "delivered"
+    team_id, instance_id, brief = deliver.await_args_list[1].args
+    assert (team_id, instance_id) == (team["id"], member["instance_id"])
+    assert "修复登录页" in brief
+    assert "只改登录模块" in brief
+    assert "相关测试通过" in brief

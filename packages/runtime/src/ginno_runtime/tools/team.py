@@ -152,7 +152,7 @@ def build_team_tools(session_id: str | None) -> list:
 
     async def _resolve_target(instance_id: str, agent_id: str) -> tuple[str, str]:
         """(instance_id, error)。两者都空或都解析不到 → error 非空。"""
-        team_id, _team = _team()
+        team_id, _ = _team()
         if not team_id:
             return "", t("[error] This session is no longer a team main session.",
                          "[error] 本会话已不是任何团队的主会话。")
@@ -192,7 +192,7 @@ def build_team_tools(session_id: str | None) -> list:
         """
         from ..teams import deliver as team_deliver
 
-        team_id, _team = _team()
+        team_id, _ = _team()
         if not team_id:
             return t("[error] This session is no longer a team main session.",
                      "[error] 本会话已不是任何团队的主会话。")
@@ -223,7 +223,7 @@ def build_team_tools(session_id: str | None) -> list:
         """
         from ..teams import deliver as team_deliver
 
-        team_id, _team = _team()
+        team_id, _ = _team()
         if not team_id:
             return t("[error] This session is no longer a team main session.",
                      "[error] 本会话已不是任何团队的主会话。")
