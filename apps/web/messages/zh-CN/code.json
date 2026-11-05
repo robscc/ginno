@@ -15,6 +15,7 @@
       "reloadFile": "刷新当前文件"
     },
     "notice": {
+      "reloadDiscardConfirm": "未保存的修改将被丢弃。确定从磁盘重新加载？",
       "unsavedClose": "有未保存的更改：再次点击关闭即放弃，或按 ⌘S 保存",
       "saved": "已保存 {path}",
       "saveFailed": "保存失败",

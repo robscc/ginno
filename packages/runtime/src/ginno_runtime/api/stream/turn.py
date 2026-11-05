@@ -321,6 +321,28 @@ def _slash_sticky(skill_name: str | None, project_slug: str) -> list[str]:
         return []
 
 
+def _sync_rewrite_into_content(
+    content: Any, rewritten: str, *, imgs: list, attach_only: bool
+) -> Any:
+    """Issue #6: prompt hook 改写必须进入最终 HumanMessage。``content`` 在
+    hook dispatch 之前已按原始文本构建（纯文本 / 多模态 text part / 
+    attachment-only 合成文案），这里把改写后的文本同步进这三条路径，否则
+    入图的仍是旧 content（改写只反映在 user_text 派生的 query/摘要里）。"""
+    if attach_only:
+        # 无正文只带附件的合成意图不被空改写覆盖；hook 真给了文本则采纳。
+        return _attach_only_text() if not (rewritten or "").strip() else rewritten
+    if imgs:
+        parts = content if isinstance(content, list) else []
+        parts = [
+            p for p in parts
+            if not (isinstance(p, dict) and p.get("type") == "text")
+        ]
+        if (rewritten or "").strip():
+            parts.insert(0, {"type": "text", "text": rewritten})
+        return parts
+    return rewritten
+
+
 async def _run_stream(
     ws: WebSocket | None,
     graph,
@@ -400,7 +422,16 @@ async def _run_stream(
     try:
         from ...mods.events import dispatch_prompt_submit
 
+        _orig_user_text = user_text
         _ps = await dispatch_prompt_submit(session_id, user_text)
+        if _ps.text != user_text:
+            # Issue #6: 改写落进最终 HumanMessage（content 与 user_text 同步）。
+            content = _sync_rewrite_into_content(
+                content,
+                _ps.text,
+                imgs=imgs,
+                attach_only=bool(attached) and not (_orig_user_text or "").strip(),
+            )
         user_text = _ps.text
         _prompt_ctx = _ps.context
         _prompt_mod = _ps.mod

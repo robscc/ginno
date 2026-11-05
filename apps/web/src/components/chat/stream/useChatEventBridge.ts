@@ -83,8 +83,11 @@ export function useChatEventBridge({
   useEffect(() => {
     const onPrefill = (e: Event) => {
       const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
-      if (!d?.sessionId || !d.text) return;
-      if (curSessionIdRef.current === d.sessionId) {
+      // issue #11：发送端（Connectors 页等无会话上下文的页面）可省
+      // sessionId——语义 = 接收时刻的当前会话草稿。显式带 id 且非当前
+      // 会话时仍忽略（发给别的会话，由那条会话的挂载实例消费）。
+      if (!d?.text) return;
+      if (!d.sessionId || curSessionIdRef.current === d.sessionId) {
         setInput((cur) => (cur ? `${cur}\n${d.text}` : d.text!));
         requestAnimationFrame(() => textareaRef.current?.focus());
       } else {

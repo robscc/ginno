@@ -18,7 +18,11 @@
       "rolledBack": "Failed — rolled back to the previous bundle.",
       "finished": "All stages passed — sidecar restarting onto the new bundle.",
       "hoverHint": "Hover for dev-swap progress",
-      "slowShort": "slow"
+      "slowShort": "slow",
+      "confirmHint": "New build is ready",
+      "confirmSwap": "Switch now",
+      "postpone": "Not now",
+      "swapping": "Switching…"
     },
     "badge": {
       "hint": "dev-override runtime bundle · {fp} · built {time} — run make dev-swap-clean to return to the factory bundle"

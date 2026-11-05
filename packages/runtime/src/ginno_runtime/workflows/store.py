@@ -571,6 +571,19 @@ def update_step(
     return run
 
 
+def set_agent_calls_spent(run_id: str, spent: int) -> dict[str, Any] | None:
+    """持久化 LLM 调用预算累计计数（issue #7）。每段（run/resume/continue）
+    结束后由驱动层写回，resume/retry 据此接续计数——预算闸跨段累计而非
+    每段从 0 重开。limit=0（不设限）时驱动层不写。"""
+    run = get_run(run_id)
+    if not run:
+        return None
+    run["agent_calls_spent"] = max(0, int(spent or 0))
+    run["updated"] = time.time()
+    _write_json(_run_path(run_id), run)
+    return run
+
+
 def delete_run(run_id: str) -> bool:
     """Remove a run's persisted artifacts: the run JSON and its events JSONL.
 

@@ -276,6 +276,16 @@ async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | No
     await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "failed", "error": err, "node_id": None})
 
 
+def _persist_budget_spent(run_id: str, budget_state_out: dict | None) -> None:
+    """Issue #7: 段结束后把预算计数写回 run 行（limit=0 不设限时不写）。"""
+    if not budget_state_out or not budget_state_out.get("limit"):
+        return
+    try:
+        _base.wf_store.set_agent_calls_spent(run_id, int(budget_state_out.get("spent") or 0))
+    except Exception:
+        _base._log.exception("workflow_budget_persist_failed run=%s", run_id)
+
+
 async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen) -> None:
     """Persist + push each engine event; keep run step status + terminal state in sync."""
     # Build the node->step map from the RUN's steps (which include injected
@@ -520,6 +530,7 @@ async def _run_workflow_bg_inner(run_id: str, workflow_id: str, context_override
         from ..workflows import result_cache as wf_rc
 
         rc = wf_rc.build_run_cache(run0, workflow_id)
+        budget_out: dict = {}
         agen = wf_engine.run_workflow(
             dsl, run_id=run_id, model=model, tools=tools,
             context_override=context_override,
@@ -529,8 +540,10 @@ async def _run_workflow_bg_inner(run_id: str, workflow_id: str, context_override
             # 预算钉死(odw P1-③):run 行持久化的 max_agent_calls(None=未指定,
             # 由 DSL/全局设置合成)。
             max_agent_calls=run0.get("max_agent_calls"),
+            budget_state_out=budget_out,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
+        _persist_budget_spent(run_id, budget_out)
         _base.sync_ledger.set_status(run_id, "ok")
     except asyncio.CancelledError:
         raise
@@ -570,13 +583,19 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
         # Manual pauses (#14) carry no node-side resume event — tell the engine
         # to emit it from the run's pending_interrupt nature instead.
         _nature = ((_base.wf_store.get_run(run_id) or {}).get("pending_interrupt") or {}).get("kind")
+        budget_out: dict = {}
         agen = wf_engine.resume_workflow(
             dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             resume_nature="manual" if _nature == "manual" else None,
             transcript_session=run0.get("transcript_session"),
+            # Issue #7: 续跑段继承原 run 预算与跨段已用量，段后写回累计。
+            max_agent_calls=run0.get("max_agent_calls"),
+            agent_calls_spent=int(run0.get("agent_calls_spent") or 0),
+            budget_state_out=budget_out,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
+        _persist_budget_spent(run_id, budget_out)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -740,12 +759,18 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
         dsl = _apply_supervisor_override(run0, dsl)
         _set_run_status(run_id, "running")
         await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
+        budget_out: dict = {}
         agen = wf_engine.continue_workflow(
             dsl, run_id=run_id, model=model, tools=tools,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             transcript_session=run0.get("transcript_session"),
+            # Issue #7: retry-from-checkpoint 段继承原 run 预算（跨段累计）。
+            max_agent_calls=run0.get("max_agent_calls"),
+            agent_calls_spent=int(run0.get("agent_calls_spent") or 0),
+            budget_state_out=budget_out,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
+        _persist_budget_spent(run_id, budget_out)
         _base.sync_ledger.set_status(run_id, "ok")
     except asyncio.CancelledError:
         raise

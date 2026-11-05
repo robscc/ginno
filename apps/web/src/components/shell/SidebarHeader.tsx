@@ -6,6 +6,7 @@ import { agentHex } from "@/lib/theme";
 import type { AgentConfig } from "@/lib/types";
 import { DevBuildBadge } from "@/components/devswap/DevBuildBadge";
 import { DevSwapCard } from "@/components/devswap/DevSwapCard";
+import { HotSwapButton } from "@/components/devswap/HotSwapButton";
 
 export interface SidebarHeaderProps {
   groupView: "time" | "project";
@@ -53,9 +54,11 @@ export function SidebarHeader({
           从 TopBar 迁来，devswap-progress-design §5）——非 dev bundle / 无
           run 时各自渲染 null 不占位；flex-wrap 兜窄侧栏。 */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-2 pt-4">
-        <img src="/icon.png" alt="" className="h-7 w-7" />
+        {/* 鸭子 logo 去掉（2026-11-05 用户反馈：窄侧栏品牌行被挤爆，砍掉
+            28px 吉祥物给徽标让位；GinnoWork 文字即品牌锚点）。 */}
         <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
         <DevBuildBadge />
+        <HotSwapButton />
         <DevSwapCard />
       </div>
 

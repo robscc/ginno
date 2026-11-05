@@ -15,6 +15,7 @@
       "reloadFile": "Reload current file"
     },
     "notice": {
+      "reloadDiscardConfirm": "Unsaved changes will be discarded. Reload from disk?",
       "unsavedClose": "Unsaved changes: click close again to discard, or press ⌘S to save",
       "saved": "Saved {path}",
       "saveFailed": "Failed to save",

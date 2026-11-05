@@ -66,6 +66,7 @@ import { codeDiff } from "@/lib/runtime";
 import { InlineDiffScheduler, type ScheduledChange } from "@/lib/inlineDiffScheduler";
 import { cn } from "@/lib/utils";
 import { RootBar } from "./RootBar";
+import { reloadNeedsConfirm } from "./reloadGuard";
 import { FileTree } from "./FileTree";
 import { EditorTabs, codeTabKey, type EditorTab } from "./EditorTabs";
 import { MonacoEditor } from "./MonacoEditor";
@@ -596,6 +597,23 @@ export function CodePanel() {
       setNotice(notice ?? t("notice.reloaded"));
     },
     [dropRead, patchMeta, t],
+  );
+
+  // 手动刷新入口的防呆（issue #8）：dirty/conflict tab 直接 reload 会静默
+  // 丢弃未保存修改（或未决冲突），先 window.confirm（与诊断修复同一确认惯例），
+  // 取消则不动缓冲区。自动重载路径（code.changed 跟随）不走这里，行为不变。
+  const manualReload = useCallback(
+    (key: string) => {
+      const m = tabMetaRef.current[key];
+      if (
+        reloadNeedsConfirm(m) &&
+        !window.confirm(t("notice.reloadDiscardConfirm"))
+      ) {
+        return;
+      }
+      reloadTab(key);
+    },
+    [reloadTab, t],
   );
 
   /**
@@ -1245,11 +1263,11 @@ export function CodePanel() {
             ) : null}
             {/* 手动刷新当前文件（2026-10-13）：bash/脚本改文件不产生
                 code.changed（只有文件工具有结果标记），S3 自动跟随收不到
-                信号——显式重载兜底。脏 tab 的未保存修改不会被覆盖：刷新
-                走 reloadTab，冲突时 S2 冲突条接管。 */}
+                信号——显式重载兜底。脏/冲突 tab 先 confirm（issue #8）：
+                确认丢弃才 reload，取消则缓冲区原样保留。 */}
             <ToolButton
               title={t("panel.reloadFile")}
-              onClick={() => activeKey && reloadTab(activeKey)}
+              onClick={() => activeKey && manualReload(activeKey)}
             >
               <RotateCcw className="h-3.5 w-3.5" />
             </ToolButton>
@@ -1327,7 +1345,7 @@ export function CodePanel() {
                   {showDiff ? t("conflict.hideDiff") : t("conflict.viewDiff")}
                 </BarButton>
                 <BarButton
-                  onClick={() => activeKey && reloadTab(activeKey)}
+                  onClick={() => activeKey && manualReload(activeKey)}
                   icon={<RotateCcw size={12} />}
                   title={t("conflict.reloadTitle")}
                 >

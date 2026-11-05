@@ -175,6 +175,12 @@ async def extract_from_text(
                 "只输出修正后的 JSON 对象。]",
             )
         resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
+        # 预算计数（issue #12）：Extract 的模型调用与 Agent/LLM 节点同源
+        # 烧钱，必须计入 run 的 agent-call budget，否则结构化抽取可绕过
+        # 成本上限。修复调用（attempt>0）同样计；label 即节点标识。
+        budget = run_ctx.get("agent_budget")
+        if budget is not None:
+            budget.spend(f"{label}#extract" + (".fix" if attempt else ""))
         # Per-call usage telemetry (source=workflow). The extraction model may
         # differ from the run model — attribute the configured name.
         ah.record_model_usage(

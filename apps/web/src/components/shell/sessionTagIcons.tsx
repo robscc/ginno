@@ -40,9 +40,11 @@ const BY_ID = new Map(SESSION_TAG_ICONS.map((d) => [d.id, d]));
 export function SessionTagIcon({
   id,
   size = 14,
+  className,
 }: {
   id?: string | null;
   size?: number;
+  className?: string;
 }) {
   if (!id) return null;
   const def = BY_ID.get(id);
@@ -50,7 +52,7 @@ export function SessionTagIcon({
   return (
     <def.Icon
       style={{ color: def.color, width: size, height: size }}
-      className="shrink-0"
+      className={`shrink-0 ${className ?? ""}`}
       aria-hidden
     />
   );

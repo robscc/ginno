@@ -28,12 +28,35 @@ from .budget import AgentCallBudget, resolve_limit
 
 def workflow_max_agent_calls_setting() -> int:
     """全局默认预算(0 = 不设限;world_state ``workflow_max_agent_calls``)。"""
+
     from .. import world_state
 
     try:
         return max(0, int(world_state.context_settings().get("workflow_max_agent_calls") or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _make_agent_budget(
+    dsl: dict, max_agent_calls: int | None, agent_calls_spent: int = 0
+) -> AgentCallBudget:
+    """合成 AgentCallBudget：优先级 run 参数 > DSL > 设置；``spent`` 接续
+    跨段已用量（issue #7：resume/continue 必须继承原 run 的预算与计数，
+    而不是每段从 0 重新起表——否则预算闸被续跑绕过）。"""
+    b = AgentCallBudget(
+        resolve_limit(run_override=max_agent_calls, dsl=dsl, setting=workflow_max_agent_calls_setting())
+    )
+    if agent_calls_spent:
+        b.spent = max(0, int(agent_calls_spent))
+    return b
+
+
+def _report_budget(run_ctx: dict, budget_state_out: dict | None) -> None:
+    """把本段结束后的预算计数交还驱动层（持久化到 run 行）。"""
+    b = run_ctx.get("agent_budget")
+    if budget_state_out is not None and b is not None:
+        budget_state_out["spent"] = int(b.spent)
+        budget_state_out["limit"] = int(b.limit)
 
 
 def _trimmed_traceback(exc: BaseException, max_chars: int = 4000) -> str:
@@ -196,6 +219,7 @@ async def run_workflow(
     transcript_session: str | None = None,
     result_cache: Any = None,
     max_agent_calls: int | None = None,
+    budget_state_out: dict | None = None,
 ) -> AsyncIterator[dict]:
     d = wf_dsl.normalize_dsl(dsl)
     initial = dict((d.get("context") or {}).get("initial") or {})
@@ -218,13 +242,7 @@ async def run_workflow(
         # LLM 调用预算(odw-comparison P1-③):agent/llm 每次尝试 spend 一次,
         # 超限 BudgetExceeded 硬失败(不被 retry 吃掉)。limit=0 不设限。
         # 合成优先级:run 参数 > DSL budget.maxAgentCalls > 全局设置。
-        "agent_budget": AgentCallBudget(
-            resolve_limit(
-                run_override=max_agent_calls,
-                dsl=d,
-                setting=workflow_max_agent_calls_setting(),
-            )
-        ),
+        "agent_budget": _make_agent_budget(d, max_agent_calls),
     }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
@@ -246,7 +264,9 @@ async def run_workflow(
         try:
             async for ev in _pump_events(graph, state, config, run_ctx, ctr):
                 yield ev
+            _report_budget(run_ctx, budget_state_out)
         except Exception as exc:  # surface graph/step failures as an event, don't crash
+            _report_budget(run_ctx, budget_state_out)
             ev = {
                 "run_id": run_id,
                 "kind": "error",
@@ -313,6 +333,10 @@ async def resume_workflow(
     usage_attr: dict | None = None,
     resume_nature: str | None = None,
     transcript_session: str | None = None,
+    # Issue #7: 续跑段继承原 run 的预算与跨段已用量（整个逻辑 run 累计语义）。
+    max_agent_calls: int | None = None,
+    agent_calls_spent: int = 0,
+    budget_state_out: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Continue a paused run by resuming the persisted interrupt on its thread.
 
@@ -331,6 +355,8 @@ async def resume_workflow(
         # row (drivers read run.transcript_session) — without it every step
         # after a resume silently stopped appearing in the replay session.
         "transcript_session": transcript_session,
+        # Issue #7: 续跑段接续原 run 预算（跨段累计），不再从 0 重开。
+        "agent_budget": _make_agent_budget(d, max_agent_calls, agent_calls_spent),
     }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
@@ -359,7 +385,9 @@ async def resume_workflow(
         try:
             async for ev in _pump_events(graph, Command(resume=resume_value), config, run_ctx, ctr):
                 yield ev
+            _report_budget(run_ctx, budget_state_out)
         except Exception as exc:
+            _report_budget(run_ctx, budget_state_out)
             ev = {
                 "run_id": run_id,
                 "kind": "error",
@@ -391,6 +419,10 @@ async def continue_workflow(
     usage_attr: dict | None = None,
     result_cache: Any = None,
     transcript_session: str | None = None,
+    # Issue #7: retry-from-checkpoint 段同样继承原 run 预算（跨段累计）。
+    max_agent_calls: int | None = None,
+    agent_calls_spent: int = 0,
+    budget_state_out: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Retry-from-failure (workflow-ux-redesign P2): stream the graph with
     input=None on the run's thread so LangGraph re-executes the pending node
@@ -403,7 +435,9 @@ async def continue_workflow(
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {}),
                                "result_cache": result_cache,
                                # same-session transcript continuation as resume_workflow
-                               "transcript_session": transcript_session}
+                               "transcript_session": transcript_session,
+                               # Issue #7: 续跑段接续原 run 预算（跨段累计）。
+                               "agent_budget": _make_agent_budget(d, max_agent_calls, agent_calls_spent)}
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
@@ -427,7 +461,9 @@ async def continue_workflow(
         try:
             async for ev in _pump_events(graph, None, config, run_ctx, ctr):
                 yield ev
+            _report_budget(run_ctx, budget_state_out)
         except Exception as exc:
+            _report_budget(run_ctx, budget_state_out)
             ev = {
                 "run_id": run_id,
                 "kind": "error",

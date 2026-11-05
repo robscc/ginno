@@ -1074,9 +1074,11 @@ async def _stream_graph(
         if session_id and any(
             (nm or "").startswith("todo_") for nm, _args in tool_args_by_id.values()
         ):
-            for t in todo_store.touched_since(_pre_turn_todos):
-                if t.get("id") and session_id not in (t.get("session_ids") or []):
-                    todo_store.link_session(t["id"], session_id)
+            # 变量名用 todo（不用 t）：同函数上游的步数预警分支用 t() 作
+            # i18n 翻译函数，遮蔽会在触发预警时 UnboundLocalError（issue #5）。
+            for todo in todo_store.touched_since(_pre_turn_todos):
+                if todo.get("id") and session_id not in (todo.get("session_ids") or []):
+                    todo_store.link_session(todo["id"], session_id)
         # refresh the right-panel TODO list after every turn (the agent may
         # have mutated it via the todo_* tools); the checkbox path is optimistic
         # and doesn't need this.

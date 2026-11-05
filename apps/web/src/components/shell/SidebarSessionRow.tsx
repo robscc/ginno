@@ -258,6 +258,11 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                 >
                   {subMeta.glyph}
                 </span>
+              ) : !isSub && s.label_icon ? (
+                // 2026-11-05 用户反馈：会话设了 label icon 时，行首用 label
+                // icon 替代 agent 鸭——手动分类的视觉优先于 agent 归属
+                // （归属仍在 ⋯ 菜单/详情可见）。
+                <SessionTagIcon id={s.label_icon} className="h-4 w-4" />
               ) : (
                 // 归属由行首图标表达：agent 配置了 icon 就显示它（按 agent 色
                 // 着色），未配置（或 agent 已删除）统一回退到品牌鸭。
@@ -265,9 +270,6 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                   <AgentIcon name={rowAgent?.icon} className="h-4 w-4" />
                 </span>
               )}
-              {/* Session label icon（label-icon-design §3.1）：标题前 14px 语义色
-                  图标；子会话/worker 派生行不渲染；无 icon 不占位。 */}
-              {!isSub && <SessionTagIcon id={s.label_icon} />}
               <span className="truncate">{s.title || t("session.untitled")}</span>
               {/* label chips：标题右、靠右收敛之前；最多 2 个 + "+N" 折叠，
                   hover title 展示全量；子会话行不渲染；无标签不占位。 */}

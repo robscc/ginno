@@ -91,11 +91,34 @@ export type { SerializedElement, SerializedNode } from './types.ts'
 /** What a serialized tree may carry per prop: scalars only. `onInput`/`onSelect`
  *  ride the same action-id channel as `onPress`. */
 const CALLBACK_PROPS: ReadonlySet<string> = new Set(['onPress', 'onInput', 'onSelect'])
-function scalarProps(props: Readonly<Record<string, unknown>>): Record<string, string | number | boolean> {
-  const scalars: Record<string, string | number | boolean> = {}
+type Scalar = string | number | boolean
+function scalarProps(
+  props: Readonly<Record<string, unknown>>,
+): Record<string, Scalar | Scalar[]> {
+  const scalars: Record<string, Scalar | Scalar[]> = {}
   for (const [name, value] of Object.entries(props)) {
     if (name === 'children' || CALLBACK_PROPS.has(name)) continue
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') scalars[name] = value
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      scalars[name] = value
+    } else if (
+      // issue #10：Select.options 这类受控数组 props 之前被整组丢弃，
+      // 宿主 UI 收不到选项。保留「元素全为标量的数组」（浅拷贝）；
+      // 含对象/函数的数组仍丢（不支持深序列化，宁缺勿错）。
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every(
+        (it) =>
+          typeof it === 'string' ||
+          typeof it === 'number' ||
+          typeof it === 'boolean',
+      )
+    ) {
+      scalars[name] = value.slice() as Scalar[]
+    }
   }
   return scalars
 }
