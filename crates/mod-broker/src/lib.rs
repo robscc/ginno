@@ -336,6 +336,11 @@ impl Broker {
         value: &Value,
     ) -> Result<(Value, Vec<ModApplyOutcome>, bool), String> {
         let config = parse_config(value)?;
+        // Issue #9（2026-11-05，方案：Python 单一来源，broker 只读）：
+        // 桌面生产构造 Broker::new(None) 没有路径；Python 推来的 config
+        // 携带 storePath，在这里原子应用到 Store（换路径 + 缓存重载）。
+        // 变化时清缓存懒加载新文件，store.set/delete 立即可用。
+        self.store.set_path(config.store_path.clone());
         let old_specs: HashMap<String, ModSpec> = std::mem::take(&mut *self.specs.lock().unwrap());
         let new_specs: HashMap<String, ModSpec> = config
             .mods
@@ -942,5 +947,54 @@ fn empty_config() -> Config {
         band_rows: 8,
         host_mode: false,
         mods: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod issue9_tests {
+    //! Issue #9（2026-11-05）：桌面生产构造 Broker::new(None) 无 store 路径；
+    //! Python 推送 config.storePath 后 Store 原子换路径、set/delete 立即可用。
+    //! 纯 Rust，无 Node 依赖（空 mods 列表不 spawn runner）。
+    use super::*;
+    use serde_json::json;
+
+    fn cfg_with_store(path: &std::path::Path) -> Value {
+        json!({
+            "mods": { "items": {} },
+            "storePath": path,
+            "nodePath": "/usr/bin/true",   // 空 mods 不 spawn runner：占位通过 parse
+            "runnerPath": "/usr/bin/true",
+            "workspace": path.parent().unwrap().join("workspace"),
+            "logsDir": path.parent().unwrap().join("logs"),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn store_path_injected_by_python_config() {
+        let dir = std::env::temp_dir().join(format!("ginno-issue9-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let store_file = dir.join("store.json");
+        let _ = std::fs::remove_file(&store_file);
+
+        // 桌面生产构造：无路径 → store.set 被拒（issue 现状）
+        let broker = Broker::new(None);
+        assert!(broker.store.set("p", "k", json!(1)).is_err());
+
+        // Python config 注入 storePath（单一来源），apply 后立即可写
+        let ack = broker.apply_config(&cfg_with_store(&store_file)).await;
+        assert!(ack.get("error").is_none(), "apply_config failed: {ack}");
+        let r = broker.store.set("p", "k", json!(42));
+        assert!(r.is_ok(), "store.set after config: {r:?} ack={ack}");
+        assert_eq!(broker.store.get("p", "k"), json!(42));
+        assert!(store_file.exists(), "store file persisted at config path");
+        assert!(
+            std::fs::read_to_string(&store_file)
+                .unwrap()
+                .contains("k\":42"),
+            "file content carries the written value"
+        );
+
+        let _ = std::fs::remove_file(&store_file);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

@@ -873,6 +873,10 @@ class ModChannel:
             "nodePath": node_path,
             "runnerPath": runner_path,
             "mods": {"items": items},
+            # Issue #9（2026-11-05）：broker $.store 的持久化路径。Python 是
+            # 唯一权威计算方（单一来源），broker 只读这个值——桌面生产构造
+            # Broker::new(None) 无路径，靠本配置注入；apply 时原子换路径。
+            "storePath": str(mods_dir() / "store.json"),
             # Budget values the broker's BudgetClock enforces (§3.2); the
             # broker's key names, defaulting to the spec numbers.
             "budgets": {

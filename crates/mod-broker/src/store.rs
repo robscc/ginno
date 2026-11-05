@@ -16,7 +16,7 @@ pub const STORE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const STORE_LIMIT_MESSAGE: &str = "$.store.set: the store would exceed 4194304 bytes of JSON";
 
 pub struct Store {
-    path: Option<PathBuf>,
+    path: Mutex<Option<PathBuf>>,
     data: Mutex<HashMap<String, Map<String, Value>>>,
 }
 
@@ -24,15 +24,32 @@ impl Store {
     /// Opens (or defers opening) the store at `path`; `None` disables it.
     pub fn new(path: Option<PathBuf>) -> Store {
         Store {
-            path,
+            path: Mutex::new(path),
             data: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Issue #9（2026-11-05，方案：Python 单一来源）：配置应用时换路径。
+    /// 新路径加载已有数据（try-load；坏文件按空店处理），旧缓存丢弃——
+    /// 避免把上一个路径的数据写到新路径。返回是否真的变化。
+    pub fn set_path(&self, new_path: Option<PathBuf>) -> bool {
+        let mut path = self.path.lock().unwrap();
+        if *path == new_path {
+            return false;
+        }
+        *path = new_path;
+        drop(path);
+        let mut cached = self.data.lock().unwrap();
+        cached.clear();
+        // 让下一次 load() 从新路径读盘（清空缓存即懒加载）。
+        true
     }
 
     fn load(&self) -> HashMap<String, Map<String, Value>> {
         let mut cached = self.data.lock().unwrap();
         if cached.is_empty() {
-            if let Some(path) = &self.path {
+            let path = self.path.lock().unwrap().clone();
+            if let Some(path) = &path {
                 if let Ok(text) = std::fs::read_to_string(path) {
                     if let Ok(Value::Object(loaded)) = serde_json::from_str::<Value>(&text) {
                         for (plugin, keys) in loaded {
@@ -54,9 +71,10 @@ impl Store {
     }
 
     fn persist(&self, data: &HashMap<String, Map<String, Value>>) -> Result<(), String> {
-        let Some(path) = &self.path else {
+        let Some(path) = self.path.lock().unwrap().clone() else {
             return Err("$.store needs a configured store path".to_string());
         };
+        let path = &path;
         let whole: Value = Value::Object(
             data.iter()
                 .map(|(plugin, keys)| (plugin.clone(), Value::Object(keys.clone())))
@@ -143,7 +161,13 @@ mod tests {
             let store = tmp_store("persist");
             store.set("a", "x", Value::String("1".into())).unwrap();
             store.set("b", "y", Value::Bool(true)).unwrap();
-            store.path.clone().unwrap()
+            let p = store
+                .path
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("tmp_store sets a path");
+            p
         };
         let reopened = Store::new(Some(path));
         assert_eq!(reopened.get("a", "x"), Value::String("1".into()));
