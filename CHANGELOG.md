@@ -7,6 +7,10 @@ versions.
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.1.2] - 2026-11-05
+
 ### Added
 
 - **Turn 级耗时 + token 显示**（对话每个 turn 右下角）：运行中每秒跳动
