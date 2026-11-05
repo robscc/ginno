@@ -84,8 +84,18 @@ export async function fetchDevSwapSnapshot(): Promise<DevSwapRun | null> {
 /** 断线重连后的续播动作：拉快照，有 run 就推送，没有就清空本地态。 */
 export async function resyncDevSwapRun(): Promise<DevSwapRun | null> {
   const run = await fetchDevSwapSnapshot();
-  if (run) pushDevSwapRun(run);
-  else clearDevSwapRun();
+  if (run) {
+    pushDevSwapRun(run);
+    // 兜底（2026-11-05 实案：确认门广播发出时前端断连，确认框永久丢失，
+    // finish:running 挂了 57 分钟）：重连拉快照发现 finish 仍在 running
+    // 且确认态为空 → 自动重开确认框。真实重启过程中 app 会整页 reload，
+    // 不会误弹（重开后的新进程快照是终态/新 run）。
+    if (run.stage === "finish" && run.state === "running" && !isDevSwapConfirmPending()) {
+      setDevSwapPendingConfirm("pending");
+    }
+  } else {
+    clearDevSwapRun();
+  }
   return run;
 }
 
