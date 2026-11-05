@@ -550,3 +550,27 @@ async def test_dev_swap_failure_notice_strips_ansi(isolated_home, monkeypatch):
     msg = events[0][1]["message"]
     assert "\x1b" not in msg and "[31m" not in msg
     assert "[dev-swap] uv" in msg and "exit 1" in msg
+
+
+def test_result_mention_resolves_beyond_linked_but_session_does_not(monkeypatch, tmp_path) -> None:
+    """@result 引用语义可指向任意历史会话（2026-11-05）；@session 投递语义
+    仍 linked-only——linked 集合外的目标被忽略。"""
+    from ginno_runtime.commands import resolver as R
+    from ginno_runtime import session_meta as SM
+
+    # 造一个不在 linked 集合里的会话 meta（注入全库迭代器，免依赖磁盘布局）
+    monkeypatch.setattr(
+        R, "_all_session_metas",
+        lambda: iter([({"id": "out-sid", "title": "外部调研", "type": "main"}, "default")]),
+    )
+    monkeypatch.setattr(R, "_linked_member", lambda cur, sid=None, label=None: None)
+    monkeypatch.chdir(tmp_path)
+
+    from ginno_runtime.commands import resolver as res
+
+    got, _ = res.resolve_mentions("cur", "结合 @result:外部调研 的结论", [])
+    kinds = [(r["kind"], r["id"]) for r in got]
+    assert ("result", "out-sid") in kinds, kinds
+
+    got2, _ = res.resolve_mentions("cur", "@session:外部调研 去干活", [])
+    assert not [r for r in got2 if r["kind"] == "session"], got2

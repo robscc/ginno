@@ -159,6 +159,48 @@ def _linked_member(cur_session_id: str | None, sid: str | None = None, label: st
     return None
 
 
+def _all_session_metas():
+    """全库会话 meta 迭代器（@result 标题兜底用）。独立成函数便于测试注入。"""
+    from .. import paths as _paths
+    from ..session_meta import _session_meta_list
+
+    for slug_dir in _paths.home().glob("projects/*/sessions/_index.json"):
+        slug = slug_dir.parent.parent.name
+        for meta in _session_meta_list(slug):
+            yield meta, slug
+
+
+def _result_target(cur_session_id: str | None, sid: str | None = None, label: str | None = None) -> dict | None:
+    """@result 目标解析（2026-11-05 反馈修正）：引用语义的 X 常是任意历史
+    会话（昨天那个调研），未必与本会话 linked。先走 linked（§5.5 原路径，
+    精确 id/标题命中），未命中再按 id/标题在全库 meta 兜底；排除自身 /
+    channel / subagent。@session（投递语义）**不走**本兜底——投递范围矩阵
+    不变。"""
+    m = _linked_member(cur_session_id, sid=sid, label=label)
+    if m:
+        return m
+    if not (sid or label):
+        return None
+    from .. import paths as _paths
+    from ..session_meta import _find_meta, _session_meta_list
+
+    hit = _find_meta(sid) if sid else None
+    if hit is None and label:
+        for meta, slug in _all_session_metas():
+            if (meta.get("title") or "") == label:
+                hit = (meta, slug)
+                break
+    if not hit:
+        _log.info("mention: @result target %r not found — ignored", sid or label)
+        return None
+    meta, slug = hit
+    if meta.get("id") == cur_session_id:
+        return None
+    if (meta.get("type") or "").startswith("channel") or meta.get("type") == "subagent":
+        return None
+    return {"id": meta["id"], "title": meta.get("title") or meta["id"], "type": meta.get("type")}
+
+
 def _last_assistant_text_sync(session_id: str, slug: str) -> str:
     """目标会话最后一条 assistant 正文（@result 取数，§5.2：倒序跳过
     tool-only/空文本；同步 checkpoint 读——resolve_turn 是 sync 路径）。
@@ -236,7 +278,13 @@ def resolve_mentions(
             else:
                 _log.warning("mention: agent id %s not found", mid)
         elif kind in ("session", "result"):
-            m = _linked_member(cur_session_id, sid=mid)
+            # @result 引用任意会话的结论（2026-11-05）：linked 未命中时全库
+            # 兜底；@session 投递语义保持 linked-only。
+            m = (
+                _result_target(cur_session_id, sid=mid)
+                if kind == "result"
+                else _linked_member(cur_session_id, sid=mid)
+            )
             if m:
                 add(kind, m["id"], m.get("title") or m["id"], m)
             else:
@@ -263,7 +311,11 @@ def resolve_mentions(
                 add("agent", agent.id, agent.name, agent)
                 covered.add("agent")
         elif kind in ("session", "result"):
-            m = _linked_member(cur_session_id, label=label)
+            m = (
+                _result_target(cur_session_id, label=label)
+                if kind == "result"
+                else _linked_member(cur_session_id, label=label)
+            )
             if m:
                 add(kind, m["id"], m.get("title") or m["id"], m)
                 covered.add(kind)

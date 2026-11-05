@@ -625,6 +625,18 @@ export function ChatStream({
       // @session/@result 候选：LinkedSessionsChip 同款 members 投影
       // （linkedMembers state，见顶部 useEffect——打字路径零请求）。
       linkedSessions: linkedMembers,
+      // @result 兜底候选（2026-11-05）：最近 20 个会话（引用任意历史会话的
+      // 结论；@session 投递候选不受影响）。打字路径零请求——g.sessions 已在内存。
+      recentSessions: [...(g.sessions ?? [])]
+        .filter(
+          (r) =>
+            r.id !== (session?.id ?? null) &&
+            (r.type ?? "") !== "subagent" &&
+            !(r.type ?? "").startsWith("channel"),
+        )
+        .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0))
+        .slice(0, 20)
+        .map((r) => ({ id: r.id, title: r.title, type: r.type, updated_at: r.updated })),
       artifacts: [...g.artifacts, ...others].filter(inTeamScope),
       sessionId: session?.id ?? null,
       teamMembers,

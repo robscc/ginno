@@ -130,6 +130,9 @@ export interface MenuSources {
   agents: AgentConfig[];
   /** @session（投递）/ @result（引用结论）候选：linked 会话成员。 */
   linkedSessions?: LinkedMentionEntry[];
+  /** @result 兜底候选（2026-11-05）：最近会话（引用语义可指向任意历史会话，
+   *  linked 未覆盖时补充；@session 投递语义仍 linked-only）。 */
+  recentSessions?: Array<{ id: string; title?: string | null; type?: string | null; updated_at?: number }>;
   artifacts: Artifact[];
   /** 当前会话 id：非本会话的 artifact 在菜单里标注来源（跨会话选择）。 */
   sessionId?: string | null;
@@ -250,6 +253,15 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     ].filter(Boolean).join(" · ");
     push("session", l.id, l.title, detail, blocked);
     push("result", l.id, l.title, l.title ? "" : "", false);
+  }
+  // @result 兜底：最近会话（去重 linked 已推的；自身/subagent/渠道排除）。
+  // linked 成员排前面（既有顺序），recent 补在后 —— 无 detail 区分来源。
+  const seen = new Set<string>(items.filter((i) => i.kind === "result").map((i) => i.id));
+  for (const r of src.recentSessions ?? []) {
+    if (seen.has(r.id) || r.id === src.sessionId) continue;
+    if ((r.type ?? "") === "subagent" || (r.type ?? "").startsWith("channel")) continue;
+    seen.add(r.id);
+    push("result", r.id, r.title || r.id, "");
   }
   return items;
 }
