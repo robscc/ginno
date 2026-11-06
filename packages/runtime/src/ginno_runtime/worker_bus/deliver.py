@@ -9,6 +9,7 @@ stop-event 前置检查），锁内发现目标忙则降级 steer。
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -23,6 +24,9 @@ from ..server_shared import (
 )
 from ..session_meta import _find_meta
 from ..subagent_scheduler import _wake_parent_turn
+
+# 后台吸收任务持有集（防 GC；完成自动移出，2026-11-06 异步派活）。
+_ASSIGN_BG_TASKS: set[asyncio.Task] = set()
 from ..subagent_scheduler.brief import _xml_attr, _xml_text
 from .registry import TERMINAL_PROJECTED, project_status, resolve_target
 
@@ -71,6 +75,7 @@ async def assign_to_worker(
     goal: str,
     constraints: str = "",
     acceptance: str = "",
+    async_delivery: bool = False,
 ) -> dict[str, Any]:
     """派活入口。返回回执 dict：
 
@@ -128,6 +133,22 @@ async def assign_to_worker(
     # 唤醒 main 的机制本就是它诞生时的用途——子代理回传父级）；channel 仍
     # 在 resolve_target 拒掉。出口码映射回执；steer_origin 让锁内竞态降级
     # 的条目也享受 worker 保留待遇。
+    # 异步投递（2026-11-06 用户需求：assign_worker 不再同步等吸收）。
+    # 闲路径的 _wake_parent_turn 要等唤醒 turn 启动 + checkpoint 提交
+    # （秒级）——后台执行，立即回 queued（回执契约不变；吸收结果由
+    # worker_status / watch_worker 的既有通道表达；进程崩溃窗口内丢失
+    # 语义与 busy-queued 相同，digest 通知照常）。
+    if async_delivery:
+        _bg = asyncio.create_task(
+            _wake_parent_turn(tid, text, {"ginno_worker_msg": wp}, steer_origin="worker")
+        )
+        _ASSIGN_BG_TASKS.add(_bg)
+        _bg.add_done_callback(_ASSIGN_BG_TASKS.discard)
+        _log.info("worker_assign_wake_bg from=%s to=%s", sender_id, tid)
+        _stamp_assign_links(sender_id, tid)
+        return {"ok": True, "receipt": "queued", "msg_id": msg_id,
+                "detail": t("absorbing in background",
+                            "正在后台提交（吸收中）")}
     outcome = await _wake_parent_turn(
         tid, text, {"ginno_worker_msg": wp}, steer_origin="worker"
     )

@@ -185,10 +185,24 @@ def build_worker_tools(session_id: str | None, project_slug: str | None = None):
         return _json.dumps({"count": len(rows), "workers": rows}, ensure_ascii=False)
 
     async def assign_worker(
-        target: str, goal: str, constraints: str = "", acceptance: str = ""
+        target: str, goal: str, constraints: str = "", acceptance: str = "",
+        async_delivery: bool = True,
     ) -> str:
-        r = await assign_to_worker(session_id, target, goal, constraints, acceptance)
+        """async_delivery（默认 true，2026-11-06）：闲 worker 也不等唤醒
+        turn 的 checkpoint 提交（秒级），后台吸收、立即回 queued——工具
+        调用零阻塞。要同步拿 absorbed 回执的旧语义用 async_delivery=false。"""
+        r = await assign_to_worker(
+            session_id, target, goal, constraints, acceptance, async_delivery
+        )
         receipt = r.get("receipt")
+        # 派完自动挂订阅（2026-11-06 用户定调：session 不等 worker 完成，
+        # 应订阅其结论）。成功投递即建 terminal 订阅——digest/结果异步回注
+        # 本会话（忙→工具边界，闲→新 turn），模型无需再调 watch_worker，
+        # 也不要 worker_status(wait) 原地阻塞。
+        watched = False
+        if receipt in ("absorbed", "queued"):
+            w = await _watch_impl(session_id, target, "terminal")
+            watched = bool(w.get("ok")) and not w.get("already_settled")
         if receipt == "absorbed":
             msg = t("Task delivered (absorbed into the worker's checkpoint).",
                     "任务已投递（已提交进 worker 的 checkpoint）。")
@@ -204,11 +218,17 @@ def build_worker_tools(session_id: str | None, project_slug: str | None = None):
             if detail:
                 msg += "\n" + detail
             return msg
-        return _json.dumps({"ok": True, "receipt": receipt, "msg_id": r.get("msg_id")},
-                           ensure_ascii=False) + "\n" + msg + "\n" + t(
-            "Delivery is async — FINISH this turn after any wrap-up; watch the "
-            "digest notice instead of blocking.",
-            "投递是异步的——收尾后即可收口本 turn；等 digest 通知，勿阻塞等待。",
+        return _json.dumps(
+            {"ok": True, "receipt": receipt, "msg_id": r.get("msg_id"),
+             "watching": watched},
+            ensure_ascii=False,
+        ) + "\n" + msg + "\n" + t(
+            "Delivery is async and a terminal subscription is auto-established — "
+            "do NOT wait for the worker: FINISH this turn and continue your own "
+            "next step; the worker's digest/result will be injected asynchronously "
+            "(busy → at a tool boundary, idle → a new turn).",
+            "投递异步且已自动订阅结论——不要等 worker：收口本 turn、继续你自己的 "
+            "下一步；worker 的摘要/结果会异步回注（忙→工具边界，闲→新 turn）。",
         )
 
     async def watch_worker(target: str, want: str = "terminal") -> str:

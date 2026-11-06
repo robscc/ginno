@@ -476,3 +476,45 @@ async def test_inject_result_extra_kwargs_rides_steer():
         "ginno_subagent_result": "C1",
         "ginno_worker_msg": {"from": "C1"},
     }
+
+
+@pytest.mark.asyncio
+async def test_assign_worker_auto_subscribes(monkeypatch) -> None:
+    """2026-11-06 实案（session 81bc86b）：assign 成功但 agent 没调
+    watch_worker → worker 完成时 digest 被 watched_absent 跳过，结论丢失。
+    修复后 assign_worker 成功投递即自动建 terminal 订阅；拒收（refused）
+    时不建。"""
+    import ginno_runtime.worker_bus.tools as T
+
+    woke = {}
+    watched = []
+
+    async def fake_assign(sender, target, goal, constraints="", acceptance="", async_delivery=False):
+        woke["target"] = target
+        return {"ok": True, "receipt": "absorbed", "msg_id": "m1"}
+
+    async def fake_watch(sid, target, want):
+        watched.append((sid, target, want))
+        return {"ok": True}
+
+    async def fake_watch_settled(sid, target, want):
+        watched.append(("settled", target, want))
+        return {"ok": True, "already_settled": True}
+
+    monkeypatch.setattr(T, "assign_to_worker", fake_assign)
+
+    async def fake_watch_impl(sid, target, want):
+        return await fake_watch(sid, target, want)
+
+    monkeypatch.setattr(T, "_watch_impl", fake_watch_impl)
+    tools = {t.name: t for t in T.build_worker_tools("sess-a")}
+    out = await tools["assign_worker"].ainvoke({"target": "w1", "goal": "g"})
+    assert watched == [("sess-a", "w1", "terminal")], watched
+    assert '"watching": true' in out
+
+    # already_settled（worker 已终态）→ 不算订阅成功，但也不报错
+    monkeypatch.setattr(T, "_watch_impl", fake_watch_settled)
+    watched.clear()
+    out2 = await tools["assign_worker"].ainvoke({"target": "w1", "goal": "g"})
+    assert watched == [("settled", "w1", "terminal")]
+    assert '"watching": false' in out2
