@@ -131,8 +131,8 @@ def _worker_result_text(
         kind = ""
     return (
         f'<ginno_worker_result session="{_xml_attr(target_id)}"'
-        + (f' msg_id="{_xml_attr(msg_id)}"' if msg_id else "")'
-        f' from="{_xml_attr(title)}" status="{_xml_attr(status)}"'
+        + (f' msg_id="{_xml_attr(msg_id)}"' if msg_id else "")
+        + f' from="{_xml_attr(title)}" status="{_xml_attr(status)}"'
         f' goal="{_xml_attr(goal[:120])}"{kind}>\n'
         f"{body}\n</ginno_worker_result>"
     )
