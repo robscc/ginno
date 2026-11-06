@@ -31,6 +31,15 @@ Layout at a glance:
 
 ## Testing
 
+### Pre-commit hooks（强烈建议装）
+
+```bash
+./scripts/install-hooks.sh
+```
+
+提交前自动按变更类型跑 `cargo fmt --check` / `ruff check` / `next lint`
+（未涉及的栈零开销，全栈大改 ~15s 内）。应急跳过：`git commit --no-verify`。
+
 **Python runtime** (`packages/runtime`) — the suite is hermetic: no network,
 no API keys, no MCP servers.
 

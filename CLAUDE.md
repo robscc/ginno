@@ -102,6 +102,17 @@ uv run --group test --extra docs pytest -m unit -q                        # 纯�
 cd apps/web && pnpm test          # vitest（src/lib/*.test.ts，node 环境，无 DOM）
 ```
 
+### 提交前门禁（pre-commit）
+
+```bash
+./scripts/install-hooks.sh   # clone 后跑一次；hook 指向仓库内 scripts/pre-commit.sh
+```
+
+按 staged 文件类型分发：rust 变更 → `cargo fmt --check`（desktop + mod-broker 两个
+manifest）；python 变更 → `ruff check`；前端变更 → `next lint`。未涉及的栈零开销。
+fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它就不会再犯**。应急跳过
+单次提交：`git commit --no-verify`（慎用，CI 仍会拦）。
+
 **测试基建红线**（都踩过坑，别再踩）：
 
 - **禁止在 `tests/e2e/`（或任何子目录）建 `conftest.py`**——它会遮蔽模块名 `conftest`，
