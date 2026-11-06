@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-14 # arm64 — matches the supported platform (Apple Silicon)
+    runs-on: macos-15 # arm64 — matches the supported platform (Apple Silicon)
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

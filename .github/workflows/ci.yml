@@ -96,7 +96,7 @@ jobs:
     # macOS runner: the desktop crate pulls Tauri, whose Linux build needs
     # webkit2gtk/gtk system packages — not worth installing per-run while a
     # public repo gets macOS minutes free. mod-broker rides along.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
