@@ -161,11 +161,20 @@ export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string): Promise<v
     // the socket drop that caused this reconcile — drop those entries instead
     // of re-sending them (design §3.3, exactly-once).
     dropAbsorbedSteers(ctx, sid, mapped);
+    // 压缩信号（2026-11-06 /compact 实案）：摘要消息以 "[conversation
+    // summary]" 开头随历史下发。压缩会把早于摘要的消息整体抹掉——此刻
+    // 仍在 "sending" 的气泡（WS 已发出、只是断线没等到 message.end）若
+    // 未出现在历史里，大概率不是"没送达"而是"被压缩吃掉了"（用户实测
+    // /compact 成功但气泡被误标「未送达」）。此时按已送达静默收口：直接
+    // 丢弃占位气泡，不标 failed、不诱导重发（重发 /compact 无害但误导）。
+    const compactedAway = mapped.some(
+      (m) => m.role === "user" && textOf(m).startsWith("[conversation summary]"),
+    );
     for (const p of pending) {
       const delivered = mapped.some(
         (m) => m.role === "user" && textOf(m) === textOf(p),
       );
-      if (!delivered) {
+      if (!delivered && !compactedAway) {
         mapped.push({ ...p, status: "failed" as const, failReason: "connLost" });
       }
     }

@@ -339,12 +339,20 @@ function SubQuestionFields({
           ))}
         </div>
       )}
+      {/* 2026-11-06 用户反馈：多问题卡里点了选项后自由输入被锁死
+          （draft.optionIndex!==null → disabled），想改填自定义答案没有反悔
+          入口。改为始终可输入：开始打字即取消选项选择（onText 置
+          optionIndex=null），已选项时 placeholder 提示可覆盖。 */}
       {sub.allowFreeText && (
         <input
           value={draft.optionIndex !== null ? "" : draft.text}
           onChange={(e) => onText(e.target.value)}
-          disabled={!interactive || draft.optionIndex !== null}
-          placeholder={t("askUser.freeTextPlaceholder")}
+          disabled={!interactive}
+          placeholder={
+            draft.optionIndex !== null
+              ? t("askUser.freeTextOverrideHint")
+              : t("askUser.freeTextPlaceholder")
+          }
           className="w-full rounded border border-line bg-card px-2 py-1.5 text-xs text-txt placeholder:text-faint focus:border-violet/60 focus:outline-none disabled:opacity-50"
         />
       )}

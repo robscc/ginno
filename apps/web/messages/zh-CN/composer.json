@@ -63,7 +63,8 @@
       "defaultHeader": "需要你做出选择",
       "freeTextPlaceholder": "其他（回车发送）",
       "sendCustom": "发送自定义回答",
-      "skip": "跳过 · 让代理自行判断"
+      "skip": "跳过 · 让代理自行判断",
+      "freeTextOverrideHint": "输入自定义答案将替换已选选项"
     },
     "sheet": {
       "savedTo": "已保存到 {path}",

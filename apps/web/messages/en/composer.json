@@ -63,7 +63,8 @@
       "defaultHeader": "Your choice is needed",
       "freeTextPlaceholder": "Other (press Enter to send)",
       "sendCustom": "Send custom answer",
-      "skip": "Skip · let the agent use its best judgment"
+      "skip": "Skip · let the agent use its best judgment",
+      "freeTextOverrideHint": "Type a custom answer to override the selected option"
     },
     "sheet": {
       "savedTo": "Saved to {path}",
