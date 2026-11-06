@@ -17,7 +17,6 @@ import pytest
 
 from ginno_runtime import jsonx as json
 from ginno_runtime import subagent_scheduler as sched
-from ginno_runtime.testing.fake_model import script
 from ginno_runtime.testing.fake_model import (
     ScriptedChatModel,
     script,

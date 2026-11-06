@@ -92,6 +92,7 @@ export function parseWorkerResults(
   text: string,
 ): Array<{
   sessionId: string;
+  msgId: string;
   from: string;
   status: string;
   goal: string;
@@ -102,6 +103,7 @@ export function parseWorkerResults(
   if (!doc) return [];
   const out: Array<{
     sessionId: string;
+  msgId: string;
     from: string;
     status: string;
     goal: string;
@@ -111,6 +113,7 @@ export function parseWorkerResults(
   for (const el of Array.from(doc.getElementsByTagName("ginno_worker_result"))) {
     out.push({
       sessionId: el.getAttribute("session") ?? "",
+      msgId: el.getAttribute("msg_id") ?? "",
       from: el.getAttribute("from") ?? "",
       status: el.getAttribute("status") ?? "",
       goal: el.getAttribute("goal") ?? "",

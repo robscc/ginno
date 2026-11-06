@@ -109,7 +109,9 @@ async def watch_worker(
     return {"ok": True, "watched": True, "status": st, "want": want}
 
 
-def _worker_result_text(target_id: str, meta: dict, status: str, digest: str = "") -> str:
+def _worker_result_text(
+    target_id: str, meta: dict, status: str, digest: str = "", msg_id: str = ""
+) -> str:
     """``<ginno_worker_result>`` 信封（前端折员工回传卡）。digest 带标识
     属性；终态回传正文 = result_summary（done）/错误信息。"""
     title = str(meta.get("title") or target_id[:8])
@@ -129,6 +131,7 @@ def _worker_result_text(target_id: str, meta: dict, status: str, digest: str = "
         kind = ""
     return (
         f'<ginno_worker_result session="{_xml_attr(target_id)}"'
+        + (f' msg_id="{_xml_attr(msg_id)}"' if msg_id else "")'
         f' from="{_xml_attr(title)}" status="{_xml_attr(status)}"'
         f' goal="{_xml_attr(goal[:120])}"{kind}>\n'
         f"{body}\n</ginno_worker_result>"
@@ -225,7 +228,10 @@ async def on_turn_settled_hook(session_id: str) -> None:
         return
     due = list(digests)
     body = f"[{st}] {excerpt}"
-    text = _worker_result_text(session_id, meta, st, digest=body)
+    _digest_msg_id = f"digest-{session_id[:8]}-{now}"
+    text = _worker_result_text(
+        session_id, meta, st, digest=body, msg_id=_digest_msg_id
+    )
     keep = []
     for s in subs:
         if s in due:
