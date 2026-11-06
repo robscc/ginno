@@ -583,7 +583,9 @@
       "assignConstraints": "Constraints",
       "assignAcceptance": "Acceptance criteria",
       "viewWorker": "View worker conversation",
-      "senderLabel": "Assigned by"
+      "senderLabel": "Assigned by",
+      "worker.waitingNotice": "📡 Watching \"{title}\" — its result will be injected here when it settles (waiting, not stuck)",
+      "worker.resumedNotice": "📡 Watched session finished — result injecting"
     },
     "jumpLatest": "Jump to latest message",
     "deliver.started": "→ delivered to {label} (new turn)",

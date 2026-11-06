@@ -5,7 +5,6 @@
 import { getWorkflowRun } from "@/lib/runtime";
 import { notifyNative } from "@/lib/desktop";
 import { notifyPrefs } from "@/lib/notifyPrefs";
-import { pushNotice } from "@/lib/notice";
 import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
@@ -29,6 +28,7 @@ import { flushSteerQueue, recallSteers, settleRecalled } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
+import { pushNotice } from "@/lib/notice";
 
 // ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
 // reply 类完成通知经 30s 同会话合并窗口（5 步 workflow 只弹一条）；
@@ -667,6 +667,23 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // SheetViewer refetches if that file is the one being viewed.
       if (ev.file_id) ctx.g.notifyPreviewInvalidate(ev.file_id as string);
       break;
+    case "worker.waiting":
+    case "worker.resumed": {
+      // 等待可见化（2026-11-06 用户实录「assign 后 5 分钟像卡死」）：
+      // 订阅建立 → 弹提示界定等待窗口起点；digest 到达 → 撤场提示。
+      {
+        const waiting = ev.event === "worker.waiting";
+        const title = typeof ev.target_title === "string" ? ev.target_title : "";
+        pushNotice(
+          "info",
+          waiting
+            ? ctx.i18nRef.current.tr("worker.waitingNotice", { title })
+            : ctx.i18nRef.current.tr("worker.resumedNotice"),
+          { dedupeKey: `${ev.event}-${ev.target}` },
+        );
+      }
+      break;
+    }
     case "linked.done": {
       // 订阅的会话 turn 完成（2026-11-06 闭环）：📡 前缀 OS 通知 + 点击直达
       // 目标会话。正盯着自己会话时不弹（chip 徽标可见）；origin=schedule/
