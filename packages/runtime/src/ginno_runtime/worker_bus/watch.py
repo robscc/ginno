@@ -14,7 +14,7 @@ from typing import Any
 
 from .. import paths
 from ..lang import t
-from ..server_shared import _log, spawn_bg
+from ..server_shared import _log, _push_session_event, spawn_bg
 from ..session_meta import (
     _find_meta,
     _session_meta_list,
@@ -211,20 +211,20 @@ async def on_turn_settled_hook(session_id: str) -> None:
     if not digests:
         return
     now = int(time.time())
-    due = [
-        s for s in digests
-        if now - int(s.get("last_digest") or 0) >= DIGEST_MIN_INTERVAL_S
-    ]
-    if not due:
-        _last = max(int(s.get("last_digest") or 0) for s in digests)
-        _log.info(
-            "digest suppressed by throttle (last=%d s ago) session=%s",
-            now - _last, session_id,
-        )
-        return
+    # 推送门 = 内容而非时间（2026-11-06 用户定规：「只要有 summarize 的
+    # 内容都要推」）。旧版 300s 时间窗会把短窗口内的新 turn 摘要整个丢弃
+    # （用户实录"最新版本不是这样的"）——现改为：excerpt 非空必推全部
+    # digest 订阅者；空内容 settle 仍静默（防无意义重复）。DIGEST_MIN_
+    # INTERVAL_S 仅保留作兼容引用，不再挡内容。
     st = project_status(session_id, meta)
     excerpt = await _last_assistant_excerpt(slug, session_id)
-    body = f"[{st}] {excerpt}" if excerpt else f"[{st}]"
+    if not excerpt:
+        _log.info(
+            "digest suppressed (no new summarize content) session=%s", session_id
+        )
+        return
+    due = list(digests)
+    body = f"[{st}] {excerpt}"
     text = _worker_result_text(session_id, meta, st, digest=body)
     keep = []
     for s in subs:
@@ -237,6 +237,14 @@ async def on_turn_settled_hook(session_id: str) -> None:
         sid = str(s.get("session_id") or "")
         if not sid or sid == session_id:
             continue
+        # 等待可见化收口：digest 到达 = 等待结束（worker.waiting 起场于此撤）
+        try:
+            await _push_session_event(
+                sid, "worker.resumed",
+                {"target": session_id, "want": "digest"}, "",
+            )
+        except Exception:
+            pass
         try:
             await _inject_result(
                 sid, text, session_id,

@@ -205,7 +205,11 @@ def build_worker_tools(session_id: str | None, project_slug: str | None = None):
                 msg += "\n" + detail
             return msg
         return _json.dumps({"ok": True, "receipt": receipt, "msg_id": r.get("msg_id")},
-                           ensure_ascii=False) + "\n" + msg
+                           ensure_ascii=False) + "\n" + msg + "\n" + t(
+            "Delivery is async — FINISH this turn after any wrap-up; watch the "
+            "digest notice instead of blocking.",
+            "投递是异步的——收尾后即可收口本 turn；等 digest 通知，勿阻塞等待。",
+        )
 
     async def watch_worker(target: str, want: str = "terminal") -> str:
         r = await _watch_impl(session_id, target, want)
@@ -217,8 +221,16 @@ def build_worker_tools(session_id: str | None, project_slug: str | None = None):
                  "result_summary": r.get("result_summary")},
                 ensure_ascii=False,
             )
-        return _json.dumps({"watched": True, "status": r.get("status"),
-                            "want": r.get("want")}, ensure_ascii=False)
+        return _json.dumps(
+            {"watched": True, "status": r.get("status"), "want": r.get("want")},
+            ensure_ascii=False,
+        ) + "\n" + t(
+            "Subscription established — FINISH this turn now; the digest/result "
+            "arrives asynchronously (busy → injected at a tool boundary, idle → "
+            "a new turn). Do NOT block on worker_status(wait=true).",
+            "订阅已建立——本 turn 可直接收口；结果异步回注（忙→工具边界注入，"
+            "闲→新 turn）。不要用 worker_status(wait=true) 原地阻塞等待。",
+        )
 
     async def worker_status(
         target: str, wait: bool = False, timeout_s: int = 0

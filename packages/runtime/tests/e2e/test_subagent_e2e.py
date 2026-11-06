@@ -17,6 +17,7 @@ import pytest
 
 from ginno_runtime import jsonx as json
 from ginno_runtime import subagent_scheduler as sched
+from ginno_runtime.testing.fake_model import script
 from ginno_runtime.testing.fake_model import (
     ScriptedChatModel,
     script,
@@ -300,3 +301,55 @@ def test_concurrent_child_stream_never_lands_on_parent_socket(
         and f.get("turn_id") not in started
     ]
     assert not foreign, f"foreign-turn frames on the parent socket: {foreign[:3]}"
+
+
+@pytest.mark.asyncio
+async def test_watch_digest_e2e_every_content_pushed(isolated_home, ws_conv, create_session):
+    """e2e（2026-11-06 用户定规，点名必须覆盖）：watch 的 digest「只要有
+    summarize 的内容都要推」——目标连续两轮 settle（间隔秒级，远小于任何
+    节流窗）→ 订阅方两条 digest 全部收到，一条不吞。真实 ws 双 turn。"""
+    from ginno_runtime.worker_bus import watch as ww
+    from ginno_runtime.session_meta import _session_meta_upsert, _session_meta_patch
+    from ginno_runtime.checkpointer import FileCheckpointer
+    import time as _t
+
+    sub = create_session(
+        ScriptedChatModel(scripts=[script("收到A"), script("收到B")]), agent_id="dev"
+    )
+    tgt = create_session(
+        ScriptedChatModel(scripts=[script("第一轮结论：A"), script("第二轮结论：B")]),
+        agent_id="dev", title="目标",
+    )
+    # 订阅方 digest 订阅目标（watch_worker 的落盘形态，last_digest=0）
+    _session_meta_patch("default", tgt, {"subscribers": [
+        {"session_id": sub, "want": "digest", "since": int(_t.time()), "last_digest": 0}
+    ]})
+    ww._WATCHED.add(tgt)
+    cp = FileCheckpointer("default")
+
+    def last_msgs(sid):
+        tup = cp.get_tuple({"configurable": {"thread_id": sid}})
+        return (tup.checkpoint.get("channel_values") or {}).get("messages") if tup else []
+
+    # 目标连续两轮真实 turn（秒级间隔）
+    with ws_conv(tgt) as conv:
+        conv.invoke("跑第一轮")
+        conv.recv_until("message.end", "error")
+    ww._WATCHED.add(tgt)  # hook 后仍保留（digest 订阅不清快查表）
+    with ws_conv(tgt) as conv:
+        conv.invoke("跑第二轮")
+        conv.recv_until("message.end", "error")
+
+    # 订阅方 checkpoint 应含两条 digest 信封（一条不吞）
+    for _ in range(50):
+        msgs = last_msgs(sub) or []
+        digests = [m for m in msgs
+                   if getattr(m, "additional_kwargs", {}).get("ginno_worker_msg", {}).get("kind") == "digest"
+                   or "kind=\"digest\"" in str(getattr(m, "content", ""))]
+        if len(digests) >= 2:
+            break
+        await asyncio.sleep(0.2)
+    texts = [str(getattr(m, "content", "")) for m in (last_msgs(sub) or [])]
+    got_a = any("第一轮结论：A" in t for t in texts)
+    got_b = any("第二轮结论：B" in t for t in texts)
+    assert got_a and got_b, f"digest 短窗口丢弃：A={got_a} B={got_b}，texts={len(texts)}"

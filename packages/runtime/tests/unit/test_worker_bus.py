@@ -383,25 +383,38 @@ async def test_notify_settled_failed_and_stopped(inject_calls):
 # ----------------------------- digest 节流 ---------------------------------- #
 
 
-async def test_digest_hook_throttles(monkeypatch, inject_calls):
+async def test_digest_hook_pushes_every_summarized_content(monkeypatch, inject_calls):
+    """推送门 = 内容而非时间（2026-11-06 用户定规「只要有 summarize 的
+    内容都要推」）：短窗口内连续两轮有内容 → 两条 digest 全推（旧 300s
+    时间窗会把第二条整个吞掉——用户实录）；空内容 settle 仍静默。"""
     _put_meta(SLUG, _worker_meta("W1", status="running", subscribers=[
         {"session_id": "SUB", "want": "digest", "since": 1, "last_digest": 0}]))
     ww._WATCHED.add("W1")
 
+    excerpts = iter(["第一轮结论：A", "第二轮结论：B"])
+
     async def fake_excerpt(slug, sid, limit=300):
-        return "正在跑第三轮测试"
+        return next(excerpts)
 
     monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
     await worker_bus.on_turn_settled_hook("W1")
     assert len(inject_calls) == 1
     assert 'kind="digest"' in inject_calls[0]["text"]
-    assert "正在跑第三轮测试" in inject_calls[0]["text"]
-    # 节流窗口内第二次 settle：不推
+    assert "第一轮结论：A" in inject_calls[0]["text"]
+    # 紧接着的第二轮（远小于任何节流窗）：内容在 → 必推，不吞
     await worker_bus.on_turn_settled_hook("W1")
-    assert len(inject_calls) == 1
+    assert len(inject_calls) == 2
+    assert "第二轮结论：B" in inject_calls[1]["text"]
+    # 空内容 settle：静默（防无意义重复），不推
+    async def empty_excerpt(slug, sid, limit=300):
+        return ""
+
+    monkeypatch.setattr(ww, "_last_assistant_excerpt", empty_excerpt)
+    await worker_bus.on_turn_settled_hook("W1")
+    assert len(inject_calls) == 2
     # 未订阅的会话：零成本直接返回（不抛、不投）
     await worker_bus.on_turn_settled_hook("NOT-WATCHED")
-    assert len(inject_calls) == 1
+    assert len(inject_calls) == 2
 
 
 # ----------------------------- 启动对账 ------------------------------------- #
