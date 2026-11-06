@@ -29,6 +29,7 @@ import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
 import { pushNotice } from "@/lib/notice";
+import { decideTurnAdoption, mismatchReportBudget } from "@/lib/streamTurnGuard";
 
 // ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
 // reply 类完成通知经 30s 同会话合并窗口（5 步 workflow 只弹一条）；
@@ -214,33 +215,54 @@ export function mutateLive(ctx: EngineCtx, sid: string, ev: { event: string; [k:
   // 气泡 turnId 一致；不一致说明内容串进了别轮的气泡。release webview 没有
   // 可读控制台，所以同时上报服务端日志（client_diag）留证。
   const evTurn = ev.turn_id as string | undefined;
-  const bubble = (ctx.storeRef.current[sid] ?? []).find((m) => m.id === id);
+  let bubble = (ctx.storeRef.current[sid] ?? []).find((m) => m.id === id);
   // 孤儿流认领（2026-10-01 串线排查）：客户端在 turn 进行中途才连上 socket
   // （子会话常态——spawn 后隔几十秒才被打开），拿不到 turn.start，气泡带着
   // 本地占位 turnId。首个带 turn_id 的事件到来时认领服务端 id，否则该会话的
   // 每个事件都对不上气泡、（更要紧）steer 帧会带一个服务端不认的 turn_id。
-  if (evTurn && bubble && bubble.turnId !== evTurn) {
-    if (ctx.orphanStreamRef.current[sid] && !ctx.adoptedTurnRef.current[sid]) {
-      ctx.adoptedTurnRef.current[sid] = true;
-      ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((m) =>
-        m.id === id ? { ...m, turnId: evTurn } : m,
-      );
-    }
+  //
+  // 认领泛化（2026-11-06 mismatch 洪水）：sidecar 重启/resume 会在**正常
+  // 连接中**生成新 turn_id——旧 bubble 不重建，此后每帧失配（16aef0a3
+  // 实录 17 分钟 10,051 条 WARNING）。会话内 turn 串行、不存在真并发串线，
+  // 漂移即认领：live bubble 的 turnId 跟随服务端（孤儿标记只是初始来源
+  // 之一，不再是唯一通道）。判定在 lib/streamTurnGuard（纯函数可测）。
+  if (
+    evTurn &&
+    bubble &&
+    decideTurnAdoption({
+      bubbleTurn: bubble.turnId,
+      evTurn,
+      orphan: !!ctx.orphanStreamRef.current[sid],
+      adopted: !!ctx.adoptedTurnRef.current[sid],
+    }) === "adopt"
+  ) {
+    ctx.adoptedTurnRef.current[sid] = true;
+    ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((m) =>
+      m.id === id ? { ...m, turnId: evTurn } : m,
+    );
+    bubble = { ...bubble, turnId: evTurn };
   }
-  if (evTurn && bubble?.turnId && evTurn !== bubble.turnId && !ctx.orphanStreamRef.current[sid]) {
-    const detail = {
-      event: ev.event,
-      ev_turn: evTurn,
-      bubble_turn: bubble.turnId,
-      session: sid,
-      head: String((ev.content as string) ?? "").slice(0, 40),
-    };
-    console.warn("[ginno] stream event landed in another turn's bubble", detail);
-    try {
-      ctx.socketsRef.current[sid]?.send(
-        JSON.stringify({ type: "client_diag", diag_kind: "bubble_turn_mismatch", detail }),
-      );
-    } catch { /* socket may be closing */ }
+  if (evTurn && bubble?.turnId && evTurn !== bubble.turnId) {
+    // 上报限频（streamTurnGuard）：同一 (会话, bubble, ev) 漂移对终生一次
+    // ——认领修复后此分支几乎不再触发；残留触发也只报一次，诊断洪水
+    // 不再淹没真错误。
+    if (
+      mismatchReportBudget({ sid, bubble: bubble.turnId, ev: evTurn })
+    ) {
+      const detail = {
+        event: ev.event,
+        ev_turn: evTurn,
+        bubble_turn: bubble.turnId,
+        session: sid,
+        head: String((ev.content as string) ?? "").slice(0, 40),
+      };
+      console.warn("[ginno] stream event landed in another turn's bubble", detail);
+      try {
+        ctx.socketsRef.current[sid]?.send(
+          JSON.stringify({ type: "client_diag", diag_kind: "bubble_turn_mismatch", detail }),
+        );
+      } catch { /* socket may be closing */ }
+    }
   }
   ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((msg) =>
     msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
