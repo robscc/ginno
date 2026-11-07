@@ -14,6 +14,7 @@ import { GoalChip } from "./GoalChip";
 import { ContextFoldersChip } from "./ContextFoldersChip";
 import { LinkedSessionsChip } from "./LinkedSessionsChip";
 import { TopBarFuncButton } from "./TopBarFuncButton";
+import { NoticeBell } from "@/components/notice/NoticeBell";
 
 /** Filename from `Content-Disposition` (RFC 5987 `filename*=` first, then the
  *  plain form). The project-export endpoint returns FileResponse, whose header
@@ -247,6 +248,7 @@ export function TopBar({
       )}
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        <NoticeBell />
         <div className="relative">
           <button
             onClick={() => setExportMenu((m) => !m)}

@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { PanelRightClose } from "lucide-react";
 import { PANEL_WIDTH_DEFAULT, useGinno } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
+import { subscribeUnreadCount } from "@/lib/notice";
 import { PanelResizer } from "@/components/workflow/studio/PanelResizer";
 import { CodePanel } from "./code/CodePanel";
 import { ModPaneHost } from "./ModPaneHost";
@@ -13,6 +14,7 @@ import { WorkflowPanel } from "./WorkflowPanel";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { SynthesisPanel } from "./SynthesisPanel";
+import { NoticeInboxPanel } from "@/components/notice/NoticeInboxPanel";
 
 // The tab registry — order, labels, icons — lives in `@/lib/rightTabs`: the
 // store derives the visible list from it and Settings → 通用设置 reorders it.
@@ -27,6 +29,9 @@ export function RightPanel() {
   const tn = useTranslations("right");
   const tab = g.rightTab;
   const width = g.rightPanelWidth;
+  // 通知 tab 未读数（badge 口径：countInBadge:false 的 session 投影不计）。
+  const [noticeUnread, setNoticeUnread] = useState(0);
+  useEffect(() => subscribeUnreadCount(setNoticeUnread), []);
   // Below the default width the labels don't fit beside the icons — drop to
   // icon-only tabs (titles keep them discoverable).
   const compact = width < PANEL_WIDTH_DEFAULT;
@@ -69,6 +74,8 @@ export function RightPanel() {
               // Memory tab: violet pulse dot while a distillation draft awaits
               // review (memory.changed WS event drives the badge).
               const showMemoryDraft = meta.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
+              // Notice tab: unread count from the notice inbox (P1 §3).
+              const showNoticeUnread = meta.id === "notice" && noticeUnread > 0;
               const ariaExtra =
                 meta.id === "workflow" && (showHuman || showActive || showFailed)
                   ? `, ${tb("workflow", {
@@ -80,7 +87,9 @@ export function RightPanel() {
                     ? `, ${tb("synthesis", { n: g.synthesisActiveCount })}`
                     : showMemoryDraft
                       ? `, ${tb("memoryDraft")}`
-                      : "";
+                      : showNoticeUnread
+                        ? `, ${tb("notice", { n: noticeUnread })}`
+                        : "";
               const label = tn(`tabs.${meta.id}`);
               return (
                 <button
@@ -132,6 +141,14 @@ export function RightPanel() {
                       title={tb("memoryDraft")}
                     />
                   )}
+                  {showNoticeUnread && (
+                    <span
+                      className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red px-1 text-[10px] font-semibold leading-none text-white"
+                      title={tb("notice", { n: noticeUnread })}
+                    >
+                      {noticeUnread > 99 ? "99+" : noticeUnread}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -157,6 +174,7 @@ export function RightPanel() {
           {tab === "memory" && <MemoryPanel />}
           {tab === "synthesis" && <SynthesisPanel />}
           {tab === "code" && <CodePanel />}
+          {tab === "notice" && <NoticeInboxPanel />}
         </div>
       </aside>
     </>

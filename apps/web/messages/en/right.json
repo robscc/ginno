@@ -8,6 +8,7 @@
       "memory": "Memory",
       "synthesis": "Synthesis",
       "code": "Code",
+      "notice": "Notices",
       "settingsTitle": "Right-panel tabs",
       "settingsHint": "Drag the handle on the left to reorder; click the eye icon to show / hide. Hidden tabs keep their position and can be shown again anytime.",
       "settingsListLabel": "Right-panel tab order",
@@ -50,7 +51,8 @@
       "newFiles": "{n} new files",
       "workflow": "{human} awaiting input, {active} running, {failed} newly failed",
       "synthesis": "{n} syntheses in progress",
-      "memoryDraft": "memory draft awaiting review"
+      "memoryDraft": "memory draft awaiting review",
+      "notice": "{n} unread notices"
     },
     "memory": {
       "title": "Global Memory",
@@ -280,6 +282,14 @@
       "replayOk": "Replay succeeded ({n} attempts, {v})",
       "replayFail": "Replay failed: {r}",
       "replayFailConnect": "Replay failed: cannot connect to the runtime"
+    },
+    "notice": {
+      "unreadCount": "{n} unread",
+      "allRead": "All read",
+      "markAll": "Mark all read",
+      "empty": "No notices",
+      "unread": "unread",
+      "sessionKind": "session"
     }
   }
 }

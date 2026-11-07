@@ -205,7 +205,8 @@
       "exportProjectHint": "A copy is also kept in ~/.ginno/index/exports/",
       "exportProjectDone": "Project export downloaded (also kept in ~/.ginno/index/exports/)",
       "exportFailed": "Export failed — check that the runtime is connected",
-      "contextTitle": "Context {percent}%: {used} / {window} tokens (estimated from the last call)"
+      "contextTitle": "Context {percent}%: {used} / {window} tokens (estimated from the last call)",
+      "noticeBell": "Notice inbox ({n} unread)"
     },
     "links": {
       "chipTitle": "Linked sessions",

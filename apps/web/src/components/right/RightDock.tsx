@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useGinno, type RightTab } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
+import { subscribeUnreadCount } from "@/lib/notice";
 
 /**
  * Collapsed-state affordance for the right panel (right-panel-redesign.md
@@ -27,6 +28,9 @@ export function RightDock() {
   const tn = useTranslations("right");
   const [hover, setHover] = useState(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Notice tab unread (P1 §3) — mirrors the tab-strip badge.
+  const [noticeUnread, setNoticeUnread] = useState(0);
+  useEffect(() => subscribeUnreadCount(setNoticeUnread), []);
 
   useEffect(() => {
     return () => {
@@ -103,6 +107,8 @@ export function RightDock() {
           const synthActive = meta.id === "synthesis" && g.synthesisActiveCount > 0;
           // Memory tab: violet pulse dot while a draft awaits review.
           const memoryDraft = meta.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
+          // Notice tab: unread count from the notice inbox (P1 §3).
+          const noticeUnreadBadge = meta.id === "notice" && noticeUnread > 0;
           const badgeExtra = n
             ? `, ${tb("newFiles", { n })}`
             : wfBadges.length
@@ -115,7 +121,9 @@ export function RightDock() {
                 ? `, ${tb("synthesis", { n: g.synthesisActiveCount })}`
                 : memoryDraft
                   ? `, ${tb("memoryDraft")}`
-                  : "";
+                  : noticeUnreadBadge
+                    ? `, ${tb("notice", { n: noticeUnread })}`
+                    : "";
           return (
             <button
               key={meta.id}
@@ -145,6 +153,11 @@ export function RightDock() {
               )}
               {memoryDraft && (
                 <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse rounded-full bg-violet" />
+              )}
+              {noticeUnreadBadge && (
+                <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red px-1 text-[10px] font-semibold leading-none text-white">
+                  {noticeUnread > 99 ? "99+" : noticeUnread}
+                </span>
               )}
             </button>
           );

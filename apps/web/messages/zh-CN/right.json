@@ -8,6 +8,7 @@
       "memory": "记忆",
       "synthesis": "总结",
       "code": "代码",
+      "notice": "通知",
       "settingsTitle": "右栏标签页",
       "settingsHint": "拖动左侧手柄调整顺序；点击眼睛图标显示/隐藏。隐藏的标签页保留原位置，随时可再次显示。",
       "settingsListLabel": "右栏标签页顺序",
@@ -50,7 +51,8 @@
       "newFiles": "{n} 个新文件",
       "workflow": "{human} 个等待输入，{active} 个执行中，{failed} 个新失败",
       "synthesis": "{n} 个总结正在进行",
-      "memoryDraft": "记忆草稿待审阅"
+      "memoryDraft": "记忆草稿待审阅",
+      "notice": "{n} 条未读通知"
     },
     "memory": {
       "title": "全局记忆",
@@ -280,6 +282,14 @@
       "replayOk": "回放成功（{n} 次尝试，{v}）",
       "replayFail": "回放失败：{r}",
       "replayFailConnect": "回放失败：无法连接运行时"
+    },
+    "notice": {
+      "unreadCount": "{n} 条未读",
+      "allRead": "全部已读",
+      "markAll": "全部已读",
+      "empty": "没有通知",
+      "unread": "未读",
+      "sessionKind": "会话"
     }
   }
 }
