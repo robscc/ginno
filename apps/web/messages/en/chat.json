@@ -259,6 +259,11 @@
       "expand": "Expand full output",
       "openDelegation": "Open delegation replay"
     },
+    "mcpApp": {
+      "app": "App",
+      "sandbox": "sandboxed",
+      "permissions": "This app requested extra permissions: {perms}"
+    },
     "thinking": {
       "live": "Thinking…",
       "done": "Deeply thought",

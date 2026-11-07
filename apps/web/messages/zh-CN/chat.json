@@ -259,6 +259,11 @@
       "expand": "展开全部输出",
       "openDelegation": "打开委托回放"
     },
+    "mcpApp": {
+      "app": "应用",
+      "sandbox": "沙箱",
+      "permissions": "此应用请求了额外权限：{perms}"
+    },
     "thinking": {
       "live": "思考中……",
       "done": "已深入思考",

@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -10,8 +10,10 @@ import { fmtTokens } from "@/lib/format";
 import { AskUserCard } from "./AskUserCard";
 import { useGinno } from "@/lib/store";
 import { ensureFileRegistered } from "@/lib/api/workspace";
+import { toolsWithUi, type McpToolUiInfo } from "@/lib/runtime";
 import { openLinkExternal } from "@/lib/api/knowledge";
 import { useChatT } from "./blocks/i18n";
+import { McpAppCard } from "./McpAppCard";
 import type { Block, SteerBandFile, SteerBandImage } from "./blocks/types";
 import { MentionText } from "./MentionText";
 import {
@@ -225,6 +227,28 @@ export function DevSwapResultLine({ block }: { block: Extract<Block, { kind: "de
   );
 }
 
+/** MCP Apps 清单（docs/mcp-apps-design.md §2）：挂载拉一次，store 单飞去重
+ * （N 张卡的会话也只发一次请求）；resolved 后 setState 补渲染。MCP 连接
+ * 变化靠 staleMs 过期后的下一次挂载/刷新收口，P0 不做推送。 */
+function useMcpToolsWithUi(): Record<string, McpToolUiInfo> {
+  const [map, setMap] = useState<Record<string, McpToolUiInfo>>(() => toolsWithUi.peek() ?? {});
+  useEffect(() => {
+    let alive = true;
+    toolsWithUi
+      .get()
+      .then((m) => {
+        if (alive) setMap(m);
+      })
+      .catch(() => {
+        /* 拉不到清单就不渲染 app 卡（普通气泡照常） */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return map;
+}
+
 /** Blocks rendered INSIDE the assistant card (everything except refs).
  * onAnswerQuestion/questionLive thread ChatStream's ask_user resume channel
  * down to a pending question card; without them the card renders read-only. */
@@ -242,6 +266,7 @@ export function InnerBlocks({
   const out: React.ReactNode[] = [];
   let i = 0;
   let key = 0;
+  const mcpUiMap = useMcpToolsWithUi();
   // Resolve `web|sN` citation ids against this bubble's web_search results.
   const refMap = webRefMap(blocks);
   // turn_meta（耗时+token 小字）是「卡片角落 chrome」而非内容：live 期插入
@@ -304,6 +329,15 @@ export function InnerBlocks({
     } else if (b.kind === "workflow") {
       out.push(<WorkflowBlock key={key++} run={b.run} />);
     } else if (b.kind === "tool") {
+      // MCP Apps：工具命中 ui 清单时，普通气泡上方附加交互 app 卡（保守
+      // 附加而非替换——无 UI/清单未达/拉取失败都回退现有渲染，见
+      // docs/mcp-apps-design.md §2 呈现容器 P0）。
+      const mcpUi = mcpUiMap[b.name];
+      if (mcpUi && !b.pending) {
+        out.push(
+          <McpAppCard key={`mcpapp-${key++}`} server={mcpUi.server} tool={mcpUi.tool} data={b.content} />,
+        );
+      }
       out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} />);
     } else if (b.kind === "question") {
       out.push(
