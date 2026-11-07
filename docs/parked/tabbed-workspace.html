@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ginno · 会话内多标签工作台原型 — Tabbed Workspace</title>
+<style>
+  :root {
+    --bg: #0e1013; --panel: #15181d; --panel-2: #1b1f26; --panel-3: #21262e;
+    --border: #262b34; --border-2: #333a46;
+    --text: #e6e9ee; --text-dim: #8b93a1; --text-faint: #5c6472;
+    --accent: #4f8cff; --violet: #a78bfa; --ok: #34c77b; --warn: #ffb020; --err: #ff5c5c;
+    --ws: #2dd4bf;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #08090b; color: var(--text); overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    height: 100vh; display: flex; flex-direction: column; }
+  button { font-family: inherit; cursor: pointer; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a303a; border-radius: 4px; }
+
+  .demo-bar { background: #1a1408; border-bottom: 1px solid #3a2f12; color: #d8b45a;
+    font-size: 12px; padding: 7px 16px; display: flex; gap: 14px; align-items: center; flex-shrink: 0; }
+  .demo-bar b { color: #f0d080; }
+  .demo-bar .sp { margin-left: auto; opacity: .7; }
+  kbd { background: var(--panel-3); border: 1px solid var(--border-2); border-radius: 4px;
+    padding: 0 5px; font-size: 10.5px; font-family: ui-monospace, monospace; }
+
+  .app { flex: 1; display: flex; min-height: 0; }
+
+  /* ── 侧栏（简化） ── */
+  .sidebar { width: 232px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0; }
+  .side-head { padding: 13px 14px 8px; font-weight: 600; font-size: 13px; color: var(--text-dim); }
+  .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 14px; font-size: 12.5px;
+    color: var(--text-dim); cursor: pointer; }
+  .nav-item:hover { background: var(--panel-2); color: var(--text); }
+  .nav-item.active { background: var(--panel-2); color: var(--text); border-left: 2px solid var(--accent); }
+  .sec-label { padding: 14px 14px 5px; font-size: 10.5px; letter-spacing: .8px; color: var(--text-faint); text-transform: uppercase; }
+  .sess { padding: 5px 14px 5px 30px; font-size: 11.5px; color: var(--text-faint); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess:hover { color: var(--text-dim); }
+  .sess.on { color: var(--text); }
+
+  /* ── 舞台：chat + resizer + workspace ── */
+  .stage { flex: 1; display: flex; min-width: 0; position: relative; background: var(--bg); }
+
+  .chat-col { flex: 1; min-width: 280px; display: flex; flex-direction: column; transition: flex-basis .18s; }
+  .topbar { height: 46px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px; padding: 0 16px; background: var(--panel); }
+  .topbar h1 { font-size: 13.5px; font-weight: 600; }
+  .topbar .sub { font-size: 11px; color: var(--text-faint); }
+  .pill { border: 1px solid var(--border); background: var(--panel-2); border-radius: 999px;
+    padding: 2px 9px; font-size: 11px; color: var(--text-dim); }
+  .pill.ws { color: var(--ws); border-color: rgba(45,212,191,.35); background: rgba(45,212,191,.08); cursor: pointer; }
+  .pill.ws:hover { border-color: var(--ws); }
+
+  .thread { flex: 1; overflow-y: auto; padding: 18px 22px 8px; }
+  .msg { display: flex; gap: 10px; margin-bottom: 16px; }
+  .ava { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; }
+  .ava.u { background: var(--panel-3); color: var(--text-dim); }
+  .ava.a { background: rgba(79,140,255,.18); color: var(--accent); }
+  .bubble { flex: 1; min-width: 0; font-size: 13px; line-height: 1.65; color: var(--text); }
+  .bubble .who { font-size: 11.5px; color: var(--text-faint); margin-bottom: 3px; }
+  .bubble p { margin-bottom: 8px; }
+
+  /* 卡片：工具 / 产物 / 任务 */
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin: 6px 0 12px; font-size: 12.5px; }
+  .card .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .card .ico { font-size: 14px; }
+  .card .t { font-weight: 600; font-size: 12.5px; }
+  .card .meta { font-size: 11px; color: var(--text-faint); }
+  .card .acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .cbtn { background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border);
+    border-radius: 7px; padding: 3px 10px; font-size: 11.5px; }
+  .cbtn:hover { border-color: var(--ws); color: var(--ws); }
+  .cbtn.pri { border-color: rgba(45,212,191,.45); color: var(--ws); background: rgba(45,212,191,.08); }
+  .card .row { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-dim); padding: 2px 0; }
+  .card .row b { color: var(--text); font-weight: 600; }
+  .tag { font-size: 10px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--text-faint); }
+  .tag.live { color: var(--ok); border-color: rgba(52,199,123,.4); }
+  .tag.done { color: var(--accent); border-color: rgba(79,140,255,.4); }
+
+  .composer { border-top: 1px solid var(--border); padding: 10px 16px 12px; display: flex; gap: 8px; flex-shrink: 0; background: var(--bg); }
+  .composer input { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    color: var(--text); padding: 8px 12px; font-size: 13px; outline: none; }
+  .composer input:focus { border-color: var(--accent); }
+  .composer button { background: var(--accent); border: none; color: #fff; border-radius: 9px; padding: 0 16px; font-size: 13px; }
+
+  /* ── 分隔条 ── */
+  .resizer { width: 6px; cursor: col-resize; background: transparent; flex-shrink: 0; position: relative; }
+  .resizer::after { content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: transparent; }
+  .resizer:hover::after, .resizer.on::after { background: var(--ws); }
+
+  /* ── 工作台 ── */
+  .ws-col { display: flex; flex-direction: column; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--border); overflow: hidden; }
+  .tab-strip { display: flex; align-items: center; background: var(--panel-2); border-bottom: 1px solid var(--border);
+    height: 38px; flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+  .tab-strip::-webkit-scrollbar { display: none; }
+  .wtab { display: flex; align-items: center; gap: 7px; padding: 0 10px; height: 100%;
+    border-right: 1px solid var(--border); background: transparent; border-top: 2px solid transparent;
+    color: var(--text-faint); font-size: 12px; white-space: nowrap; max-width: 210px; cursor: pointer; position: relative; }
+  .wtab:hover { background: var(--panel-3); color: var(--text-dim); }
+  .wtab.on { background: var(--panel); color: var(--text); border-top-color: var(--ws); }
+  .wtab .ttl { overflow: hidden; text-overflow: ellipsis; }
+  .wtab .x { opacity: 0; border: none; background: none; color: var(--text-faint); font-size: 13px; padding: 0 1px; border-radius: 4px; }
+  .wtab:hover .x, .wtab.on .x { opacity: 1; }
+  .wtab .x:hover { color: var(--err); background: var(--panel-2); }
+  .wtab .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--violet); box-shadow: 0 0 5px var(--violet); flex-shrink: 0; }
+  .wtab .spin { width: 10px; height: 10px; border: 2px solid var(--border-2); border-top-color: var(--ok);
+    border-radius: 999px; animation: r 0.8s linear infinite; flex-shrink: 0; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  .plus { border: none; background: none; color: var(--text-faint); font-size: 15px; padding: 0 12px; }
+  .plus:hover { color: var(--ws); }
+  .ws-tools { margin-left: auto; display: flex; gap: 4px; padding-right: 8px; position: sticky; right: 0; background: var(--panel-2); }
+  .wtool { background: var(--panel-3); color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 11px; padding: 2px 8px; }
+  .wtool:hover, .wtool.on { color: var(--ws); border-color: rgba(45,212,191,.4); }
+
+  .ws-body { flex: 1; min-height: 0; position: relative; background: var(--panel); }
+  .pane { position: absolute; inset: 0; display: none; flex-direction: column; min-height: 0; }
+  .pane.on { display: flex; }
+  .pane-hd { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim); flex-shrink: 0; background: var(--panel-2); }
+  .pane-hd .t { color: var(--text); font-weight: 600; }
+  .pane-hd .url { font-family: ui-monospace, monospace; font-size: 11px; background: var(--panel-3);
+    padding: 2px 8px; border-radius: 5px; color: var(--text-dim); }
+  .pane-hd .r { margin-left: auto; display: flex; gap: 6px; }
+  .pane-c { flex: 1; overflow: auto; min-height: 0; }
+
+  table.x { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.x th { position: sticky; top: 0; background: var(--panel-2); text-align: left; padding: 7px 12px;
+    color: var(--text-faint); font-weight: 600; border-bottom: 1px solid var(--border-2); font-size: 11px; letter-spacing: .4px; }
+  table.x td { padding: 6px 12px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
+  table.x tr:hover td { background: var(--panel-2); color: var(--text); }
+  table.x td b { color: var(--text); font-weight: 600; }
+  .lang { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 10.5px; border: 1px solid var(--border-2); }
+  .lang.ts { color: #3178c6; border-color: rgba(49,120,198,.5); }
+  .lang.rs { color: #dea584; border-color: rgba(222,165,132,.5); }
+  .lang.py { color: #3572A5; border-color: rgba(53,114,165,.5); }
+  .lang.go { color: #00ADD8; border-color: rgba(0,173,216,.5); }
+
+  .md { padding: 18px 26px; font-size: 13px; line-height: 1.75; color: var(--text-dim); max-width: 720px; }
+  .md h2 { font-size: 16px; color: var(--text); margin: 4px 0 12px; }
+  .md h3 { font-size: 13.5px; color: var(--text); margin: 16px 0 6px; }
+  .md ul { padding-left: 20px; margin: 6px 0; }
+  .md li { margin: 3px 0; }
+  .md b { color: var(--text); }
+
+  .term { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.7;
+    padding: 14px 16px; color: var(--text-dim); }
+  .term .g { color: var(--ok); } .term .y { color: var(--warn); } .term .r { color: var(--err); }
+  .term .d { color: var(--text-faint); }
+
+  /* 假浏览器页面 */
+  .web { background: #fff; color: #1f2328; }
+  .web .inner { max-width: 680px; margin: 0 auto; padding: 26px 20px; }
+  .web h1 { font-size: 18px; margin-bottom: 4px; font-family: ui-monospace, monospace; }
+  .web .path { font-family: ui-monospace, monospace; font-size: 12px; color: #656d76; margin-bottom: 18px;
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 6px 10px; }
+  .web pre { font-family: ui-monospace, monospace; font-size: 11.5px; line-height: 1.65; color: #0550ae;
+    background: #f6f8fa; border-radius: 6px; padding: 12px; overflow-x: auto; white-space: pre; }
+  .web .note { font-size: 12px; color: #656d76; margin-top: 14px; }
+
+  /* ── Sheet（peek 快览） ── */
+  .sheet-veil { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; display: none; }
+  .sheet-veil.on { display: block; }
+  .sheet { position: fixed; top: 40px; bottom: 12px; right: 12px; width: min(560px, 46vw); z-index: 41;
+    background: var(--panel); border: 1px solid var(--border-2); border-radius: 12px;
+    display: flex; flex-direction: column; transform: translateX(30px); opacity: 0; transition: .18s; pointer-events: none; }
+  .sheet.on { transform: none; opacity: 1; pointer-events: auto; }
+  .sheet .hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .sheet .hd .t { font-weight: 600; font-size: 13px; }
+  .sheet .hint { font-size: 11px; color: var(--text-faint); margin-left: auto; }
+  .sheet .c { flex: 1; overflow: auto; padding: 14px 16px; font-size: 12.5px; color: var(--text-dim); line-height: 1.7; }
+
+  /* ── 停靠条（hidden 态） ── */
+  .dock-strip { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; background: var(--panel-2);
+    cursor: pointer; display: none; }
+  .dock-strip:hover { background: var(--ws); }
+  .dock-strip .v { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    width: 7px; height: 7px; border-radius: 999px; background: var(--violet); box-shadow: 0 0 6px var(--violet); }
+
+  /* ── toast：右下角（统一提示位） ── */
+  .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 90; display: flex; flex-direction: column;
+    gap: 8px; align-items: flex-end; pointer-events: none; }
+  .toast { background: var(--panel-3); border: 1px solid var(--border-2); border-left: 3px solid var(--ws);
+    color: var(--text); border-radius: 9px; padding: 8px 14px; font-size: 12.5px; box-shadow: 0 6px 24px rgba(0,0,0,.45);
+    animation: tin .18s ease-out; max-width: 340px; }
+  .toast.err { border-left-color: var(--err); }
+  .toast.ok { border-left-color: var(--ok); }
+  @keyframes tin { from { transform: translateY(8px); opacity: 0; } }
+
+  /* ── 布局态 ── */
+  /* split（默认）：.ws-col 有宽度 */
+  /* max：chat 压缩为迷你条 */
+  .stage[data-layout="max"] .chat-col { flex-direction: row; }
+  .stage[data-layout="max"] .thread, .stage[data-layout="max"] .composer,
+  .stage[data-layout="max"] .resizer { display: none; }
+  .stage[data-layout="max"] .chat-col { flex: 0 0 auto; width: 100%; }
+  .stage[data-layout="max"] .topbar { width: 100%; height: 44px; border-bottom: 1px solid var(--border); }
+  .stage[data-layout="max"] .ws-col { flex: 1; border-left: none; }
+  .mini-input { display: none; margin-left: 14px; flex: 1; max-width: 460px; }
+  .stage[data-layout="max"] .mini-input { display: block; }
+  .mini-input input { width: 100%; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 5px 11px; font-size: 12px; outline: none; }
+  .stage[data-layout="max"] .ws-col { flex-direction: column; }
+  /* hidden：工作台收起 */
+  .stage[data-layout="hidden"] .ws-col { display: none; }
+  .stage[data-layout="hidden"] .resizer { display: none; }
+  .stage[data-layout="hidden"] .dock-strip { display: block; }
+</style>
+</head>
+<body>
+
+<div class="demo-bar">
+  <span>🧪 <b>Ginno 原型</b> · 会话内多标签工作台（Tabbed Workspace）</span>
+  <span>点产物卡片的「⧉ 在工作台打开」/「预览」；<kbd>⌘1..9</kbd> 切标签 <kbd>⌘W</kbd> 关标签 <kbd>⌘\</kbd> 循环布局（分栏→最大化→收起）</span>
+  <span class="sp">设计文档：docs/tabbed-workspace-design.md</span>
+</div>
+
+<div class="app">
+  <!-- 侧栏 -->
+  <div class="sidebar">
+    <div class="side-head">GinnoWork</div>
+    <div class="nav-item active">💬 会话</div>
+    <div class="nav-item">🤖 团队</div>
+    <div class="nav-item">⚙️ 工作流</div>
+    <div class="nav-item">⏰ 定时任务</div>
+    <div class="sec-label">今天</div>
+    <div class="sess on">📊 竞品调研 + trending 整理</div>
+    <div class="sess">fork 会话（11-06）</div>
+    <div class="sess">钉钉 · 群助手</div>
+    <div class="sec-label">更早</div>
+    <div class="sess">企微语音转写联调</div>
+    <div class="sess">worker_bus 设计</div>
+  </div>
+
+  <!-- 舞台 -->
+  <div class="stage" id="stage" data-layout="split">
+
+    <!-- 聊天列 -->
+    <div class="chat-col" id="chatCol">
+      <div class="topbar">
+        <h1>竞品调研 + trending 整理</h1>
+        <span class="sub">claude-sonnet-4.6</span>
+        <span class="pill ws" id="layoutPill" onclick="cycleLayout()">◧ 工作台 · 分栏</span>
+        <span style="margin-left:auto" class="pill">⧠ 42k / 500k</span>
+      </div>
+
+      <div class="thread">
+        <div class="msg">
+          <div class="ava u">我</div>
+          <div class="bubble"><div class="who">我 · 10:24</div>
+            <p>帮我整理最近的 GitHub trending 周榜，结合上周的竞品调研出个对比表，顺带把数据存成 xlsx。</p>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="ava a">G</div>
+          <div class="bubble"><div class="who">Ginno · 10:24</div>
+            <p>好，我先抓取 GitHub trending 数据，再结合本地竞品调研做对比。</p>
+
+            <!-- 工具卡：浏览器 -->
+            <div class="card">
+              <div class="hd"><span class="ico">🌐</span><span class="t">browser · 抓取 trending</span>
+                <span class="meta">api.github.com · 2.1s</span><span style="margin-left:auto" class="tag done">完成</span></div>
+              <div class="row"><span>页面</span><b>github.com/trending?since=weekly</b></div>
+              <div class="row"><span>解析条目</span><b>25 repos</b></div>
+              <div class="acts">
+                <button class="cbtn pri" onclick="openTab('browser','https://api.github.com','api.github.com','🌐')">⧉ 在工作台打开</button>
+                <button class="cbtn" onclick="toast('已保存快照到产物')">💾 存快照</button>
+              </div>
+            </div>
+
+            <!-- 产物卡：xlsx -->
+            <div class="card">
+              <div class="hd"><span class="ico">📊</span><span class="t">trending-2026-11-07.xlsx</span>
+                <span class="meta">产物 · 18 KB</span><span style="margin-left:auto" class="tag done">已生成</span></div>
+              <div class="row"><span>工作表</span><b>weekly / 对比</b></div>
+              <div class="row"><span>行 × 列</span><b>25 × 9</b></div>
+              <div class="acts">
+                <button class="cbtn pri" onclick="openTab('artifact','trending-xlsx','trending-2026-11-07.xlsx','📊')">⧉ 在工作台打开</button>
+                <button class="cbtn" onclick="peek('trending-2026-11-07.xlsx')">👁 快速预览</button>
+                <button class="cbtn" onclick="toast('已下载 trending-2026-11-07.xlsx','ok')">⬇ 下载</button>
+              </div>
+            </div>
+
+            <!-- 产物卡：md 报告 -->
+            <div class="card">
+              <div class="hd"><span class="ico">📄</span><span class="t">2026-11-04-竞品特性调研.md</span>
+                <span class="meta">产物 · 9.4 KB · 知识库已收录</span><span style="margin-left:auto" class="tag done">已生成</span></div>
+              <div class="acts">
+                <button class="cbtn pri" onclick="openTab('artifact','competitor-md','竞品特性调研（13 产品）.md','📄')">⧉ 在工作台打开</button>
+                <button class="cbtn" onclick="peek('竞品特性调研.md')">👁 快速预览</button>
+              </div>
+            </div>
+
+            <!-- 任务卡：后台 -->
+            <div class="card">
+              <div class="hd"><span class="ico">▶</span><span class="t">后台任务 · pytest 全量回归</span>
+                <span class="meta">packages/runtime · 已跑 3:12</span><span style="margin-left:auto" class="tag live">运行中</span></div>
+              <div class="row"><span>进度</span><b id="taskProg">2110 / 2790 用例</b></div>
+              <div class="acts">
+                <button class="cbtn pri" onclick="openTab('task','pytest','bg · pytest 全量回归','▶')">⧉ 在工作台打开</button>
+              </div>
+            </div>
+
+            <p>对比表已生成在 xlsx 的「对比」工作表；竞品调研要点与 trending 数据的差异我标了 ⚠ 列。后台还在跑全量回归，出结果我会提醒你（工作台标签会出现未读点 <span style="color:var(--violet)">•</span>）。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <input id="composerInput" placeholder="边看报告边追问…（最大化布局下也可直接输入）" onkeydown="if(event.key==='Enter')send()">
+        <button onclick="send()">发送</button>
+      </div>
+    </div>
+
+    <!-- 分隔条 -->
+    <div class="resizer" id="resizer" title="拖拽调整工作台宽度"></div>
+
+    <!-- 工作台 -->
+    <div class="ws-col" id="wsCol" style="width:520px; flex:0 0 520px">
+      <div class="tab-strip" id="tabStrip">
+        <!-- tabs 由 JS 渲染 -->
+        <div class="ws-tools">
+          <button class="wtool" onclick="setLayout('max')" title="最大化工作台">⛶</button>
+          <button class="wtool" onclick="setLayout('hidden')" title="收起工作台">◧</button>
+        </div>
+      </div>
+      <div class="ws-body" id="wsBody">
+        <div class="pane" data-pane="artifact:trending-xlsx">
+          <div class="pane-hd"><span>📊</span><span class="t">trending-2026-11-07.xlsx</span><span class="url">weekly · 25 行</span>
+            <div class="r"><button class="wtool" onclick="toast('已在新窗口打开')">↗</button><button class="wtool" onclick="toast('已下载','ok')">⬇</button></div></div>
+          <div class="pane-c">
+            <table class="x">
+              <tr><th>#</th><th>仓库</th><th>⭐ 总数</th><th>本周 +</th><th>语言</th><th>对比调研</th></tr>
+              <tr><td>1</td><td><b>thedotmack/claude-mem</b></td><td>113,204</td><td>+4,182</td><td><span class="lang ts">TS</span></td><td>✅ 候选 #2 记忆层</td></tr>
+              <tr><td>2</td><td><b>open-webui/open-webui</b></td><td>98,371</td><td>+1,930</td><td><span class="lang ts">TS</span></td><td>✅ tabbed workspace 参考</td></tr>
+              <tr><td>3</td><td><b>max-sixty/worktrunk</b></td><td>4,108</td><td>+1,264</td><td><span class="lang rs">Rust</span></td><td>✅ 候选 #6 worktree</td></tr>
+              <tr><td>4</td><td><b>anthropics/claude-code</b></td><td>76,550</td><td>+1,102</td><td><span class="lang ts">TS</span></td><td>✅ /context 参考</td></tr>
+              <tr><td>5</td><td><b>ginno</b>（本仓库镜像）</td><td>3,205</td><td>+318</td><td><span class="lang py">Py</span></td><td>— 基线</td></tr>
+              <tr><td>6</td><td><b>microsoft/TypeScript</b></td><td>102,447</td><td>+240</td><td><span class="lang ts">TS</span></td><td>—</td></tr>
+              <tr><td>7</td><td><b>ollama/ollama</b></td><td>141,032</td><td>+880</td><td><span class="lang go">Go</span></td><td>—</td></tr>
+              <tr><td>8</td><td><b>cline/cline</b></td><td>52,884</td><td>+742</td><td><span class="lang ts">TS</span></td><td>⚠ 云沙箱，不收录</td></tr>
+              <tr><td>…</td><td colspan="5" style="color:var(--text-faint)">（完整 25 行见 xlsx；此为工作台半屏预览，比右侧栏多显示 3 列）</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="artifact:competitor-md">
+          <div class="pane-hd"><span>📄</span><span class="t">竞品特性调研（13 产品）.md</span><span class="url">Research · 2026-11-04</span></div>
+          <div class="pane-c"><div class="md">
+            <h2>Ginno 竞品特性调研</h2>
+            <p style="font-size:11.5px;color:var(--text-faint)">覆盖 13 个产品：Claude Code、Codex CLI、Gemini CLI、Antigravity、Open WebUI、Cherry Studio、Cline…</p>
+            <h3>可借鉴点（节选）</h3>
+            <ul>
+              <li><b>Claude Code</b>：/context token 可视化、权限 deny-instead-of-prompting、MCP 长任务后台化</li>
+              <li><b>Open WebUI</b>：Tabbed workspace（本原型）、会话级 Analytics Explorer</li>
+              <li><b>claude-mem</b>：跨会话自动记忆，压缩钩子沉淀条目 + 相关性注入</li>
+              <li><b>Antigravity</b>：任务面板与对话同屏的编辑器级工作台</li>
+            </ul>
+            <h3>结论</h3>
+            <p>碎片产物容器是桌面 agent 通用短板；tab 化工作台与本地优先架构无冲突，纯 web 层改造。</p>
+          </div></div>
+        </div>
+
+        <div class="pane" data-pane="browser:https://api.github.com">
+          <div class="pane-hd"><span>🌐</span><span class="t">内嵌浏览器</span><span class="url">api.github.com/search/repositories?q=stars:%3E50000</span>
+            <div class="r"><button class="wtool" onclick="toast('已刷新','ok')">⟳</button><button class="wtool" onclick="toast('已在系统浏览器打开')">↗</button></div></div>
+          <div class="pane-c"><div class="web"><div class="inner">
+            <h1>Search repositories</h1>
+            <div class="path">GET https://api.github.com/search/repositories?q=stars:&gt;50000&amp;sort=stars</div>
+            <pre>{
+  "total_count": 41,
+  "items": [
+    {
+      "full_name": "freeCodeCamp/freeCodeCamp",
+      "stargazers_count": 419000,
+      "language": "TypeScript"
+    },
+    {
+      "full_name": "vuejs/vue",
+      "stargazers_count": 208000,
+      "language": "TypeScript"
+    }
+  ]
+}</pre>
+            <div class="note">✓ 页面快照 10:26 抓取 · 浏览器以 tab 常驻：会话切换不打断已打开的页面。</div>
+          </div></div></div>
+        </div>
+
+        <div class="pane" data-pane="task:pytest">
+          <div class="pane-hd"><span>▶</span><span class="t">bg · pytest 全量回归</span><span class="url">uv run --group test --extra docs</span>
+            <div class="r"><button class="wtool" onclick="toast('已停止任务','err')">■</button></div></div>
+          <div class="pane-c"><div class="term" id="termOut"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 停靠条（hidden 态入口） -->
+    <div class="dock-strip" onclick="setLayout('split')" title="展开工作台">
+      <div class="v" id="dockDot" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Sheet 快览（peek） -->
+<div class="sheet-veil" id="veil" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet">
+  <div class="hd">
+    <span id="sheetIcon">📊</span><span class="t" id="sheetTitle">—</span>
+    <span class="hint">快览（peek）· 深度浏览请转工作台</span>
+    <button class="cbtn pri" onclick="sheetToWorkspace()">⤢ 工作台</button>
+    <button class="cbtn" onclick="closeSheet()">✕</button>
+  </div>
+  <div class="c" id="sheetBody"></div>
+</div>
+
+<!-- toast 统一右下角 -->
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ───── workspace tab 状态机 ───── */
+const tabs = []; // {id, kind, src, title, icon, unread, live}
+let activeId = null;
+let sheetCtx = null;
+
+const $ = (s) => document.querySelector(s);
+const stage = $('#stage');
+
+function toast(msg, cls) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (cls ? ' ' + cls : '');
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = '.25s'; }, 2200);
+  setTimeout(() => el.remove(), 2500);
+}
+
+function openTab(kind, src, title, icon, opts) {
+  const id = kind + ':' + src;
+  const exist = tabs.find(t => t.id === id);
+  if (exist) { // 幂等：已有则激活并清未读
+    exist.unread = false;
+    activate(id);
+    toast('已切换到已打开的标签：' + title);
+    return;
+  }
+  if (tabs.length >= 12) { // 上限：替换最老非置顶
+    const victim = tabs.find(t => !t.pinned);
+    if (victim) closeTab(victim.id, true);
+  }
+  tabs.push({ id, kind, src, title, icon, unread: false, live: opts?.live || false });
+  activate(id);
+  setLayout('split', true);
+  toast('已在工作台打开：' + title, 'ok');
+}
+
+function activate(id) {
+  activeId = id;
+  tabs.forEach(t => { if (t.id === id) t.unread = false; });
+  render();
+}
+
+function closeTab(id, silent) {
+  const i = tabs.findIndex(t => t.id === id);
+  if (i < 0) return;
+  if (tabs[i].pinned && !silent) { toast('已置顶的标签不会被「关闭其他」清掉；点 × 仍可关闭'); }
+  tabs.splice(i, 1);
+  if (activeId === id) activeId = tabs[Math.max(0, i - 1)]?.id || null;
+  if (!tabs.length) setLayout('hidden');
+  render();
+  if (!silent) toast('已关闭标签');
+}
+
+function render() {
+  // strip
+  document.querySelectorAll('.wtab').forEach(e => e.remove());
+  const strip = $('#tabStrip');
+  tabs.forEach((t, i) => {
+    const b = document.createElement('div');
+    b.className = 'wtab' + (t.id === activeId ? ' on' : '');
+    b.draggable = true; b.title = t.title + '（⌘' + (i + 1) + '；双击置顶）';
+    b.innerHTML = (t.live ? '<span class="spin"></span>' : `<span>${t.icon}</span>`)
+      + (t.unread ? '<span class="dot"></span>' : '')
+      + `<span class="ttl">${t.title}</span>`
+      + (t.pinned ? '<span style="font-size:9px;color:var(--ws)">◆</span>' : '')
+      + '<button class="x">✕</button>';
+    b.onclick = (e) => { if (e.target.className === 'x') closeTab(t.id); else activate(t.id); };
+    b.ondblclick = () => { t.pinned = !t.pinned; render(); toast(t.pinned ? '已置顶标签 ◆' : '已取消置顶'); };
+    b.ondragstart = (e) => e.dataTransfer.setData('text/plain', t.id);
+    b.ondragover = (e) => e.preventDefault();
+    b.ondrop = (e) => {
+      e.preventDefault();
+      const from = tabs.findIndex(x => x.id === e.dataTransfer.getData('text/plain'));
+      const to = tabs.findIndex(x => x.id === t.id);
+      if (from < 0 || from === to) return;
+      tabs.splice(to, 0, tabs.splice(from, 1)[0]);
+      render();
+    };
+    strip.insertBefore(b, strip.querySelector('.ws-tools'));
+  });
+  // panes
+  document.querySelectorAll('.pane').forEach(p => {
+    p.classList.toggle('on', !!activeId && p.dataset.pane === activeId);
+  });
+  $('#dockDot').style.display = tabs.some(t => t.unread) ? '' : 'none';
+}
+
+/* ───── 布局 ───── */
+const LAYOUT_NAME = { split: '◧ 工作台 · 分栏', max: '⛶ 工作台 · 最大化', hidden: '◧ 工作台 · 已收起' };
+function setLayout(l, keepIfHidden) {
+  if (keepIfHidden && l === 'split' && !tabs.length) return;
+  stage.dataset.layout = l;
+  $('#layoutPill').textContent = LAYOUT_NAME[l];
+  toast('布局：' + LAYOUT_NAME[l].replace(/.*·\s*/, ''));
+}
+function cycleLayout() {
+  const order = ['split', 'max', 'hidden'];
+  setLayout(order[(order.indexOf(stage.dataset.layout) + 1) % 3]);
+}
+
+/* 分隔条拖拽 */
+(() => {
+  const rz = $('#resizer'), col = $('#wsCol');
+  let on = false;
+  rz.onmousedown = (e) => { on = true; rz.classList.add('on'); document.body.style.userSelect = 'none'; e.preventDefault(); };
+  window.addEventListener('mousemove', (e) => {
+    if (!on) return;
+    const rect = stage.getBoundingClientRect();
+    const w = Math.min(Math.max(rect.width - e.clientX - 6, 280), rect.width * 0.7);
+    col.style.flexBasis = col.style.width = w + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!on) return;
+    on = false; rz.classList.remove('on'); document.body.style.userSelect = '';
+    toast('宽度已记忆：' + Math.round(parseFloat(col.style.width)) + 'px');
+  });
+})();
+
+/* ───── Sheet peek ───── */
+function peek(title) {
+  sheetCtx = title;
+  $('#sheetTitle').textContent = title;
+  $('#sheetBody').innerHTML = title.includes('xlsx')
+    ? '<p><b style="color:var(--text)">weekly</b>（25 行 × 9 列）</p><p style="font-family:ui-monospace,monospace;font-size:11px;line-height:1.8">1  claude-mem&nbsp;&nbsp;&nbsp;113,204 ★&nbsp;&nbsp;+4,182<br>2  open-webui&nbsp;&nbsp;98,371 ★&nbsp;&nbsp;+1,930<br>3  worktrunk&nbsp;&nbsp;&nbsp;&nbsp;4,108 ★&nbsp;&nbsp;+1,264<br>…（Sheet 只给概览；全表 9 列请转工作台）</p>'
+    : '<p><b style="color:var(--text)">竞品特性调研</b> · 13 产品</p><p>- Claude Code：/context 可视化、deny-instead-of-prompting<br>- Open WebUI：Tabbed workspace、Analytics explorer<br>- claude-mem：跨会话自动记忆（11.3 万 ★）<br>- worktrunk：并行 agent 的 worktree 管理</p><p style="color:var(--text-faint);font-size:11.5px">Sheet = 快览；工作台 = 深度浏览（多开/常驻）。</p>';
+  $('#veil').classList.add('on'); $('#sheet').classList.add('on');
+}
+function closeSheet() { $('#veil').classList.remove('on'); $('#sheet').classList.remove('on'); }
+function sheetToWorkspace() {
+  closeSheet();
+  if (sheetCtx?.includes('xlsx')) openTab('artifact', 'trending-xlsx', 'trending-2026-11-07.xlsx', '📊');
+  else openTab('artifact', 'competitor-md', '竞品特性调研（13 产品）.md', '📄');
+}
+
+/* ───── 发送（迷你条/主输入共用） ───── */
+function send() {
+  const inp = $('#composerInput');
+  if (!inp.value.trim()) return;
+  toast('已发送 · 回复就绪后工作台标签将出现未读点', 'ok');
+  inp.value = '';
+  // 模拟：后台任务 tab 打未读点（若已开且非激活）
+  setTimeout(() => {
+    const t = tabs.find(x => x.id === 'task:pytest');
+    if (t && t.id !== activeId) { t.unread = true; render(); }
+  }, 1200);
+}
+
+/* ───── 后台任务日志流（未读点演示） ───── */
+const LINES = [
+  ['d', 'packages/runtime/tests/api/test_sessions.py::test_create'],
+  ['g', 'PASSED'], ['d', 'tests/graph/test_rate_limit.py::test_backoff'],
+  ['g', 'PASSED'], ['y', 'tests/e2e/test_ask_user_flow.py::test_wait_question'],
+  ['g', 'PASSED (retry 1)'], ['d', 'tests/test_scheduler.py::test_weekly_grid'],
+  ['y', 'WARN utc boundary'], ['g', 'PASSED'],
+];
+let li = 0, done = 2110;
+function pumpLog() {
+  const t = tabs.find(x => x.id === 'task:pytest');
+  done = Math.min(done + 47, 2790);
+  $('#taskProg').textContent = done + ' / 2790 用例';
+  const [c, s] = LINES[li++ % LINES.length];
+  const div = document.createElement('div');
+  div.className = c; div.textContent = `[10:2${Math.floor(li / 10) % 10}] ${s}`;
+  $('#termOut').appendChild(div);
+  $('#termOut').scrollTop = 1e6;
+  if (t && t.id !== activeId) { t.unread = true; render(); } // 非激活 → 未读点
+  if (done >= 2790) {
+    if (t) { t.live = false; t.unread = t.id !== activeId; render(); }
+    $('#taskProg').textContent = '2790 / 2790 · 全部通过 ✅';
+    toast('后台任务完成：pytest 全量回归 2790 通过', 'ok');
+    return;
+  }
+  setTimeout(pumpLog, 1500);
+}
+$('#termOut').innerHTML = '<div class="d">== pytest 全量回归 · tail 模式（非激活时标签打未读点 •）==</div>';
+setTimeout(pumpLog, 2500);
+
+/* ───── 快捷键 ───── */
+window.addEventListener('keydown', (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (!mod) return;
+  if (e.key === '\\') { e.preventDefault(); cycleLayout(); }
+  else if (e.key.toLowerCase() === 'w' && activeId) { e.preventDefault(); closeTab(activeId); }
+  else if (/^[1-9]$/.test(e.key)) {
+    const t = tabs[+e.key - 1];
+    if (t) { e.preventDefault(); activate(t.id); toast('⌘' + e.key + ' → ' + t.title); }
+  }
+  else if (e.key === ']') { e.preventDefault(); const i = tabs.findIndex(t => t.id === activeId); tabs[i + 1] && activate(tabs[i + 1].id); }
+  else if (e.key === '[') { e.preventDefault(); const i = tabs.findIndex(t => t.id === activeId); tabs[i - 1] && activate(tabs[i - 1].id); }
+});
+
+/* 初始：预开两个 tab，演示多开 */
+openTab('artifact', 'trending-xlsx', 'trending-2026-11-07.xlsx', '📊');
+openTab('task', 'pytest', 'bg · pytest 全量回归', '▶', { live: true });
+render();
+</script>
+</body>
+</html>

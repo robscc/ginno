@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ginno × MCP Apps 交互动画 — 数据流时序演示</title>
+<style>
+  :root {
+    --bg: #0e1013; --panel: #15181d; --panel-2: #1b1f26; --panel-3: #21262e;
+    --border: #262b34; --border-2: #333a46;
+    --text: #e6e9ee; --dim: #8b93a1; --faint: #5c6472;
+    --accent: #4f8cff; --ws: #2dd4bf; --violet: #a78bfa; --ok: #34c77b; --warn: #ffb020; --err: #ff5c5c;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #08090b; color: var(--text); overflow: hidden; height: 100vh;
+    display: flex; flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; }
+  button { font-family: inherit; cursor: pointer; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a303a; border-radius: 4px; }
+
+  .demo-bar { background: #1a1408; border-bottom: 1px solid #3a2f12; color: #d8b45a; font-size: 12px;
+    padding: 7px 16px; display: flex; gap: 14px; align-items: center; flex-shrink: 0; }
+  .demo-bar b { color: #f0d080; }
+  .demo-bar .sp { margin-left: auto; opacity: .7; }
+
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  /* ───── 左：Ginno 界面 mock ───── */
+  .ginno { flex: 1.25; min-width: 420px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg); }
+  .g-top { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--dim); background: var(--panel); flex-shrink: 0; }
+  .g-top .pill { border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 10.5px; color: var(--faint); }
+  .g-thread { flex: 1; overflow-y: auto; padding: 14px 18px; }
+
+  .msg { display: flex; gap: 9px; margin-bottom: 13px; animation: pop .3s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+  .ava { width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .ava.u { background: var(--panel-3); color: var(--dim); }
+  .ava.a { background: rgba(79,140,255,.18); color: var(--accent); }
+  .bub { flex: 1; font-size: 12.5px; line-height: 1.6; color: var(--text); }
+  .who { font-size: 10.5px; color: var(--faint); margin-bottom: 2px; }
+
+  .toolcard { background: var(--panel); border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px;
+    margin: 4px 0 12px; font-size: 11.5px; }
+  .toolcard .hd { display: flex; gap: 7px; align-items: center; margin-bottom: 5px; }
+  .toolcard .t { font-weight: 600; font-family: ui-monospace, monospace; font-size: 11px; color: var(--ws); }
+  .toolcard .m { color: var(--faint); font-size: 10.5px; }
+  .toolcard .kv { color: var(--dim); font-family: ui-monospace, monospace; font-size: 10.5px; }
+  .toolcard .kv b { color: var(--violet); font-weight: 600; }
+
+  /* McpAppCard（iframe 区） */
+  .appcard { border: 1px solid rgba(45,212,191,.4); border-radius: 10px; overflow: hidden; margin: 4px 0 12px;
+    background: var(--panel-2); animation: pop .35s ease-out; }
+  .appcard .bar { display: flex; align-items: center; gap: 7px; padding: 6px 10px; font-size: 10.5px;
+    color: var(--ws); background: rgba(45,212,191,.07); border-bottom: 1px solid var(--border); }
+  .appcard .bar .sandbox { margin-left: auto; color: var(--faint); font-family: ui-monospace, monospace; font-size: 9.5px;
+    border: 1px solid var(--border); padding: 0 6px; border-radius: 4px; }
+  .app-inner { padding: 10px; font-size: 11.5px; }
+  .app-filter { display: flex; gap: 5px; margin-bottom: 8px; }
+  .fchip { border: 1px solid var(--border-2); border-radius: 999px; padding: 1px 9px; font-size: 10px; color: var(--dim); cursor: pointer; }
+  .fchip.on { color: #0c0f12; background: var(--ws); border-color: var(--ws); font-weight: 600; }
+  .app-tbl { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  .app-tbl th { text-align: left; color: var(--faint); font-weight: 600; padding: 3px 6px; border-bottom: 1px solid var(--border-2); font-size: 9.5px; }
+  .app-tbl td { padding: 3.5px 6px; border-bottom: 1px solid var(--border); color: var(--dim); }
+  .app-tbl td b { color: var(--text); }
+  .flash { animation: flash 1s ease-out; }
+  @keyframes flash { 0% { background: rgba(45,212,191,.25); } 100% { background: transparent; } }
+
+  /* ───── 右：泳道 + 帧面板 ───── */
+  .side { flex: 1; min-width: 430px; display: flex; flex-direction: column; background: var(--panel); }
+  .side-hd { padding: 9px 14px; font-size: 12px; font-weight: 600; color: var(--dim); border-bottom: 1px solid var(--border); flex-shrink: 0;
+    display: flex; gap: 10px; align-items: center; }
+
+  /* 泳道 */
+  .lanes { position: relative; height: 238px; flex-shrink: 0; border-bottom: 1px solid var(--border); overflow: hidden; }
+  .lane { position: absolute; top: 0; bottom: 34px; width: 1px; background: var(--border-2); }
+  .lane .tag { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); font-size: 10px;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--faint); background: var(--panel); white-space: nowrap; }
+  .lane.hot .tag { color: var(--ws); border-color: rgba(45,212,191,.5); box-shadow: 0 0 10px rgba(45,212,191,.15); }
+  .lane.hot { background: rgba(45,212,191,.25); }
+  .lane.user { left: 12%; } .lane.ginno { left: 38%; } .lane.server { left: 64%; } .lane.app { left: 88%; }
+  .lifeline { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--border); bottom: 34px; opacity: 0; }
+  .msgcap { position: absolute; transform: translate(-50%, -50%); font-size: 10px; font-family: ui-monospace, monospace;
+    background: var(--panel-3); border: 1px solid var(--border-2); color: var(--dim); border-radius: 6px;
+    padding: 1.5px 8px; white-space: nowrap; opacity: 0; z-index: 5; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  .msgcap.show { opacity: 1; transition: opacity .2s; }
+  .msgcap.req { color: var(--accent); border-color: rgba(79,140,255,.45); }
+  .msgcap.res { color: var(--ok); border-color: rgba(52,199,123,.45); }
+  .msgcap.ui { color: var(--violet); border-color: rgba(167,139,250,.45); }
+  .wire { position: absolute; height: 2px; z-index: 4; opacity: 0; }
+  .wire.show { opacity: 1; }
+  .wire.req { background: linear-gradient(90deg, transparent, var(--accent)); }
+  .wire.res { background: linear-gradient(90deg, transparent, var(--ok)); }
+  .wire.ui { background: linear-gradient(270deg, transparent, var(--violet)); height: 2px; }
+  .pkt { position: absolute; width: 7px; height: 7px; border-radius: 999px; z-index: 6; opacity: 0; }
+  .pkt.run { opacity: 1; transition: left .9s cubic-bezier(.4,.1,.4,1); }
+  .pkt.req { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .pkt.res { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .pkt.ui { background: var(--violet); box-shadow: 0 0 8px var(--violet); }
+  .timeaxis { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; border-top: 1px solid var(--border); display: flex; }
+
+  /* 步骤条 */
+  .steps { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .stp { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2);
+    color: var(--faint); font-size: 10.5px; display: flex; align-items: center; justify-content: center; }
+  .stp.done { color: var(--ws); border-color: rgba(45,212,191,.35); }
+  .stp.cur { color: #0c0f12; background: var(--ws); border-color: var(--ws); font-weight: 700; }
+
+  /* 帧面板 */
+  .frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .frame-hd { padding: 8px 14px 6px; font-size: 12px; }
+  .frame-hd .st { font-weight: 700; color: var(--ws); }
+  .frame-hd .d { color: var(--dim); font-size: 11.5px; margin-top: 3px; line-height: 1.55; }
+  .frame pre { flex: 1; margin: 6px 14px 12px; background: #0b0d10; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; line-height: 1.65;
+    color: var(--dim); overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .frame pre .k { color: var(--violet); } .frame pre .s { color: #7ecb8f; } .frame pre .n { color: #d8a657; }
+  .frame pre .c { color: var(--faint); }
+
+  /* 控制 */
+  .ctrl { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .cbtn { background: var(--panel-3); color: var(--dim); border: 1px solid var(--border); border-radius: 7px;
+    padding: 4px 12px; font-size: 11.5px; }
+  .cbtn:hover { color: var(--ws); border-color: rgba(45,212,191,.4); }
+  .cbtn.pri { background: rgba(45,212,191,.12); color: var(--ws); border-color: rgba(45,212,191,.4); }
+  .spdlab { font-size: 10.5px; color: var(--faint); margin-left: auto; }
+</style>
+</head>
+<body>
+
+<div class="demo-bar">
+  <span>🧪 <b>Ginno × MCP Apps 交互动画</b> · 场景：GitHub trending 周报（带 UI 的工具）</span>
+  <span>右侧泳道展示协议数据流：用户 → Ginno(host) → MCP server ⇄ 沙箱 iframe；底部按钮可暂停/步进</span>
+  <span class="sp">设计文档 docs/mcp-apps-design.md</span>
+</div>
+
+<div class="main">
+  <!-- Ginno mock -->
+  <div class="ginno">
+    <div class="g-top">💬 竞品调研 + trending 整理 <span class="pill">claude-sonnet-4.6</span>
+      <span class="pill" id="connPill" style="color:var(--faint)">🔌 trending-mcp: connected</span></div>
+    <div class="g-thread" id="thread"></div>
+  </div>
+
+  <!-- 泳道 + 帧 -->
+  <div class="side">
+    <div class="side-hd">🛰️ 协议时序（4 泳道）</div>
+    <div class="lanes" id="lanes">
+      <div class="lane user" id="ln-user"><span class="tag">👤 用户</span></div>
+      <div class="lane ginno" id="ln-ginno"><span class="tag">🤖 Ginno · host</span></div>
+      <div class="lane server" id="ln-server"><span class="tag">📦 trending-mcp</span></div>
+      <div class="lane app" id="ln-app"><span class="tag">🧩 App iframe</span></div>
+      <div class="timeaxis" id="timeaxis"></div>
+    </div>
+    <div class="steps" id="steps"></div>
+    <div class="frame">
+      <div class="frame-hd"><span class="st" id="stepTitle"></span><div class="d" id="stepDesc"></div></div>
+      <pre id="frameJson"></pre>
+    </div>
+    <div class="ctrl">
+      <button class="cbtn pri" id="playBtn" onclick="togglePlay()">⏸ 暂停</button>
+      <button class="cbtn" onclick="step(-1)">⏮ 上一步</button>
+      <button class="cbtn" onclick="step(1)">下一步 ⏭</button>
+      <button class="cbtn" onclick="replay()">↺ 重播</button>
+      <span class="spdlab">每步 <span id="spdVal">2.6</span>s <input type="range" min="1.2" max="4.5" step="0.2" value="2.6"
+        style="vertical-align:middle;width:90px" oninput="setSpeed(this.value)"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const thread = $('#thread');
+const lanesBox = $('#lanes');
+const N_STEPS = 10;
+const ROWS_ALL = [
+  ["claude-mem", "113,204", "+4,182", "TS"],
+  ["open-webui", "98,371", "+1,930", "TS"],
+  ["openrig", "9,4k", "+642", "TS"],
+  ["context-mode", "5,2k", "+511", "TS"],
+  ["worktrunk", "4,108", "+1,264", "Rust"],
+  ["ollama", "141,032", "+880", "Go"],
+  ["xtool", "3,8k", "+297", "Swift"],
+  ["VoiceStudio", "2,9k", "+244", "Py"],
+  ["scientific-agent-skills", "2,1k", "+188", "Py"],
+  ["ghidra", "28,4k", "+96", "Java"],
+];
+const ROWS_PY = ROWS_ALL.filter(r => r[3] === "Py");
+
+function bubble(who, cls, text) {
+  const d = document.createElement('div');
+  d.className = 'msg';
+  d.innerHTML = `<div class="ava ${cls}">${who === '我' ? '我' : 'G'}</div>
+    <div class="bub"><div class="who">${who}</div><p>${text}</p></div>`;
+  thread.appendChild(d); thread.scrollTop = 1e6; return d;
+}
+function toolCard() {
+  const d = document.createElement('div');
+  d.className = 'toolcard';
+  d.innerHTML = `<div class="hd">🔧 <span class="t">mcp_trending-mcp_render</span>
+      <span class="m">stdio · 1.2s</span><span style="margin-left:auto" class="m">✅</span></div>
+    <div class="kv">topic: <b>"ai-agent"</b> · _meta.ui.resourceUri: <b>"ui://trending/main"</b></div>`;
+  thread.appendChild(d); thread.scrollTop = 1e6; return d;
+}
+function appCard() {
+  const d = document.createElement('div');
+  d.className = 'appcard';
+  d.innerHTML = `<div class="bar">🧩 trending-viewer <span style="color:var(--faint)">· MCP App</span>
+      <span class="sandbox">iframe sandbox="allow-scripts"</span></div>
+    <div class="app-inner">
+      <div class="app-filter" id="appFilter">
+        <span class="fchip on" onclick="pickLang(this,'All')">All</span>
+        <span class="fchip" onclick="pickLang(this,'TS')">TS</span>
+        <span class="fchip" id="pyChip" onclick="pickLang(this,'Python')">Python</span>
+        <span class="fchip" onclick="pickLang(this,'Rust')">Rust</span>
+      </div>
+      <table class="app-tbl" id="appTbl"></table>
+    </div>`;
+  thread.appendChild(d); thread.scrollTop = 1e6; return d;
+}
+function renderTbl(rows) {
+  $('#appTbl').innerHTML = "<tr><th>repo</th><th>⭐</th><th>周增</th><th>语言</th></tr>" +
+    rows.map(r => `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td style="color:var(--ok)">${r[2]}</td><td>${r[3]}</td></tr>`).join("");
+}
+window.pickLang = (el, lang) => {
+  document.querySelectorAll('.fchip').forEach(c => c.classList.remove('on'));
+  el.classList.add('on');
+  if (lang === 'Python') { jumpTo(6); } // 演示：点 Python 触发第 7 步剧本
+  else renderTbl(ROWS_ALL);
+};
+function agentSay(t) { bubble('Ginno', 'a', t); }
+
+/* ── 泳道动画原语 ── */
+const laneX = { user: 12, ginno: 38, server: 64, app: 88 }; // %
+function pkt(from, to, cls, label, y, dirBack) {
+  const p = document.createElement('div');
+  p.className = 'pkt ' + cls;
+  p.style.top = y + 'px'; p.style.left = laneX[from] + '%';
+  lanesBox.appendChild(p);
+  const w = document.createElement('div');
+  w.className = 'wire ' + cls + ' show';
+  w.style.top = (y + 2) + 'px';
+  const x1 = Math.min(laneX[from], laneX[to]), x2 = Math.max(laneX[from], laneX[to]);
+  w.style.left = x1 + '%'; w.style.width = (x2 - x1) + '%';
+  lanesBox.appendChild(w);
+  const cap = document.createElement('div');
+  cap.className = 'msgcap show ' + cls;
+  cap.textContent = label;
+  cap.style.top = (y - 13) + 'px';
+  cap.style.left = ((x1 + x2) / 2) + '%';
+  lanesBox.appendChild(cap);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    p.classList.add('run');
+    p.style.left = laneX[to] + '%';
+  }));
+  setTimeout(() => { p.remove(); }, 1100);
+}
+function hot(lane) {
+  ['user','ginno','server','app'].forEach(l => $('#ln-' + l).classList.toggle('hot', l === lane));
+}
+function markTime(i) {
+  const t = document.createElement('div');
+  t.style.cssText = 'flex:1;border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:9.5px;color:var(--faint);font-family:ui-monospace,monospace';
+  t.textContent = i; $('#timeaxis').appendChild(t);
+}
+
+/* ── 剧本 ── */
+const J = (o) => $('#frameJson').innerHTML = o;
+const hl = (s) => s
+  .replace(/&/g, '&amp;')
+  .replace(/"([^"]+)":/g, '"<span class="k">$1</span>":')
+  .replace(/: "([^"]*)"/g, ': "<span class="s">$1</span>"')
+  .replace(/: (\d[\d,\.]*)/g, ': <span class="n">$1</span>');
+
+const SCRIPT = [
+  { t: "① 用户提问", d: "普通对话开始——用户要周报。Ginno 侧已连接 MCP server「trending-mcp」（stdio，uvx 拉起）。",
+    f: hl(`{ "role": "user", "text": "整理下本周 GitHub trending，重点看 AI Agent 方向" }`),
+    act() { bubble('我', 'u', '整理下本周 GitHub trending，重点看 AI Agent 方向'); pkt('user', 'ginno', 'req', '输入', 60); hot('user'); } },
+
+  { t: "② LLM 选中带 UI 的工具", d: "模型看到工具 mcp_trending-mcp_render——它的定义里带着 _meta.ui.resourceUri（MCP Apps 的入口声明，连接时 list_tools 已随 description 返回，registry 透传给前端）。",
+    f: hl(`{ "tool": "mcp_trending-mcp_render",
+  "_meta": { "ui": {
+    "resourceUri": "ui://trending/main",
+    "csp": "default-src 'none'; script-src 'unsafe-inline'" } } }`),
+    act() { hot('ginno'); pkt('ginno', 'ginno', 'ui', '选择工具（带 _meta.ui）', 92); } },
+
+  { t: "③ runtime 调用工具", d: "Ginno runtime 走既有 MCP 会话（session.call_tool），与普通 MCP 工具调用完全同一条路——不经过任何新协议。",
+    f: hl(`→ session.call_tool("render", { topic: "ai-agent" })`),
+    act() { pkt('ginno', 'server', 'req', 'tools/call · render', 124); hot('server'); } },
+
+  { t: "④ server 返回结构化数据", d: "server 返回 structuredContent（10 条仓库数据）。注意：数据是 JSON，UI 引用在 _meta 里——Ginno 拿到数据后再去取界面。",
+    f: hl(`{ "structuredContent": { "repos": [
+    { "name": "claude-mem", "stars": 113204, "weekly": 4182 }, … ] },
+  "elapsed_ms": 812 }`),
+    act() { pkt('server', 'ginno', 'res', 'structuredContent ×10', 156); hot('ginno'); } },
+
+  { t: "⑤ host 取 ui:// resource", d: "前端发现 _meta.ui → 调 Ginno 新 API GET /api/mcp/ui（runtime 代取 ui://trending/main，返回内联 HTML）。前端不直连 server——stdio 场景浏览器根本连不了。",
+    f: hl(`GET /api/mcp/ui?server=trending-mcp&tool=render
+→ 200 { "html": "<!doctype html>…(内联 React bundle, 86 KB)", "csp": "…" }`),
+    act() { pkt('ginno', 'server', 'req', 'read_resource ui://trending/main', 188); setTimeout(() => pkt('server', 'ginno', 'res', 'HTML 86 KB', 214), 600); } },
+
+  { t: "⑥ 对话流渲染沙箱 iframe", d: "McpAppCard 渲染：<iframe sandbox=\"allow-scripts\" srcdoc=html>——不给 allow-same-origin，app 碰不到 Ginno 的 DOM/cookie/storage。初始化握手后 host 把 ④ 的数据推进去，表格出现在对话里。",
+    f: hl(`parent ⇄ iframe (postMessage JSON-RPC)
+→ { "method": "ui/initialize", "params": { "client": "ginno" } }
+← { "result": { "capabilities": ["tools", "context"] } }
+→ { "method": "ui/data", "params": { repos: [...] } }`),
+    act() { hot('app'); toolCard(); appCard(); renderTbl(ROWS_ALL); pkt('ginno', 'app', 'ui', 'ui/initialize + 数据推送', 246); } },
+
+  { t: "⑦ 用户在 app 内交互 → 回调工具", d: "用户在表格里点「Python」筛选——app 发 postMessage tools/call(filter)。这是 MCP Apps 的核心：界面动作直接变成 MCP 工具调用，绕过 LLM、无需再打字。",
+    f: hl(`← { "method": "tools/call",
+     "params": { "name": "filter",
+       "arguments": { "language": "Python" } } }`),
+    act() { hot('user'); pkt('user', 'app', 'ui', '点「Python」', 278); setTimeout(() => pkt('app', 'ginno', 'ui', 'tools/call filter', 304), 600); } },
+
+  { t: "⑧ Ginno 代理调用（过权限层）", d: "McpAppBridge 不会裸转发：调用先过 Ginno 权限层（deny→ask→allow，标记 via:\"mcp-app\"）。此处命中 allow 规则放行；若是写操作会弹权限卡，注明「由 MCP App trending-viewer 发起」。随后 runtime 走同一条 MCP 会话调 server。",
+    f: hl(`permission.check("mcp_trending-mcp_filter",
+  { via: "mcp-app", origin: "trending-viewer" })
+→ allow (settings: "mcp_trending-mcp_filter")
+→ session.call_tool("filter", { language: "Python" })`),
+    act() { hot('ginno'); pkt('ginno', 'server', 'req', 'tools/call filter（已过权限）', 336); } },
+
+  { t: "⑨ 结果推回 app，界面更新", d: "server 返回 2 条 Python 仓库 → host 经 postMessage 推给 iframe，表格原地更新（不重开 iframe、不丢滚动位置）。整个过程对话流零打扰。",
+    f: hl(`← session.call_tool → { repos: [VoiceStudio, scientific-agent-skills] }
+→ iframe: { "method": "ui/data", "params": { repos: [2 items] } }`),
+    act() { pkt('server', 'ginno', 'res', '2 items', 368); setTimeout(() => { pkt('ginno', 'app', 'ui', 'ui/data 更新', 394); renderTbl(ROWS_PY);
+      document.querySelectorAll('.fchip').forEach(c => c.classList.remove('on'));
+      $('#pyChip').classList.add('on');
+      $('#appTbl').classList.add('flash'); }, 800); hot('app'); } },
+
+  { t: "⑩ agent 收尾", d: "最后（可选）LLM 补一句总结——数据流闭环：对话触发 → 界面交互 → 工具回调 → 界面更新 → 对话收尾。全程 server 只是一个普通 MCP server，UI 是它自带的。",
+    f: hl(`Ginno: "已按 Python 过滤，剩 2 个仓库——
+VoiceStudio（本地语音克隆）与 scientific-agent-skills
+（科研技能库）。要我把全量 10 个存成 xlsx 吗？"`),
+    act() { hot('ginno'); pkt('app', 'ginno', 'ui', '（空闲）', 426); agentSay('已按 Python 过滤，剩 2 个仓库——<b>VoiceStudio</b>（本地语音克隆）与 <b>scientific-agent-skills</b>（科研技能库）。要我把全量 10 个存成 xlsx 吗？'); } },
+];
+
+/* ── 播放器 ── */
+let cur = -1, timer = null, speed = 2.6, playing = true;
+function renderSteps() {
+  const box = $('#steps'); box.innerHTML = '';
+  for (let i = 0; i < N_STEPS; i++) {
+    const b = document.createElement('button');
+    b.className = 'stp' + (i === cur ? ' cur' : i < cur ? ' done' : '');
+    b.textContent = i + 1;
+    b.title = SCRIPT[i].t;
+    b.onclick = () => jumpTo(i);
+    box.appendChild(b);
+  }
+}
+function apply(i) {
+  $('#stepTitle').textContent = SCRIPT[i].t;
+  $('#stepDesc').textContent = SCRIPT[i].d;
+  J(SCRIPT[i].f);
+  markTime(i + 1);
+  SCRIPT[i].act();
+}
+function jumpTo(i) { cur = i; renderSteps(); apply(i); resetTimer(); }
+function step(d) { const n = cur + d; if (n < 0 || n >= N_STEPS) return; playing = false; updBtn(); jumpTo(n); }
+function resetTimer() { clearInterval(timer); if (playing) timer = setTimeout(next, speed * 1000); }
+function next() {
+  if (cur + 1 >= N_STEPS) { replay(); return; }
+  cur++; renderSteps(); apply(cur); resetTimer();
+}
+function replay() {
+  thread.innerHTML = ''; lanesBox.querySelectorAll('.pkt,.wire,.msgcap').forEach(e => e.remove());
+  $('#timeaxis').innerHTML = ''; cur = -1; playing = true; updBtn(); next();
+}
+function togglePlay() { playing = !playing; updBtn(); resetTimer(); }
+function updBtn() { $('#playBtn').textContent = playing ? '⏸ 暂停' : '▶ 播放'; }
+function setSpeed(v) { speed = +v; $('#spdVal').textContent = (+v).toFixed(1); resetTimer(); }
+
+renderSteps(); next();
+</script>
+</body>
+</html>
