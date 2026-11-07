@@ -4,6 +4,7 @@
 import { getSessionHistory } from "@/lib/runtime";
 import {
   foldSubagentResultBlocks,
+  foldTaskEventBlocks,
   type Block,
 } from "@/components/chat/blocks";
 import { mid, payloadFromBlocks, type ChatMsg } from "../streamCore";
@@ -85,7 +86,9 @@ export function mapHistory(
       role: m.role,
       // 运行时注入的子代理结果（契约 3：<ginno_subagent_result> 包裹的
       // HumanMessage）在重放时折成结果卡片块，避免原始标签以文本气泡出现。
-      blocks: foldSubagentResultBlocks(m.blocks),
+      // 任务事件注入带（[task finished]…）同样折成极薄 task_event 标记行
+      // （live 侧在 handle.ts steer.absorbed 折卡，此处补齐历史重放路径）。
+      blocks: foldTaskEventBlocks(foldSubagentResultBlocks(m.blocks)),
       agentId: m.agentId,
       teamReply: m.teamReply ?? null,
       turnId: own ?? (m.role === "assistant" ? carryTurn : undefined),

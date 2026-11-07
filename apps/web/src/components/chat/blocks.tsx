@@ -69,6 +69,7 @@ export {
   parseWorkerResults,
   parseWorkerAssign,
 } from "./blocks/subagentParse";
+export { foldTaskEventBlocks } from "./blocks/taskEventParse";
 export {
   SubagentKindBadges,
   SubagentSpawnCard,
