@@ -98,7 +98,12 @@ export class McpAppBridge {
     if (typeof method !== "string") return; // JSON-RPC response/非 request 形态：静默
     const id = msg.id as JsonRpcId | undefined;
     if (method === "ui/initialize") {
-      this.replyInitialize(id);
+      this.replyInitialize(id, msg.params);
+      return;
+    }
+    if (method === "ui/notifications/initialized") {
+      // 官方握手第二拍：app 完成通知，host 无需动作
+      this.deps.log?.("mcpApp: initialized notification received");
       return;
     }
     if (method === "tools/call") {
@@ -120,12 +125,37 @@ export class McpAppBridge {
       return;
     }
     this.deps.warn?.(`mcpAppBridge: dropped unknown method "${method}"`);
+    // 官方 App 类对带 id 的 request 会 await 回应——未知 request 必须回
+    // JSON-RPC error（而非静默丢弃），否则 app 侧 Promise 永挂。
+    if (id !== undefined) {
+      this.reply(id, undefined, { code: -32601, message: `method not found: ${method}` });
+    }
   }
 
-  /** host 主动推送（初始工具结果 + 后续更新）。 */
+  /** host 主动推送（初始工具结果 + 后续更新）。官方 wire：notification
+   * `ui/notifications/tool-result`，params = 标准 MCP CallToolResult
+   * （{content: [...], isError?}）。接受调用方 {tool, content} 旧形态，
+   * 规整为 content-only（App.ontoolresult 只读 content）。 */
   pushData(payload: Record<string, unknown>): void {
     if (this.disposed) return;
-    this.deps.postToApp({ jsonrpc: "2.0", method: "ui/data", params: payload });
+    const content = Array.isArray(payload.content)
+      ? payload.content
+      : [{ type: "text", text: String(payload.content ?? "") }];
+    const params: Record<string, unknown> = { content };
+    const structured =
+      payload.structuredContent ?? (payload as { structured?: unknown }).structured;
+    if (structured != null) params.structuredContent = structured;
+    if (payload.isError === true) params.isError = true;
+    if (typeof payload.error === "string") {
+      // 错误回推：官方 CallToolResult 形态（isError + 文本 content）
+      params.isError = true;
+      params.content = [{ type: "text", text: payload.error }];
+    }
+    this.deps.postToApp({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-result",
+      params,
+    });
   }
 
   dispose(): void {
@@ -135,13 +165,24 @@ export class McpAppBridge {
 
   // ------------------------------------------------------------------ //
 
-  private replyInitialize(id?: JsonRpcId): void {
-    // notification 形态（无 id）不回应答；request 应答声明 host 能力
+  private replyInitialize(id?: JsonRpcId, reqParams?: unknown): void {
+    // notification 形态（无 id）不回应答；request 应答按官方 McpUiInitializeResultSchema：
+    // { protocolVersion, hostInfo, hostCapabilities, hostContext? }——字段名与
+    // 官方 ext-apps App 类的 zod 校验严格对齐（2026-11-07 协议联调实测；
+    // 旧版回 {capabilities:[…]} 会导致 App.connect() 校验失败、页面卡「连接 host…」）。
     if (id === undefined) return;
+    const reqVersion =
+      _isPlainObject(reqParams) && typeof reqParams.protocolVersion === "string"
+        ? reqParams.protocolVersion
+        : "2025-11-21";
     this.deps.postToApp({
       jsonrpc: "2.0",
       id,
-      result: { capabilities: ["tools"] },
+      result: {
+        protocolVersion: reqVersion,
+        hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" },
+        hostCapabilities: { serverTools: {} },
+      },
     });
   }
 
