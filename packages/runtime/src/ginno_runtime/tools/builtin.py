@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 import weakref
 from collections import deque
 from collections.abc import Callable
@@ -66,6 +67,7 @@ GLOB_MAX_DIRS = 20000
 _WALK_IGNORE_DIRS = frozenset(
     {
         ".git",
+        ".ginno-bash-out",
         "node_modules",
         ".next",
         "dist",
@@ -425,13 +427,94 @@ BASH_OUT_TAIL = 10_000
 BASH_ERR_HEAD = 10_000
 BASH_ERR_TAIL = 5_000
 
+# 中间段落盘（2026-11-07）：超预算被丢弃的 stdout 中间段流式写入 base_dir
+# 下 ``.ginno-bash-out/``，省略行给出 read_file 分页取回提示——「中间省略」
+# 从死路变成可翻页。仅 stdout 落盘（stderr 预算 10k+5k 小、翻页价值低，
+# 决策记录：P0 只做 stdout）。文件是恢复窗口不是归档：目录内文件数与单文件
+# 大小双重封顶，超限即删（最老先删）。
+BASH_SPILL_DIR = ".ginno-bash-out"
+BASH_SPILL_MAX_FILES = 20
+BASH_SPILL_MAX_FILE_BYTES = 5 * 1024 * 1024
 
-def _drain_pipe(stream, cap_head: int, cap_tail: int, state: dict) -> None:
+
+def _sweep_spill_dir(d: Path, keep: Path) -> None:
+    """目录内文件数 > BASH_SPILL_MAX_FILES 时按 mtime 删最老（keep 刚创建不删）。
+
+    best-effort：任何 OSError 静默跳过——清理失败绝不能砸掉正在执行的命令。
+    """
+    files: list[tuple[int, Path]] = []
+    try:
+        for p in d.iterdir():
+            try:
+                files.append((p.stat().st_mtime_ns, p))
+            except OSError:
+                continue
+    except OSError:
+        return
+    if len(files) <= BASH_SPILL_MAX_FILES:
+        return
+    files.sort()
+    excess = len(files) - BASH_SPILL_MAX_FILES
+    for _, p in files:
+        if excess <= 0:
+            break
+        if p == keep:
+            continue
+        try:
+            p.unlink()
+            excess -= 1
+        except OSError:
+            continue
+
+
+def _open_spill(base_dir: Path) -> tuple | None:
+    """懒创建一个新的中间段文件，返回 ``(fh, rel_path_text, abs_path)``。
+
+    仅在读线程首次丢弃 chunk 时被调用一次（短命令不触发 → 零残留）。
+    mkdir/open/清理任一失败 → None，调用方降级为纯省略行（goal：落盘失败
+    绝不砸命令）。返回相对路径文本（相对 base_dir）供省略行与 read_file 直用。
+    """
+    try:
+        d = base_dir / BASH_SPILL_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"bash-{uuid.uuid4().hex[:8]}.log"
+        fh = p.open("w", encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    _sweep_spill_dir(d, p)
+    return fh, f"{BASH_SPILL_DIR}/{p.name}", p
+
+
+def _abandon_spill(fh, abs_path: Path | None, state: dict) -> None:
+    """写失败/超大小上限：关闭并删除半成品，state 退回纯省略行。"""
+    try:
+        fh.close()
+    except OSError:
+        pass
+    if abs_path is not None:
+        try:
+            abs_path.unlink()
+        except OSError:
+            pass
+    state["spill_path"] = None
+
+
+def _drain_pipe(stream, cap_head: int, cap_tail: int, state: dict, spill_opener=None) -> None:
     """读线程主体。``state`` 由调用方在线程启动【前】建好、本线程原地更新
     （GIL 下字段读写原子），主线程 join 超时也能安全拿到部分快照——proc.
-    kill 只杀直接子进程，握住管道不放的孙进程会让读线程迟迟不 EOF。"""
+    kill 只杀直接子进程，握住管道不放的孙进程会让读线程迟迟不 EOF。
+
+    ``spill_opener``（2026-11-07）：首个被丢弃的中间 chunk 出现时调用一次，
+    返回 ``(fh, rel, abs)`` 或 None；此后每个被挤出 tail 窗口的 chunk 流式
+    write+flush 到盘（join 超时也已可读）。写 OSError（磁盘满/权限）或累计
+    超 BASH_SPILL_MAX_FILE_BYTES → 删除半成品、state["spill_path"] 置
+    None，省略行退化为无恢复路径的旧格式——落盘永远只是增强，不是依赖。"""
     head: list = state["head"]
     tail: deque = state["tail"]
+    spill = None
+    spill_abs: Path | None = None
+    spill_bytes = 0
+    opener_called = False
     while True:
         chunk = stream.read(8192)
         if not chunk:
@@ -445,7 +528,33 @@ def _drain_pipe(stream, cap_head: int, cap_tail: int, state: dict) -> None:
             state["tail_len"] += len(chunk)
             while tail and state["tail_len"] > cap_tail:
                 state["tail_len"] -= len(tail[0])
-                tail.popleft()
+                dropped = tail.popleft()
+                if spill is None and not opener_called:
+                    opener_called = True
+                    if spill_opener is not None:
+                        opened = spill_opener()
+                        if opened is not None:
+                            spill, state["spill_path"], spill_abs = opened
+                if spill is None:
+                    continue
+                try:
+                    spill.write(dropped)
+                    spill.flush()  # join 超时也能从盘上读到已产出部分
+                except OSError:
+                    _abandon_spill(spill, spill_abs, state)
+                    spill = None
+                    spill_abs = None
+                    continue
+                spill_bytes += len(dropped)
+                if spill_bytes > BASH_SPILL_MAX_FILE_BYTES:
+                    _abandon_spill(spill, spill_abs, state)
+                    spill = None
+                    spill_abs = None
+    if spill is not None:
+        try:
+            spill.close()
+        except OSError:
+            pass
 
 
 def _compose_capped(state: dict, label: str) -> str:
@@ -453,11 +562,16 @@ def _compose_capped(state: dict, label: str) -> str:
     if state["total"] <= head_len:
         return "".join(state["head"])
     dropped = state["total"] - head_len - state["tail_len"]
-    return (
-        f"{''.join(state['head'])}"
-        f"\n[{label}: 中间省略 {dropped} chars]\n"
-        f"{''.join(state['tail'])}"
-    )
+    omit = f"[{label}: 中间省略 {dropped} chars"
+    spill_rel = state.get("spill_path")
+    if spill_rel:
+        # 建议 limit 用 head 的实际行数（同规模窗口）；chunk 边界与行边界无关，
+        # 精确行号以 read_file 返回的 "lines a–b of N" 为准。
+        head_lines = len("".join(state["head"]).splitlines()) or 1
+        omit += (
+            f" → 全量已存 {spill_rel}，read_file offset=1 limit={head_lines} 可取回"
+        )
+    return f"{''.join(state['head'])}\n{omit}]\n{''.join(state['tail'])}"
 
 
 def _atomic_write_text(p: Path, text: str) -> None:
@@ -1084,7 +1198,13 @@ def build_builtin_tools(
     def bash(command: str, timeout: int = 30) -> str:
         """Run a shell command with the session working directory (the primary
         context folder when one is set) as cwd. Returns stdout+stderr, capped
-        head+tail（超预算中间段省略计数；超时保留已产出内容）. Never raises.
+        head+tail（超预算中间段省略计数；stdout 的被省略中间段会存入工作目录
+        ``.ginno-bash-out/``，省略行附 read_file offset/limit 取回提示；超时
+        保留已产出内容）. Never raises.
+
+        Prefer built-in directory args (`git -C <path> …`, `rg <pattern>
+        <path>`, `pytest <path>`) over `cd <path> && …` — simpler commands
+        keep output handling consistent.
 
         Shell gotchas worth knowing: a pipeline's exit code is the LAST
         command's — an rg failure behind ``| head`` shows up only in the
@@ -1150,11 +1270,19 @@ def build_builtin_tools(
             return f"[error] cannot execute: {type(e).__name__}: {e}"
         # 流式 head+tail 采集（预算见 _drain_pipe 上方注释）：state 先建好
         # 再起读线程，原地更新；join 超时（孙进程握管道）也拿得到部分快照。
-        so = {"head": [], "tail": deque(), "head_len": 0, "tail_len": 0, "total": 0}
+        # stdout 的被丢弃中间段懒落盘到 base_dir/.ginno-bash-out/（短命令
+        # 零残留），stderr 不落盘（预算小、价值低）。
+        so = {
+            "head": [], "tail": deque(), "head_len": 0,
+            "tail_len": 0, "total": 0, "spill_path": None,
+        }
         se = {"head": [], "tail": deque(), "head_len": 0, "tail_len": 0, "total": 0}
+        spill_opener = (lambda: _open_spill(base_dir)) if cwd else None
         readers = [
             threading.Thread(
-                target=_drain_pipe, args=(proc.stdout, BASH_OUT_HEAD, BASH_OUT_TAIL, so), daemon=True
+                target=_drain_pipe,
+                args=(proc.stdout, BASH_OUT_HEAD, BASH_OUT_TAIL, so, spill_opener),
+                daemon=True,
             ),
             threading.Thread(
                 target=_drain_pipe, args=(proc.stderr, BASH_ERR_HEAD, BASH_ERR_TAIL, se), daemon=True
