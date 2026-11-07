@@ -105,6 +105,43 @@ def _unpack_rw(ctx_res: tuple) -> tuple[Any, Any]:
     return ctx_res[0], ctx_res[1]
 
 
+class MCPNotConnectedError(RuntimeError):
+    """Operation needs a live session for a server that is not connected
+    (disabled, disconnected, or still connecting)."""
+
+
+def _tool_ui(mcp_tool: Any) -> dict[str, Any] | None:
+    """MCP Apps 扩展（modelcontextprotocol.io/extensions/apps）：tool
+    description 的 ``_meta.ui`` 块（``{resourceUri, csp, permissions}``）。
+
+    SDK ``mcp.types.Tool`` 把线上的 ``_meta`` 映射为 ``meta`` 字段；非 SDK
+    对象（FakeTool 等）兜底认 ``_meta`` 属性。非 dict / 无 ui 块返回 None。
+    """
+    meta = getattr(mcp_tool, "meta", None)
+    if meta is None:
+        meta = getattr(mcp_tool, "_meta", None)
+    if not isinstance(meta, dict):
+        return None
+    ui = meta.get("ui")
+    return ui if isinstance(ui, dict) and ui else None
+
+
+def _content_texts(contents: list) -> list[str]:
+    """CallToolResult.content → 纯文本块列表（text 原样、其余 model_dump）。
+
+    graph 工具包装器（模型视角，\\n join）与 /api/mcp/call（app 视角，
+    逐块返回）共用，保证两条路径对同一结果产出一致的内容。
+    """
+    texts: list[str] = []
+    for c in contents:
+        text = getattr(c, "text", None)
+        if text:
+            texts.append(text)
+        else:
+            texts.append(json.dumps(c.model_dump() if hasattr(c, "model_dump") else str(c)))
+    return texts
+
+
 @dataclass
 class MCPServerConfig:
     name: str
@@ -352,16 +389,7 @@ class _LiveServer:
                 )
             result = await session.call_tool(tool_name, payload)
             # MCP returns CallToolResult with .content list
-            contents = getattr(result, "content", None) or []
-            texts: list[str] = []
-            for c in contents:
-                # 注意不能叫 t：会遮蔽模块级 i18n 函数 t，让上面 session 为
-                # None 的分支 return t(...) 变成 UnboundLocalError（F823）。
-                text = getattr(c, "text", None)
-                if text:
-                    texts.append(text)
-                else:
-                    texts.append(json.dumps(c.model_dump() if hasattr(c, "model_dump") else str(c)))
+            texts = _content_texts(getattr(result, "content", None) or [])
             return "\n".join(texts) or "(empty tool result)"
 
         def _run(**kwargs: Any) -> str:
@@ -370,12 +398,21 @@ class _LiveServer:
         # Build a pydantic schema model for StructuredTool
         model = _schema_to_model(full_name, schema)
 
+        # MCP Apps（docs/mcp-apps-design.md §2 ①）：把 tool 的 _meta.ui 透传
+        # 到 StructuredTool.metadata —— 前端/UI 侧由此得知「这个工具带交互
+        # UI」；无 ui 块的工具 metadata 只带 server 名（消费方按缺失降级）。
+        metadata: dict[str, Any] = {"mcp_server": server_name}
+        ui = _tool_ui(mcp_tool)
+        if ui is not None:
+            metadata["mcp_ui"] = ui
+
         return StructuredTool(
             name=full_name,
             description=description,
             func=_run,
             coroutine=_arun,
             args_schema=model,
+            metadata=metadata,
         )
 
 
@@ -772,3 +809,108 @@ class MCPRegistry:
         used by todo-provider readiness checks (mcp link)."""
         live = self._live.get(server_name)
         return [t.name for t in live.tools] if live else []
+
+    # ------------------------------------------------------------------ #
+    # MCP Apps（docs/mcp-apps-design.md §2）：ui:// resource 读取与 app
+    # 发起的工具回调。api/mcp_apps.py 是唯一消费方。
+    # ------------------------------------------------------------------ #
+
+    def _live_for(self, server_name: str) -> "_LiveServer | None":
+        """Resolve the CURRENT live session for a server.
+
+        语义与 _wrap_tool 的调用时解析一致（重连/reload 后旧 registry 实例
+        自动路由到 server_shared._mcp 的新连接）：优先 shared 当前 registry
+        的 _live，回退 self（单测、未挂 shared 的场景）。stdio/sse/http 同
+        一 ClientSession——read_resource/call_tool 都走它，没有传输分叉。
+        """
+        return _resolve_live(server_name) or self._live.get(server_name)
+
+    def find_tool_ui(self, server_name: str, graph_tool_name: str) -> dict[str, Any] | None:
+        """``_meta.ui`` of one tool, addressed by its GRAPH-facing name.
+
+        server 名是 mcp.json 的配置名，graph_tool_name 是图内全名
+        （``mcp_<prefix>_<tool>``）——API/前端只持有全名，逐一与 live.tools
+        的全名比对（naming.py 的 slug 化不可逆，不能剥前缀反解原始名）。
+        工具不存在 / 无 ui 块 / server 未连 → None。
+        """
+        live = self._live_for(server_name)
+        if live is None:
+            return None
+        for t in live.tools:
+            if _full_tool_name(server_name, t.name) == graph_tool_name:
+                return _tool_ui(t)
+        return None
+
+    def tools_with_ui(self) -> dict[str, dict[str, Any]]:
+        """轻量清单：graph 全名 → {server, tool, resourceUri, csp, permissions}。
+
+        前端「工具块要不要渲染 app 卡」的判定数据源（GET /api/mcp/tools-with-ui）。
+        只含会进 graph 的工具（_active_tools，disabled 的不出现）；ui 块缺
+        resourceUri 的不出现（没有可加载的 UI 就没有卡）。键序按全名排序，
+        双端 diff/缓存友好。
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for name, live in self._live.items():
+            for t in live._active_tools():
+                ui = _tool_ui(t)
+                if not ui or not ui.get("resourceUri"):
+                    continue
+                full = _full_tool_name(name, t.name)
+                out[full] = {
+                    "server": name,
+                    "tool": full,
+                    "resourceUri": str(ui.get("resourceUri")),
+                    "csp": ui.get("csp"),
+                    "permissions": ui.get("permissions"),
+                }
+        return {k: out[k] for k in sorted(out)}
+
+    async def read_resource(self, server_name: str, uri: str) -> str:
+        """Read one resource of a server, contents joined into a string.
+
+        MCP Apps 的 ``ui://`` resource 是 HTML 文本；TextResourceContents 取
+        ``text``，BlobResourceContents（base64）解码为 UTF-8——blob 解码失败
+        按 ValueError 抛出（不静默给 app 半截 HTML）。空 contents 同样抛错
+        （前端拿到空字符串会渲染白卡，报错更诚实）。
+        """
+        import base64
+
+        live = self._live_for(server_name)
+        session = live.session if live else None
+        if session is None:
+            raise MCPNotConnectedError(f"mcp server '{server_name}' is not connected")
+        result = await session.read_resource(uri)
+        parts: list[str] = []
+        for c in getattr(result, "contents", None) or []:
+            text = getattr(c, "text", None)
+            if text is not None:
+                parts.append(str(text))
+                continue
+            blob = getattr(c, "blob", None)
+            if blob is not None:
+                try:
+                    parts.append(base64.b64decode(str(blob)).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError) as e:
+                    raise ValueError(f"resource {uri}: blob is not UTF-8 text ({e})") from e
+        if not parts:
+            raise ValueError(f"resource {uri} returned no contents")
+        return "\n".join(parts)
+
+    async def call_tool(
+        self, server_name: str, tool_name: str, arguments: dict | None
+    ) -> dict[str, Any]:
+        """Call a tool over the CURRENT live session (app-initiated path).
+
+        与 _wrap_tool._arun 同一 ClientSession（_live_for 重连语义），但结果
+        以结构化 dict 返回：``content`` 是 _content_texts 的逐块列表（app 视
+        角不 join），``structured`` 透传 CallToolResult.structuredContent。
+        调用方（api/mcp_apps.py）负责权限判定——这里不做任何 policy 检查。
+        """
+        live = self._live_for(server_name)
+        session = live.session if live else None
+        if session is None:
+            raise MCPNotConnectedError(f"mcp server '{server_name}' is not connected")
+        result = await session.call_tool(tool_name, dict(arguments or {}))
+        texts = _content_texts(getattr(result, "content", None) or [])
+        structured = getattr(result, "structuredContent", None)
+        return {"content": texts, "structured": structured}
