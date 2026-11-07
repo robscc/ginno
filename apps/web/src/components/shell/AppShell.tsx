@@ -17,7 +17,7 @@ import { ChatStream } from "@/components/chat/ChatStream";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
 import { SheetViewer } from "@/components/chat/SheetViewer";
-import { NoticeHost } from "@/components/notice/NoticeHost";
+import { NoticeHost, useNoticeNativeFallback } from "@/components/notice/NoticeHost";
 import { DevSwapCard } from "@/components/devswap/DevSwapCard";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
@@ -51,6 +51,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const t = useTranslations("shell");
   const pathname = usePathname();
   const router = useRouter();
+  // 失焦期间 error 级通知的 OS 原生兜底（notice-unification §1 ③，P1 降级范围
+  // 见 NoticeHost.tsx 的 useNoticeNativeFallback 注释）。
+  useNoticeNativeFallback();
   // inline session rename (double-click title or pencil icon)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");

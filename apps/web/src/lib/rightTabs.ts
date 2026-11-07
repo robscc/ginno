@@ -10,7 +10,7 @@
  * and no runtime cycle exists even though `store.tsx` imports this module.
  */
 
-import { Brain, Code2, FileBox, ListTodo, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import { Bell, Brain, Code2, FileBox, ListTodo, Sparkles, Zap, type LucideIcon } from "lucide-react";
 import type { RightTab } from "./store";
 
 /** 标签 key 的字面量联合（"tabs.<id>"），保住 useTranslations 的 key 类型检查。 */
@@ -33,6 +33,7 @@ export const RIGHT_TABS: RightTabMeta[] = [
   { id: "memory", labelKey: "tabs.memory", icon: Brain },
   { id: "synthesis", labelKey: "tabs.synthesis", icon: Sparkles },
   { id: "code", labelKey: "tabs.code", icon: Code2 },
+  { id: "notice", labelKey: "tabs.notice", icon: Bell },
 ];
 
 export const RIGHT_TAB_BY_ID = Object.fromEntries(
