@@ -128,6 +128,42 @@ fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它�
 - 打包 UI 的 playwright e2e（`test_packaged_ui_*`）需要运行中的 dist sidecar——
   本地 8787 被 Ginno/dev 占着会挂，CI 干净环境自动 skip。跑它们前先退出 Ginno。
 
+## 特性分支 PR 自动化（CI 绿 → 自动合并 main）
+
+标准交付流（2026-11 实战沉淀，agent 协作纪律）：
+
+1. **分支**：`git checkout -b <type>/<slug>`（fix/feat/refactor），一分支一主题；
+   commit message 中文规范：现象 → 根因 → 修复 → 验证（跑了哪些测试）。
+2. **提交前最小验证集**（按改动栈，不跑全量）：runtime → 相关单测文件 +
+   `ruff check`；web → `pnpm exec tsc --noEmit` + `pnpm exec vitest run`；
+   只有都绿才推。长中文 commit message 直接 `-m` 可能被 agent shell 参数层
+   吞——写进文件用 `git commit -F <file>`。
+3. **开 PR**：`gh pr create -t "<type>: <一句话>" --body-file <file> -b main -H <branch>`，
+   body 四段：现象 / 根因 / 修复 / 验证。
+4. **挂 watch shell 自动合并**（后台跑，不占会话；CI rust job ~9 分钟，
+   轮询窗口必须 ≥ 25 轮×60s——10 轮等不到绿的教训见 PR #41）：
+
+   ```bash
+   sleep 300
+   for i in $(seq 1 25); do
+     OUT=$(gh pr checks <N> 2>&1)
+     if ! echo "$OUT" | grep -qE "pending|in progress|queued"; then
+       if echo "$OUT" | grep -q fail; then echo CI_RED; break; fi
+       S=$(gh pr view <N> --json state -q .state)
+       if [ "$S" = "OPEN" ]; then gh pr merge <N> --rebase --delete-branch && break; fi
+       [ "$S" = "MERGED" ] && break
+     fi
+     sleep 60
+   done
+   git checkout -q main && git pull -q --ff-only
+   ```
+
+   **判绿一律用 `gh pr checks` 原生命令的三态**（pending / fail / green），
+   不要手搓 grep 计数——`grep -oc` 数的是行数不是匹配数、大小写敏感，
+   PR #39/#40 两次 watch 空转翻车均源于此。
+5. **合并策略 rebase-merge + 删分支**；构建生效统一走 `make app`（改 runtime
+   后想不重启验证走 `make dev-swap`），不逐 PR 构建。
+
 ## 文档归档规范
 
 - 设计/方案文档一律放进本仓库 `docs/`（如 `docs/code-panel-diff-design.md`），深度设计放 `docs/design/`；不要只留在会话或 Obsidian 里。
