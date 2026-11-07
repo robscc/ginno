@@ -55,7 +55,7 @@ from ...server_shared import (
     _turn_lock,
     spawn_bg,
 )
-from ...session_meta import _find_meta, _session_meta_patch
+from ...session_meta import _find_meta, _session_meta_patch, resolve_session_model
 from ...session_unread import note_turn_finished
 from ...todos import store as todo_store
 from ...tools.artifact_tools import ARTIFACT_TOOL_NAMES
@@ -817,16 +817,23 @@ async def _stream_graph(
                                 # (usage-stats-design.md §4). Best-effort: the
                                 # store never raises, so this cannot break the
                                 # turn. provider/model come from the session's
-                                # meta (resolved at create/rebuild time).
-                                _sreg = _SESSIONS.get(session_id) or {}
+                                # meta (resolved at create/rebuild time);
+                                # resolve_session_model additionally falls back
+                                # to the on-disk meta so a restarted sidecar
+                                # still attributes calls correctly (the ring
+                                # window would otherwise collapse to the 200k
+                                # fallback — 2026-11-07).
+                                _prov, _model = resolve_session_model(
+                                    session_id, _SESSIONS.get(session_id)
+                                )
                                 usage_store.record(
                                     input_tokens=u["input_tokens"],
                                     output_tokens=u["output_tokens"],
                                     cache_read_tokens=u["cache_read_tokens"],
                                     cache_creation_tokens=u["cache_creation_tokens"],
                                     reasoning_tokens=u.get("reasoning_tokens", 0),
-                                    provider=_sreg.get("model_provider") or "",
-                                    model=_sreg.get("model_name") or "",
+                                    provider=_prov,
+                                    model=_model,
                                     source=usage_source,
                                     session_id=session_id or None,
                                     project_slug=slug or None,
@@ -849,9 +856,7 @@ async def _stream_graph(
                                             # 占用是「当前状态」不是累计，前端每轮
                                             # 直接替换（usage.stats-design）。
                                             "context": context_state(
-                                                _turn_ctx_tokens,
-                                                _sreg.get("model_provider") or "",
-                                                _sreg.get("model_name") or "",
+                                                _turn_ctx_tokens, _prov, _model,
                                             ),
                                         },
                                     )

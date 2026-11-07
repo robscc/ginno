@@ -7,8 +7,13 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import usage_store
 from ..lang import t
 from ..server_shared import _SESSIONS, _USAGE_BY_SESSION
-from ..session_meta import _find_meta
-from ..usage import cache_hit_ratio, context_state
+from ..session_meta import _find_meta, resolve_session_model
+from ..usage import (
+    NON_CONTEXT_SOURCES as _NON_CONTEXT_SOURCES,
+    cache_hit_ratio,
+    context_state,
+    last_chat_input_tokens,
+)
 
 router = APIRouter()
 
@@ -65,47 +70,17 @@ async def get_session_usage(session_id: str) -> dict:
             "context": ctx}
 
 
-# 「当前上下文」只统计跑过会话 graph 的真实对话调用。绕过 graph 的直连调用
-# （压缩摘要/标题/探活/记忆/外部 agent/workflow 内部 agent/subagent 调度/分类
-# 器/mods 统计）的 input 是被压全量、外部 prompt 或摘要 transcript——都不是
-# 本会话上下文。ContextRing 锯齿根因（2026-11-07）：手动 /compact 的命令 turn
-# 不跑 graph、没有对话 record，压缩 record（input=被压全量，如 360k/600k=60%）
-# 成为最后一条 → 切会话时 GET /usage seed 出被压前的高占用，与 WS usage 帧的
-# 压缩后真值（13%）交替闪烁。channels 投递（schedule/wecom/dingtalk/task/…）
-# 走 run_user_turn → 真实上下文，不在名单内。
-_NON_CONTEXT_SOURCES = frozenset({
-    "compaction", "external", "memory", "title", "probe", "classifier",
-    "mods", "subagent_gate", "subagent_plan", "workflow",
-})
-
-
 def _context_of_session(session_id: str) -> dict | None:
     """TopBar 圆环的初始值：最近一次**对话调用**的全量 prompt 占用（与 WS
     usage 事件的 context 字段同口径，见 usage.context_state）。无对话调用
     记录 → None（前端不显示圆环）——只有压缩/标题类 sideband 记录时宁可
     不显示，也不显示被压全量之类的假占用。"""
     try:
-        s = _SESSIONS.get(session_id)
-        provider = (s or {}).get("model_provider") or ""
-        model = (s or {}).get("model_name") or ""
-        if not s:
-            found = _find_meta(session_id)
-            if found:
-                provider = found[0].get("provider") or ""
-                model = found[0].get("model") or ""
-        rows = usage_store.query_requests(
-            session_id=session_id, page=1, page_size=20).get("rows") or []
-        # 跳过非对话 source（见 _NON_CONTEXT_SOURCES）：page_size=20 的窗口
-        # 足够跨过「手动 /compact 后 + 一串 sideband 调用」的最后一段；连续
-        # 20+ 条全是 sideband 的会话退化为 None（环不显示），仍优于假值。
-        row = next(
-            (r for r in rows if r.get("source") not in _NON_CONTEXT_SOURCES),
-            None,
-        )
-        if row is None:
+        provider, model = resolve_session_model(session_id)
+        tokens = last_chat_input_tokens(session_id)
+        if tokens is None:
             return None
-        # usage log 的 input_tokens 已是全量 prompt（含缓存读/写）
-        return context_state(int(row.get("input_tokens") or 0), provider, model)
+        return context_state(tokens, provider, model)
     except Exception:  # noqa: BLE001 — 显示辅助
         return None
 

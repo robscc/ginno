@@ -157,6 +157,38 @@ def _resolve_session_meta(session_id: str) -> dict | None:
     return None
 
 
+def resolve_session_model(
+    session_id: str, session: dict | None = None
+) -> tuple[str, str]:
+    """The (provider_config_id, model_name) a session's usage should be
+    attributed to — the ONE resolution chain every context-window consumer
+    must use (seed + WS frame + usage log rows).
+
+    In-memory session registry first (``model_provider`` / ``model_name``,
+    resolved at create/rebuild time), then the on-disk session meta
+    (``provider`` / ``model``) for sessions the registry no longer holds
+    (sidecar restarted, session not yet touched). Before this helper the WS
+    frame read the registry only, so a restarted sidecar attributed live
+    calls to provider="" → the ring fell back to a 200k window while the
+    GET seed resolved the real one from disk — same session, two windows,
+    occupancy jumping between them (2026-11-07). Never raises; ("", "")
+    only when neither source knows the session.
+    """
+    s = session if session is not None else _SESSIONS.get(session_id)
+    provider = (s or {}).get("model_provider") or ""
+    model = (s or {}).get("model_name") or ""
+    if not provider or not model:
+        try:
+            found = _find_meta(session_id)
+        except Exception:  # noqa: BLE001 — 显示辅助，解析失败即空
+            found = None
+        if found:
+            provider = provider or found[0].get("provider") or ""
+            model = model or found[0].get("model") or ""
+    return provider, model
+
+
+
 def _session_meta_set_tags(
     slug: str,
     session_id: str,

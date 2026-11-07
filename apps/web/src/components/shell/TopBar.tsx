@@ -90,11 +90,13 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
   return (
     <span
       className="flex h-8 w-8 shrink-0 items-center justify-center"
-      title={tr("topbar.contextTitle", {
-        used: fmtTokens(ctx.tokens),
-        window: fmtTokens(ctx.window),
-        percent: ctx.percent.toFixed(0),
-      })}
+      title={
+        tr("topbar.contextTitle", {
+          used: fmtTokens(ctx.tokens),
+          window: fmtTokens(ctx.window),
+          percent: ctx.percent.toFixed(0),
+        }) + (pct >= 70 ? " — " + tr("topbar.contextSuggestCompact") : "")
+      }
     >
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
         <circle cx="10" cy="10" r={R} fill="none" stroke="var(--line2, #34343f)" strokeWidth="2.5" />

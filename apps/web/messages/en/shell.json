@@ -206,6 +206,7 @@
       "exportProjectDone": "Project export downloaded (also kept in ~/.ginno/index/exports/)",
       "exportFailed": "Export failed — check that the runtime is connected",
       "contextTitle": "Context {percent}%: {used} / {window} tokens (estimated from the last call)",
+      "contextSuggestCompact": "approaching the compaction threshold — consider running /compact",
       "noticeBell": "Notice inbox ({n} unread)"
     },
     "links": {
