@@ -900,6 +900,22 @@ def _tools_node_factory(all_tools):
     node = ToolNode(all_tools, handle_tool_errors=_tool_error_reply)
 
     async def tools_node(state: AgentState, config=None) -> dict:
+        # 遗言 WAL 工具边界写（docs/lastwords-design.md P2）：每个工具执行
+        # 边界增量覆盖写遗言（reason=running，节流 1 次/5s）——此刻 checkpoint
+        # 已含本 turn 的请求与 pending tool_calls，快照最完整；SIGKILL 最多
+        # 丢当前工具执行中的进度。best-effort，绝不拖累工具执行。
+        try:
+            _cfg = (config or {}).get("configurable") or {}
+            from .lastwords import note_tool_boundary
+
+            note_tool_boundary(
+                str(_cfg.get("thread_id") or ""),
+                str(_cfg.get("turn_id") or ""),
+                _cfg.get("project_slug"),
+                list(state.get("messages") or []),
+            )
+        except Exception:  # noqa: BLE001
+            pass
         # 工具心跳（2026-10-13 stall 误杀修复·方案 A）：工具执行期间图流完全
         # 安静——messages 只在 LLM 流式时吐字、updates 只在节点完成时发——
         # CHUNK_TIMEOUT_S 看门狗（engine.chunked_stream）会在任何 ≥180s 的

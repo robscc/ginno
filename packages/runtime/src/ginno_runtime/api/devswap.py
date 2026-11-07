@@ -279,6 +279,30 @@ async def post_progress(report: ProgressReport, request: Request) -> dict:
     return {"ok": True, **update_progress(report)}
 
 
+@router.post("/api/devswap/lastwords/prepare")
+async def lastwords_prepare(request: Request, body: dict | None = None) -> dict:
+    """遗言预告（docs/lastwords-design.md §1）：switch 段杀进程前的显式落盘。
+
+    dev_swap.sh 在切换 symlink 前 curl 本端点（容错：sidecar 不在就跳过，
+    SIGTERM 兜底仍在）；body 可带 ``fingerprint_old``（旧 bundle 指纹，随
+    快照记录——恢复注入的消息里可辨识旧版本）。返回写入的活跃 turn 数。
+    """
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1", "localhost"):
+        return {"ok": False, "error": "local-only"}
+    import asyncio
+
+    from .. import lastwords as _lastwords
+
+    fp_old = str((body or {}).get("fingerprint_old") or "")
+    # write_lastwords 是同步 IO（checkpoint JSONL 读取 + 落盘）；to_thread
+    # 避免阻塞事件循环（正在流的 turn 不被 prepare 卡帧）。
+    n = await asyncio.to_thread(
+        _lastwords.write_lastwords, _lastwords.REASON_DEV_SWAP, fingerprint_old=fp_old
+    )
+    return {"ok": True, "count": n, "mode": _lastwords.mode()}
+
+
 @router.get("/api/devswap/progress")
 async def get_progress() -> dict:
     return get_snapshot()
