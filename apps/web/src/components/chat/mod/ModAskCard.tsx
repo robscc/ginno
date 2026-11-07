@@ -9,7 +9,7 @@ import { HelpCircle, Send } from "lucide-react";
  * 提问(broker notify "mod.ask" → WS `mod.ask` 帧)后,这里渲染浮层卡片——
  * mod 名标签 + 问题正文 + choices 按钮 / 自由输入。回答经 engine 回发
  * `mod.ui.answer {id, value}`,本地乐观清卡(broker 侧 resolve 对应 Promise;
- * 孤儿 answer 由 broker 丢弃)。样式对齐 ModToastHost 的卡片语言。
+ * 孤儿 answer 由 broker 丢弃)。样式对齐右下角通知卡的卡片语言。
  */
 
 export interface ModAskState {

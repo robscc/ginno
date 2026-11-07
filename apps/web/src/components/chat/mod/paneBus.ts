@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Mod pane 事件总线(claude-code-mods-design.md §7.4):ModToastHost 同款
+ * Mod pane 事件总线(claude-code-mods-design.md §7.4):lib/notice 同款
  * 模块级总线——engine 的 WS 分发在任何组件树之外也能推送,右栏的 ModPaneHost
  * 挂载后订阅;press 回发沿 engine 已有的 socket(注册 sender,而不是右栏自己
  * 开连接)。pane 是 session-scoped 的:每一帧都带归属会话 id,宿主只显示当前

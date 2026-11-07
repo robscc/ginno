@@ -5,7 +5,7 @@
 import { getWorkflowRun } from "@/lib/runtime";
 import { notifyNative } from "@/lib/desktop";
 import { notifyPrefs } from "@/lib/notifyPrefs";
-import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
+import { pushNotice, type NoticeLevel } from "@/lib/notice";
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
@@ -28,7 +28,6 @@ import { flushSteerQueue, recallSteers, settleRecalled } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
-import { pushNotice } from "@/lib/notice";
 import { decideTurnAdoption, mismatchReportBudget } from "@/lib/streamTurnGuard";
 
 // ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
@@ -1597,10 +1596,13 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       break;
     }
     case "mod.toast": {
-      const level: ModToastLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
-      // 事件契约:带 i18n_key 时落地翻译(evText),否则成品文本原样直显
-      // (broker toast / mod 自己的文案是成品字符串)。
-      pushModToast(level, ctx.i18nRef.current.evText(ev, String(ev.text ?? "")));
+      // 收编进全局 notice 总线（notice-unification-design.md §4）：ModToastHost
+      // 已退役，右下角统一容器渲染。事件契约不变：带 i18n_key 时落地翻译
+      // (evText)，否则成品文本原样直显（broker toast / mod 自己的文案）。
+      // 帧里没有稳定的 mod id 可做 dedupeKey，不传——保留多条并存语义
+      //（NOTICE_MAX=3 堆叠），避免不同文案被 TTL 去重合并。
+      const level: NoticeLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
+      pushNotice(level, ctx.i18nRef.current.evText(ev, String(ev.text ?? "")), { source: "mod" });
       break;
     }
     case "mod.state.changed": {

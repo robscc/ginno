@@ -1,13 +1,14 @@
 /**
- * 全局通知中心总线（notice-center-design.md）。
+ * 全局通知中心总线（notice-center-design.md；mods toast 收编见
+ * notice-unification-design.md §4）。
  *
  * 为什么是模块级总线而不是 React context：通知的**主要来源是 socket 回调**
  * （`useChatStreamEngine` 的 WS 事件处理活在组件树之外，且闭包生命周期长于
- * 单次 render），context 的 hook 够不到那里。沿用 ModToastHost 已验证的
+ * 单次 render），context 的 hook 够不到那里。沿用 mods 时代已验证的
  * 「模块级 listener 数组」手法，宿主 `NoticeHost` 挂载后订阅即可，调用点零依赖。
  *
- * 与 chat/mod/ModToastHost（右下角，mods 子系统自己的回执）并存：
- * 这里是**跨视图、需要用户知晓**的通知的统一出口（模型热切、连接器 fallback …）。
+ * 这里是**全应用唯一**的悬浮通知出口（模型热切、连接器 fallback、mods
+ * toast、MCP 设置回执……统一经 pushNotice 进右下角容器渲染）。
  */
 
 export type NoticeLevel = "info" | "success" | "warn" | "error";
