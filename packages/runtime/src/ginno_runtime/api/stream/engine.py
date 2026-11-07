@@ -86,10 +86,12 @@ from .errors import (
     AUTO_RETRY_MAX,
     TURN_RECURSION_LIMIT_DEFAULT,
     TurnStopped,
+    clean_model_error_text,
     _is_content_filter_error,
     _is_transient_model_error,
     _langgraph_error_hint,
     format_turn_error,
+    model_error_reset_at,
     recursion_warn_threshold,
     turn_error_fields,
     turn_recursion_limit,
@@ -673,6 +675,18 @@ async def _stream_graph(
                 # 把「套餐无权限」伪装成卡死），用户看着它决定 ⏹ 与否。
                 if isinstance(payload, dict) and payload.get("ginno_model_error"):
                     me = payload["ginno_model_error"]
+                    # 2026-11-08 429 显示优化：清洗后的错误文本（去 APIError
+                    # 前缀与英文括注尾巴，重置时间去重）+ 结构化 reset_at。
+                    _me_err = clean_model_error_text(me.get("error", ""))
+                    _me_reset = model_error_reset_at(_me_err)
+                    _me_params: dict[str, Any] = {
+                        "error": _me_err,
+                        "seconds": f"{me.get('wait_s', 0):.0f}",
+                        "attempt": int(me.get("attempt") or 0),
+                        "max": int(me.get("max") or 0),
+                    }
+                    if _me_reset:
+                        _me_params["reset_at"] = _me_reset
                     await safe_send(
                         emit(
                             "notice",
@@ -681,15 +695,10 @@ async def _stream_graph(
                                     f"Model API error — retrying in "
                                     f"{me.get('wait_s', 0):.0f}s "
                                     f"({me.get('attempt')}/{me.get('max')}): "
-                                    f"{me.get('error', '')}"
+                                    f"{_me_err}"
                                 ),
                                 "i18n_key": "stream.model_error_backoff",
-                                "params": {
-                                    "error": str(me.get("error", "")),
-                                    "seconds": f"{me.get('wait_s', 0):.0f}",
-                                    "attempt": int(me.get("attempt") or 0),
-                                    "max": int(me.get("max") or 0),
-                                },
+                                "params": _me_params,
                             },
                         )
                     )
@@ -1378,15 +1387,17 @@ async def _stream_graph(
                             # Event contract (i18n-design.md §3): English
                             # fallback text + i18n_key + params for the UI.
                             # error 参数带 provider 原始信息（e48be8a3 决策：
-                            # 接口错误永远亮给前端，用户自己决定中断与否）。
+                            # 接口错误永远亮给前端，用户自己决定中断与否）；
+                            # 展示文本经 clean_model_error_text 清洗（去
+                            # APIError 前缀/英文括注，2026-11-08 429 优化）。
                             "message": (
                                 f"Model connection error, auto-retrying in "
                                 f"{_backoff:.0f}s ({_attempt + 1}/{AUTO_RETRY_MAX}): "
-                                f"{str(e)[:300]}"
+                                f"{clean_model_error_text(e)}"
                             ),
                             "i18n_key": "stream.auto_retry",
                             "params": {
-                                "error": f"{type(e).__name__}: {str(e)[:300]}",
+                                "error": clean_model_error_text(e),
                                 "seconds": f"{_backoff:.0f}",
                                 "attempt": _attempt + 1,
                                 "max": AUTO_RETRY_MAX,

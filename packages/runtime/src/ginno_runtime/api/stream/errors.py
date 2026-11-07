@@ -76,6 +76,45 @@ from ..messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_w
 TURN_RECURSION_LIMIT_DEFAULT = 128
 
 
+_MODEL_ERR_NOISE_RE = re.compile(
+    r"\s*\([^()]*?(?:out of its allowance|429:|you can retry your request)[^()]*\)",
+    re.IGNORECASE,
+)
+_MODEL_ERR_RESET_AT_RE = re.compile(r"(20\d{2}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)")
+
+
+def clean_model_error_text(raw: object, limit: int = 300) -> str:
+    """Provider 错误串清洗为前端展示文本（2026-11-08 429 显示优化）。
+
+    智谱 429 原文示例（一句话里重置时间出现两遍、中英混杂、带括注尾巴）：
+        APIError: Zhipu GLM: 您已达到每周/每月使用上限, 您的限额将在
+        2026-11-09 14:31:21 重置。(out of its allowance: not asked again
+        before Nov 9 14:31 UTC+8) (429: you can retry your request)
+    清洗后：
+        Zhipu GLM: 您已达到每周/每月使用上限，您的限额将在 2026-11-09 14:31:21 重置。
+
+    规则：去 ``APIError:`` 前缀；去英文括注（out-of-its-allowance /
+    ``429:`` / you-can-retry 整段，其中 allowance 括注与中文主句是同一
+    重置时间的重复表述）；折叠多余空白；``", "`` 统一中文逗号。清洗结果
+    为空时回退原文（防意外正则吞噬）。日志与 stop 原因仍走原始串，
+    这里只影响 chat 流里的 notice 展示。
+    """
+    s = str(raw or "").strip()
+    cleaned = re.sub(r"^\s*APIError:\s*", "", s)
+    cleaned = _MODEL_ERR_NOISE_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    cleaned = cleaned.replace(", ", "，")
+    if not cleaned:
+        cleaned = s
+    return cleaned[:limit]
+
+
+def model_error_reset_at(text: str) -> str | None:
+    """从（清洗前或清洗后的）错误文本提取首个重置时间戳，供 UI 结构化展示。"""
+    m = _MODEL_ERR_RESET_AT_RE.search(str(text or ""))
+    return m.group(1) if m else None
+
+
 def turn_recursion_limit() -> int:
     raw: str | None = os.environ.get("GINNO_RECURSION_LIMIT")
     if raw and raw.strip():
