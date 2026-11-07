@@ -176,7 +176,9 @@ export class McpAppBridge {
   }
 
   private async dispatch(item: _QueueItem): Promise<void> {
-    let cancelTimeout: (() => void) | null = null;
+    // no-op 初始化：赋值发生在 Promise 构造回调里，null 初始化会被 TS 控制流
+    // narrow 成 never（TS2349）；no-op 哨兵保持 () => void 类型
+    let cancelTimeout: () => void = () => {};
     const timeout = new Promise<"timeout">((resolve) => {
       cancelTimeout = this.schedule(() => resolve("timeout"), this.timeoutMs);
     });
@@ -196,7 +198,7 @@ export class McpAppBridge {
       this.reply(item.id, undefined, { code: -32000, message });
       this.pushData({ tool: item.tool, error: message });
     } finally {
-      cancelTimeout?.();
+      cancelTimeout();
     }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { McpAppBridge, type McpAppBridgeDeps } from "./mcpAppBridge";
+import { McpAppBridge, type McpAppBridgeDeps, type McpCallResult } from "./mcpAppBridge";
 
 /** fake clock 模式（参照 notifyHub.test.ts）：时间注入，测试不依赖真实 timer。 */
 function makeBridge(over: Partial<McpAppBridgeDeps> = {}) {
@@ -147,14 +147,14 @@ describe("McpAppBridge tools/call 数据面", () => {
     await h.flush();
     const rs = responses(h.posted);
     expect(rs[0].error).toMatchObject({ code: -32000 });
-    expect(String(rs[0].error?.message)).toContain("rejected");
+    expect(String((rs[0].error as { message?: string })?.message)).toContain("rejected");
     const pushes = dataPushes(h.posted);
     expect(pushes[0].params).toMatchObject({ tool: "denied", error: expect.stringContaining("rejected") });
   });
 
   it("超时：10s 未 resolve → 超时错误回推，且不杀 callMcp promise", async () => {
     const h = makeBridge({
-      callMcp: vi.fn(() => new Promise(() => {})), // 永不 settle
+      callMcp: vi.fn(() => new Promise<McpCallResult>(() => {})), // 永不 settle
     });
     h.msg({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "slow" } });
     await h.flush();
@@ -162,7 +162,7 @@ describe("McpAppBridge tools/call 数据面", () => {
     h.advance(10_000);
     await h.flush();
     const rs = responses(h.posted);
-    expect(rs[0].error?.message).toContain("timed out");
+    expect((rs[0].error as { message?: string })?.message).toContain("timed out");
     expect(dataPushes(h.posted)[0].params).toMatchObject({ tool: "slow", error: expect.stringContaining("timed out") });
   });
 
