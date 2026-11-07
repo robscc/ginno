@@ -23,6 +23,16 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from . import protocol as p
 from .client import WecomClient
 
+# 官方大小上限（docs/wecom-media-protocol.md §4）：按上传类型本地预检，
+# 超限直接抛 ValueError——省一次注定失败的三段式上传（init 就会被拒）。
+MEDIA_TYPE_MAX_BYTES = {
+    "image": 10 * 1024 * 1024,
+    "voice": 2 * 1024 * 1024,
+    "video": 10 * 1024 * 1024,
+    "file": 20 * 1024 * 1024,
+}
+MEDIA_MIN_BYTES = 5  # 官方要求 total_size 最少 5 字节
+
 
 def _b64decode_loose(s: str) -> bytes:
     """企微下发的 aeskey 是无填充/URL-safe base64（43 字符、`-_` 字母表），
@@ -73,9 +83,21 @@ async def download_media(url: str, aes_key: str | None,
 
 async def upload_media(client: WecomClient, path: Path, *,
                        media_type: str = "file") -> str:
-    """三段式分片上传 → media_id（串行分片，简单优先；文件多走并发收益小）。"""
+    """三段式分片上传 → media_id（串行分片，简单优先；文件多走并发收益小）。
+
+    media_id 有效期 3 天（立发立用，勿缓存）；上传会话 30 分钟内须完成。
+    超出类型上限（image 10MB / file 20MB / voice 2MB / video 10MB）或不足
+    5 字节直接抛 ValueError，调用方按失败降级处理。
+    """
     data = path.read_bytes()
     total_size = len(data)
+    if total_size < MEDIA_MIN_BYTES:
+        raise ValueError(
+            f"file too small: {total_size} bytes (min {MEDIA_MIN_BYTES})")
+    max_bytes = MEDIA_TYPE_MAX_BYTES.get(media_type)
+    if max_bytes is not None and total_size > max_bytes:
+        raise ValueError(
+            f"{media_type} too large: {total_size} > {max_bytes} bytes")
     total_chunks = max(1, math.ceil(total_size / p.MEDIA_CHUNK_BYTES))
     if total_chunks > p.MEDIA_MAX_CHUNKS:
         raise ValueError(

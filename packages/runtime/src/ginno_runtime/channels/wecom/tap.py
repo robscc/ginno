@@ -14,7 +14,9 @@ content、``finish=true`` 定格——因此节流策略是「攒增量、发全
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..base import ChannelTap, TurnProgressTracker
@@ -22,6 +24,8 @@ from . import protocol as p
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .adapter import WeComChannelAdapter
+
+log = logging.getLogger("ginno.wecom")
 
 # 节流：企微单会话限频 ~30 msg/min（流式帧计入），3s 一发留出余量
 _FLUSH_INTERVAL_S = 3.0
@@ -33,7 +37,9 @@ _STATUS_ICON = {"done": "✅", "running": "⏳", "pending": "🕒",
 _SENDABLE = {"png", "jpg", "jpeg", "gif", "webp", "pdf", "docx", "xlsx",
              "pptx", "txt", "csv", "md", "html", "zip", "json", "tsv",
              "log", "py", "js", "ts", "go", "rs"}
-_IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp"}
+# 官方图片上传仅支持 png/jpg/jpeg/gif（docs/wecom-media-protocol.md §4）；
+# webp 走 file 类型发送，避免 init 即被格式白名单拒绝。
+_IMAGE_EXT = {"png", "jpg", "jpeg", "gif"}
 
 
 def _widget_to_markdown(data: dict) -> str:
@@ -208,8 +214,6 @@ class WeComTap(ChannelTap):
     # ---- 产物上行（P1）-------------------------------------------------------
 
     async def _send_artifact(self, path_str: str, name: str = "") -> None:
-        from pathlib import Path
-
         from .media import upload_media
 
         path = Path(path_str).expanduser()
@@ -217,17 +221,33 @@ class WeComTap(ChannelTap):
             return
         ext = path.suffix.lstrip(".").lower()
         if ext not in _SENDABLE:
+            return  # 未知类型不外发（安全默认，同钉钉）
+        if not self.req_id:
+            # push_only tap（steer 补投等主动场景）：aibot_send_msg 只支持
+            # markdown/card（docs/wecom-media-protocol.md §1），媒体发不出
+            # ——不做注定失败的上传，直接路径回执走主动推送出口。
+            await self._artifact_receipt(path, "本轮无回复流，见桌面端")
             return
         try:
             media_type = "image" if ext in _IMAGE_EXT else "file"
             media_id = await upload_media(self.adapter.client, path,
                                           media_type=media_type)
-            await self.adapter.client.respond(
-                self.req_id, p.media_body(media_type, media_id))
-        except Exception:  # noqa: BLE001 — 上传失败降级为路径回执
-            md = f"\n📎 产物文件（企业微信上传失败，见桌面端）: `{path}`"
-            self._buf.append(md)
-            self._buf_len += len(md)
+            if media_type == "image":
+                await self.adapter.client.send_image(self.req_id, media_id)
+            else:
+                await self.adapter.client.send_file(self.req_id, media_id)
+        except Exception:  # noqa: BLE001 — 上传/发送失败降级为路径回执
+            # 静默丢弃必须留痕（仓库规矩）：warn 进 sidecar 日志
+            log.warning("wecom_send_artifact_failed path=%s", path,
+                        exc_info=True)
+            await self._artifact_receipt(path, "企业微信上传失败，见桌面端")
+
+    async def _artifact_receipt(self, path: Path, note: str) -> None:
+        """产物路径回执进流式缓冲（push_only 时随 _tail 走主动推送）。"""
+        md = f"\n📎 产物文件（{note}）: `{path}`"
+        self._buf.append(md)
+        self._buf_len += len(md)
+        await self._maybe_flush(force=True)  # 回执即时报达，不等下一帧
 
     # ---- 分发表 --------------------------------------------------------------
 
