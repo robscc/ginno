@@ -132,7 +132,9 @@ case "$BASE_KB" in ''|*[!0-9]*) BASE_KB=0 ;; esac
 # dist，du 采样会长期 1% 后突跳 95%。改为：make 输出锚点（Analyzing/hooks/
 # ctypes/base_library/PYZ/EXE/COLLECT）定基础进度，Analyzing 段按时间插值
 # （预期 90s）爬 5→45%，COLLECT 段用 du 占比细分 80→95%。
-BUILD_LOG="$(mktemp /tmp/devswap-build.XXXXXX.log)"
+# 注意：BSD mktemp 的 XXXXXX 必须在模板末尾（带 .log 后缀会生成字面量文件，
+# 第二次运行即 File exists——2026-11-07 实测教训）。
+BUILD_LOG="$(mktemp /tmp/devswap-build.XXXXXX).log"
 report build_runtime running "make runtime（PyInstaller）" 1
 log "make runtime …（构建日志: $BUILD_LOG）"
 T0=$(date +%s)
