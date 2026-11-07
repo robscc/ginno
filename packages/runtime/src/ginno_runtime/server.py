@@ -351,6 +351,20 @@ async def lifespan(app: FastAPI):
     devswap_watch_task = asyncio.create_task(_devswap_api.watch_swap_finish())
     # 壳 pid 看守（反孤儿化，见 _watch_shell_pid docstring）：壳硬死时自退。
     shell_watch_task = asyncio.create_task(_watch_shell_pid())
+    # 遗言恢复（docs/lastwords-design.md §1）：上个进程留下的 lastwords/
+    # 快照按 mode 注入回原 session（notify 折叠带 / auto headless 续跑）。
+    # 后台 task + 全 try 包裹——恢复失败绝不炸启动；延时 2s 让 MCP/会话
+    # 装配先行（注入要 _ensure_session 就绪）。
+    async def _lastwords_recover_task() -> None:
+        await asyncio.sleep(2.0)
+        try:
+            from .lastwords import recover_lastwords
+
+            await recover_lastwords()
+        except Exception:  # noqa: BLE001
+            _log.exception("lastwords recovery failed (continuing)")
+
+    lastwords_recover_task = asyncio.create_task(_lastwords_recover_task())
     try:
         yield
     finally:
@@ -358,6 +372,17 @@ async def lifespan(app: FastAPI):
             mcp_connect_task.cancel()
         devswap_watch_task.cancel()
         shell_watch_task.cancel()
+        lastwords_recover_task.cancel()
+        # 遗言落盘（docs/lastwords-design.md §1 SIGTERM 兜底）：prepare API
+        # 漏调（人肉 kill / 壳直接重启）时这里是最后一道。同步快速 IO——
+        # 遍历活跃 turn 读 checkpoint + 落盘，预算 <2s（uvicorn 优雅关闭
+        # 窗口 timeout_graceful_shutdown=3s）；复杂逻辑一律放 prepare API。
+        try:
+            from . import lastwords as _lastwords
+
+            _lastwords.write_lastwords(_lastwords.REASON_SIGNAL)
+        except Exception:  # noqa: BLE001 — 兜底本身绝不拖垮其余收尾
+            _log.exception("lastwords signal write failed")
         # 取消调度循环 + 在途执行协程（契约同 Goal driver / _connect_mcp_background）。
         if scheduler_task is not None:
             try:

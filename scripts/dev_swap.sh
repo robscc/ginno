@@ -213,6 +213,13 @@ if [ ! -x "$OVERRIDE_DIR/$NEW_DIR/ginno-runtime" ]; then
 fi
 
 # ---- 6. 记旧值 → symlink 原子切 → state.json=pending ---------------------
+# 遗言预告（docs/lastwords-design.md §1）：切 symlink 壳会重启 sidecar，
+# 杀进程前请旧进程把进行中 turn 写成快照落盘（重启后新进程扫描恢复）。
+# 容错：sidecar 不在/超时即跳过——SIGTERM 兜底（lifespan finally）仍在。
+if curl -sf --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+  LW_JSON="$(curl -s -m 8 -X POST "http://127.0.0.1:$PORT/api/devswap/lastwords/prepare" -H 'Content-Type: application/json' -d "{\"fingerprint_old\":\"$FINGERPRINT\"}" 2>/dev/null || true)"
+  log "lastwords prepare: ${LW_JSON:-<no response>}"
+fi
 # state.sha 存完整 fingerprint（含 -dirty）：壳的 finish_dev_swap 与
 # /api/health 的 build.fingerprint 严格相等比较。
 report switch running "symlink → dev-override/$NEW_DIR"

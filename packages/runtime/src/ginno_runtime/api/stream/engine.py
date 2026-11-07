@@ -195,6 +195,16 @@ async def _stream_graph(
         # Heartbeat stamp for turn_gate_busy's staleness self-heal (see
         # server_shared): every turn execution re-arms here.
         _RUNNING_TURNS_AT[session_id] = time.time()
+        # 遗言 WAL 护体（docs/lastwords-design.md P2）：turn 启动即写初始
+        # 遗言（reason=running）——此刻 checkpoint 还没有本 turn 的请求
+        # （快照回落上一条用户消息），工具边界写会立刻覆盖补全；SIGKILL
+        # 场景最坏只丢最后一次增量。best-effort，绝不拖累 turn。
+        try:
+            from ..lastwords import note_turn_start
+
+            note_turn_start(session_id, turn_id, slug)
+        except Exception:  # noqa: BLE001
+            pass
         # Cooperative stop signal: setdefault so an event pre-armed by the WS
         # loop (created before this task spawned) is never clobbered.
         stop_evt = _TURN_STOP.setdefault(session_id, asyncio.Event())
@@ -1487,6 +1497,15 @@ async def _stream_graph(
         if not saw_interrupt:
             _RUNNING_TURNS.pop(session_id, None)
             _RUNNING_TURNS_AT.pop(session_id, None)
+            # 遗言作废（lastwords-design P2）：turn 正常/出错收尾即删——绝不
+            # 把已完成的 turn 留给下次重启误恢复（parked interrupt 不在此列，
+            # 那是 turn 还活着等 resume，遗言保留是对的）。
+            try:
+                from ..lastwords import note_turn_end
+
+                note_turn_end(session_id, turn_id)
+            except Exception:  # noqa: BLE001
+                pass
             _PENDING_RESUME.discard(session_id)
             _PENDING_KIND.pop(session_id, None)
             # Steering entries live exactly one turn segment (steering-design
