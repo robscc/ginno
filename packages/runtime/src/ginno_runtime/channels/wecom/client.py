@@ -159,6 +159,19 @@ class WecomClient:
         return await self.request(p.CMD_SEND_MSG,
                                   p.markdown_push_body(chatid, content))
 
+    # ---- 媒体回复（被动；主动推送 aibot_send_msg 仅支持 markdown/card，见
+    # docs/wecom-media-protocol.md §1——所以没有 chatid 版本）---------------
+
+    async def send_image(self, req_id: str, media_id: str) -> dict:
+        """回复图片（msgtype=image）：media_id 来自 media.upload_media，3 天有效。"""
+        return await self.request(
+            p.CMD_RESPOND_MSG, p.media_body("image", media_id), req_id)
+
+    async def send_file(self, req_id: str, media_id: str) -> dict:
+        """回复文件（msgtype=file）：同上，必须透传触发消息的回调 req_id。"""
+        return await self.request(
+            p.CMD_RESPOND_MSG, p.media_body("file", media_id), req_id)
+
     def _fail_pending(self, reason: str) -> None:
         for fut in self._pending.values():
             if not fut.done():
