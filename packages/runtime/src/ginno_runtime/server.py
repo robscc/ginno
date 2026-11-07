@@ -574,6 +574,7 @@ from .api import files as _files_api  # noqa: E402
 from .api import tasks as _tasks_api  # noqa: E402
 from .api import folders as _folders_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
+from .api import mcp_apps as _mcp_apps_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
 from .api import plans as _plans_api  # noqa: E402
 from .api import schedule as _schedule_api  # noqa: E402
@@ -602,6 +603,7 @@ app.include_router(_files_api.router)
 app.include_router(_tasks_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
+app.include_router(_mcp_apps_api.router)
 app.include_router(_memory_api.router)
 app.include_router(_mods_api.router)
 app.include_router(_schedule_api.router)
