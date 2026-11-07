@@ -182,6 +182,9 @@ export class McpAppBridge {
         protocolVersion: reqVersion,
         hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" },
         hostCapabilities: { serverTools: {} },
+        // hostContext 必填（App 类 zod 严格校验，2026-11-07 联调实测）；子字段
+        // 全 optional——给主题即可，toolInfo 等按需后续补。
+        hostContext: { theme: "dark" },
       },
     });
   }
