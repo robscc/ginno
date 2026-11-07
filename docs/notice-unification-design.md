@@ -101,6 +101,13 @@ badge 未读数 = `readAt===null` 计数；toast 被自动超时消失**不算�
 P1：localStorage（`ginno:noticebox`，上限 100 条滚动窗口）。
 P2 可选：升级 runtime `api/notifications`（跨设备/多窗一致）——本地优先原则下非必须。
 
+### 3.5 P1 实施决策记录（2026-11-07）
+- **badge 挂载点**：TopBar 右侧 `ml-auto` 区的独立铃铛按钮（`NoticeBell`，`components/notice/NoticeBell.tsx`）——全路由可见（不依赖 session 存在），数值 = notice 未读（`subscribeUnreadCount`，countInBadge 口径）+ `Object.keys(g.unreadSessions).length`（session store 单一事实源），两 store 独立 emit 幂等收敛。点击 = `setRightTab("notice",{manual:true}) + setRightPanelOpen(true)`（与 RightDock openTab 同款范式）。
+- **收件箱容器**：注册为 RightDock/RightPanel 的第 7 个 tab（`RightTab` 联合类型 + `RIGHT_TABS` 注册表 + `defaultPanelWidths` 各加一条，`NoticeInboxPanel` 渲染分支）——沿用现有 tab 范式零新框架；tab strip/dock/设置页三处徽标与排序自动继承。
+- **session 投影挂点**：放在 `useSessions.markSessionUnread` **内部**（而非 handle.ts 调用点）——turn-done/error、重连 reconcile、子会话完成四条路径一次覆盖，且天然继承 watching guard（正在看的会话不投影）与幂等 guard（已有未读不重复投）。双写已读挂在 `clearSessionUnread` 最前（`markNoticeReadByKey("session:"+id)`，幂等）。`reloadSessions` 的服务端权威态回写**不**投影（重启后收件箱由 localStorage 恢复，不重复堆叠）。
+- **OS 兜底降级范围**：`notifyNative` 的 kind 枚举（session/workflow-run/schedule-run/bg-task/test）不含泛化 notice 文案，硬映射会产生错误跳转——P1 仅对 **error 级**兜底（kind:"test"，点击仅 refocus 主窗），实现为 `useNoticeNativeFallback`（AppShell 挂载，visibility+hasFocus 双判失焦，水位线去重防重放）。非 error 级 TODO(P2)：Rust 侧加 "notice" kind 后放开（§2.3）。
+- **持久化字段**：收件箱条目存语义数据（level/text/createdAt/readAt/kind/countInBadge/mode/source/dedupeKey/actionMeta）；`action` 回调不可序列化→ session 条目行为靠 `actionMeta:{kind:"session",id}` 跨重启重建；`entered` 等动画态不落盘。加载失败（JSON 损坏/非数组）静默重置为空。
+
 ## 4. 存量 5 套体系的收编
 
 | 体系 | 处置 | 改动点 |
@@ -118,7 +125,7 @@ P2 可选：升级 runtime `api/notifications`（跨设备/多窗一致）——
 | 期 | 内容 | 量 | 验收 |
 |---|---|---|---|
 | P0 | 总线统一 + Web 版右下角 + settings 可见性修复 + mod/MCP/fallback 收编 + DevSwapCard 同容器 | 2-3h | 全部悬浮 toast 出自单容器右下角；无第三方库；现有测试零破坏 ✅ done 2026-11-07 |
-| P1 | 未读/已读通道：mode 扩展 + badge + 收件箱面板 + 四种已读触发 + 失焦时 OS 兜底联动 | 4-6h | push 一次即 badge+1；四种触发均清；silent 不弹卡片 |
+| P1 | 未读/已读通道：mode 扩展 + badge + 收件箱面板 + 四种已读触发 + 失焦时 OS 兜底联动 | 4-6h | push 一次即 badge+1；四种触发均清；silent 不弹卡片 ✅ done 2026-11-07 |
 | P2 | Rust 通知窗（pin.rs 范式）+ 双版本分发 + action 跨窗转发 + 主窗跟随定位 | 8-12h | 桌面版通知为独立置顶窗 UI 与 Web 版像素级同源；失焦时 OS 兜底 |
 
 ## 6. 风险与声明
