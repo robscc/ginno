@@ -128,23 +128,53 @@ fi
 BASE_KB="$(du -sk "$DIST" 2>/dev/null | awk '{print $1}')"
 case "$BASE_KB" in ''|*[!0-9]*) BASE_KB=0 ;; esac
 [ "$BASE_KB" -lt 10240 ] && BASE_KB=262144   # <10MB 视为无基线 → 256MB 默认
+# 进度模型（2026-11-07 重写）：PyInstaller 的 Analyzing 阶段（约 6 成耗时）不写
+# dist，du 采样会长期 1% 后突跳 95%。改为：make 输出锚点（Analyzing/hooks/
+# ctypes/base_library/PYZ/EXE/COLLECT）定基础进度，Analyzing 段按时间插值
+# （预期 90s）爬 5→45%，COLLECT 段用 du 占比细分 80→95%。
+BUILD_LOG="$(mktemp /tmp/devswap-build.XXXXXX.log)"
 report build_runtime running "make runtime（PyInstaller）" 1
-log "make runtime …"
-make -C "$ROOT" runtime &
+log "make runtime …（构建日志: $BUILD_LOG）"
+T0=$(date +%s)
+ANCHOR_T=$T0
+LAST_ANCHOR=0
+make -C "$ROOT" runtime > "$BUILD_LOG" 2>&1 &
 MAKE_PID=$!
 (
   while kill -0 "$MAKE_PID" 2>/dev/null; do
     sleep 5
-    K="$(du -sk "$DIST" 2>/dev/null | awk '{print $1}' || echo 0)"
-    case "$K" in ''|*[!0-9]*) K=0 ;; esac
-    P=$(( K * 100 / BASE_KB ))
+    NOW=$(date +%s)
+    # 锚点从晚到早探测（log 追加式：出现晚锚点意味着之前全过）
+    if   command grep -q "Building COLLECT" "$BUILD_LOG"; then A=80
+    elif command grep -q "Building EXE" "$BUILD_LOG"; then A=70
+    elif command grep -q "Building PYZ" "$BUILD_LOG"; then A=60
+    elif command grep -q "Building base_library" "$BUILD_LOG"; then A=55
+    elif command grep -q "ctypes DLLs" "$BUILD_LOG"; then A=50
+    elif command grep -q "Processing module hooks" "$BUILD_LOG"; then A=45
+    elif command grep -q "Analyzing" "$BUILD_LOG"; then A=5
+    else A=1; fi
+    if [ "$A" != "$LAST_ANCHOR" ]; then ANCHOR_T=$NOW; LAST_ANCHOR=$A; fi
+    P=$A
+    if [ "$A" = "5" ]; then
+      # Analyzing 大头：段内时间插值 5→45（预期 90s，超时压在 44 等锚点）
+      ELAPSED=$(( NOW - ANCHOR_T ))
+      [ "$ELAPSED" -gt 90 ] && ELAPSED=90
+      P=$(( 5 + ELAPSED * 40 / 90 ))
+    elif [ "$A" = "80" ]; then
+      # COLLECT：dist 实际在写，du 占比细分 80→95
+      K="$(du -sk "$DIST" 2>/dev/null | awk '{print $1}' || echo 0)"
+      case "$K" in ''|*[!0-9]*) K=0 ;; esac
+      R=$(( K * 15 / (BASE_KB > 0 ? BASE_KB : 1) ))
+      [ "$R" -gt 15 ] && R=15
+      P=$(( 80 + R ))
+    fi
     [ "$P" -lt 1 ] && P=1
     [ "$P" -gt 95 ] && P=95
     report build_runtime running "make runtime（PyInstaller）" "$P"
   done
 ) &
 PCT_PID=$!
-wait "$MAKE_PID" || { kill "$PCT_PID" 2>/dev/null; wait "$PCT_PID" 2>/dev/null || true; die_stage "make runtime 失败"; }
+wait "$MAKE_PID" || { kill "$PCT_PID" 2>/dev/null; wait "$PCT_PID" 2>/dev/null || true; log "构建失败，日志尾部："; tail -20 "$BUILD_LOG"; die_stage "make runtime 失败"; }
 kill "$PCT_PID" 2>/dev/null; wait "$PCT_PID" 2>/dev/null || true
 report build_runtime ok "bundle 已重建" 100
 
