@@ -80,7 +80,7 @@ describe("McpAppBridge 来源校验与白名单", () => {
             params: { protocolVersion: "2025-11-21", appCapabilities: {}, appInfo: { name: "demo", version: "0" } } });
     await h.flush();
     expect(responses(h.posted)).toEqual([
-      { jsonrpc: "2.0", id: 7, result: { protocolVersion: "2025-11-21", hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" }, hostCapabilities: { serverTools: {} } } },
+      { jsonrpc: "2.0", id: 7, result: { protocolVersion: "2025-11-21", hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: "dark" } } },
     ]);
   });
 
