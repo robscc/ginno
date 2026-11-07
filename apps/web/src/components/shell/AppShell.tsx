@@ -19,6 +19,7 @@ import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { ModToastHost } from "@/components/chat/mod/ModToastHost";
 import { NoticeHost } from "@/components/notice/NoticeHost";
+import { DevSwapCard } from "@/components/devswap/DevSwapCard";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
 import { SidebarArchive } from "@/components/shell/SidebarArchive";
@@ -981,12 +982,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} context={contextState} />
             )}
-            {/* 全局通知中心（notice-center-design.md）：零高度定位锚紧跟 TopBar，
-                通知因此始终贴在顶栏正下方、不参与布局（不顶动内容）。absolute
-                右对齐，而右侧栏是本列的兄弟节点 → 天然不会被通知覆盖。 */}
-            <div className="relative z-30 h-0">
-              <NoticeHost />
-            </div>
             <ChatStream
               session={session}
               onRunningChange={setRunning}
@@ -1028,6 +1023,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </main>
+
+      {/* 右下角统一通知容器（notice-unification-design.md §2.2/§4）：全应用唯一
+          悬浮 toast 层，fixed 定位类只在这里持有。NoticeHost（notice 总线）与
+          DevSwapCard（持久交互卡，非 toast）作为流式子元素在此堆叠，天然避让
+          不重叠；容器壳 pointer-events-none，子层各自恢复 pointer-events-auto。 */}
+      <div className="pointer-events-none fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
+        <NoticeHost />
+        <DevSwapCard />
+      </div>
 
       {/* B 轨 fallback「提示一次」toast(connector #6) */}
       {fallbackToast && (

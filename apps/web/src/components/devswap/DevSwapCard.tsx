@@ -1,10 +1,10 @@
 "use client";
 
 // DevSwapCard — dev-swap 热切换进度时间线卡片（docs/dev-swap-progress-design.md
-// §1/§5）。挂在侧栏品牌行 GinnoWork 右侧：内联 pill（状态点 + 阶段 + pct），
-// hover 弹出六阶段纵向时间线（✔/◐/○/✖ 状态点 + 阶段名 + 明细 + 耗时），失败
-// 红色停在失败步并可展开尾 30 行日志；全部完成转绿 1.5s 后自动收起（徽标
-// dev·{指纹} 即终态凭证）。
+// §1/§5）。挂在 AppShell 的右下角统一通知容器（notice-unification-design.md
+// §4：定位由容器持有，本组件是容器内流式子元素）：进度 pill（hover 向上弹
+// 六阶段卡）→ 构建完成淡入确认对话框 → 暂不缩为待切换 pill → 确认后淡出。
+// 品牌行只留入口（HotSwapButton + dev 指纹徽标），视线全程不搬家。
 
 import { useEffect, useMemo, useState } from "react";
 import { subscribeDevSwapConfirm, setDevSwapPendingConfirm, isDevSwapConfirmPending } from "@/lib/devswap/bus";
@@ -122,7 +122,9 @@ export function DevSwapCard() {
    * 品牌行只留入口（热更新按钮 + dev 指纹），视线全程不搬家。 */
   const showProgress = run.state === "running" || failed;
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
+    // 统一容器壳是 pointer-events-none，持久交互卡整体恢复交互；
+    // 定位（fixed 右下角）由 AppShell 统一容器持有，此处只做堆叠流。
+    <div className="pointer-events-auto flex flex-col items-end gap-2">
       {/* 确认对话框：构建完成淡入（fade+slide-up），单行 nowrap */}
       {confirmState === "pending" && (
         <div
