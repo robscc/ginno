@@ -161,11 +161,15 @@ export function hydrateNoticebox(): InboxEntry[] {
     if (!raw) return inbox;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) throw new Error("not an array");
-    const valid = parsed.filter(isPlainEntry).map((e) => ({
-      ...e,
-      countInBadge: e.countInBadge !== false,
-      mode: e.mode === "silent" ? "silent" : "toast",
-    }));
+    // 返回类型注解给 mode 三元提供 NoticeMode 上下文（否则字面量 widening
+    // 成 string，TS2322）。
+    const valid = parsed.filter(isPlainEntry).map(
+      (e): InboxEntry => ({
+        ...e,
+        countInBadge: e.countInBadge !== false,
+        mode: e.mode === "silent" ? "silent" : "toast",
+      }),
+    );
     inbox = valid.slice(-NOTICEBOX_MAX);
     uid = inbox.reduce((m, e) => Math.max(m, e.id), 0);
     emitInbox();
