@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../runtime";
+import { markNoticeReadByKey, pushNotice } from "../notice";
 import type { ScheduleRun, SessionMeta } from "../types";
 
 // Last active session, restored on boot (open-experience redesign). Only real
@@ -100,6 +101,19 @@ export function useSessions({
       if (!id || watchingSession(id)) return;
       if (unreadRef.current[id] !== undefined) return;
       setUnreadMap({ ...unreadRef.current, [id]: Date.now() / 1000 });
+      // 通知域投影（notice-unification-design §3.3）：打未读的同时投一条
+      // silent notice 进收件箱——可点的记录，但 countInBadge:false（badge 的
+      // 会话部分只信 session store，防双算）；dedupeKey 保证同会话不堆叠。
+      const title =
+        handlesRef.current.sessionsRef.current.find((s) => s.id === id)?.title?.trim() ||
+        id.slice(0, 8);
+      pushNotice("info", title, {
+        mode: "silent",
+        kind: "session",
+        countInBadge: false,
+        dedupeKey: `session:${id}`,
+        actionMeta: { kind: "session", id },
+      });
     },
     [setUnreadMap, watchingSession],
   );
@@ -110,6 +124,9 @@ export function useSessions({
       // last_finished，「正在看」时也要上报才能压掉它。失败不重试——下一次
       // clear 路径或 reloadSessions 会再对齐。
       void api.markSessionSeen(id).catch(() => {});
+      // 双写已读（§3.3 原子双写的另一半）：收件箱里的 session 投影条目
+      // 一并标已读（幂等；无投影条目时是 no-op）。
+      markNoticeReadByKey(`session:${id}`);
       if (unreadRef.current[id] === undefined) return;
       const next = { ...unreadRef.current };
       delete next[id];
