@@ -15,7 +15,11 @@ function makeBridge(over: Partial<McpAppBridgeDeps> = {}) {
     };
   };
   const iframe = { id: "iframe-window" }; // fake contentWindow（source 比对用）
-  const callMcp = vi.fn(async () => ({ content: ["ok"], structured: { done: true } }));
+  // over.callMcp 提前取出：返回的 h.callMcp 必须与 bridge 实际使用的是同一个
+  // spy（否则断言看默认 spy，永远 0 次调用）
+  const callMcp =
+    over.callMcp ??
+    vi.fn(async () => ({ content: ["ok"], structured: { done: true } }));
   const bridge = new McpAppBridge({
     targetWindow: iframe,
     postToApp: (m) => posted.push(m as Record<string, unknown>),
