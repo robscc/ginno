@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import logging
 from pathlib import Path
 
 import pytest
@@ -349,6 +351,9 @@ class FakeClient:
     def __init__(self):
         self.responds: list[tuple[str, dict]] = []
         self.pushes: list[tuple[str, str]] = []
+        self.sent_images: list[tuple[str, str]] = []
+        self.sent_files: list[tuple[str, str]] = []
+        self.fail_media_send = False
 
     async def respond(self, req_id: str, body: dict) -> dict:
         self.responds.append((req_id, body))
@@ -361,6 +366,18 @@ class FakeClient:
 
     async def send_markdown(self, chatid: str, content: str) -> dict:
         self.pushes.append((chatid, content))
+        return {}
+
+    async def send_image(self, req_id: str, media_id: str) -> dict:
+        if self.fail_media_send:
+            raise RuntimeError("send_image boom")
+        self.sent_images.append((req_id, media_id))
+        return {}
+
+    async def send_file(self, req_id: str, media_id: str) -> dict:
+        if self.fail_media_send:
+            raise RuntimeError("send_file boom")
+        self.sent_files.append((req_id, media_id))
         return {}
 
 
@@ -882,3 +899,204 @@ async def test_adapter_busy_command_not_steered(tmp_path: Path, monkeypatch):
                 if b.get("stream", {}).get("finish")]
     assert any("未被注入" in b["stream"]["content"] for b in finishes)
     await holder
+
+
+# ---------------------------------------------------------------- F7 产物上行（媒体回复）
+# 协议依据 docs/wecom-media-protocol.md：image/file 只能走被动回复
+# （aibot_respond_msg + 回调 req_id）；主动推送仅 markdown/card。
+
+
+class _CannedUploadClient:
+    """假 client：录制 request() 调用序，按 cmd 回 canned body（L1）。"""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    async def request(self, cmd, body=None, req_id=None, **kw):
+        self.calls.append((cmd, dict(body or {})))
+        if cmd == p.CMD_UPLOAD_MEDIA_INIT:
+            return {"upload_id": "U1"}
+        if cmd == p.CMD_UPLOAD_MEDIA_FINISH:
+            return {"media_id": "M9"}
+        return {}
+
+
+async def test_upload_media_three_stage_sequence(tmp_path: Path):
+    """upload+send 组合的 upload 半边：init → chunk×N → finish 调用序与
+    body 字段（512KB+1 → 2 片，md5/total_chunks/base64 分片都对齐）。"""
+    from ginno_runtime.channels.wecom.media import upload_media
+
+    f = tmp_path / "report.pdf"
+    payload = b"x" * (p.MEDIA_CHUNK_BYTES + 1)
+    f.write_bytes(payload)
+    cl = _CannedUploadClient()
+    assert await upload_media(cl, f, media_type="file") == "M9"
+    assert [c for c, _ in cl.calls] == [
+        p.CMD_UPLOAD_MEDIA_INIT, p.CMD_UPLOAD_MEDIA_CHUNK,
+        p.CMD_UPLOAD_MEDIA_CHUNK, p.CMD_UPLOAD_MEDIA_FINISH]
+    init = cl.calls[0][1]
+    assert init["type"] == "file" and init["filename"] == "report.pdf"
+    assert init["total_size"] == len(payload) and init["total_chunks"] == 2
+    assert init["md5"] == hashlib.md5(payload).hexdigest()
+    c0, c1 = cl.calls[1][1], cl.calls[2][1]
+    assert c0["upload_id"] == "U1" and c0["chunk_index"] == 0
+    assert base64.b64decode(c0["base64_data"]) == payload[:p.MEDIA_CHUNK_BYTES]
+    assert c1["chunk_index"] == 1 and c1["base64_data"]
+    assert cl.calls[3][1] == {"upload_id": "U1"}
+
+
+async def test_upload_media_rejects_size_limits(tmp_path: Path):
+    """协议上限预检：image >10MB / file >20MB / <5B 均不发任何请求。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    img = tmp_path / "big.png"
+    img.write_bytes(b"i" * (media_mod.MEDIA_TYPE_MAX_BYTES["image"] + 1))
+    doc = tmp_path / "big.pdf"
+    doc.write_bytes(b"d" * (media_mod.MEDIA_TYPE_MAX_BYTES["file"] + 1))
+    tiny = tmp_path / "tiny.txt"
+    tiny.write_bytes(b"abc")
+    cl = _CannedUploadClient()
+    for f, mt in ((img, "image"), (doc, "file"), (tiny, "file")):
+        with pytest.raises(ValueError):
+            await media_mod.upload_media(cl, f, media_type=mt)
+    assert cl.calls == []  # 预检在 init 前拦下，省一次注定失败的三段式
+
+
+def _mk_artifact(tmp_path: Path, fname: str, *, exists: bool = True) -> Path:
+    """造一个产物文件；``exists=False`` 用于「文件不存在」负路径（名字须
+    与同测试内其它产物不重复——tmp_path 是共享的）。"""
+    f = tmp_path / fname
+    if exists:
+        f.write_bytes(b"payload-bytes")
+    return f
+
+
+async def test_tap_artifact_dispatch_matrix(tmp_path: Path, monkeypatch):
+    """分流矩阵：png→image；webp→file（官方图片白名单仅 png/jpg/jpeg/gif）；
+    pdf→file；未知扩展名与不存在的文件一律不上传不发送。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    uploads: list[tuple[Path, str]] = []
+
+    async def fake_upload(client, path, *, media_type="file"):
+        uploads.append((path, media_type))
+        return f"MID-{media_type}"
+
+    monkeypatch.setattr(media_mod, "upload_media", fake_upload)
+
+    async def send(fname: str, *, exists: bool = True) -> FakeClient:
+        ad = FakeAdapter()
+        tap = WeComTap(ad, "req9", "chat1", "s1")
+        f = _mk_artifact(tmp_path, fname, exists=exists)
+        await tap.send_text(_frame("ref.emit", kind="file",
+                                   name=f.name, ref_id=str(f)))
+        return ad.client
+
+    cl = await send("img1.png")
+    assert uploads[-1][1] == "image"
+    assert cl.sent_images == [("req9", "MID-image")] and cl.sent_files == []
+    cl = await send("shot1.webp")
+    assert uploads[-1][1] == "file"
+    assert cl.sent_files == [("req9", "MID-file")] and cl.sent_images == []
+    cl = await send("doc1.pdf")
+    assert uploads[-1][1] == "file" and cl.sent_files[0][1] == "MID-file"
+    n = len(uploads)
+    await send("bad1.exe")              # 白名单外：未知类型不外发
+    await send("miss1.png", exists=False)  # 文件不存在：静默跳过
+    assert len(uploads) == n
+
+
+async def test_tap_artifact_image_emit_uploads(tmp_path: Path, monkeypatch):
+    """image.emit 触点（代码生成图片）：files.get_by_id 命中 → image 上行。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG fake")
+    uploads: list[tuple[Path, str]] = []
+
+    async def fake_upload(client, path, *, media_type="file"):
+        uploads.append((path, media_type))
+        return "m-img"
+
+    monkeypatch.setattr(media_mod, "upload_media", fake_upload)
+
+    import ginno_runtime.files as files_mod
+
+    class _E:
+        name = "chart.png"
+        path = str(img)
+
+    monkeypatch.setattr(files_mod, "get_by_id",
+                        lambda fid: _E() if fid == "f1" else None)
+    ad = FakeAdapter()
+    tap = WeComTap(ad, "req9", "chat1", "s1")
+    await tap.send_text(_frame("image.emit", file_id="f1", name="chart.png"))
+    assert uploads and uploads[0][1] == "image"
+    assert ad.client.sent_images == [("req9", "m-img")]
+    # 未知 file_id → 静默
+    await tap.send_text(_frame("image.emit", file_id="nope", name="x.png"))
+    assert len(uploads) == 1
+
+
+async def test_tap_artifact_upload_failure_falls_back_with_warning(
+        tmp_path: Path, monkeypatch, caplog):
+    """上传失败 → 降级 markdown 路径回执进流式回复 + warn 日志留痕。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    async def boom(client, path, *, media_type="file"):
+        raise RuntimeError("upload exploded")
+
+    monkeypatch.setattr(media_mod, "upload_media", boom)
+    ad = FakeAdapter()
+    tap = WeComTap(ad, "req9", "chat1", "s1")
+    img = _mk_artifact(tmp_path, "failup.png")
+    with caplog.at_level(logging.WARNING, logger="ginno.wecom"):
+        await tap.send_text(_frame("ref.emit", kind="file",
+                                   name=img.name, ref_id=str(img)))
+    assert any("wecom_send_artifact_failed" in r.message for r in caplog.records)
+    assert ad.client.sent_images == [] and ad.client.sent_files == []
+    streams = [b for _, b in ad.client.responds if b.get("stream")]
+    assert any("📎 产物文件（企业微信上传失败" in s["stream"]["content"]
+               and str(img) in s["stream"]["content"] for s in streams)
+
+
+async def test_tap_artifact_send_failure_falls_back_with_warning(
+        tmp_path: Path, monkeypatch, caplog):
+    """上传成功但发送失败 → 同一降级路径 + warn 日志。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    async def fake_upload(client, path, *, media_type="file"):
+        return "m-ok"
+
+    monkeypatch.setattr(media_mod, "upload_media", fake_upload)
+    ad = FakeAdapter()
+    ad.client.fail_media_send = True
+    tap = WeComTap(ad, "req9", "chat1", "s1")
+    doc = _mk_artifact(tmp_path, "failsend.pdf")
+    with caplog.at_level(logging.WARNING, logger="ginno.wecom"):
+        await tap.send_text(_frame("ref.emit", kind="file",
+                                   name=doc.name, ref_id=str(doc)))
+    assert any("wecom_send_artifact_failed" in r.message for r in caplog.records)
+    assert ad.client.sent_files == []  # send_file 抛错，未记成功
+    streams = [b for _, b in ad.client.responds if b.get("stream")]
+    assert any("📎 产物文件" in s["stream"]["content"] for s in streams)
+
+
+async def test_tap_push_only_artifact_skips_upload_and_pushes_receipt(
+        tmp_path: Path, monkeypatch):
+    """push_only tap（无回调 req_id）：aibot_send_msg 不支持媒体——不做
+    注定失败的上传，直接路径回执走主动推送出口。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    async def must_not_upload(client, path, *, media_type="file"):
+        raise AssertionError("push_only tap 不应触发上传")
+
+    monkeypatch.setattr(media_mod, "upload_media", must_not_upload)
+    ad = FakeAdapter()
+    tap = WeComTap.push_only(ad, "chat1")
+    img = _mk_artifact(tmp_path, "failup.png")
+    await tap.send_text(_frame("ref.emit", kind="file",
+                               name=img.name, ref_id=str(img)))
+    await tap.close()
+    assert ad.client.pushes and any("📎 产物文件" in c and str(img) in c
+                                    for _, c in ad.client.pushes)
