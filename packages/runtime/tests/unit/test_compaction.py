@@ -488,3 +488,112 @@ def test_effective_threshold_unknown_window_keeps_default(isolated_home):
     from ginno_runtime.compaction import _effective_compact_threshold
 
     assert _effective_compact_threshold({}) == 500000
+# --------------------------------------------------------------------------- #
+# threshold molecule: real usage over local estimate (2026-11-07, session
+# 1a0c1d77 — ring showed 81% while the estimator sat ~20% under the line,
+# so auto-compaction never fired and zero traces landed in sidecar.log).
+# --------------------------------------------------------------------------- #
+async def _tiny_graph(isolated_home, thread_id: str):
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    model = ScriptedChatModel(
+        scripts=[script(text="r")] * 20 + [script(text="前情摘要。")]
+    )
+    _placeholder = (
+    )
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": thread_id}}
+    for q in ("q1", "q2", "q3"):
+        await graph.ainvoke({"messages": [HumanMessage(content=q)]}, config)
+    return {"graph": graph, "model": model, "session_id": thread_id}, config
+
+
+def _threshold_settings(isolated_home, threshold: int = 3000) -> None:
+    settings = {"context": {"compact_threshold_tokens": threshold, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+
+
+async def test_threshold_uses_real_usage_molecule(isolated_home):
+    """真实分子优先：估算远小于阈值，但最近一次对话调用的全量 prompt
+    过线 → 触发（与 TopBar 圆环同口径）。"""
+    _threshold_settings(isolated_home)  # threshold=3000: 高于估算、低于 usage 分子
+    from ginno_runtime import usage_store
+
+    session, config = await _tiny_graph(isolated_home, "mol-1")
+    # 最近一次「对话调用」的全量 prompt 过线（fake 调用的小 input 在它之前）
+    usage_store.record(
+        input_tokens=5000, output_tokens=1, provider="p", model="m",
+        source="chat", session_id="mol-1",
+    )
+    stats = await maybe_compact_history(session, config)
+    assert stats is not None, "usage molecule (5000) must cross threshold=100 despite tiny estimate"
+
+
+async def test_threshold_ignores_sideband_usage(isolated_home):
+    """sideband 记录（压缩摘要等）不是会话上下文：只有它时按估算判断
+    → 估算 < 阈值 → 不触发。"""
+    _threshold_settings(isolated_home)  # threshold=3000: 高于估算、低于 usage 分子
+    from ginno_runtime import usage_store
+
+    usage_store.record(
+        input_tokens=999_999, output_tokens=1, provider="p", model="m",
+        source="compaction", session_id="mol-sb",
+    )
+    session, config = await _tiny_graph(isolated_home, "mol-sb")
+    stats = await maybe_compact_history(session, config)
+    assert stats is None, "sideband input must not count as the context molecule"
+
+
+async def test_threshold_falls_back_to_estimate_without_usage(isolated_home):
+    """无 usage 记录（新会话）时回退本地估算（原行为不回归）。"""
+    _threshold_settings(isolated_home)  # threshold=3000: 高于估算、低于 usage 分子
+    session, config = await _tiny_graph(isolated_home, "mol-est")
+    # 估算（q1/q2/q3 + r 回复）远低于 100 → 不触发
+    assert await maybe_compact_history(session, config) is None
+
+
+def test_last_chat_input_tokens_skips_sideband(isolated_home):
+    from ginno_runtime import usage_store
+    from ginno_runtime.usage import last_chat_input_tokens
+
+    import time as _time
+
+    _t0 = _time.time()
+    usage_store.record(
+        input_tokens=1111, output_tokens=1, provider="p", model="m",
+        source="chat", session_id="lcit-1", ts=_t0 - 1,
+    )
+    usage_store.record(
+        input_tokens=999_999, output_tokens=1, provider="p", model="m",
+        source="compaction", session_id="lcit-1", ts=_t0,
+    )
+    # chat 在 sideband 之前（ts 更早）→ 扫描窗口必须跨过 sideband 找到它
+    assert last_chat_input_tokens("lcit-1") == 1111
+    assert last_chat_input_tokens("lcit-none") is None
+
+
+def test_effective_threshold_follows_session_model(isolated_home):
+    """P1：阈值窗口按**会话**的模型配置解析，而非全局默认配置。"""
+    from ginno_runtime.compaction import _effective_compact_threshold
+
+    (isolated_home / "settings.json").write_text(
+        json.dumps(
+            {
+                "default_config": "big",
+                "model_configs": [
+                    {"id": "big", "protocol": "openai-compatible", "context_window": 600000,
+                     "models": ["m1"], "default_model": "m1"},
+                    {"id": "small", "protocol": "openai-compatible", "context_window": 200000,
+                     "models": ["m2"], "default_model": "m2"},
+                ],
+            }
+        )
+    )
+    # 无 session 信息 → 全局默认（big 600k）→ 450k
+    assert _effective_compact_threshold({}) == 450_000
+    # 会话指定 small（200k）→ 150k——不再被全局默认的 600k 遮蔽
+    assert (
+        _effective_compact_threshold({}, {"model_provider": "small", "model_name": "m2"})
+        == 150_000
+    )

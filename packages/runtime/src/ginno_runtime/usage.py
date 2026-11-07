@@ -83,6 +83,52 @@ def context_state(last_input_tokens: int, provider: str = "", model: str = "") -
     }
 
 
+# 「当前上下文」只统计跑过会话 graph 的真实对话调用。绕过 graph 的直连调用
+# （压缩摘要/标题/探活/记忆/外部 agent/workflow 内部 agent/subagent 调度/分类
+# 器/mods 统计）的 input 是被压全量、外部 prompt 或摘要 transcript——都不是
+# 本会话上下文。ContextRing 锯齿根因（2026-11-07）：手动 /compact 的命令 turn
+# 不跑 graph、没有对话 record，压缩 record（input=被压全量，如 360k/600k=60%）
+# 成为最后一条 → 切会话时 GET /usage seed 出被压前的高占用，与 WS usage 帧的
+# 压缩后真值（13%）交替闪烁。channels 投递（schedule/wecom/dingtalk/task/…）
+# 走 run_user_turn → 真实上下文，不在名单内。
+NON_CONTEXT_SOURCES = frozenset({
+    "compaction", "external", "memory", "title", "probe", "classifier",
+    "mods", "subagent_gate", "subagent_plan", "workflow",
+})
+
+# sideband 记录跨过的扫描窗口：足够跨过「手动 /compact 后 + 一串 sideband 调用」
+# 的最后一段；连续 20+ 条全是 sideband 的会话视为无对话记录。
+_CONTEXT_SCAN_ROWS = 20
+
+
+def last_chat_input_tokens(session_id: str) -> int | None:
+    """最近一次**对话调用**的全量 prompt tokens——TopBar 圆环同分子。
+
+    compaction 的阈值判断以此为准（2026-11-07，会话 1a0c1d77：真实 491k
+    显示 81% 却不触发——本地估算对工具输出/代码低估 ~20%，392k < 600k×
+    0.75=450k 永远骑在线下）。返回 None = 扫描窗口内无对话记录（新会话
+    /首次 turn），调用方回退本地估算。usage log 的 input_tokens 已是全量
+    prompt（含缓存读/写，见模块 docstring 的规范化语义）。
+    """
+    try:
+        from . import usage_store
+
+        rows = (
+            usage_store.query_requests(
+                session_id=session_id, page=1, page_size=_CONTEXT_SCAN_ROWS
+            ).get("rows")
+            or []
+        )
+        row = next(
+            (r for r in rows if r.get("source") not in NON_CONTEXT_SOURCES),
+            None,
+        )
+        tokens = int((row or {}).get("input_tokens") or 0)
+        return tokens if tokens > 0 else None
+    except Exception:  # noqa: BLE001 — 阈值判断的辅助，失败回退估算
+        return None
+
+
 def empty_usage() -> dict[str, int]:
     return {k: 0 for k in USAGE_FIELDS} | {"calls": 0}
 

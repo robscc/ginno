@@ -1248,8 +1248,15 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // persistent whole-tree total — applying the accumulator wholesale made
       // the counter JUMP BACKWARD on every turn (2026-10-31 drift fix; the
       // consumer in AppShell adds the turn onto the fetched base).
+      // usage 事件的 turn 增量与圆环更新只作用于**当前活跃会话**（P0，
+      // 2026-11-07 混用修复）：TopBar 的 usageDelta/contextState 是全局
+      // 单值，而后台会话（定时 task / 并行委托 / 仍在跑的长 turn）一样
+      // 产 usage 帧——不过滤会把别的会话的占用覆盖到当前会话的圆环上
+      // （「81% 在跳」「多个 session 混用」的根因）。turn-meta 累加仍按
+      // 事件所属 sid 落到对应会话的气泡上，不受此守卫影响。
+      const active = ctx.activeSidRef.current;
       const t = ev.turn as Partial<SessionUsage> | undefined;
-      if (t && typeof t.input_tokens === "number") {
+      if (t && typeof t.input_tokens === "number" && sid === active) {
         ctx.onUsageChange?.({
           input_tokens: t.input_tokens ?? 0,
           output_tokens: t.output_tokens ?? 0,
@@ -1270,9 +1277,12 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           outputTokens: (_cur?.outputTokens ?? 0) + (t.output_tokens ?? 0),
         });
       }
-      // 上下文占用（TopBar 圆环）：当前状态，直接替换。
+      // 上下文占用（TopBar 圆环）：当前状态，直接替换——仅当前活跃会话
+      // 的帧（见上面的 active 守卫）。
       const c = ev.context as ContextState | undefined;
-      if (c && typeof c.percent === "number") ctx.onContextChange?.(c);
+      if (c && typeof c.percent === "number" && sid === active) {
+        ctx.onContextChange?.(c);
+      }
       break;
     }
     case "turn.state": {

@@ -38,6 +38,7 @@ from langchain_core.messages import (
 
 from .lang import t
 from .tokens import estimate_messages_tokens
+from .usage import last_chat_input_tokens
 from .world_state import (
     SUMMARY_MSG_PREFIX,
     render_reinjection,
@@ -183,20 +184,27 @@ def _copy_with_new_id(m: BaseMessage) -> BaseMessage:
     return m
 
 
-def _effective_compact_threshold(settings: dict) -> int:
+def _effective_compact_threshold(settings: dict, session: dict | None = None) -> int:
     """压缩阈值 = min(compact_threshold_tokens(默认 500k), 模型窗口×0.75)。
 
     阈值跟随模型窗口（2026-11-04，会话 1a0c1d77 实测）：默认 500k 是 1M
     窗口时代的基线——小窗口模型（200k/128k）上下文撑满时 estimate 仍远低
     于 500k，压缩永不触发（前端占比已 >100%）。已知窗口时收紧到
     窗口×0.75；窗口未知（0）维持原行为。
+
+    窗口按 **本会话** 的模型配置解析（2026-11-07，P1）：优先 session 的
+    ``model_provider``（配置 id）+ ``model_name``，与 TopBar 圆环/usage 落库
+    同一条 ``resolve_session_model`` 链；会话信息缺失时退回全局默认配置
+    （原行为）。此前恒用全局默认配置——会话切到非默认模型（如 512k 的
+    智谱官方而默认是 600k 的中转）时阈值按错误的窗口计算。
     """
     threshold = int(settings.get("compact_threshold_tokens", 500000))
     try:
         from .providers import context_window_for, get_config, get_default_config
 
-        _cfg = get_config(get_default_config()) or {}
-        _win = context_window_for(_cfg)
+        _cfg_id = (session or {}).get("model_provider") or get_default_config()
+        _cfg = get_config(_cfg_id) or {}
+        _win = context_window_for(_cfg, (session or {}).get("model_name"))
         if _win > 0:
             threshold = min(threshold, int(_win * 0.75))
     except Exception:
@@ -249,17 +257,36 @@ async def maybe_compact_history(
     if state is None or getattr(state, "next", None):
         return None  # nothing stored, or paused at an interrupt — leave alone
     messages = list((state.values or {}).get("messages", []))
-    threshold = _effective_compact_threshold(settings)
-    if not force and estimate_messages_tokens(messages) < threshold:
+    session_id = str(session.get("session_id") or "")
+    threshold = _effective_compact_threshold(settings, session)
+    # 分子与 TopBar 圆环同口径（2026-11-07，会话 1a0c1d77：真实 491k 显示
+    # 81% 却零触发）：优先取最近一次**对话调用**的全量 prompt（usage log 的
+    # input_tokens，含缓存读写）——本地估算对工具输出/代码/JSON 低估 ~20%
+    # （491k 真实 vs 392k 估算），按估算对比窗口×0.75 意味着真实占用 ~93%
+    # 才触发，模型在此之前就可能 overflow。无 usage 记录（新会话/首 turn）
+    # 时回退估算。force 路径（手动 /compact）本就绕过阈值，不查。
+    current_tokens = (
+        last_chat_input_tokens(session_id)
+        if not force
+        else estimate_messages_tokens(messages)
+    )
+    est_tokens = estimate_messages_tokens(messages)
+    if current_tokens is None:
+        current_tokens = est_tokens
+        basis = "estimate"
+    else:
+        basis = "usage"
+    if not force and current_tokens < threshold:
         return None
 
     keep_turns = max(1, int(settings.get("compact_keep_turns", 3)))
     # 观测（2026-11-04）：自动压缩触发曾在 sidecar.log 零痕迹，排障全靠猜
     # （本日 890e49866 138k→71k 一案）。在决策点与完成点各打一条 INFO。
+    # basis=usage|estimate 标明分子口径，直接对照圆环百分比。
     log.info(
-        "compaction_triggered session=%s force=%s est_tokens=%d threshold=%d",
-        str(session.get("session_id") or ""), force,
-        estimate_messages_tokens(messages), threshold,
+        "compaction_triggered session=%s force=%s tokens=%d basis=%s est_tokens=%d threshold=%d",
+        session_id, force, current_tokens, basis,
+        est_tokens, threshold,
     )
     split = find_split_index(messages, keep_turns)
     if split <= 0:
@@ -276,7 +303,6 @@ async def maybe_compact_history(
     # every turn's threshold check); the 2s deadline keeps the turn path fast.
     from .mods.events import dispatch_session_compact
 
-    session_id = str(session.get("session_id") or "")
     if await dispatch_session_compact(
         session_id,
         tokens=int(estimate_messages_tokens(messages)),
