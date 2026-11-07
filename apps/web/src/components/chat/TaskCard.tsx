@@ -203,13 +203,16 @@ export function TaskEventBand({ block }: { block: { taskId: string; ev: string; 
       ? block.exit === 0 ? "var(--st-ok)" : "var(--st-error)"
       : block.ev === "healthy"
         ? "var(--st-ok)"
-        : "var(--st-skipped)";
+        : block.ev === "lastwords"
+          ? "var(--st-warn, #f59e0b)"
+          : "var(--st-skipped)";
   const label =
     block.ev === "healthy" ? tc("taskCard.evHealthy")
     : block.ev === "watch" ? tc("taskCard.evWatch")
     : block.ev === "finished" ? tc("taskCard.evFinished", { exit: block.exit ?? "?" })
     : block.ev === "stopped" ? tc("taskCard.evStopped")
     : block.ev === "timeout" ? tc("taskCard.evTimeout")
+    : block.ev === "lastwords" ? tc("taskCard.evLastwords")
     : block.ev;
   return (
     <div

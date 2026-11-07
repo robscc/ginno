@@ -36,7 +36,13 @@
       "logHint": "允许 0-90，0 = 不清理，默认 7",
       "logHelp": "运行日志（~/.ginno/logs/）超过该天数后自动删除；启动时与每天各清理一次，修改后立即保存。",
       "logClamped": "超出范围，已收敛到 {n}（允许 0-90）",
-      "logSaved": "日志保留天数已保存：{n} 天"
+      "logSaved": "日志保留天数已保存：{n} 天",
+      "lastwordsLabel": "热切换恢复（遗言模式）",
+      "lastwordsHelp": "dev-swap 重启后恢复被中断的会话：notify 注入恢复提示（默认）；auto 自动续跑（仅显式 dev-swap）；off 不恢复",
+      "lastwordsNotify": "通知（注入恢复提示）",
+      "lastwordsAuto": "自动续跑（仅 dev-swap）",
+      "lastwordsOff": "关闭",
+      "lastwordsSaved": "遗言模式已保存"
     },
     "diagnostics": {
       "title": "诊断",

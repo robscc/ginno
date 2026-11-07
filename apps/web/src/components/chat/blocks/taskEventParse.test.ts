@@ -48,4 +48,51 @@ describe("foldTaskEventBlocks", () => {
     ]);
     expect(out).toHaveLength(1);
   });
+
+  // 遗言恢复带（runtime lastwords.py render_band）：首行折成 ev:"lastwords"
+  // 的 task_event 块（taskId 合成、title 取首行余下），正文保留为 text。
+  describe("lastwords band", () => {
+    it("折为 ev=lastwords 的 task_event，title 带摘要", () => {
+      const out = foldTaskEventBlocks([
+        {
+          kind: "text" as const,
+          text: "[lastwords] dev-swap 重启恢复：帮我跑一遍 dev-swap 验证遗言模式 · 旧指纹 abcdef123456 · 后台任务 2 个可收割(bg_logs)",
+        },
+      ]);
+      expect(out).toHaveLength(1);
+      const tev = out[0] as { kind: string; taskId: string; ev: string; title: string };
+      expect(tev.kind).toBe("task_event");
+      expect(tev.ev).toBe("lastwords");
+      expect(tev.taskId).toBe("lastwords");
+      expect(tev.title).toContain("dev-swap 重启恢复");
+      expect(tev.title).toContain("旧指纹 abcdef123456");
+    });
+
+    it("auto 续跑模板多行：首行折带、正文保留", () => {
+      const src = [
+        "[lastwords] dev-swap 重启恢复：修复构建 · 旧指纹 abc",
+        "",
+        "原始请求：修复构建",
+        "最后进展：跑到单测阶段",
+      ].join("\n");
+      const out = foldTaskEventBlocks([{ kind: "text" as const, text: src }]);
+      expect(out).toHaveLength(2);
+      expect((out[0] as { ev: string }).ev).toBe("lastwords");
+      expect((out[1] as { text: string }).text).toContain("原始请求：修复构建");
+    });
+
+    it("不在行首的 [lastwords] 不折叠（正则不锚 $ 的同族坑）", () => {
+      const src = [
+        { kind: "text" as const, text: "普通消息中间出现 [lastwords] 字样不该折" },
+      ];
+      expect(foldTaskEventBlocks(src)).toEqual(src);
+    });
+
+    it("task 带优先于 lastwords 带（互不串扰）", () => {
+      const out = foldTaskEventBlocks([
+        { kind: "text" as const, text: '[task finished] "x" (t_ab12) exit 0 · ran 1s' },
+      ]);
+      expect((out[0] as { ev: string }).ev).toBe("finished");
+    });
+  });
 });
