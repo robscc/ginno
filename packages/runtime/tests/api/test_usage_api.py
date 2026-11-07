@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -205,6 +206,99 @@ def test_context_field_in_event_and_endpoint(create_session, ws_conv, client):
     sid2 = create_session([script(text="ok")], agent_id="dev")
     data2 = client.get(f"/api/sessions/{sid2}/usage").json()
     assert data2["context"] is None
+
+
+def _ctx_seed(session_id, source, input_tokens):
+    _seed(session_id=session_id, source=source, input_tokens=input_tokens)
+
+
+def test_context_of_session_skips_compaction_record(client):
+    """ContextRing 锯齿（2026-11-07）复现·单元级：压缩调用的 input 是
+    「被压全量」（≈压缩前历史，如 360k/600k=60%），不是当前上下文。它 record
+    进 usage_store（2026-10-12「压缩的也要算进去」口径不动）但 GET /usage 的
+    context 必须跳过——否则手动 /compact 后压缩 record 是最后一条，切会话
+    seed 出被压前的高占用，与 WS usage 帧的压缩后真值交替闪烁。"""
+    _ctx_seed("sess-ctx", "chat", 78_000)
+    _ctx_seed("sess-ctx", "compaction", 360_000)  # 最后一条 = 压缩调用
+    data = client.get("/api/sessions/sess-ctx/usage").json()
+    assert data["ok"]
+    assert data["context"]["tokens"] == 78_000, (
+        "context must reflect the last REAL conversation call, not the "
+        f"compaction record: {data['context']}"
+    )
+
+
+def test_context_of_session_skips_sideband_records(client):
+    """同口径外延：绕过会话 graph 的直连调用（标题/探活/记忆摘要/外部 agent/
+    workflow 内部 agent/subagent 调度）的 input 都不代表本会话当前上下文；
+    channels 投递（schedule/wecom/dingtalk…）跑的就是 session graph，保留。"""
+    _ctx_seed("sess-side", "chat", 10_000)
+    for src in ("title", "probe", "memory", "external", "workflow",
+                "classifier", "mods", "subagent_gate", "subagent_plan"):
+        _ctx_seed("sess-side", src, 900_000)
+    _ctx_seed("sess-side", "schedule", 12_000)  # 真实 graph 调用 → 最新真值
+    data = client.get("/api/sessions/sess-side/usage").json()
+    assert data["context"]["tokens"] == 12_000
+
+    # 只有非上下文记录 → context 为 None（环不显示），绝不显示假值
+    _ctx_seed("sess-only-side", "title", 5_000)
+    data2 = client.get("/api/sessions/sess-only-side/usage").json()
+    assert data2["context"] is None
+
+
+def test_context_no_sawtooth_after_manual_compact(
+    create_session, ws_conv, client, isolated_home
+):
+    """ContextRing 锯齿（2026-11-07）复现·端到端：真实跑「两轮对话 + 手动
+    /compact」。压缩总结直连 model.ainvoke（input=被压全量）record 进 store
+    但命令 turn 不跑 graph、没有对话 record → 压缩 record 成为最后一条。
+    修复前 GET /usage 的 context = 被压全量（≈压缩前占用，用户实测 360k/
+    600k=60%），切会话 seed 高值、下轮 WS usage 帧又替换回低值（78k=13%）
+    → 环交替闪烁。修复后 context 口径 = 最近一次对话调用，两源一致。
+    回复文本刻意长：避免 graph 的退化回复 nudge 在同 turn 重调模型、
+    额外消费 script 槽位。"""
+    (isolated_home / "settings.json").write_text(
+        json.dumps({"context": {"compact_keep_turns": 1}})
+    )
+    long_text = ("这一轮的回答内容足够长，不会触发图里的退化回复检测与重调机制，"
+                 "保证每个 turn 恰好消费一个 script 槽位。")
+    u1 = {"input_tokens": 5_000, "output_tokens": 10, "total_tokens": 5_010}
+    u2 = {"input_tokens": 5_200, "output_tokens": 10, "total_tokens": 5_210}
+    # 压缩总结调用的 usage：input=被压全量（远大于压缩后真实上下文）
+    u_compact = {"input_tokens": 120_000, "output_tokens": 500,
+                 "total_tokens": 120_500}
+    sid = create_session(
+        [
+            script(text=long_text, usage=u1),
+            script(text=long_text, usage=u2),
+            script(text="summary", usage=u_compact),  # /compact 的 ainvoke
+        ],
+        agent_id="dev",
+    )
+    ws_ctx = []
+    with ws_conv(sid) as conv:
+        conv.invoke("第一个问题")
+        ev1 = conv.recv_until("message.end", "error")
+        conv.invoke("第二个问题")
+        ev2 = conv.recv_until("message.end", "error")
+        conv.invoke("/compact")
+        events = conv.recv_until("message.end", "error")
+        assert events_of(events, "notice"), "compact must have replied"
+        # /compact 的命令 turn 不跑 graph → 不发 usage 帧（这正是压缩 record
+        # 成为「最后一条」、旧口径取到假值的原因）
+        assert not events_of(events, "usage")
+        ws_ctx = [e["context"]["tokens"]
+                  for evs in (ev1, ev2) for e in events_of(evs, "usage")
+                  if e.get("context")]
+    # WS 帧口径（engine _turn_ctx_tokens）：turn 内平滑后的对话真值
+    assert ws_ctx == [5_000, 5_200], f"unexpected usage frames: {ws_ctx}"
+
+    # API 口径（_context_of_session）：压缩 record（120k）不得顶替对话真值
+    data = client.get(f"/api/sessions/{sid}/usage").json()
+    assert data["context"]["tokens"] == 5_200, (
+        f"GET /usage context must mirror the last conversation call, "
+        f"not the compaction full-history input: {data['context']}"
+    )
 
 
 def test_provider_name_decorated(client):
