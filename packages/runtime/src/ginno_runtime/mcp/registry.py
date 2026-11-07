@@ -47,7 +47,8 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, BeforeValidator, Field, create_model
+from typing_extensions import Annotated
 
 from ginno_runtime import jsonx as json
 
@@ -450,14 +451,86 @@ def _tool_detail(mcp_tool: Any, server_name: str = "") -> dict[str, Any]:
     }
 
 
+def _string_annotation(v: Any) -> Any:
+    """BeforeValidator for string fields: bare numeric model output → str.
+
+    The symmetric half of the 2026-11-07 incident: a server declaring
+    ``{"type": "string"}`` (ids, names...) gets "expected string, received
+    number" when the model emits ``123`` — pydantic v2 lax mode does NOT
+    coerce int/float→str, so restore it here (bool is an int subclass but a
+    stringly "true" is not worth guessing; leave it to fail validation).
+    """
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return str(v)
+    return v
+
+
+_STRING_FIELD = Annotated[str, BeforeValidator(_string_annotation)]
+
+_JSON_TYPE_ANNOTATIONS: dict[str, Any] = {
+    "number": float,
+    "integer": int,
+    "boolean": bool,
+    "string": _STRING_FIELD,
+    # array/object deliberately NOT mapped (stay Any): the legacy
+    # list/dict→json.dumps canonicalization in _wrap_tool._arun depends on
+    # receiving raw values, and the server validates nested shapes anyway.
+}
+
+
+def _schema_annotation(prop: Any) -> Any:
+    """JSON-schema property → pydantic annotation (Any fallback, never str).
+
+    Type fidelity is the whole point (2026-11-07 "expected number, received
+    string"): the annotation drives BOTH the provider-facing tool schema
+    (``{"type": "number"}`` — an Any field drops the type and models emit
+    stringly-typed numbers) and pydantic's lax validation, which restores a
+    stringly value ("139.7449") to the declared type before the MCP server
+    sees it. Handles ``"type": ["number", "null"]`` and single-branch
+    ``anyOf``; anything ambiguous falls back to Any (pass-through, no
+    flattening).
+    """
+    if not isinstance(prop, dict):
+        return Any
+    t = prop.get("type")
+    if isinstance(t, list):  # union with null, e.g. ["number", "null"]
+        t = next((x for x in t if x != "null"), None)
+    if t is None:
+        any_of = prop.get("anyOf")
+        if isinstance(any_of, list):
+            branches = [a for a in any_of if isinstance(a, dict) and a.get("type") != "null"]
+            if len(branches) == 1:
+                return _schema_annotation(branches[0])
+        # A string enum with no explicit type still means string.
+        enum = prop.get("enum")
+        if isinstance(enum, list) and enum and all(isinstance(x, str) for x in enum):
+            return _STRING_FIELD
+        return Any
+    return _JSON_TYPE_ANNOTATIONS.get(t, Any)
+
+
 def _schema_to_model(name: str, schema: dict) -> type[BaseModel]:
-    """Convert a JSON schema dict into a pydantic model for LangChain tool args."""
+    """Convert a JSON schema dict into a pydantic model for LangChain tool args.
+
+    Field annotations come from the JSON schema's declared types via
+    ``_schema_annotation`` (see the 2026-11-07 incident notes there);
+    descriptions ride along so the provider schema keeps them. Anything
+    unrecognized stays Any — pass-through, never a blanket str that would
+    silently flatten types.
+    """
     props = (schema or {}).get("properties", {}) or {}
     required = set((schema or {}).get("required", []) or [])
 
     fields: dict[str, Any] = {}
     for k, v in props.items():
-        fields[k] = (Any, ... if k in required else Field(default=None))
+        annotation = _schema_annotation(v)
+        description = v.get("description") if isinstance(v, dict) else None
+        if k in required:
+            fields[k] = (
+                (annotation, Field(..., description=description)) if description else (annotation, ...)
+            )
+        else:
+            fields[k] = (annotation, Field(default=None, description=description))
 
     return create_model(f"{name}_Args", **fields)
 
