@@ -368,6 +368,15 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # 遗言保护（lastwords.py SIGTERM 诊断 1a）：置位关闭旗——此后
+        # asyncio loop teardown 取消残余 turn 协程触发的 note_turn_end
+        # 不得删掉 write_lastwords(signal) 刚落盘的遗言。
+        try:
+            from . import lastwords as _lastwords
+
+            _lastwords.mark_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         if not mcp_connect_task.done():
             mcp_connect_task.cancel()
         devswap_watch_task.cancel()
