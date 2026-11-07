@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -17,6 +18,10 @@ from ginno_runtime.tools.builtin import build_builtin_tools
 from ginno_runtime.tools.rtk_bridge import detect_rtk, reset_rtk_cache, rewrite
 
 pytestmark = pytest.mark.unit
+
+# rewrite 用绝对路径调用 rtk（裸名在最小 PATH 环境会 exit 127）——
+# 单测断言的前缀即 _install_rtk mock 的 which 返回值。
+_RTK = "/opt/homebrew/bin/rtk"
 
 
 @pytest.fixture(autouse=True)
@@ -68,10 +73,16 @@ def rtk_installed(monkeypatch):
         "gh pr list",
         "gh pr status",
         "grep -rn TODO src",
+        # 2026-11-07 rtk 1.1.0 实测加白（见 _RTK_WHITELIST 注释的逐条结论）
+        "rg TODO src",
+        "rg --pcre2 '(a)\\1' .",
+        "find . -name '*.py'",
+        "diff a.txt b.txt",
+        "diff -u a.txt b.txt",
     ],
 )
 def test_rewrite_whitelisted_commands(rtk_installed, cmd):
-    assert rewrite(cmd) == f"rtk {cmd}"
+    assert rewrite(cmd) == f"{_RTK} {cmd}"
 
 
 @pytest.mark.parametrize(
@@ -79,33 +90,115 @@ def test_rewrite_whitelisted_commands(rtk_installed, cmd):
     [
         "git push",  # 白名单外 git 子命令
         "git commit -m x",
-        "terraform plan",  # rtk 0.42.1 无 terraform 子命令（实测）
-        "rg TODO",  # rtk 对 rg 是透传原生执行，无压缩收益（实测）
+        "terraform plan",  # rtk 无 terraform 子命令（0.42.1/1.1.0 实测）
         "kubectl logs x",  # 白名单外 kubectl 子命令
         "gh issue list",  # 白名单外 gh 子命令（保守）
-        "pytest::not-this",  # noqa — 见下条真实用例
+        # rtk 1.1.0 实测不加白（见模块注释）：err/summary 是吞 stdout 的
+        # runner 形态，test/read 与 shell 内建同名会被改写破坏语义，
+        # log 是 macOS 系统 log 代理非文件日志过滤器。
+        "err cat a.txt",
+        "summary make build",
+        "test -f a.txt",
+        "test -d /tmp && echo y",
+        "read -r line",
+        "log show --last 1h",
     ],
 )
 def test_rewrite_non_whitelisted(rtk_installed, cmd):
     assert rewrite(cmd) is None
 
 
-def test_rewrite_compound_commands_never_rewritten(rtk_installed):
+# ---- B2：git -C <path> <sub> 形态 ----
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git -C /repo status",
+        "git -C /repo diff",
+        "git -C /repo log --oneline -3",
+        "git -C ../rel/path status --porcelain",
+        "git -C /repo diff HEAD~1",
+    ],
+)
+def test_rewrite_git_c_forms(rtk_installed, cmd):
+    assert rewrite(cmd) == f"{_RTK} {cmd}"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git -C /repo add -A",  # -C 后子命令仅 status/diff/log
+        "git -C /repo push",
+        "git -c user.email=t@t status",  # -c（小写，配置注入）不是 -C
+        "git worktree list",
+    ],
+)
+def test_rewrite_git_c_non_whitelisted(rtk_installed, cmd):
+    assert rewrite(cmd) is None
+
+
+# ---- B3：复合段感知 —— 按顶层 && / ; 拆段，命中段前插 rtk ----
+
+
+@pytest.mark.parametrize(
+    "cmd,expected",
+    [
+        # 实际会话的主形态：cd 复合命令的第二段现在能命中
+        ("cd /repo && git log --oneline", f"cd /repo && {_RTK} git log --oneline"),
+        # 多段：命中的都换，不命中的原样
+        ("echo hi && git status && echo bye", f"echo hi && {_RTK} git status && echo bye"),
+        ("ls; echo done", f"{_RTK} ls; echo done"),
+        ("git status && git diff", f"{_RTK} git status && {_RTK} git diff"),
+        ("rg TODO . ; rg DONE .", f"{_RTK} rg TODO . ; {_RTK} rg DONE ."),
+        # 引号内的 && / ; 不拆段（引号内是参数文本）
+        ('echo "a && b" ; ls', f'echo "a && b" ; {_RTK} ls'),
+        ("echo 'x|y' && rg foo", f"echo 'x|y' && {_RTK} rg foo"),
+        # 重组保留原空白（仅多出 "rtk "）
+        (" pytest -q ", f" {_RTK} pytest -q "),
+        ("cd  x   &&   git status", f"cd  x   &&   {_RTK} git status"),
+        # git -C 复合段
+        ("echo pre && git -C /repo log -2", f"echo pre && {_RTK} git -C /repo log -2"),
+    ],
+)
+def test_rewrite_compound_segments(rtk_installed, cmd, expected):
+    assert rewrite(cmd) == expected
+
+
+def test_rewrite_compound_all_miss_returns_none(rtk_installed):
+    # 没有任何段命中 → None（一切照旧），不返回原样字符串
+    assert rewrite("cd /repo && make build") is None
+    assert rewrite("echo a; echo b") is None
+
+
+def test_rewrite_pipe_and_redirect_segments_never_rewritten(rtk_installed):
+    """管道/重定向破坏 rtk 输出语义：所在段整段原样（goal B3 保守要求）。"""
     for cmd in [
         "git status | head -5",
         "git diff > /tmp/x.patch",
-        "pytest && echo done",
-        "ls; rm -rf /",
-        "git status && git diff",
+        "rg TODO . | wc -l",
         "cat log.txt | grep err",
+        "ls > out.txt",
+        "find . | xargs grep x",
+        # 段级：第二段含管道 → 只有该段不动，第一段仍可命中
+        "git status && git diff | cat",
+        # 后台 & / 输入 < 同样整段不重写
+        "git status &",
+        "grep x < in.txt",
     ]:
-        assert rewrite(cmd) is None, cmd
+        if cmd == "git status && git diff | cat":
+            assert rewrite(cmd) == f"{_RTK} git status && git diff | cat", cmd
+        else:
+            assert rewrite(cmd) is None, cmd
 
 
 def test_rewrite_empty_and_bad_quoting(rtk_installed):
     assert rewrite("") is None
     assert rewrite("   ") is None
-    assert rewrite("git status 'unclosed") is None  # shlex 失败 → 不动
+    assert rewrite("git status 'unclosed") is None  # 引号不闭合 → 整条不动
+    assert rewrite('echo "unclosed && ls') is None
+    assert rewrite("echo `date` && ls") is None  # 命令替换 → 整条不动
+    assert rewrite("echo a\necho b") is None  # 换行 → 整条不动
 
 
 # ---- rewrite：无 rtk / 版本不符 ----
@@ -189,14 +282,14 @@ def test_enabled_explicit_true(rtk_installed, monkeypatch, tmp_path):
     sp = tmp_path / "settings.json"
     _write_settings(sp, {"rtk": {"enabled": True}})
     monkeypatch.setattr(rtk_bridge, "settings_path", lambda: sp)
-    assert rewrite("git status") == "rtk git status"
+    assert rewrite("git status") == f"{_RTK} git status"
 
 
 def test_broken_settings_file_defaults_enabled(rtk_installed, monkeypatch, tmp_path):
     sp = tmp_path / "settings.json"
     sp.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(rtk_bridge, "settings_path", lambda: sp)
-    assert rewrite("git status") == "rtk git status"
+    assert rewrite("git status") == f"{_RTK} git status"
 
 
 # ---- bash 工具端到端 ----
@@ -221,8 +314,8 @@ def test_bash_tool_executes_rewritten_command(monkeypatch, ws, tmp_path):
         def __init__(self, argv, **kw):
             captured["argv"] = argv
             captured["cwd"] = kw.get("cwd")
-            self.stdout = None
-            self.stderr = None
+            self.stdout = io.StringIO()
+            self.stderr = io.StringIO()
 
         def wait(self, timeout=None):
             return 0
@@ -235,7 +328,7 @@ def test_bash_tool_executes_rewritten_command(monkeypatch, ws, tmp_path):
     read_file, write_file, glob_files, grep_files, edit_file, bash = build_builtin_tools(Path(ws))
     bash.invoke({"command": "git status", "timeout": 5})
     shell_cmd = captured["argv"][2]
-    assert shell_cmd == "rtk git status"
+    assert shell_cmd == f"{_RTK} git status"
 
 
 def test_bash_tool_unaffected_without_rtk(monkeypatch, ws, tmp_path):
@@ -249,8 +342,8 @@ def test_bash_tool_unaffected_without_rtk(monkeypatch, ws, tmp_path):
     class FakeProc:
         def __init__(self, argv, **kw):
             captured["argv"] = argv
-            self.stdout = None
-            self.stderr = None
+            self.stdout = io.StringIO()
+            self.stderr = io.StringIO()
 
         def wait(self, timeout=None):
             return 0
