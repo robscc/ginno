@@ -68,7 +68,11 @@ export function createToolsWithUiStore(
   }
 
   function get(): Promise<ToolsWithUiMap> {
-    if (cache && now() - fetchedAt < staleMs) return Promise.resolve(cache);
+    // 启动竞态（sidecar 未连完 MCP server）会拿到空清单——空清单不能
+    // 享受完整 stale 窗口（否则 app 卡最长哑 5 分钟，2026-11-07 实测），
+    // 缩短为 15s 让下一次挂载/lookup 迅速重拉。
+    const effStale = cache && Object.keys(cache).length === 0 ? 15_000 : staleMs;
+    if (cache && now() - fetchedAt < effStale) return Promise.resolve(cache);
     return refresh();
   }
 
@@ -77,7 +81,15 @@ export function createToolsWithUiStore(
   }
 
   function lookup(graphName: string): McpToolUiInfo | null {
-    return cache?.[graphName] ?? null;
+    const hit = cache?.[graphName] ?? null;
+    // 自愈（2026-11-07 实测坑）：启动竞态会缓存到空清单（sidecar 还没连完
+    // MCP server），而 lookup 纯读不刷新 → app 卡永远不渲染直到用户恰好
+    // 触发一次 get。miss 且缓存已 stale 时后台 refresh——下一次组件渲染
+    // （React 状态由消费方驱动）即命中。不阻塞当前渲染路径。
+    if (!hit && cache && now() - fetchedAt >= staleMs) {
+      void refresh().catch(() => undefined);
+    }
+    return hit;
   }
 
   return { get, refresh, peek, lookup };
