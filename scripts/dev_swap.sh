@@ -96,8 +96,11 @@ if [ "${FORCE:-0}" != "1" ]; then
     BUSY="$(printf '%s' "$RUNNING" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
+# 2026-11-07：tasks 不再计入 BUSY——后台任务是独立 shell 进程（spool 于
+# tasks 目录，不依赖 sidecar），sidecar 重启不打断它们；而计入会造成
+# 「后台发起的 dev-swap 自己拦自己」的自锁（本任务恰在 /api/running.tasks
+# 里）。quiesce 的保护对象只有 turn（内存态随重启丢失）。
 n = sum(1 for s in d.get("sessions", []) if s.get("running"))
-n += sum(1 for t in d.get("tasks", []) if not t.get("detached"))
 print(n)' 2>/dev/null || echo "?")"
     if [ "$BUSY" != "0" ] && [ "$BUSY" != "?" ]; then
       die_stage "有 $BUSY 个运行中 turn/任务（/api/running）。等它们结束，或 FORCE=1 强制"
