@@ -28,9 +28,19 @@ from ..paths import settings_path
 
 log = logging.getLogger(__name__)
 
-# 命令重写白名单（保守起步）：token 前缀精确匹配。全部条目经 rtk 0.42.1
-# `rtk <cmd> --help` 实测确认有专用压缩子命令（2026-11-04）；terraform 无
-# 子命令、rg 被透传原生执行（无压缩且输出更差）——均不入白名单。
+# 命令重写白名单（保守起步）：token 前缀精确匹配。2026-11-07 按 rtk 1.1.0
+# 逐条实测复核（rg/find/diff 为新增；其余沿用 0.42.1 实测结论）：
+#   ✅ rg    — 1.1.0 已非透传：分组头 "N matches in M files" + 截断保计数，
+#              5000 行样本 111 匹配压到 28 行；无匹配 rc=1 与原生一致
+#   ✅ find  — compact 树形输出；危险 flag（-delete 等）实测透传且生效
+#              （行为与原生一致，无静默吞掉）
+#   ✅ diff  — -u/普通格式输出与原生逐字一致，rc=1 一致；大 diff 才触发压缩
+#   ❌ err/test/read/summary — 均为「rtk 包装任意命令」的 runner 形态，而
+#              首 token 同名的 shell 内建（test -f / read -r）或原生命令
+#              会被改写破坏语义，且 err/summary 会吞掉 stdout——不加
+#   ❌ log   — rtk log 是 macOS 系统 log 命令的代理（show/stream/collect），
+#              不是文件日志过滤器；首 token 为 log 的场景无压缩收益——不加
+#   ❌ terraform — 无子命令（0.42.1 实测，1.1.0 help 未列出）
 _RTK_WHITELIST: tuple[tuple[str, ...], ...] = (
     ("git", "status"),
     ("git", "diff"),
@@ -48,9 +58,15 @@ _RTK_WHITELIST: tuple[tuple[str, ...], ...] = (
     ("kubectl", "pods"),
     ("gh", "pr"),
     ("grep",),
+    ("rg",),
+    ("find",),
+    ("diff",),
 )
 
-# 复合命令特征：出现任一字符即不重写（管道/重定向/列表/命令替换/换行）。
+# 段级命令元字符：拆段后段内出现任一（引号内也算，保守）即该段不重写——
+# 管道/重定向会破坏 rtk 的输出语义；单 &（后台）、< 同理。
+_SEG_META = "|<>&\n"
+# 顶层拆分符：&& 与 ;（引号内不拆）。反引号/换行 → 整条不重写。
 _SHELL_META = "|&;<>`\n"
 
 _UNSET = object()
@@ -117,23 +133,112 @@ def reset_rtk_cache() -> None:
     _detect_cache = _UNSET
 
 
+def _split_segments(command: str) -> list[tuple[str, str]] | None:
+    """按顶层 ``&&`` / ``;`` 拆段（引号内不拆）。
+
+    返回 ``[(segment_text, separator), ...]``——段文本自带分隔符两侧的空白，
+    重组时 ``"".join(seg + sep)`` 即可逐字节还原原命令。反引号（命令替换）、
+    换行、引号不闭合 → None（整条不重写，保持保守：改写失败的方向永远是
+    「一切照旧」）。双引号内的 ``\\"`` 按转义处理；多字节转义边界最多误判
+    到「不闭合」一侧，同样只是放弃重写。
+    """
+    segs: list[tuple[str, str]] = []
+    cur: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        c = command[i]
+        if quote:
+            cur.append(c)
+            if c == quote and (quote == "'" or command[i - 1] != "\\"):
+                quote = None
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            cur.append(c)
+            i += 1
+            continue
+        if c == "`" or c == "\n":
+            return None
+        if c == "&" and command.startswith("&&", i):
+            segs.append(("".join(cur), "&&"))
+            cur = []
+            i += 2
+            continue
+        if c == ";":
+            segs.append(("".join(cur), ";"))
+            cur = []
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    if quote:
+        return None
+    segs.append(("".join(cur), ""))
+    return segs
+
+
+def _seg_whitelisted(seg: str) -> bool:
+    """单段是否命中白名单（含 ``git -C <path> <sub>`` 形态）。
+
+    段内含任何段级元字符（``| < > &``）即 False——管道/重定向段整段原样。
+    """
+    seg = seg.strip()
+    if not seg or any(c in seg for c in _SEG_META):
+        return False
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:  # 引号不闭合等 — 交给原 shell 报错，我们不动
+        return False
+    if not tokens:
+        return False
+    for prefix in _RTK_WHITELIST:
+        if tuple(tokens[: len(prefix)]) == prefix:
+            return True
+    # git -C <path> status|diff|log（B2）：目录参数形态，rtk 1.1.0 实测透传正常
+    return bool(
+        len(tokens) >= 4
+        and tokens[0] == "git"
+        and tokens[1] == "-C"
+        and tokens[3] in ("status", "diff", "log")
+    )
+
+
 def rewrite(command: str) -> str | None:
-    """白名单命中且有 rtk 时返回 ``rtk <原命令>``，否则 None（一切照旧）。"""
+    """白名单命中且有 rtk 时返回改写后的命令，否则 None（一切照旧）。
+
+    B3（2026-11-07）复合段感知：命令按顶层 ``&&`` / ``;`` 拆段，每段独立
+    匹配白名单，命中段前插 ``rtk ``，未命中段（含管道/重定向段）原样保留，
+    重组后整条返回——``cd X && git log`` 里第二段现在能命中（此前含 ``&&``
+    一律不重写，实际会话模型几乎全写复合命令，rtk 100% 未命中）。
+    """
     if not command or not command.strip():
         return None
     if not _rtk_enabled():
         return None
-    if detect_rtk() is None:
+    rtk = detect_rtk()
+    if rtk is None:
         return None
-    if any(c in command for c in _SHELL_META):
+    segs = _split_segments(command)
+    if segs is None:
         return None
-    try:
-        tokens = shlex.split(command)
-    except ValueError:  # 引号不闭合等 — 交给原 shell 报错，我们不动
-        return None
-    if not tokens:
-        return None
-    for prefix in _RTK_WHITELIST:
-        if tuple(tokens[: len(prefix)]) == prefix:
-            return f"rtk {command}"
-    return None
+    # 用绝对路径调用 rtk：GUI sidecar 的最小 PATH 环境（或测试环境）下登录
+    # shell 未必含 rtk 所在目录——裸 `rtk` 会 command not found（exit 127），
+    # detect_rtk 的 Homebrew fallback 探到的正是这种环境。
+    parts: list[str] = []
+    changed = False
+    for seg, sep in segs:
+        if _seg_whitelisted(seg):
+            # 保留段两侧原有空白，只在核心命令前插 rtk —— 重组结果与原命令
+            # 逐字节对齐（仅多出 "<rtk> "），`cd X && git log` → `cd X && <rtk> git log`
+            lead = seg[: len(seg) - len(seg.lstrip())]
+            trail = seg[len(seg.rstrip()):]
+            parts.append(f"{lead}{rtk} {seg.strip()}{trail}")
+            parts.append(sep)
+            changed = True
+        else:
+            parts.append(seg)
+            parts.append(sep)
+    return "".join(parts) if changed else None
