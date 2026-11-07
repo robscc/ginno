@@ -31,6 +31,7 @@ export function McpAddWizard({
 }) {
   const t = useTranslations("settings.mcp");
   const [step, setStep] = useState(1);
+  const [copiedError, setCopiedError] = useState(false);
   const [transport, setTransport] = useState<TransportPick>("http");
   const [tpl, setTpl] = useState<string | null>(null);
   const [paste, setPaste] = useState("");
@@ -407,9 +408,25 @@ export function McpAddWizard({
               {testResult && !testResult.ok && (
                 <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-[rgb(var(--st-error))]/30 bg-[rgb(var(--st-error))]/[0.06] px-3.5 py-3">
                   <X className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(var(--st-error))]" />
-                  <div className="min-w-0">
-                    <b className="block text-[13.5px] text-txt">{t("wzTestFailTitle")}</b>
-                    <p className="mt-1 break-all font-mono text-[11px] leading-relaxed text-muted">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <b className="block text-[13.5px] text-txt">{t("wzTestFailTitle")}</b>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard
+                            ?.writeText(String(testResult.error ?? ""))
+                            .then(() => setCopiedError(true))
+                            .catch(() => undefined);
+                          setTimeout(() => setCopiedError(false), 1500);
+                        }}
+                        className="shrink-0 rounded-md border border-line px-2 py-0.5 text-[11px] text-muted hover:text-txt"
+                        title={t("wzCopyError")}
+                      >
+                        {copiedError ? t("wzCopied") : t("wzCopyError")}
+                      </button>
+                    </div>
+                    <p className="mt-1 select-text break-all font-mono text-[11px] leading-relaxed text-muted">
                       {testResult.error}
                     </p>
                     <p className="mt-1 text-xs text-faint">{t("wzTestFailHint")}</p>

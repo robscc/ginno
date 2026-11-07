@@ -240,6 +240,8 @@
       "wzToolsWarn": "工具会在每一轮注入上下文 — 在工具页关掉不用的可省 token。",
       "wzTestFailTitle": "连接失败",
       "wzTestFailHint": "提示：检查 URL 与 key；服务器列表会显示单行根因。",
+      "wzCopyError": "复制错误",
+      "wzCopied": "已复制",
       "wzSaved": "{name} 已保存 — 正在后台连接，几秒后状态行会更新",
       "wzOverwrite": "「{name}」已存在 — 保存将覆盖它。",
       "impTitle": "导入 MCP 配置",
