@@ -456,13 +456,18 @@ export function ChatStream({
     const sockReady = !!sock && sock.readyState === WebSocket.OPEN;
 
     if (!sockReady) {
-      // Not delivered: the bubble lands in the failed state. No assistant
-      // placeholder, no busy lock — retry becomes available once the socket
-      // reconnects.
+      // 断线窗口发送（2026-11-07 /compact「连接断开——未送达」实案）：
+      // 断开后前端固定 3s 重连 + 握手，此前一击即标 connNotReady 太早。
+      // 先以 sending 落位并轮询等连接（6s > 3s 重连 + 握手余量；不用
+      // waitForSocketOpen——重连 timer 未走到时旧 armSocketReady promise
+      // 已 reject，它会立即误判 false）。连上即以原 turnId 重走 attemptSend
+      // （existingTurn 复用，LangGraph add_messages 按 id 幂等）；超时仍断
+      // 才标 connNotReady，红色感叹号重试兜底。等待期间不占 busy 锁；
+      // 气泡若被撤回/编辑（status 离开 sending）则放弃补发。
       storeRef.current[sid] = userMsgId
         ? (storeRef.current[sid] ?? []).map((m) =>
             m.id === userMsgId
-              ? { ...m, turnId, status: "failed" as const, failReason: "connNotReady" }
+              ? { ...m, turnId, status: "sending" as const, sendPayload: payload }
               : m,
           )
         : [
@@ -473,12 +478,32 @@ export function ChatStream({
               blocks: userBlocks,
               turnId,
               agentId: payload.agentId,
-              status: "failed" as const,
-              failReason: "connNotReady",
+              status: "sending" as const,
               sendPayload: payload,
             },
           ];
       syncDisplay(sid);
+      const deadline = Date.now() + 6000;
+      const waitOpen = (): Promise<boolean> => {
+        const s = socketsRef.current[sid];
+        if (s?.readyState === WebSocket.OPEN) return Promise.resolve(true);
+        if (Date.now() >= deadline) return Promise.resolve(false);
+        return new Promise((res) => setTimeout(() => void waitOpen().then(res), 400));
+      };
+      void waitOpen().then((open) => {
+        const cur = (storeRef.current[sid] ?? []).find((m) => m.id === uid);
+        if (!cur || cur.status !== "sending") return; // 撤回/编辑后放弃
+        if (!open) {
+          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+            m.id === uid
+              ? { ...m, status: "failed" as const, failReason: "connNotReady" }
+              : m,
+          );
+          syncDisplay(sid);
+          return;
+        }
+        attemptSend(sid, payload, userMsgId ?? uid);
+      });
       return;
     }
 
