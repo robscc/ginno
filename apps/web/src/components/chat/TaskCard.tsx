@@ -147,7 +147,9 @@ export function TaskCard({ taskId }: { taskId: string }) {
               {b.text}
             </span>
           </div>
-          <div className="truncate font-mono text-[11px] text-faint">$ {task?.command || "…"}</div>
+          <div className="truncate font-mono text-[11px] text-faint" title={task?.command || undefined}>
+            $ {task?.command || "…"}
+          </div>
         </div>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-faint" key={tick}>
           {elapsed}
@@ -195,9 +197,29 @@ export function TaskCard({ taskId }: { taskId: string }) {
   );
 }
 
-/** task_event 块的极薄标记行（blocks.tsx 渲染）：只标注入点，状态在卡片。 */
+/** task_event 块的极薄标记行（blocks.tsx 渲染）：只标注入点，状态在卡片。
+ *
+ * 2026-11-08：hover 行浮出任务的完整脚本（command + cwd）——极薄行只有
+ * title（多为 command 前 40 字符），后台任务具体跑了什么要点进任务中心
+ * 才知道。按 tid 惰性拉 GET /api/tasks/{id}（终态任务回落 index，重启后
+ * 也能查），模块级缓存去重；非 t_* 合成 id（lastwords）不请求。 */
+const taskCmdCache = new Map<string, Promise<TaskRecord | null>>();
+const REAL_TID_RE = /^t_[0-9a-zA-Z]+$/;
+
+function fetchTaskOnce(tid: string): Promise<TaskRecord | null> {
+  let p = taskCmdCache.get(tid);
+  if (!p) {
+    p = getTask(tid).catch(() => null);
+    taskCmdCache.set(tid, p);
+  }
+  return p;
+}
+
 export function TaskEventBand({ block }: { block: { taskId: string; ev: string; title?: string; exit?: number | null; dur?: string } }) {
   const { tc } = useChatT();
+  const [task, setTask] = useState<TaskRecord | null>(null);
+  const [hover, setHover] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const color =
     block.ev === "finished"
       ? block.exit === 0 ? "var(--st-ok)" : "var(--st-error)"
@@ -214,16 +236,44 @@ export function TaskEventBand({ block }: { block: { taskId: string; ev: string; 
     : block.ev === "timeout" ? tc("taskCard.evTimeout")
     : block.ev === "lastwords" ? tc("taskCard.evLastwords")
     : block.ev;
+  const showCard = hover && !!task?.command;
   return (
     <div
-      className="my-1 flex items-center gap-1.5 border-l-2 py-0.5 pl-2 text-[11px]"
+      ref={cardRef}
+      className="relative my-1 flex items-center gap-1.5 border-l-2 py-0.5 pl-2 text-[11px]"
       style={{ borderColor: color, color: "rgb(var(--muted))", background: "color-mix(in srgb, currentColor 4%, transparent)" }}
+      onMouseEnter={() => {
+        setHover(true);
+        if (REAL_TID_RE.test(block.taskId)) {
+          void fetchTaskOnce(block.taskId).then((t) => {
+            // 缓存可能来自更早的轮询（任务那时还 running）——终态字段以
+            // 事件行为准展示，这里只取 command/cwd，不覆盖行内状态。
+            if (t) setTask(t);
+          });
+        }
+      }}
+      onMouseLeave={() => setHover(false)}
     >
       <span style={{ color }}>▸</span>
       <span className="truncate">
         {label} · <span className="font-mono">{block.title || block.taskId}</span>
         {block.dur ? ` · ${block.dur}` : ""}
       </span>
+      {showCard && (
+        <div
+          className="absolute left-2 top-full z-30 mt-1 w-max max-w-xl overflow-hidden rounded-lg border border-line bg-card shadow-lg"
+          data-testid={`task-event-cmd-${block.taskId}`}
+        >
+          <div className="select-text whitespace-pre-wrap break-all px-3 py-2 font-mono text-[11px] leading-relaxed text-txt">
+            $ {task!.command}
+          </div>
+          {task!.cwd ? (
+            <div className="border-t border-line px-3 py-1.5 font-mono text-[10px] text-faint">
+              cwd: {task!.cwd}
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
