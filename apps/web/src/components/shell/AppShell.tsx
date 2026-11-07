@@ -1009,7 +1009,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
           {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}
           {g.rightPanelOpen ? <RightPanel /> : <RightDock />}
-          <SheetViewer />
         </div>
         {/* Non-workspace routes (settings, kb, workflows, scheduled)。定时回放期间
             用 CSS hidden（不卸载）——/scheduled 的页签/过滤/时间条日期在「返回」后
@@ -1026,6 +1025,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </main>
+
+      {/* 文件预览弹层（SheetViewer）：fixed 全局 modal，挂在 main 顶层——
+          2026-11-08 修复：原挂工作区行内，/scheduled 等非工作区路由（或定时
+          回放/RunSubSessionView 期间）工作区行被 CSS hidden，display:none
+          祖先连 fixed 子层一起吃掉——定时任务实例里点 artifact「点不开」、
+          切回 session 又突然显示。预览是全局 store 状态，弹层就该全应用常驻。 */}
+      <SheetViewer />
 
       {/* 右下角统一通知容器（notice-unification-design.md §2.2/§4）：全应用唯一
           悬浮 toast 层，fixed 定位类只在这里持有。NoticeHost（notice 总线）与
