@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
+import { pushNotice } from "@/lib/notice";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { McpServerCard } from "./mcp/McpServerCard";
 import { McpDetailView, type McpDetailTab } from "./mcp/McpDetailView";
@@ -11,7 +12,6 @@ import { McpImportModal } from "./mcp/McpImportModal";
 import { useMcp } from "./mcp/useMcp";
 import { fmtTokens, TOKENS_PER_TOOL, type McpServerEntry, type ParsedServer } from "./mcp/mcpShared";
 
-type Toast = { msg: string; tone: "ok" | "err" | "warn" };
 type ConfirmState = { title: string; message: string; confirmLabel?: string; onConfirm: () => void };
 
 // Settings → Connections → MCP（设计文档 docs/mcp-server-ui-design.md）。
@@ -31,14 +31,18 @@ export function McpSettings() {
   // 开关显示值一律取 switchStateOf）。toggleServer 的确认循环结束/超时/异常
   // 都会清除对应条目；server 被移除由 prune effect 兜底清理，防开关永久卡灰。
   const [pendingByServer, setPendingByServer] = useState<Record<string, { on: boolean }>>({});
-  const [toast, setToast] = useState<Toast | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [advText, setAdvText] = useState<string | null>(null); // null = 未编辑（显示冻结快照）
   const [advSnapshot, setAdvSnapshot] = useState<string | null>(null); // 展开时刻冻结的 cfg 快照
   const [advError, setAdvError] = useState<string | null>(null);
 
-  const showToast = useCallback((msg: string, tone: Toast["tone"] = "ok") => {
-    setToast({ msg, tone });
+  // toast 收编进全局 notice 总线（notice-unification-design.md §4）：私有
+  // state + fixed 底部居中层已删，内部映射转发；3 个子组件（向导/导入/详情）
+  // 的 onToast(msg, tone) 接口不变，零改动。
+  const showToast = useCallback((msg: string, tone: "ok" | "err" | "warn" = "ok") => {
+    pushNotice(tone === "ok" ? "success" : tone === "err" ? "error" : "warn", msg, {
+      source: "general",
+    });
   }, []);
   // 写失败统一出口：损坏锁写时给出针对性文案（而非误导性的「保存失败」），
   // 其余（网络断开 / 后端 500）保持 saveFailed。cfgError 来自 ≤5s 前的轮询，
@@ -46,11 +50,6 @@ export function McpSettings() {
   const saveFailToast = useCallback(() => {
     showToast(cfgError ? t("cfgCorruptBlocked") : t("saveFailed"), "err");
   }, [cfgError, t, showToast]);
-  useEffect(() => {
-    if (!toast) return;
-    const tm = setTimeout(() => setToast(null), 2800);
-    return () => clearTimeout(tm);
-  }, [toast]);
 
   // 进入详情页时拉一次 ?tools=1 明细（toolDetails / disabledTools）
   useEffect(() => {
@@ -600,21 +599,6 @@ export function McpSettings() {
           onConfirm={confirm.onConfirm}
           onCancel={() => setConfirm(null)}
         />
-      )}
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 z-[60] -translate-x-1/2">
-          <div
-            className={`rounded-lg border bg-card2 px-4 py-2 text-[13px] text-txt shadow-xl ${
-              toast.tone === "ok"
-                ? "border-green/45"
-                : toast.tone === "err"
-                  ? "border-red/50"
-                  : "border-yellow/50"
-            }`}
-          >
-            {toast.msg}
-          </div>
-        </div>
       )}
     </div>
   );

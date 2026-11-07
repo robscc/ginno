@@ -454,25 +454,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     closeScheduleRunRef.current();
   }, [pathname]);
 
-  // 连接器事件通道(#6「提示一次」):B 轨 fallback 首次发生时弹一条 toast,
+  // 连接器事件通道(#6「提示一次」):B 轨 fallback 首次发生时推一条 notice,
   // 用户知情后可在 连接器 设置里改 off/auto。WS 断了静默——提示不是关键路径。
-  const [fallbackToast, setFallbackToast] = useState<string | null>(null);
+  // (notice-unification §4:私有 state + fixed 层已收编进 pushNotice 右下容器)
   useEffect(() => {
     let ws: WebSocket | null = null;
     let closed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       ws = openSocket(wsConnectorsUrl());
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as { type: string; hint?: string };
           if (msg.type === "browser_fallback_used" && msg.hint) {
-            setFallbackToast(msg.hint);
-            // 8s 自动消失;一次性提示(sessionStorage 防重复打扰)
+            // 8s 自动消失;dedupeKey 防多帧重弹;一次性提示(sessionStorage 防重复打扰)
+            pushNotice("info", `${t("fallbackToast.title")}\n${msg.hint}`, {
+              duration: 8000,
+              dedupeKey: "browser-fallback",
+              source: "connector",
+            });
             if (!sessionStorage.getItem("ginno-fb-toast")) {
               sessionStorage.setItem("ginno-fb-toast", "1");
             }
-            timer = setTimeout(() => setFallbackToast(null), 8000);
           }
         } catch { /* 非 JSON 帧 */ }
       };
@@ -480,7 +482,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     } catch { /* WebSocket 不可用(静态导出预渲染) */ }
     return () => {
       closed = true;
-      if (timer) clearTimeout(timer);
       try { ws?.close(); } catch { /* already closed */ }
     };
   }, []);
@@ -1031,14 +1032,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <NoticeHost />
         <DevSwapCard />
       </div>
-
-      {/* B 轨 fallback「提示一次」toast(connector #6) */}
-      {fallbackToast && (
-        <div className="fixed bottom-5 right-5 z-50 max-w-xs rounded-xl border border-violet-500/40 bg-violet-500/10 px-4 py-3 text-xs leading-relaxed text-txt shadow-lg">
-          <div className="font-medium">{t("fallbackToast.title")}</div>
-          <div className="mt-0.5 text-faint">{fallbackToast}</div>
-        </div>
-      )}
 
       {goalSessionModal && (
         <GoalEditor
