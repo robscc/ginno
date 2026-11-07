@@ -53,7 +53,7 @@ function makeBridge(over: Partial<McpAppBridgeDeps> = {}) {
 const responses = (posted: Array<Record<string, unknown>>) =>
   posted.filter((m) => m.id !== undefined);
 const dataPushes = (posted: Array<Record<string, unknown>>) =>
-  posted.filter((m) => m.method === "ui/data");
+  posted.filter((m) => m.method === "ui/notifications/tool-result");
 
 describe("McpAppBridge 来源校验与白名单", () => {
   it("event.source 不是目标 iframe：全部忽略", async () => {
@@ -74,12 +74,23 @@ describe("McpAppBridge 来源校验与白名单", () => {
     expect(h.warns).toEqual([]);
   });
 
-  it("ui/initialize request → 应答 capabilities=['tools']", async () => {
+  it("ui/initialize request → 应答官方 McpUiInitializeResult 结构（hostInfo/hostCapabilities，版本透传）", async () => {
     const h = makeBridge();
-    h.msg({ jsonrpc: "2.0", id: 7, method: "ui/initialize", params: {} });
+    h.msg({ jsonrpc: "2.0", id: 7, method: "ui/initialize",
+            params: { protocolVersion: "2025-11-21", appCapabilities: {}, appInfo: { name: "demo", version: "0" } } });
     await h.flush();
     expect(responses(h.posted)).toEqual([
-      { jsonrpc: "2.0", id: 7, result: { capabilities: ["tools"] } },
+      { jsonrpc: "2.0", id: 7, result: { protocolVersion: "2025-11-21", hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" }, hostCapabilities: { serverTools: {} } } },
+    ]);
+  });
+
+  it("ui/notifications/initialized 通知 → 容忍不回应；未知带 id 的 request → 回 -32601 防 app await 挂起", async () => {
+    const h = makeBridge();
+    h.msg({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
+    h.msg({ jsonrpc: "2.0", id: 9, method: "ui/open-link", params: { url: "https://x" } });
+    await h.flush();
+    expect(h.posted).toEqual([
+      { jsonrpc: "2.0", id: 9, error: { code: -32601, message: "method not found: ui/open-link" } },
     ]);
   });
 
@@ -90,12 +101,14 @@ describe("McpAppBridge 来源校验与白名单", () => {
     expect(h.posted).toEqual([]);
   });
 
-  it("未知 method：丢弃 + warn，不回 JSON-RPC error（不透传）", async () => {
+  it("未知 method：warn + 回 -32601（防官方 App 类 await 永挂），不透传", async () => {
     const h = makeBridge();
     h.msg({ jsonrpc: "2.0", id: 9, method: "window/open", params: { url: "https://evil" } });
-    h.msg({ jsonrpc: "2.0", id: 10, method: "mcp/client", params: {} });
+    h.msg({ jsonrpc: "2.0", method: "mcp/client-no-id", params: {} }); // 无 id 通知：不回
     await h.flush();
-    expect(h.posted).toEqual([]);
+    expect(h.posted).toEqual([
+      { jsonrpc: "2.0", id: 9, error: { code: -32601, message: "method not found: window/open" } },
+    ]);
     expect(h.callMcp).not.toHaveBeenCalled();
     expect(h.warns).toHaveLength(2);
   });
@@ -138,7 +151,7 @@ describe("McpAppBridge tools/call 数据面", () => {
     ]);
     const pushes = dataPushes(h.posted);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0].params).toEqual({ tool: "draw", content: ["ok"], structured: { done: true } });
+    expect(pushes[0].params).toEqual({ content: ["ok"], structuredContent: { done: true } });
   });
 
   it("403/拒绝：错误文本经 ui/data error 字段推给 app，并回 JSON-RPC error", async () => {
@@ -153,7 +166,8 @@ describe("McpAppBridge tools/call 数据面", () => {
     expect(rs[0].error).toMatchObject({ code: -32000 });
     expect(String((rs[0].error as { message?: string })?.message)).toContain("rejected");
     const pushes = dataPushes(h.posted);
-    expect(pushes[0].params).toMatchObject({ tool: "denied", error: expect.stringContaining("rejected") });
+    expect(pushes[0].params).toMatchObject({ isError: true, content: [expect.objectContaining({ type: "text" })] });
+    expect(JSON.stringify(pushes[0].params)).toContain("rejected");
   });
 
   it("超时：10s 未 resolve → 超时错误回推，且不杀 callMcp promise", async () => {
@@ -167,7 +181,8 @@ describe("McpAppBridge tools/call 数据面", () => {
     await h.flush();
     const rs = responses(h.posted);
     expect((rs[0].error as { message?: string })?.message).toContain("timed out");
-    expect(dataPushes(h.posted)[0].params).toMatchObject({ tool: "slow", error: expect.stringContaining("timed out") });
+    expect(dataPushes(h.posted)[0].params).toMatchObject({ isError: true });
+    expect(JSON.stringify(dataPushes(h.posted)[0].params)).toContain("timed out");
   });
 
   it("notification 形态的 tools/call（无 id）：只推 ui/data，不回 response", async () => {
@@ -221,9 +236,9 @@ describe("McpAppBridge 节流（串行 + 300ms 最小间隔）", () => {
     expect(h.callMcp).toHaveBeenCalledTimes(2); // 排队的第二个此刻才发
     release({ content: ["second-done"] }); // release 已指向第二个 promise
     await h.flush();
-    expect(dataPushes(h.posted).map((p) => (p.params as { tool: string }).tool)).toEqual([
-      "first",
-      "second",
+    expect(dataPushes(h.posted).map((p) => (p.params as { content: Array<{ text?: string }> }).content?.[0])).toEqual([
+      "first-done",
+      "second-done",
     ]);
   });
 });
