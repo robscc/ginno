@@ -13,15 +13,15 @@ import {
 } from "@/lib/notice";
 
 /**
- * 全局通知中心宿主（notice-center-design.md §3/§4）。
+ * 全局通知中心宿主（notice-center-design.md §3/§4；右下角统一收编见
+ * notice-unification-design.md §2.2/§4 P0）。
  *
- * 挂载点：AppShell 的工作区列（TopBar 之下）——`absolute right-3 top-2`，
- * 因此**不会覆盖右侧栏**（RightPanel/RightDock 是该列的兄弟节点），也不占用
- * TopBar 右侧的 usage / ⋮ 控件区。非工作区路由（Settings/KB/Workflows）的模态
- * 层级更高（z-50+），通知被压在下面属预期，不参与竞争。
+ * 挂载点：AppShell 顶层的右下角统一容器（`fixed bottom-6 right-6 z-50`，
+ * 与 DevSwapCard 持久卡同容器堆叠避让）——定位类由容器持有，本组件只是
+ * 容器内的流式子元素，因此 /settings、/kb、/workflows 等全路由可见。
  *
- * 旧实现（模型热切提示）住在 `chat/mod/ModToastHost`——mods 子系统的右下角
- * 载体，语义错位且 mods 未挂载时帧直接丢弃。这里改为跨视图的公共层。
+ * 旧 mods 子系统的右下 toast（chat/mod/ModToastHost）已退役：`mod.toast`
+ * 帧由 engine 直接 `pushNotice(source:"mod")` 进本总线（§4 收编表）。
  */
 
 const LEVEL_META: Record<
@@ -45,7 +45,7 @@ function NoticeCard({ n }: { n: Notice }) {
       onMouseEnter={() => pauseNotice(n.id)}
       onMouseLeave={() => resumeNotice(n.id)}
       className={`pointer-events-auto flex w-[340px] gap-2.5 overflow-hidden rounded-xl border border-line bg-card2 py-2.5 pl-0 pr-2.5 text-xs leading-relaxed text-txt shadow-lg transition-all duration-[180ms] ease-out ${
-        n.entered ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0"
+        n.entered ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"
       }`}
     >
       {/* 左侧 2px 语义色条 */}
@@ -99,9 +99,9 @@ export function NoticeHost() {
 
   if (items.length === 0) return null;
   return (
-    // pointer-events-none：容器只是定位壳，不挡住底下的聊天内容；
-    // 每张卡片自己恢复 pointer-events-auto。
-    <div className="pointer-events-none absolute right-3 top-2 z-30 flex flex-col items-end gap-2">
+    // pointer-events-none：不挡住底下的内容，每张卡片自己恢复
+    // pointer-events-auto；定位（fixed 右下角）由 AppShell 的统一容器持有。
+    <div className="pointer-events-none flex flex-col items-end gap-2">
       {items.map((n) => (
         <NoticeCard key={n.id} n={n} />
       ))}
