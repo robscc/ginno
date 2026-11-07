@@ -914,6 +914,25 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (run) pushDevSwapRun(run);
       break;
     }
+    case "runtime.lastwords_restored": {
+      // 遗言恢复回执（docs/lastwords-design.md P2 通知中心待恢复列表）：
+      // 新 sidecar 启动扫描后广播——投一条收件箱条目（kind:"lastwords"，
+      // countInBadge:true，dedupeKey 按会话去重），action 跳回原会话。
+      // 不 markDelivered——非本会话 turn 的帧。
+      const lwSid = String(ev.session_id ?? "");
+      if (!lwSid) break;
+      {
+        const { tr } = ctx.i18nRef.current;
+        pushNotice("info", tr("notice.lastwordsRestored"), {
+          source: "general",
+          kind: "lastwords",
+          countInBadge: true,
+          dedupeKey: `lastwords:${lwSid}`,
+          actionMeta: { kind: "session", id: lwSid },
+        });
+      }
+      break;
+    }
     case "runtime.dev_swap_pending": {
       // 开发热切换（docs/runtime-hot-swap-design.md §3.4）：CLI 已把 symlink
       // 切到新 bundle。2026-11-05 用户需求：切换需用户确认——不再自动 invoke

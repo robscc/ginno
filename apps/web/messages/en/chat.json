@@ -318,7 +318,8 @@
       "evStopped": "Task stopped",
       "evTimeout": "Task timed out",
       "evHealthy": "Task ready",
-      "evWatch": "Watch matched"
+      "evWatch": "Watch matched",
+      "evLastwords": "Hot-swap restore (last words)"
     },
     "subagent": {
       "fallbackTitle": "Subtask",
@@ -401,7 +402,8 @@
       "thinkingSwitchFailed": "Could not change the thinking effort — the session kept its previous setting",
       "openModelSettings": "Model settings",
       "dismiss": "Dismiss",
-      "homeModelPicked": "Next session will start on {model}"
+      "homeModelPicked": "Next session will start on {model}",
+      "lastwordsRestored": "Restart restore: recovery context injected into the interrupted session"
     },
     "planBoard": {
       "progress": "{done}/{total}",

@@ -36,7 +36,13 @@
       "logHint": "0-90 allowed, 0 = never clean, default 7",
       "logHelp": "Runtime logs (~/.ginno/logs/) older than this are deleted automatically; swept at startup and once a day.",
       "logClamped": "Out of range, clamped to {n} (0-90 allowed)",
-      "logSaved": "Log retention saved: {n} days"
+      "logSaved": "Log retention saved: {n} days",
+      "lastwordsLabel": "Hot-swap restore (last words)",
+      "lastwordsHelp": "Recover interrupted sessions after a dev-swap restart: notify injects a restore note (default); auto resumes the turn (explicit dev-swap only); off disables recovery",
+      "lastwordsNotify": "Notify (inject restore note)",
+      "lastwordsAuto": "Auto-resume (dev-swap only)",
+      "lastwordsOff": "Off",
+      "lastwordsSaved": "Last-words mode saved"
     },
     "diagnostics": {
       "title": "Diagnostics",

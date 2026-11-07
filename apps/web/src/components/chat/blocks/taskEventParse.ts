@@ -13,6 +13,14 @@ import type { Block } from "./types";
 const TASK_EVENT_BAND_RE =
   /^\[task (finished|failed to start)\] "([^"]*)" \((t_[0-9a-zA-Z]+)\)(.*)/;
 
+// 遗言恢复带（runtime lastwords.py render_band 首行族）：
+//   [lastwords] dev-swap 重启恢复：{摘要} · 旧指纹 abc123 · 后台任务 2 个可收割(bg_logs)
+// 与 [task …] 族同构（首行前缀标记 + 余下摘要），折成 ev:"lastwords" 的
+// task_event 块；taskId 合成 "lastwords"（无 tid），title 取首行余下全文
+// （TaskEventBand 显示 title || taskId）。多行正文（auto 续跑模板）同样
+// 保留首行余下部分之后的正文为 text block——重放不露长原文由首行折叠保证。
+const LASTWORDS_BAND_RE = /^\[lastwords\] (.*)/;
+
 export function foldTaskEventBlocks(blocks: Block[]): Block[] {
   const out: Block[] = [];
   for (const b of blocks) {
@@ -22,6 +30,20 @@ export function foldTaskEventBlocks(blocks: Block[]): Block[] {
     }
     const m = TASK_EVENT_BAND_RE.exec(b.text);
     if (!m) {
+      const lw = LASTWORDS_BAND_RE.exec(b.text);
+      if (lw) {
+        out.push({
+          kind: "task_event",
+          taskId: "lastwords",
+          ev: "lastwords",
+          title: lw[1],
+        } as Block);
+        const nl = b.text.indexOf("\n");
+        if (nl >= 0 && b.text.slice(nl + 1).trim()) {
+          out.push({ kind: "text", text: b.text.slice(nl + 1) });
+        }
+        continue;
+      }
       out.push(b);
       continue;
     }
