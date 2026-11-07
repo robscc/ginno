@@ -240,6 +240,8 @@
       "wzToolsWarn": "Tools are injected into every turn — disable unused ones in the Tools tab to save tokens.",
       "wzTestFailTitle": "Connect failed",
       "wzTestFailHint": "Tip: check the URL and key; a single-line root cause is shown in the server list.",
+      "wzCopyError": "Copy error",
+      "wzCopied": "Copied",
       "wzSaved": "{name} saved — connecting in the background; the status row will update in a few seconds",
       "wzOverwrite": "“{name}” already exists — saving replaces it.",
       "impTitle": "Import MCP config",

@@ -247,23 +247,37 @@ async def _connect_session(stack: AsyncExitStack, cfg: "MCPServerConfig") -> tup
     return read, write
 
 
+async def _probe_run(cfg: "MCPServerConfig") -> dict:
+    """probe 的完整生命周期：连接 + initialize + tools/list + 拆除，全部在
+    **同一个 task** 里执行——stdio_client 的 anyio cancel scope 要求进出同
+    task（见 _LiveServer 注释）。本协程整体被 wait_for 包裹，超时取消时
+    CancelledError 在本 task 内传播，scope 退出仍同 task。"""
+    async with AsyncExitStack() as stack:
+        read, write = await _connect_session(stack, cfg)
+        from mcp import ClientSession as _CS
+
+        session = await stack.enter_async_context(_CS(read, write))
+        await session.initialize()
+        tools_result = await session.list_tools()
+        names = [str(t.name) for t in tools_result.tools]
+        return {"ok": True, "tools": names, "count": len(names)}
+
+
 async def probe_mcp_entry(entry: dict[str, Any], timeout: float | None = None) -> dict:
     """一次性真试连（向导「测试连接」P1）：不落盘、不碰 registry 状态，
     连上即 initialize + tools/list 然后立即拆除。返回
     ``{ok, tools, count, error?}``——error 带 provider/网络原始错误全文
-    （2026-10-27 决策：接口错误永远亮给前端）。超时兜底 timeout+2s。"""
+    （2026-10-27 决策：接口错误永远亮给前端）。超时兜底 timeout+2s。
+
+    2026-11-07 修复：原实现把 ``_connect_session(stack, ...)`` 单独塞进
+    ``wait_for`` 的子 task，而 AsyncExitStack 在外层 task 退出——anyio
+    cancel scope 跨 task 进出，凡稍慢的 server（npx 首拉）必报
+    "Attempted to exit cancel scope in a different task"。改为整段生命
+    周期收进 ``_probe_run`` 单协程，wait_for 只包外层。"""
     cfg = MCPServerConfig.from_dict("probe", entry or {})
     budget = timeout if timeout is not None else cfg.connect_timeout
     try:
-        async with AsyncExitStack() as stack:
-            read, write = await asyncio.wait_for(_connect_session(stack, cfg), timeout=budget)
-            from mcp import ClientSession as _CS
-
-            session = await stack.enter_async_context(_CS(read, write))
-            await asyncio.wait_for(session.initialize(), timeout=budget)
-            tools_result = await asyncio.wait_for(session.list_tools(), timeout=budget)
-            names = [str(t.name) for t in tools_result.tools]
-            return {"ok": True, "tools": names, "count": len(names)}
+        return await asyncio.wait_for(_probe_run(cfg), timeout=budget + 2)
     except Exception as e:  # noqa: BLE001 — 试连的任何失败都是结果而非事故
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
