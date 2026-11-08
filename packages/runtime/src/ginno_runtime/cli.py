@@ -646,6 +646,12 @@ def main(argv: list[str] | None = None) -> None:
 
         print(f"ginno {__version__}")
         raise SystemExit(0)
+    # `ginno checkpoints segment ...`：维护子命令（2026-11-08 切分器），
+    # 与默认的 exec 单发 turn 入口分流。
+    if argv and argv[0] == "checkpoints":
+        from .checkpoint_segment import cli_main as _ckpt_cli
+
+        raise SystemExit(_ckpt_cli(argv[1:]))
     instruction = ""
     if "--" in argv:
         idx = argv.index("--")
