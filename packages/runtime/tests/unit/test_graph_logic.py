@@ -375,8 +375,10 @@ async def test_permission_block_does_not_fork_lanes(isolated_home):
     # the blocked round never executed; the re-issued round executed EXACTLY
     # once — no shadow lane double-running tools
     assert executions == ["r2"]
-    # every tool_call got its ToolMessage except the blocked r1 (answered by
-    # the block notice instead, pre-existing design) — nothing else dangles
+    # 2026-11-08 (PR #55): blocked/deny 现在补配对 ToolMessage(status=
+    # error) —— 断言从旧设计的「r1 例外（由 AIMessage block notice 回答）」
+    # 反转为更强不变量：**每个** tool_call（含被拦截的 r1）都有配对的
+    # ToolMessage 响应，无悬挂调用；r1 的响应内容即拦截通知。
     answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
     r1_ids = [
         tc["id"]
@@ -392,7 +394,13 @@ async def test_permission_block_does_not_fork_lanes(isolated_home):
         for tc in (m.tool_calls or [])
         if isinstance(tc, dict)
     }
-    assert all_ids - answered == set(r1_ids)
+    assert all_ids <= answered
+    r1_answers = [
+        m for m in msgs
+        if isinstance(m, ToolMessage) and m.tool_call_id in set(r1_ids)
+    ]
+    assert r1_answers
+    assert all("[blocked:" in (m.content or "") and m.status == "error" for m in r1_answers)
 
 
 async def test_raising_tool_is_contained_not_fatal(isolated_home):
