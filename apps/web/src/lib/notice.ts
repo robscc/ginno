@@ -61,6 +61,10 @@ export interface NoticeOptions {
   countInBadge?: boolean;
   /** 行为重建元数据（跨持久化保留的点击行为）。 */
   actionMeta?: NoticeActionMeta;
+  /** false = 纯瞬时 toast：不进通知中心、不计 badge、不留档（2026-11-08
+   *  用户反馈「切换模型没必要进通知面板」）。默认 true（进收件箱留档）。
+   *  适用于操作确认类反馈；错误/结果回传类保持默认。 */
+  inbox?: boolean;
 }
 
 export interface Notice extends NoticeOptions {
@@ -288,11 +292,16 @@ export function pushNotice(level: NoticeLevel, text: string, opts: NoticeOptions
   const mode: NoticeMode = opts.mode === "silent" ? "silent" : "toast";
   const countInBadge = opts.countInBadge !== false;
 
-  // ---- 第一步：收件箱（无条件进；dedupeKey 命中则原位刷新，不堆叠。
+  // ---- 第一步：收件箱（默认进；dedupeKey 命中则原位刷新，不堆叠。
   // 刷新视为新内容 → 重新未读，§3.3：会话投影已读后又来新回复应重新点亮）。
-  const prevEntry = opts.dedupeKey ? inbox.find((e) => e.dedupeKey === opts.dedupeKey) : undefined;
-  let entryId: number;
-  if (prevEntry) {
+  // inbox:false（2026-11-08 用户反馈「切换模型没必要进通知面板」）：纯
+  // 瞬时 toast——只弹几秒即逝、不进通知中心、不计 badge、不留档；适用
+  // 于"操作确认"类反馈（模型切换等），错误/回传类仍默认留档。
+  const ephemeral = opts.inbox === false;
+  let entryId = 0;
+  if (!ephemeral) {
+    const prevEntry = opts.dedupeKey ? inbox.find((e) => e.dedupeKey === opts.dedupeKey) : undefined;
+    if (prevEntry) {
     entryId = prevEntry.id;
     inbox = inbox.map((e) =>
       e.id === prevEntry.id
@@ -329,9 +338,14 @@ export function pushNotice(level: NoticeLevel, text: string, opts: NoticeOptions
       },
     ];
   }
-  inbox = inbox.slice(-NOTICEBOX_MAX);
-  saveNoticebox();
-  emitInbox();
+  } // (!ephemeral)
+  if (!ephemeral) {
+    inbox = inbox.slice(-NOTICEBOX_MAX);
+    saveNoticebox();
+    emitInbox();
+  } else {
+    entryId = ++uid;
+  }
 
   // ---- 第二步：toast 队列（仅 toast 模式；silent 到此为止）。
   if (mode === "silent") return;

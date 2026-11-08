@@ -95,13 +95,19 @@ export function HotSwapButton() {
       type="button"
       disabled={busy}
       onClick={() =>
+        // 直接取消（2026-11-08 用户反馈「停止不了」）：此前挂 window.confirm
+        // 确认——Tauri 的 WKWebView 不弹原生 confirm 对话框，点击静默无
+        // 反应。构建阶段取消零风险（switch 前杀构建进程），无需确认门。
         running
-          ? void (window.confirm(t("nav.hotSwapCancelConfirm")) && act("/api/devswap/cancel"))
+          ? void act("/api/devswap/cancel")
           : void act("/api/devswap/start")
       }
-      className={`flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] transition-all disabled:opacity-50 ${
+      className={`flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium transition-all disabled:opacity-50 ${
         running
-          ? "animate-devswap-in border-amber-500/60 bg-amber-500/20 text-amber-600 hover:bg-red-500/20 dark:text-amber-400"
+          ? // A 案（2026-11-08 用户选定）：实心琥珀 + 黑字，浅色侧栏里对比
+            // 最强；hover 转红暗示「点击 = 取消构建」。构建中零风险可取消，
+            // 无需确认门（见 onClick 注释）。
+            "animate-devswap-in border-amber-500 bg-amber-500 text-zinc-950 hover:border-red-500 hover:bg-red-500 hover:text-white"
           : "border-amber-500/40 bg-amber-500/[0.08] text-amber-600 hover:bg-amber-500/15 dark:text-amber-400"
       }`}
       title={running ? t("nav.hotSwapCancel") : repo}

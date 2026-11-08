@@ -519,12 +519,15 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 轻提示走**公共通知层**（notice-center-design.md）：旧实现借用
       // chat/mod 的右下角 toast 宿主，语义错位且 mods 未挂载时帧直接丢弃。
       // dedupeKey 按会话去重——多窗口/回放页收到同一事件只弹一条。
+      // inbox:false（2026-11-08 用户反馈「切换模型没必要进通知面板」）：
+      // 操作确认类反馈——toast 几秒即逝，不进通知中心不留档。
       {
         const { tr } = ctx.i18nRef.current;
         const key = patch.model ? "model.switchToast" : "model.switchToastNoModel";
         pushNotice("success", tr(key, patch.model ? { model: patch.model } : undefined), {
           source: "model",
           dedupeKey: `model:${sid}`,
+          inbox: false,
         });
       }
       break;
