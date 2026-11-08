@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import events_of
+
 from ginno_runtime.mods import channel as mods_channel
 from ginno_runtime.testing.fake_model import script, script_tool_call
 
@@ -75,10 +77,15 @@ def test_tool_call_deny_blocks_execution(client, create_session, ws_conv, stub_c
     sid = create_session(model)
     with ws_conv(sid) as conv:
         conv.invoke("run it")
-        conv.recv_until("message.end")
+        events = conv.recv_until("message.end")
     tool_events = [p for _, ev, p in stub_channel.events if ev == "tool.call"]
     assert tool_events and tool_events[0]["tool"] == "bash"
-    # The blocked bubble (same shape as the hooks block) became the answer —
-    # the tool never ran (its output never appears).
+    # 2026-11-08 渲染修复：blocked/deny 改为 ToolMessage(tool_call_id,
+    # status=error) 配对响应——不再以 AIMessage 正文形态混入 answer（用户
+    # 截图实录错误文本与模型解说粘连）。断言改为 WS 事件流的 tool.end
+    # 投影（同 hooks e2e 口径；tool.end 不镜像到 mod 总线，须从 conv 取）：
+    # 拦截信息在工具结果块里，工具本体从未执行。
+    tool_ends = events_of(events, "tool.end")
+    assert any("mod denied" in (e.get("content") or "") for e in tool_ends)
     complete = [p for _, ev, p in stub_channel.events if ev == "turn.complete"][0]
-    assert "mod denied" in complete["answer"]
+    assert "pwned" not in complete["answer"]

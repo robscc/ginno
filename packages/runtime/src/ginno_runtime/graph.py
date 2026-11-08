@@ -90,6 +90,31 @@ _log = logging.getLogger(__name__)
 BLOCK_PREFIX = "[blocked:"
 
 
+def _blocked_tool_msg(
+    tc: dict, name: str, text: str, aid: str | None
+) -> ToolMessage | AIMessage:
+    """blocked/deny 的工具响应（2026-11-08 渲染修复）。
+
+    优先 ToolMessage(tool_call_id, status="error")——作为该次 tool_call
+    的配对结果返回：前端把它渲染成独立的工具失败块（同命令行 ✕ 态），
+    模型的解说留在正文，两者不再粘连（此前一律 AIMessage 正文形态，
+    用户截图实录 "[blocked:bash] hook blocked: …)hook 拦了…" 粘连）。
+    无 call id 时退回 AIMessage（防御：结构异常时宁重复旧形态，
+    也不悬挂无配对的 ToolMessage）。attribution（agent_id）两态都带。
+    """
+    tc_id = tc.get("id")
+    kw = {"agent_id": aid} if aid else {}
+    if tc_id:
+        return ToolMessage(
+            content=text,
+            tool_call_id=str(tc_id),
+            name=name,
+            status="error",
+            additional_kwargs=kw,  # type: ignore[arg-type]
+        )
+    return AIMessage(content=text, additional_kwargs=kw)
+
+
 def _resolve_agent(agent_id: str | None):
     if agent_id:
         a = agents_reg.get_agent(agent_id)
@@ -415,19 +440,18 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                     goto="agent",
                     update={
                         "messages": [
-                            AIMessage(
-                                content=(
-                                    f"{BLOCK_PREFIX}{name}] "
-                                    + t(
-                                        f"{name} is not available to "
-                                        f"{agent.name if agent else 'this agent'}. "
-                                        "Use one of your available tools, or answer directly.",
-                                        f"{name} 不可用于 "
-                                        f"{agent.name if agent else 'this agent'}。"
-                                        "请改用你可用的工具，或直接回答。",
-                                    )
+                            _blocked_tool_msg(
+                                tc, name,
+                                f"{BLOCK_PREFIX}{name}] "
+                                + t(
+                                    f"{name} is not available to "
+                                    f"{agent.name if agent else 'this agent'}. "
+                                    "Use one of your available tools, or answer directly.",
+                                    f"{name} 不可用于 "
+                                    f"{agent.name if agent else 'this agent'}。"
+                                    "请改用你可用的工具，或直接回答。",
                                 ),
-                                additional_kwargs={"agent_id": aid} if aid else {},
+                                aid,
                             )
                         ]
                     },
@@ -478,9 +502,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             goto="agent",
                             update={
                                 "messages": [
-                                    AIMessage(
-                                        content=f"{BLOCK_PREFIX}{name}] hook blocked: {r.reason}",
-                                        additional_kwargs={"agent_id": aid} if aid else {},
+                                    _blocked_tool_msg(
+                                        tc, name,
+                                        f"{BLOCK_PREFIX}{name}] hook blocked: {r.reason}",
+                                        aid,
                                     )
                                 ]
                             },
@@ -514,9 +539,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                         goto="agent",
                         update={
                             "messages": [
-                                AIMessage(
-                                    content=f"{BLOCK_PREFIX}{name}] mod denied: {_mod_action['deny']}",
-                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                _blocked_tool_msg(
+                                    tc, name,
+                                    f"{BLOCK_PREFIX}{name}] mod denied: {_mod_action['deny']}",
+                                    aid,
                                 )
                             ]
                         },
@@ -612,9 +638,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                         goto="agent",
                         update={
                             "messages": [
-                                AIMessage(
-                                    content=f"{BLOCK_PREFIX}{name}] mod denied: {_reason}",
-                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                _blocked_tool_msg(
+                                    tc, name,
+                                    f"{BLOCK_PREFIX}{name}] mod denied: {_reason}",
+                                    aid,
                                 )
                             ]
                         },
