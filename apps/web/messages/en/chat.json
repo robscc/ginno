@@ -599,6 +599,7 @@
     "deliver.queued": "→ {label} is busy; will inject at next tool boundary",
     "deliver.missing": "→ {label} no longer exists",
     "deliver.noBody": "→ {label}: empty prompt, nothing delivered",
-    "deliver.ctxSkipped": "(other @-mentions did not ride the delivery)"
+    "deliver.ctxSkipped": "(other @-mentions did not ride the delivery)",
+    "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)"
   }
 }
