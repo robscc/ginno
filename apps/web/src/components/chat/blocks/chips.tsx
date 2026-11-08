@@ -1,6 +1,7 @@
 "use client";
 
 import { Code2, Sparkles } from "lucide-react";
+import { FileTypeIcon } from "./FileTypeIcon";
 import type { CodeRoot } from "@/lib/codeTypes";
 import { listCodeRoots } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
@@ -104,7 +105,7 @@ export function FileChips({ files }: { files: FileBlock[] }) {
               className={`flex min-w-0 items-center gap-1.5 ${clickable ? "cursor-pointer" : "cursor-default"}`}
             >
               <span>
-                {TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : f.fileKind === "image" ? "🖼️" : "📄"}
+                <FileTypeIcon name={f.name} kind={f.fileKind} className="h-3.5 w-3.5" />
               </span>
               <span className="max-w-[220px] truncate">{f.name}</span>
             </button>
