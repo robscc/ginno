@@ -124,7 +124,15 @@
       "autoTitle": "Auto-mount on new session (pre-fills the home composer)",
       "quickAddTitle": "Mount this folder",
       "browseTitle": "Browse for a folder…",
-      "errBrowse": "Could not open the system folder picker"
+      "errBrowse": "Could not open the system folder picker",
+      "privPreset": "Ginno runtime data · read-only",
+      "privPresetTitle": "Mount Ginno runtime data read-only (logs/session history/usage), needs confirmation",
+      "privBadge": "Privileged mount: Ginno runtime data (read-only; settings/config/mcp credential files stay blocked)",
+      "privTitle": "Enable privileged access (read-only)",
+      "privMessage": "The AI in this session will be able to read Ginno runtime data: logs, session history across all projects (including your full conversations with AI), usage details, and memory. Data is read-only; credential files (settings/config/mcp) remain blocked.",
+      "privCancel": "Cancel",
+      "privThisSession": "Mount this session only",
+      "privAuto": "Mount & default for new sessions"
     },
     "bulk": {
       "select": "Select",

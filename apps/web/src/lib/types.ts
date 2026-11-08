@@ -331,6 +331,8 @@ export interface FolderEntry {
   load_rules: boolean;
   /** 新建会话自动挂载(home-mount-picker-design.md §2.2)——首页 pending 预填来源 */
   auto_mount?: boolean;
+  /** 运行时数据 home 内路径：强制只读（特权挂载，库层钳制） */
+  forced_ro?: boolean;
   added?: string;
   last_used?: string;
 }
@@ -350,6 +352,8 @@ export interface FolderProbe {
   error?: string;
   path?: string;
   is_dir?: boolean;
+  /** 路径位于运行时数据 home 内 → 挂载前必须过特权确认弹层 */
+  runtime_home?: boolean;
   file_count?: number;
   file_count_truncated?: boolean;
   has_git?: boolean;

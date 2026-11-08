@@ -47,6 +47,21 @@ ACCESS_TIERS = ("ro", "rw")
 DEFAULT_ACCESS = "rw"  # 2026-08-12 decision: mount is rw unless demoted
 
 
+def is_runtime_home_path(raw_path: str) -> bool:
+    """True when the path is the runtime data home or inside it.
+
+    Runtime-data mounts are the "privileged session" territory
+    (runtime-data-access-design.md §2): read-only by force. Credential files
+    stay denied even under such a mount (tools-layer always-deny).
+    """
+    try:
+        real = Path(str(raw_path)).expanduser().resolve()
+        home = paths.home().resolve()
+    except OSError:
+        return False
+    return real == home or str(real).startswith(str(home) + os.sep)
+
+
 def folders_path() -> Path:
     return paths.home() / "folders.json"
 
@@ -108,6 +123,7 @@ def add_folder(
     """Register a directory. Idempotent on resolved path: re-adding an
     existing path returns the existing entry (updated fields win)."""
     real = norm_path(raw_path)
+    runtime_home = is_runtime_home_path(real)
     folders = load_library()
     for f in folders:
         if f.get("path") == real:
@@ -115,8 +131,15 @@ def add_folder(
             if name and name != f.get("name"):
                 f["name"] = name
                 changed = True
-            if access in ACCESS_TIERS and access != f.get("access"):
-                f["access"] = access
+            want_access = "ro" if runtime_home else access
+            if (
+                want_access in ACCESS_TIERS
+                and want_access != f.get("access")
+            ):
+                f["access"] = want_access
+                changed = True
+            if bool(f.get("forced_ro") or False) != runtime_home:
+                f["forced_ro"] = runtime_home
                 changed = True
             if bool(load_rules) != bool(f.get("load_rules", True)):
                 f["load_rules"] = bool(load_rules)
@@ -131,7 +154,8 @@ def add_folder(
         "id": "f_" + secrets.token_hex(4),
         "path": real,
         "name": (name or Path(real).name or real),
-        "access": access if access in ACCESS_TIERS else DEFAULT_ACCESS,
+        "access": "ro" if runtime_home else (access if access in ACCESS_TIERS else DEFAULT_ACCESS),
+        "forced_ro": runtime_home,
         "load_rules": bool(load_rules),
         "auto_mount": bool(auto_mount),
         "added": _now_iso(),
@@ -162,6 +186,14 @@ def update_folder(folder_id: str, patch: dict) -> dict | None:
         break
     if target is None:
         return None
+    # Runtime-home entries are read-only by force: clamp AFTER the patch is
+    # applied (a path patch can move an entry into/out of the runtime home).
+    if "path" in patch or "access" in patch:
+        if is_runtime_home_path(str(target.get("path") or "")):
+            target["access"] = "ro"
+            target["forced_ro"] = True
+        else:
+            target["forced_ro"] = False
     _save_library(folders)
     return target
 
@@ -228,6 +260,7 @@ def probe(raw_path: str) -> dict:
         "ok": True,
         "path": real,
         "is_dir": True,
+        "runtime_home": is_runtime_home_path(real),
         "file_count": file_count,
         "file_count_truncated": truncated,
         "has_git": (p / ".git").exists(),
@@ -291,11 +324,16 @@ def resolve_session_dirs(folder_ids: list[str], primary_id: str | None) -> tuple
             continue
         real = f.get("path") or ""
         exists = Path(real).is_dir() if real else False
+        # Execution gate: even a hand-edited folders.json entry (rw, inside
+        # the runtime home) resolves read-only — the mount is the chokepoint
+        # where the forced-ro rule actually bites (design §4.1).
+        runtime_home = bool(real) and is_runtime_home_path(real)
         d = {
             "id": fid,
             "path": real,
             "name": f.get("name") or Path(real).name,
-            "access": f.get("access", DEFAULT_ACCESS),
+            "access": "ro" if runtime_home else f.get("access", DEFAULT_ACCESS),
+            "forced_ro": runtime_home,
             "load_rules": bool(f.get("load_rules", True)),
             "missing": not exists,
         }

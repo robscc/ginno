@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from .. import context_folders as cf
+from .. import paths
 
 router = APIRouter()
+_log = logging.getLogger(__name__)
 
 
 @router.get("/api/folders")
 async def list_folders() -> dict:
-    return {"ok": True, "folders": cf.load_library()}
+    # runtime_home: the resolved runtime-data home (privileged-mount preset
+    # target). The frontend must not guess "~/.ginno" — $GINNO_HOME may be
+    # redirected (runtime-data-access-design.md §5).
+    return {
+        "ok": True,
+        "folders": cf.load_library(),
+        "runtime_home": str(paths.home()),
+    }
 
 
 @router.get("/api/folders/{folder_id}")
@@ -43,6 +54,12 @@ async def create_folder(req: dict) -> dict:
         load_rules=bool(req.get("load_rules", True)),
         auto_mount=bool(req.get("auto_mount", False)),
     )
+    if folder.get("forced_ro"):
+        _log.info(
+            "runtime_mount_forced_ro path=%s requested_access=%s auto_mount=%s",
+            folder.get("path"), (req.get("access") or cf.DEFAULT_ACCESS),
+            bool(folder.get("auto_mount")),
+        )
     return {"ok": True, "folder": folder, "probe": p}
 
 
@@ -56,6 +73,11 @@ async def patch_folder(folder_id: str, patch: dict) -> dict:
     folder = cf.update_folder(folder_id, patch or {})
     if folder is None:
         return {"ok": False, "error": "unknown folder"}
+    if folder.get("forced_ro"):
+        _log.info(
+            "runtime_mount_forced_ro path=%s patch_keys=%s",
+            folder.get("path"), ",".join(sorted((patch or {}).keys())),
+        )
     return {"ok": True, "folder": folder}
 
 

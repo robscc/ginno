@@ -156,8 +156,24 @@ def _fs_root_guard(search_root) -> str | None:
 
 def _always_deny_roots() -> list[str]:
     """Directories NO file/shell tool may ever touch, regardless of workspace
-    (credentials — never a legitimate work location)."""
-    return [os.path.expanduser("~/.ssh"), os.path.expanduser("~/Library/Keychains")]
+    (credentials — never a legitimate work location).
+
+    The three config files carry plaintext provider keys. They stay denied
+    even under a privileged session (a read-only mount of the runtime data
+    home): always-deny is checked BEFORE mount exemptions in ``_DenyPolicy``,
+    so masked reads stay the job of the config API / settings UI
+    (runtime-data-access-design.md §3).
+    """
+    roots = [os.path.expanduser("~/.ssh"), os.path.expanduser("~/Library/Keychains")]
+    try:
+        roots += [
+            str(paths.settings_path()),
+            str(paths.home() / "config.json"),
+            str(paths.mcp_config_path()),
+        ]
+    except Exception:  # pragma: no cover - paths only fails on broken env
+        pass
+    return roots
 
 
 def _skill_exempt_roots() -> list[Path]:

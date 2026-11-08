@@ -124,7 +124,15 @@
       "autoTitle": "新建会话时自动挂载（预填首页）",
       "quickAddTitle": "挂载此目录",
       "browseTitle": "浏览选择目录…",
-      "errBrowse": "系统目录选择器打开失败"
+      "errBrowse": "系统目录选择器打开失败",
+      "privPreset": "Ginno 运行时数据 · 只读",
+      "privPresetTitle": "只读挂载 Ginno 运行时数据（日志/会话历史/用量），需确认",
+      "privBadge": "特权挂载：Ginno 运行时数据（只读；settings/config/mcp 密钥文件仍受保护）",
+      "privTitle": "开启特权访问（只读）",
+      "privMessage": "本会话的 AI 将能读取 Ginno 运行时数据：运行日志、全部项目的会话历史（含你与 AI 的完整对话）、用量明细、记忆。数据只读不可写；设置中的密钥文件（settings/config/mcp）仍受保护不可读。",
+      "privCancel": "取消",
+      "privThisSession": "仅本会话挂载",
+      "privAuto": "挂载并默认用于新会话"
     },
     "bulk": {
       "select": "选择",
