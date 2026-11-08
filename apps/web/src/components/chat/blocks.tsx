@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 
 import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
+import { FileTypeIcon } from "./blocks/FileTypeIcon";
 import { useTranslations } from "next-intl";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
@@ -32,7 +33,7 @@ import {
   maskPartialSources,
   SourcesBlock,
 } from "./blocks/sources";
-import { FileChips, SkillChips, TABLE_KINDS } from "./blocks/chips";
+import { FileChips, SkillChips } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 import { TaskEventBand } from "./TaskCard";
@@ -110,7 +111,6 @@ function cleanAgentText(text: string): string {
 function RefChip({ refKind, name, refId }: { refKind: string; name: string; refId?: string }) {
   const g = useGinno();
   const { tc } = useChatT();
-  const Ic = refKind === "workflow" ? Workflow : refKind === "link" ? Link2 : FileText;
   const isUrl = /^https?:\/\//i.test(refId ?? "");
   const openable =
     !!refId && (refKind === "link" ? isUrl : refKind === "file" || refKind === "doc");
@@ -142,7 +142,13 @@ function RefChip({ refKind, name, refId }: { refKind: string; name: string; refI
         openable ? "cursor-pointer hover:border-violet/50 hover:text-txt" : "cursor-default"
       }`}
     >
-      <Ic className="h-3.5 w-3.5 text-violet" />
+      {refKind === "workflow" ? (
+        <Workflow className="h-3.5 w-3.5 text-violet" />
+      ) : refKind === "link" ? (
+        <Link2 className="h-3.5 w-3.5 text-violet" />
+      ) : (
+        <FileTypeIcon name={name} className="h-3.5 w-3.5 shrink-0" />
+      )}
       {refKind === "workflow" ? tc("refChip.workflowPrefix") : ""}
       {name}
     </button>
@@ -540,7 +546,9 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
                 "text-[10px] leading-none text-orange hover:bg-orange/25",
               )}
             >
-              <span aria-hidden>{TABLE_KINDS.has(f.kind ?? "") ? "📊" : "📄"}</span>
+              <span aria-hidden>
+                <FileTypeIcon name={f.name} kind={f.kind} className="h-3 w-3" />
+              </span>
               <span className="truncate">{f.name}</span>
             </button>
           ))}

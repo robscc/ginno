@@ -4,8 +4,9 @@
 // ChatStream.tsx 机械拆出，渲染逐字一致）。
 
 import { Loader2, X } from "lucide-react";
+import { FileTypeIcon } from "../blocks/FileTypeIcon";
 import { useTranslations } from "next-intl";
-import { TABLE_KINDS, type Attachment, type FileAttachment } from "../streamCore";
+import { type Attachment, type FileAttachment } from "../streamCore";
 
 export function ComposerAttachmentRows({
   attachments,
@@ -52,7 +53,9 @@ export function ComposerAttachmentRows({
               key={f.id}
               className="group relative flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt"
             >
-              <span>{TABLE_KINDS.has(f.kind) ? "📊" : "📄"}</span>
+              <span>
+                <FileTypeIcon name={f.name} kind={f.kind} className="h-3.5 w-3.5" />
+              </span>
               <span className="max-w-[180px] truncate" title={f.name}>
                 {f.name}
               </span>
