@@ -518,3 +518,65 @@ async def test_assign_worker_auto_subscribes(monkeypatch) -> None:
     out2 = await tools["assign_worker"].ainvoke({"target": "w1", "goal": "g"})
     assert watched == [("settled", "w1", "terminal")]
     assert '"watching": false' in out2
+
+
+# --------------------- 等待可见化三态事件（2026-11-08）---------------------- #
+
+
+@pytest.fixture
+def pushed_events(monkeypatch):
+    evs: list = []
+
+    async def fake_push(sid, event, payload, text="", turn_id=None):
+        evs.append({"sid": sid, "event": event, "payload": payload})
+
+    monkeypatch.setattr(ww, "_push_session_event", fake_push)
+    return evs
+
+
+async def test_watch_emits_worker_waiting_with_title(pushed_events):
+    """订阅建立 → worker.waiting（等待窗口起点），payload 带目标标题。"""
+    _put_meta(SLUG, _worker_meta("W2", status="running", title="数据清洗中"))
+    _put_meta(SLUG, _main_meta("SUB2"))
+    r = await worker_bus.watch_worker("SUB2", "W2", "terminal")
+    assert r["ok"]
+    hits = [e for e in pushed_events if e["event"] == "worker.waiting"]
+    assert len(hits) == 1 and hits[0]["sid"] == "SUB2"
+    assert hits[0]["payload"]["target"] == "W2"
+    assert hits[0]["payload"]["target_title"] == "数据清洗中"
+
+
+async def test_settled_emits_worker_resumed_not_progress(
+    inject_calls, pushed_events
+):
+    """终态注入 → worker.resumed（带 status），绝不再发 digest 的 progress。"""
+    _put_meta(SLUG, _worker_meta("W3", status="done", title="报表生成", subscribers=[
+        {"session_id": "SUB3", "want": "terminal", "since": 1}]))
+    ww._WATCHED.add("W3")
+    await worker_bus.notify_settled("W3")
+    assert len(inject_calls) == 1 and inject_calls[0]["sub"] == "SUB3"
+    hits = [e for e in pushed_events if e["sid"] == "SUB3"]
+    assert len(hits) == 1 and hits[0]["event"] == "worker.resumed"
+    assert hits[0]["payload"]["status"] == "done"
+    assert hits[0]["payload"]["target_title"] == "报表生成"
+
+
+async def test_digest_emits_worker_progress_not_resumed(
+    monkeypatch, inject_calls, pushed_events
+):
+    """digest 到达 = 有新进展（worker.progress），语义上不是完成——
+    2026-11-08 修正：此前 digest 复用 worker.resumed 弹「已完成」误导。"""
+    _put_meta(SLUG, _worker_meta("W4", status="running", title="长任务",
+                                 subscribers=[
+        {"session_id": "SUB4", "want": "digest", "since": 1, "last_digest": 0}]))
+    ww._WATCHED.add("W4")
+
+    async def fake_excerpt(slug, sid, limit=300):
+        return "中途进展：已处理 60%"
+
+    monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
+    await worker_bus.on_turn_settled_hook("W4")
+    assert len(inject_calls) == 1 and inject_calls[0]["sub"] == "SUB4"
+    hits = [e for e in pushed_events if e["sid"] == "SUB4"]
+    assert len(hits) == 1 and hits[0]["event"] == "worker.progress"
+    assert hits[0]["payload"]["target_title"] == "长任务"

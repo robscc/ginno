@@ -689,19 +689,36 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (ev.file_id) ctx.g.notifyPreviewInvalidate(ev.file_id as string);
       break;
     case "worker.waiting":
+    case "worker.progress":
     case "worker.resumed": {
-      // 等待可见化（2026-11-06 用户实录「assign 后 5 分钟像卡死」）：
-      // 订阅建立 → 弹提示界定等待窗口起点；digest 到达 → 撤场提示。
+      // 等待可见化三态（2026-11-06「assign 后 5 分钟像卡死」；2026-11-08
+      // 语义化）：waiting = 订阅建立（等待起点）；progress = digest 进度
+      // 节选到达（**不是完成**）；resumed = 终态结果注入。文案全部带目标
+      // 标题，用户一眼知道是哪个会话、发生了什么。
       {
-        const waiting = ev.event === "worker.waiting";
-        const title = typeof ev.target_title === "string" ? ev.target_title : "";
-        pushNotice(
-          "info",
-          waiting
-            ? ctx.i18nRef.current.tr("worker.waitingNotice", { title })
-            : ctx.i18nRef.current.tr("worker.resumedNotice"),
-          { dedupeKey: `${ev.event}-${ev.target}` },
-        );
+        const title =
+          (typeof ev.target_title === "string" && ev.target_title.trim()) ||
+          ctx.g.sessions.find((x) => x.id === ev.target)?.title?.trim() ||
+          "…";
+        if (ev.event === "worker.waiting") {
+          pushNotice(
+            "info",
+            ctx.i18nRef.current.tr("worker.waitingNotice", { title }),
+            { dedupeKey: `${ev.event}-${ev.target}` },
+          );
+        } else if (ev.event === "worker.progress") {
+          pushNotice(
+            "info",
+            ctx.i18nRef.current.tr("worker.progressNotice", { title }),
+            { dedupeKey: `${ev.event}-${ev.target}` },
+          );
+        } else {
+          pushNotice(
+            "info",
+            ctx.i18nRef.current.tr("worker.resumedNotice", { title }),
+            { dedupeKey: `${ev.event}-${ev.target}` },
+          );
+        }
       }
       break;
     }
