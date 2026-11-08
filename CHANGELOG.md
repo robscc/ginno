@@ -9,6 +9,67 @@ versions.
 
 （暂无）
 
+## [0.2.0] - 2026-11-09
+
+63 commits since 0.1.3。主题：MCP Apps 端到端打通、通知统一、遗言模式、
+企微媒体、切换会话性能治理、rtk 深度集成。
+
+### MCP Apps（聊天内可交互应用卡）
+- **P0 全链路**：`_meta.ui.resourceUri` 透传 + `ui://` 资源读取 + 沙箱 iframe 卡
+  （McpAppCard/postMessage 桥/tools-with-ui 接线）；wire 协议对齐官方 ext-apps
+  （`ui/initialize` 应答含必填 `hostContext`；推送 `ui/notifications/tool-result`）
+- 修复：MCP 工具参数类型端到端保真（number/integer/boolean 不再拍平成 string）；
+  probe 试连 cancel scope 跨 task 崩溃；向导错误可复制；tools-with-ui 空清单
+  15s 新鲜期 + lookup miss 自愈刷新（app 卡不再延迟/缺失）
+
+### 通知统一（右下角唯一出口）
+- notice 总线：右下角容器 + 未读/已读通道（mode/silent/countInBadge 防双算）+
+  收件箱面板（RightDock 新 tab）+ TopBar 铃铛 badge；ModToastHost 等私有
+  toast 全部退役合流；session 未读投影进收件箱
+
+### 遗言模式（重启恢复）
+- 被 dev-swap/重启杀掉的 turn 自动恢复：WAL 持续写 + SIGTERM 兜底 + 启动扫描
+  （exactly-once/TTL：signal 1h·running 15min/恢复价值门槛）；人工会话
+  notify 注入（前端折叠卡 + 通知中心条目 + 设置三选一），subagent 自动续跑
+  （via:lastwords）；30 用例质量矩阵
+
+### 企微媒体
+- 被动回复 send_image/send_file（协议矩阵查证：image≤10MB 仅 png/jpg/gif、
+  file≤20MB、media_id 3 天）；产物上行三段式（大小预检/降级回执/矩阵测试）；
+  **正文媒体引用即发**——markdown/attach_ref 中发现的图片文件触发发送，
+  push_only 场景降级可达提示
+
+### 切换会话性能治理（988ms → 0.5ms）
+- checkpointer 热路径**尾窗读**（尾部窗口 fold，缺锚翻倍回退全量）+
+  物化缓存（stat 失效）——get_tuple/put/get_pending_interrupt 三热路径
+  从 O(日志) 降为 O(窗口)；前端**转录窗口化**（首屏 ≤80 条，⌘K 锚点自动
+  扩窗）；**存量切分器**（`ginno checkpoints segment`：主文件自包含 +
+  只读归档段 + 首切备份 + fold 等价自检回滚）
+
+### rtk 深度集成
+- bash 超预算中间段流式落盘 + read_file 分页恢复；rtk 复合段感知重写 +
+  git -C 形态 + 1.1.0 白名单；同目录探测（嵌入式/评测分发 ginno 与 rtk
+  同卷不进 PATH）
+
+### 修复
+- ContextRing 混用守卫 + 压缩阈值与圆环同口径（会话级模型解析统一链；
+  sideband record 不入分子，13%↔60% 抖动根治）
+- 断线窗口发送不再秒标未送达（先等重连 6s 再补发，红叹号兜底）
+- 定时任务实例 artifact 预览点不开（SheetViewer 移出 hidden 工作区行）
+- 429 限流报错清洗（去重置时间重复/英文括注，附结构化 reset_at）
+- scheduler UTC 午夜时间炸弹（reconcile 扫窗动态展开，CI 三用例红根因）
+- dev-swap 三连：quiesce 不计后台任务（自锁）、进度锚点+时间插值、
+  mktemp 模板 X 末尾
+- ask_user 多问题卡选项后自由输入解锁 + /compact 假「未送达」
+- 任务事件历史重放折叠（与 live 折卡对齐）；blocked/deny 改 ToolMessage
+  配对响应（拦截信息独立渲染）；后台任务 hover 显示完整脚本
+
+### 特性与工程
+- 特权会话：运行时数据目录只读挂载（Ginno 承接 Ginno）+ workspace-in-
+  mount-roots 打穿 home-deny 历史洞封堵（哨兵断言）
+- worker_bus assign_worker 异步化 + 派完自动订阅结论
+- BYOM（自带机器）设计文档；CLAUDE.md 增补特性分支 PR 自动化章节
+
 ## [0.1.3] - 2026-11-06
 
 - **dev-swap 热更新全链路可视化**：六阶段进度（侧栏品牌行徽标 + hover 六阶段卡 + session 内倒计时/P90 慢告警）、切换确认门（右下角对话框，暂不后 ⏳ 待切换可补完成）、构建取消（左上按钮二击）、`POST /api/devswap/start|cancel`、WS 重连快照兜底
