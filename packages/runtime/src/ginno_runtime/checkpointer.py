@@ -51,6 +51,7 @@ import logging
 import os
 import tempfile
 import threading
+from collections import OrderedDict
 import time
 import uuid
 
@@ -175,11 +176,13 @@ def _read_legacy(path: Path) -> list[dict]:
     return [c for c in cps if isinstance(c, dict)] if isinstance(cps, list) else []
 
 
-def _read_log(path: Path) -> list[dict]:
-    """Fold the event log into the entry list (see module docstring)."""
+def _fold_events(lines: list[str]) -> list[dict]:
+    """Fold event lines into the entry list (see module docstring).
+
+    Torn-tail 语义与整文件一致：仅对最后一行非空行容错（进程在写()与尾
+    随换行之间死掉的半行；窗口读时窗口尾=文件尾，语义不变）。"""
     entries: list[dict] = []
     by_id: dict[str, dict] = {}
-    lines = path.read_text(encoding="utf-8").splitlines()
     last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
     for i, raw in enumerate(lines):
         if not raw.strip():
@@ -191,10 +194,10 @@ def _read_log(path: Path) -> list[dict]:
                 # Torn tail: the process died between write() and the trailing
                 # newline (or mid-line). Nothing follows it, so no committed
                 # event is lost by dropping it.
-                _log.warning("checkpoint_log_torn_tail path=%s line=%d", path, i + 1)
+                _log.warning("checkpoint_torn_tail line=%d", i + 1)
                 break
             raise ValueError(
-                f"corrupt checkpoint log {path}: unparsable line {i + 1}"
+                f"corrupt checkpoint log: unparsable line {i + 1}"
             ) from exc
         if not isinstance(event, dict):
             continue
@@ -229,12 +232,90 @@ def _read_log(path: Path) -> list[dict]:
                 None,
             )
             if idx is None:
+                # 尾窗视图里 target 被窗口切掉：跳过（截掉的死链不影响
+                # entries[-1]——truncate 之后必有 re-run 追加的更新链尾）。
                 continue
             del entries[idx + 1 :]
             entries[idx].pop("pending_writes", None)
             by_id = {str(c["checkpoint_id"]): c for c in entries}
         # "header" and unknown ops carry nothing to fold
     return entries
+
+
+def _read_log(path: Path) -> list[dict]:
+    """Fold the whole event log into the entry list (see module docstring)."""
+    return _fold_events(path.read_text(encoding="utf-8").splitlines())
+
+
+# ---- 尾窗读（2026-11-08 切换会话卡顿治理） ---------------------------------
+#
+# 全量 fold 对 516MB 级日志是 O(日志)（实测 1.2s），而热路径（get_tuple 无
+# id / get_pending_interrupt / put 的 record 读）只需要「最新 checkpoint 及
+# 其 delta 链到最近 full 锚点」。尾窗读：从文件尾取窗口字节，丢弃窗口首
+# 条 cp 事件之前的残余（writes 的 checkpoint_id 引用总是指向更早的 cp，
+# 首条 cp 起的窗口内引用闭合），窗口 fold；链锚不在窗口内则翻倍重试，
+# 上限后回退全量。零双写零缓存——纯函数，任何异常回退现状路径。
+
+_TAIL_WINDOW_MIN_B = 4 * 1024 * 1024
+_TAIL_WINDOW_MAX_B = 64 * 1024 * 1024
+
+
+def _line_op(raw: str) -> str | None:
+    try:
+        v = json.loads(raw)
+    except Exception:
+        return None
+    return v.get("op") if isinstance(v, dict) else None
+
+
+def _has_full_anchor(entries: list[dict]) -> bool:
+    """entries[-1] 沿 base 链能否在窗口内回溯到 full 锚点。"""
+    if not entries:
+        return True
+    by_id = {str(c.get("checkpoint_id")): c for c in entries}
+    cur = entries[-1]
+    seen: set[str] = set()
+    while cur.get("mode", "full") == "delta" and "checkpoint" not in cur:
+        cid = str(cur.get("checkpoint_id"))
+        if cid in seen:
+            return True  # 环——交给 _reconstruct 的守卫报错，不当缺锚
+        seen.add(cid)
+        base = by_id.get(str(cur.get("base")))
+        if base is None:
+            return False
+        cur = base
+    return True
+
+
+def _read_tail(path: Path) -> list[dict]:
+    """尾部窗口 fold（热路径读）。结构见上方设计注释。"""
+    import os as _os
+
+    try:
+        size = _os.path.getsize(path)
+    except OSError:
+        return []
+    window = _TAIL_WINDOW_MIN_B
+    while True:
+        start = max(0, size - window)
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            chunk = fh.read(size - start)
+        lines = chunk.decode("utf-8", "replace").splitlines()
+        if start > 0 and lines:
+            lines = lines[1:]  # 窗口首行可能被切半
+        first_cp = next(
+            (i for i, ln in enumerate(lines) if _line_op(ln) == "cp"),
+            len(lines),
+        )
+        entries = _fold_events(lines[first_cp:])
+        if start == 0:
+            return entries
+        if entries and _has_full_anchor(entries):
+            return entries
+        if window >= _TAIL_WINDOW_MAX_B:
+            return _read_log(path)  # 超长 delta 链：回退全量（正确性优先）
+        window *= 4
 
 
 def load_entries(path: Path) -> list[dict]:
@@ -335,6 +416,35 @@ class FileCheckpointer(BaseCheckpointSaver):
         if path is None:
             return {"session_id": session_id, "checkpoints": []}
         return {"session_id": session_id, "checkpoints": load_entries(path)}
+
+    # get_tuple 物化结果缓存（P0，2026-11-08 切换会话卡顿治理）：尾窗把
+    # 读从 934ms 降到 6ms 后，剩余大头是 serde 物化（521MB 会话实测 61ms
+    # 中 ~55ms 是 messages 反序列化）。缓存在 (slug, sid, None) 粒度存
+    # tuple，stat mtime+size 变化即失效——写路径原子重写后自然失效，无
+    # 需显式回写。类级共享（sessions.py 等每请求新建实例）。LRU=8。
+    _TUPLE_CACHE: "OrderedDict[tuple[str, str], tuple[int, int, Any]]" = OrderedDict()
+    _TUPLE_CACHE_LOCK = threading.Lock()
+
+    def _read_hot(self, session_id: str) -> dict[str, Any]:
+        """热路径读（2026-11-08 切换会话卡顿治理）：尾部窗口 fold——热路径
+        （get_tuple 无 id / get_pending_interrupt / get_app_pending / put 的
+        record 读）只需要最新 checkpoint 及其 delta 链锚；O(日志) → O(窗口)。
+        结构异常（corrupt 等）回退全量读保持既有报错语义。list / 带指定
+        checkpoint_id 的 get_tuple / truncate_to 仍走全量 _read。"""
+        path = existing_checkpoint_path(self.project_slug, session_id)
+        if path is None:
+            return {"session_id": session_id, "checkpoints": []}
+        if path.suffix != ".jsonl":
+            # v1 legacy 单文档（.json）：无事件流可尾读，走全量（含
+            # _read_legacy 兼容；首个 commit 时 _append 会折叠迁移）。
+            return self._read(session_id)
+        try:
+            entries = _read_tail(path)
+        except Exception:  # noqa: BLE001 — 窗口读任何异常回退全量（现状语义）
+            _log.warning("checkpoint_tail_window_fallback session=%s",
+                         session_id, exc_info=True)
+            entries = load_entries(path)
+        return {"session_id": session_id, "checkpoints": entries}
 
     def _migrate_legacy(self, session_id: str) -> None:
         """Fold a v1 single-document file into the append log (one-time)."""
@@ -548,7 +658,9 @@ class FileCheckpointer(BaseCheckpointSaver):
         # 读父 id 曾静默关掉 delta 模式，每个 superstep 存全量、会话文件平方级膨胀。
         parent_id = (config.get("configurable") or {}).get("checkpoint_id")
         with self._write_lock:
-            record = self._read(session_id)
+            # 尾窗读：put 只需要链尾做 delta 指纹/parent 推断（2026-11-08
+            # 写路径放大治理——全量读曾让每 turn 提交都 O(日志)）。
+            record = self._read_hot(session_id)
 
             if not parent_id and record.get("checkpoints"):
                 # Last resort (direct put() calls carrying no parent info):
@@ -613,11 +725,14 @@ class FileCheckpointer(BaseCheckpointSaver):
 
     def get_tuple(self, config: dict) -> Any:
         session_id = config["configurable"]["thread_id"]
-        record = self._read(session_id)
+        target = config["configurable"].get("checkpoint_id")
+        # 无指定 id = 链尾查询（history 端点 / resume 探测，热路径）→ 尾窗；
+        # 指定 id（rerun-from-node 等冷路径）→ 全量。
+        record = (self._read(session_id) if target
+                  else self._read_hot(session_id))
         cps = record.get("checkpoints", [])
         if not cps:
             return None
-        target = config["configurable"].get("checkpoint_id")
         if target:
             entry = next((c for c in cps if c["checkpoint_id"] == target), None)
         else:
@@ -625,6 +740,35 @@ class FileCheckpointer(BaseCheckpointSaver):
         if not entry:
             return None
         return self._tuple_from(record, session_id, entry)
+
+    def _cached_head_tuple(self, config: dict) -> Any:
+        """get_tuple 无 id 热路径的物化缓存（P0）。stat 相同 → 直接返回。"""
+        import os as _os
+
+        session_id = config["configurable"]["thread_id"]
+        path = existing_checkpoint_path(self.project_slug, session_id)
+        if path is None or path.suffix != ".jsonl":
+            return self.get_tuple(config)  # legacy/无日志：无缓存语义
+        try:
+            st = _os.stat(path)
+        except OSError:
+            return self.get_tuple(config)
+        sig = (st.st_mtime_ns, st.st_size)
+        key = (self.project_slug, session_id)
+        with FileCheckpointer._TUPLE_CACHE_LOCK:
+            hit = FileCheckpointer._TUPLE_CACHE.get(key)
+            if hit is not None and hit[:2] == sig:
+                FileCheckpointer._TUPLE_CACHE.move_to_end(key)
+                return hit[2]
+        tup = self.get_tuple(config)
+        if tup is None:
+            return None
+        with FileCheckpointer._TUPLE_CACHE_LOCK:
+            FileCheckpointer._TUPLE_CACHE[key] = (*sig, tup)
+            FileCheckpointer._TUPLE_CACHE.move_to_end(key)
+            while len(FileCheckpointer._TUPLE_CACHE) > 8:
+                FileCheckpointer._TUPLE_CACHE.popitem(last=False)
+        return tup
 
     def get_pending_interrupt(self, config: dict) -> list | None:
         """The parked turn's interrupt(s), or None if the graph is not suspended.
@@ -648,7 +792,7 @@ class FileCheckpointer(BaseCheckpointSaver):
         next superstep) and a stale interrupt must never be replayed.
         """
         session_id = config["configurable"]["thread_id"]
-        record = self._read(session_id)
+        record = self._read_hot(session_id)
         for entry in reversed(record.get("checkpoints") or []):
             writes = entry.get("pending_writes") or []
             if not writes:
@@ -675,7 +819,7 @@ class FileCheckpointer(BaseCheckpointSaver):
         if channel not in _APP_PENDING_CHANNELS:
             return None
         session_id = config["configurable"]["thread_id"]
-        record = self._read(session_id)
+        record = self._read_hot(session_id)
         cps = record.get("checkpoints", [])
         target = config["configurable"].get("checkpoint_id")
         entries = reversed(cps) if not target else (
@@ -747,7 +891,11 @@ class FileCheckpointer(BaseCheckpointSaver):
 
     # ---- LangGraph BaseCheckpointSaver API (async) ----
     async def aget_tuple(self, config: dict) -> Any:
-        return await asyncio.to_thread(self.get_tuple, config)
+        # 无指定 id 的链尾查询走物化缓存（P0；sessions history / resume
+        # 探测等热路径），带 id 冷路径直读。
+        if config.get("configurable", {}).get("checkpoint_id"):
+            return await asyncio.to_thread(self.get_tuple, config)
+        return await asyncio.to_thread(self._cached_head_tuple, config)
 
     async def aput(
         self,
