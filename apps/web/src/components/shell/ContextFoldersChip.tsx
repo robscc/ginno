@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FolderOpen, Star, X, Plus, Settings2, HardDriveDownload } from "lucide-react";
+import { FolderOpen, Star, X, Plus, Settings2, HardDriveDownload, ShieldAlert } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
@@ -19,6 +19,11 @@ import { TopBarFuncButton } from "./TopBarFuncButton";
 
 type Pending = { ids: string[]; primary: string | null };
 type ChangeFn = (ids: string[], primary: string | null) => void;
+
+/** 特权挂载预设：Ginno 运行时数据 home（runtime-data-access-design.md §5）。
+ * 真实路径以 GET /api/folders 的 runtime_home 为准（$GINNO_HOME 可被重定向），
+ * "~/.ginno" 仅作 sidecar 不可达时的展示回退。 */
+const RUNTIME_HOME_FALLBACK = "~/.ginno";
 
 export function ContextFoldersChip({
   session,
@@ -38,9 +43,12 @@ export function ContextFoldersChip({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [library, setLibrary] = useState<FolderEntry[]>([]);
+  const [runtimeHome, setRuntimeHome] = useState("");
   const [path, setPath] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  /** 特权挂载待确认路径（非空 = 确认弹层开着）。 */
+  const [privPath, setPrivPath] = useState<string | null>(null);
 
   const live = session !== undefined;
   const ids = live ? session?.context_folders ?? [] : pendingIds ?? [];
@@ -48,7 +56,9 @@ export function ContextFoldersChip({
 
   const refreshLibrary = useCallback(async () => {
     try {
-      setLibrary((await api.listFolders()).folders || []);
+      const r = await api.listFolders();
+      setLibrary(r.folders || []);
+      if (r.runtime_home) setRuntimeHome(r.runtime_home);
     } catch {
       /* sidecar unreachable — chip degrades to counts only */
     }
@@ -76,9 +86,33 @@ export function ContextFoldersChip({
     }
   }
 
-  /** 挂载一个路径（快选/手输/浏览共用）：入库幂等，首个挂载自动成为 primary。 */
+  /** 挂载一个路径（快选/手输/浏览/特权预设共用）：先 probe 判特权——
+   * 路径落入运行时数据 home 必须先过用户确认弹层（design §5，D12：
+   * 闸挂在 path 判定上，预设按钮只是快捷方式）；普通路径直接入库挂载。 */
   async function mountPath(p: string, auto = false) {
     if (!p || busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      let runtimeHome = false;
+      try {
+        const pr = await api.probeFolder(p);
+        runtimeHome = !!pr.runtime_home;
+      } catch {
+        /* probe 不可达 → 交给 createFolder 报错（同一 sidecar） */
+      }
+      if (runtimeHome) {
+        setPrivPath(p);
+        return;
+      }
+      await doMount(p, auto);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doMount(p: string, auto = false) {
+    if (!p) return;
     setBusy(true);
     setErr("");
     try {
@@ -172,6 +206,28 @@ export function ContextFoldersChip({
             </div>
 
             <div className="max-h-72 overflow-y-auto px-2 py-1.5">
+              {/* 特权预设行（runtime-data-access-design.md §5）：一键发起运行时
+                  数据只读挂载——mountPath 的 probe 闸会先弹确认层。 */}
+              <div className="mb-1 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
+                <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs text-muted">{tr("folders.privPreset")}</div>
+                  <div
+                    className="selectable truncate font-mono text-[10px] text-faint"
+                    title={runtimeHome || RUNTIME_HOME_FALLBACK}
+                  >
+                    {runtimeHome || RUNTIME_HOME_FALLBACK}
+                  </div>
+                </div>
+                <button
+                  onClick={() => mountPath(runtimeHome || RUNTIME_HOME_FALLBACK)}
+                  disabled={busy || !runtimeHome}
+                  title={tr("folders.privPresetTitle")}
+                  className="shrink-0 rounded border border-amber-500/40 px-1.5 py-px font-mono text-[10px] text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                >
+                  ro
+                </button>
+              </div>
               {rows.length === 0 && (
                 <div className="px-2 py-3 text-xs text-faint">
                   {tr("folders.empty")}
@@ -190,7 +246,12 @@ export function ContextFoldersChip({
                         <Star className="h-3.5 w-3.5" fill={primary === id ? "#fbbf24" : "none"} />
                       </button>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-xs text-txt">{folder.name}</div>
+                        <div className="truncate text-xs text-txt">
+                          {folder.forced_ro && (
+                            <span title={tr("folders.privBadge")}>🛡 </span>
+                          )}
+                          {folder.name}
+                        </div>
                         <div className="selectable truncate font-mono text-[10px] text-faint" title={folder.path}>
                           {folder.path}
                         </div>
@@ -238,7 +299,10 @@ export function ContextFoldersChip({
                   {quick.map((f) => (
                     <div key={f.id} className="group flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-card2">
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-xs text-muted">{f.name}</div>
+                        <div className="truncate text-xs text-muted">
+                          {f.forced_ro && <span title={tr("folders.privBadge")}>🛡 </span>}
+                          {f.name}
+                        </div>
                         <div className="selectable truncate font-mono text-[10px] text-faint" title={f.path}>
                           {f.path}
                         </div>
@@ -312,6 +376,58 @@ export function ContextFoldersChip({
             </div>
           </div>
         </>
+      )}
+
+      {/* 特权挂载确认层（design §5）：probe 判定路径落入运行时数据 home 时
+          必经；双确认 = auto_mount 语义（仅本会话 / 默认用于新会话）。 */}
+      {privPath && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={() => setPrivPath(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-amber-500/40 bg-card p-4 shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold text-txt">
+              <ShieldAlert className="h-4 w-4 text-amber-400" /> {tr("folders.privTitle")}
+            </div>
+            <div className="mt-2 text-xs leading-relaxed text-muted">
+              {tr("folders.privMessage")}
+              <div className="selectable mt-1 font-mono text-[10px] text-faint">{privPath}</div>
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                onClick={() => setPrivPath(null)}
+                className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
+              >
+                {tr("folders.privCancel")}
+              </button>
+              <button
+                onClick={() => {
+                  const p = privPath;
+                  setPrivPath(null);
+                  void doMount(p, true);
+                }}
+                className="rounded-lg border border-amber-500/40 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/10"
+              >
+                {tr("folders.privAuto")}
+              </button>
+              <button
+                onClick={() => {
+                  const p = privPath;
+                  setPrivPath(null);
+                  void doMount(p, false);
+                }}
+                className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+              >
+                {tr("folders.privThisSession")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

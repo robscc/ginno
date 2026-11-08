@@ -13,7 +13,12 @@ import type { Todo } from "../types";
 
 // ---- context folders (docs/context-folders-design.md) ----
 export async function listFolders() {
-  return json<{ ok: boolean; folders: import("../types").FolderEntry[] }>(`${BASE}/folders`);
+  return json<{
+    ok: boolean;
+    folders: import("../types").FolderEntry[];
+    /** 解析后的运行时数据 home（特权挂载预设目标；$GINNO_HOME 可重定向） */
+    runtime_home?: string;
+  }>(`${BASE}/folders`);
 }
 
 export async function createFolder(data: {

@@ -9,6 +9,28 @@ import sys
 _NS = sys.modules[__package__]  # package namespace: all former module globals
 
 
+def _filter_privileged_mounts(folder_ids: list[str]) -> list[str]:
+    """Drop runtime-home mounts from a subagent's inherited mount list.
+
+    Privileged access (a read-only mount of the runtime data home) is a
+    per-session user grant — delegation must not widen it
+    (runtime-data-access-design.md §4.3). Unknown ids pass through untouched
+    (they already degrade to ``missing`` markers downstream).
+    """
+    from .. import context_folders as cf
+
+    kept: list[str] = []
+    for fid in folder_ids:
+        try:
+            f = cf.get_folder(fid)
+        except Exception:
+            f = None
+        if f is not None and cf.is_runtime_home_path(str(f.get("path") or "")):
+            continue
+        kept.append(fid)
+    return kept
+
+
 def _agent_type_model_override(agent_id: str | None, type_name: str) -> tuple[str, str] | None:
     """Agents 页 per-agent per-type 模型覆盖（model-assignment-design.md §2.2，
     解析链最高层）。绑定失效（provider 禁用/删除、模型脱离 models[]、provider
@@ -240,7 +262,12 @@ async def create_subagent(
             # 思考档位(P2):显式带参才覆盖;空 = auto(子代理默认不继承
             # 父会话档位,走 agent 默认 > provider 配置链)。
             thinking_effort=thinking_effort or None,
-            context_folders=list(parent_meta.get("context_folders") or []),
+            # 特权挂载不随委派扩散(runtime-data-access-design.md §4.3):
+            # 运行时数据 ro 挂载是用户对**这个会话**的授权决定,子代理
+            # 需要时必须在它自己的会话里单独挂载。
+            context_folders=_filter_privileged_mounts(
+                list(parent_meta.get("context_folders") or [])
+            ),
             primary_folder=parent_meta.get("primary_folder") or None,
             parent_session_id=parent_session_id,
             restrict_tools=list(st.tools_allow) if st is not None else [],

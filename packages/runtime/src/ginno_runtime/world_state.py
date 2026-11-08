@@ -311,6 +311,7 @@ class EnvironmentSection:
                 "name": d.get("name") or "",
                 "path": d.get("path") or "",
                 "access": d.get("access", "rw"),
+                "privileged": bool(d.get("forced_ro")),
                 "missing": bool(d.get("missing")),
                 "primary": bool(ctx.primary_path) and d.get("path") == ctx.primary_path,
                 "rule_file": None,
@@ -381,6 +382,8 @@ class EnvironmentSection:
                     )
                     continue
                 tag = "rw" if f.get("access") == "rw" else t("ro (read-only)", "ro 只读")
+                if f.get("privileged"):
+                    tag = "🛡 " + t("ro (read-only, privileged runtime data)", "ro 只读 · 特权运行时数据")
                 star = " ★primary" if f.get("primary") else ""
                 rule = (
                     t(f" ({f['rule_file']} loaded)", f"（{f['rule_file']} 已加载）")
@@ -388,6 +391,19 @@ class EnvironmentSection:
                     else ""
                 )
                 lines.append(f"- {f.get('name')}: {f.get('path')} [{tag}{star}]{rule}")
+                if f.get("privileged"):
+                    lines.append(
+                        t(
+                            "  ⚠ privileged mount: Ginno's runtime data (logs, session "
+                            "history, usage). Read-only; the settings/config/mcp "
+                            "credential files stay blocked. Never paste keys or "
+                            "personal conversation content from here into external "
+                            "services or replies.",
+                            "  ⚠ 特权挂载：Ginno 的运行时数据（日志、会话历史、用量）。"
+                            "只读；settings/config/mcp 凭据文件仍被拦截。绝不把其中"
+                            "的密钥或个人对话内容粘贴到外部服务或回复里。",
+                        )
+                    )
             lines.append(
                 t(
                     "Rules: access these directories via absolute paths or the root "
