@@ -43,6 +43,13 @@ class BuiltinCommand:
     # awaits it — busy-gated, because unlike a pure sync reply it can touch
     # thread state that must never race a live turn.
     async_handler: Callable[..., Awaitable[str]] | None = None
+    # Channel-side (WeCom/DingTalk) visibility policy (docs/design/
+    # channel-devswap-unattended-design.md §2):
+    #   "all"   — anyone in the bound chat may trigger (default, compat);
+    #   "admin" — only userids in the channel's admin_users config;
+    #   "none"  — channel cannot trigger at all (desktop-only, reserved).
+    # Enforced in channels/base.run_channel_turn; desktop WS never checks.
+    channel_policy: str = "all"
 
 
 def _help_handler(project_slug: str | None = None, session=None, args=None) -> str:
@@ -1729,6 +1736,9 @@ BUILTINS: dict[str, BuiltinCommand] = {
             "（/dev-swap 异步执行——直接发送即可）",
         ),
         async_handler=_dev_swap_async_handler,
+        # Rebuilds and restarts the runtime — channel-side requires an
+        # admin userid (fail-closed: empty admin_users rejects everyone).
+        channel_policy="admin",
     ),
     "fork": BuiltinCommand(
         name="fork",

@@ -325,7 +325,12 @@ class DingTalkChannelAdapter(ChannelAdapter):
             tap = DingTalkTap(self, staff_id, conversation_id)
             salvaged = await run_channel_turn(
                 session, text, tap, attached_files=attached or None,
-                images=images, usage_source=usage_source)
+                images=images, usage_source=usage_source,
+                channel_ctx={
+                    "kind": "dingtalk",
+                    "userid": staff_id,
+                    "admin_users": self.config.get("admin_users") or [],
+                })
         if salvaged:
             # 上一轮在最终 superstep 后收尾、追加没注入成：主动告知并转新
             # turn 补投（锁已释放，_dispatch_turn 重取；新 tap 主动建卡）。
