@@ -483,7 +483,13 @@ export function ChatStream({
             },
           ];
       syncDisplay(sid);
-      const deadline = Date.now() + 6000;
+      // Reconnect window: 60s (was 6s — 2026-11-09 user repro: sidecar cold
+      // start / post-sleep WKWebView reconnect takes longer than 6s, the
+      // short window produced false "未送达" marks while the socket was
+      // merely still coming up). The bubble keeps its sending state (still
+      // cancellable via edit/recall); the red retry badge only appears when
+      // the socket truly stayed down for a minute.
+      const deadline = Date.now() + 60_000;
       const waitOpen = (): Promise<boolean> => {
         const s = socketsRef.current[sid];
         if (s?.readyState === WebSocket.OPEN) return Promise.resolve(true);
