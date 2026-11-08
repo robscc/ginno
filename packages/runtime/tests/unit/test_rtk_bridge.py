@@ -224,6 +224,25 @@ def test_homebrew_fallback_found_when_which_fails(monkeypatch):
     assert rtk_bridge.detect_rtk() == "/opt/homebrew/bin/rtk"
 
 
+def test_same_dir_fallback_found_when_which_fails(monkeypatch, tmp_path):
+    # 嵌入式/评测分发场景（2026-11-08 WorkBuddy Bench 集成实案）：
+    # ginno ELF 与 rtk 同卷（/opt/ginno/bin/{ginno,rtk}）且不进 PATH——
+    # which 失败时从 sys.argv[0] 所在目录探测 rtk。
+    bindir = tmp_path / "bundle" / "bin"
+    bindir.mkdir(parents=True)
+    rtk_path = bindir / "rtk"
+
+    def fake_run(args, **kw):
+        assert args[0] == str(rtk_path)
+        return subprocess.CompletedProcess(args, 0, stdout="rtk 1.1.0\n", stderr="")
+
+    monkeypatch.setattr(rtk_bridge.sys, "argv", [str(bindir / "ginno")])
+    monkeypatch.setattr(rtk_bridge.shutil, "which", lambda name: None)
+    monkeypatch.setattr(rtk_bridge.os, "access", lambda p, m: str(p) == str(rtk_path))
+    monkeypatch.setattr(rtk_bridge.subprocess, "run", fake_run)
+    assert rtk_bridge.detect_rtk() == str(rtk_path)
+
+
 def test_wrong_rtk_binary_version_not_trusted(monkeypatch):
     # crates.io 同名无关 crate：--version 输出不像 rtk → 视为未安装
     monkeypatch.setattr(rtk_bridge.shutil, "which", lambda name: "/usr/local/bin/rtk")
