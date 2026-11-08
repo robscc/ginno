@@ -23,6 +23,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 
 from ..paths import settings_path
 
@@ -84,11 +85,15 @@ def detect_rtk() -> str | None:
         return _detect_cache  # type: ignore[return-value]
     path = shutil.which("rtk")
     if not path:
+        # 同目录探测：嵌入式/评测分发场景 ginno 与 rtk 同卷（如 bench 的
+        # /opt/ginno/bin/{ginno,rtk}）且不进 PATH（2026-11-08 WorkBuddy Bench
+        # 集成实案）；PyInstaller onefile 下 sys.argv[0] 即 ginno ELF 路径。
+        _bindir = os.path.dirname(os.path.abspath(sys.argv[0]))
         # GUI 应用不继承登录 shell 的 PATH（launchd 只给 /usr/bin:/bin:…），
         # Homebrew 安装的 rtk 位于 which 找不到的目录（2026-11-04 实案：
         # app 内启动 sidecar detect 失败 → 集成整体静默失效）。补探两个
         # Homebrew 标准前缀；仅 when which 未命中，不改变 PATH 语义。
-        for cand in ("/opt/homebrew/bin/rtk", "/usr/local/bin/rtk"):
+        for cand in (os.path.join(_bindir, "rtk"), "/opt/homebrew/bin/rtk", "/usr/local/bin/rtk"):
             if os.access(cand, os.X_OK):
                 path = cand
                 break
