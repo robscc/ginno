@@ -1100,3 +1100,69 @@ async def test_tap_push_only_artifact_skips_upload_and_pushes_receipt(
     await tap.close()
     assert ad.client.pushes and any("📎 产物文件" in c and str(img) in c
                                     for _, c in ad.client.pushes)
+
+
+async def test_tap_finalize_flushes_text_media(tmp_path: Path, monkeypatch):
+    """终稿正文里的本地媒体引用补发（2026-11-08 用户定向：markdown/attach_ref
+    中发现图片/文件即触发发送——这里覆盖 markdown 文本路径）。
+
+    c79b49cd 实案：agent 回复正文写有 8 张截图的绝对路径，企微侧只收到
+    死文本。终稿后按 _send_artifact 全链路真发（image→send_image）；
+    一路径一 turn 至多一次；非白名单扩展名不发。"""
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    img = tmp_path / "shot1.png"
+    img.write_bytes(b"\x89PNG fake")
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"%PDF fake")
+    uploads: list[tuple[Path, str]] = []
+
+    async def fake_upload(client, path, *, media_type="file"):
+        uploads.append((path, media_type))
+        return f"MID-{path.name}"
+
+    monkeypatch.setattr(media_mod, "upload_media", fake_upload)
+
+    ad = FakeAdapter()
+    tap = WeComTap(ad, "reqM", "chatM", "sM")
+    body = (f"已生成截图：`{img}`（见 {doc}）。markdown 语法同样命中："
+            f"![shot]({img})。非白名单：/etc/hosts.eexe 不发。")
+    await tap.send_text(_frame("token.delta", content=body))
+    await tap.close()
+    # image 与 file 各一次；同路径 markdown 重复引用不重发
+    assert sorted((str(p), t) for p, t in uploads) == sorted([
+        (str(img), "image"), (str(doc), "file")])
+    assert ad.client.sent_images == [("reqM", "MID-shot1.png")]
+    assert ad.client.sent_files == [("reqM", "MID-report.pdf")]
+    # 幂等：重复 close 不再发
+    await tap.close()
+    assert len(ad.client.sent_images) == 1
+
+
+async def test_tap_finalize_text_media_push_only_receipt(tmp_path: Path):
+    """push_only tap（无 req_id）正文媒体 → 主动推送发不了媒体，走路径
+    回执（_send_artifact 既有降级），不抛。"""
+    img = tmp_path / "only.png"
+    img.write_bytes(b"\x89PNG fake")
+    ad = FakeAdapter()
+    tap = WeComTap.push_only(ad, "chatP")
+    await tap.send_text(_frame("token.delta", content=f"图在 {img}"))
+    await tap.close()
+    assert ad.client.sent_images == []
+    assert ad.client.pushes and any(str(img) in c for _, c in ad.client.pushes)
+
+
+def test_notify_turn_reply_media_hint(tmp_path: Path):
+    """无 tap 收口补推的正文含媒体路径 → 主动通道发不了媒体，追加可达
+    提示（文件名清单 + 桌面端/重发指引）。"""
+    ad = _make_adapter(tmp_path, {})
+    ad._mapper.bind(user_id="zhang", chat_id="czhang", ginno_session="sub1")
+    img = "/tmp/shots/kernel-task.png"
+    asyncio.run(ad.notify_turn_reply(
+        "sub1", f"8 张截图已生成：{img} 等"))
+    assert ad.client.pushes
+    body = ad.client.pushes[-1][1]
+    assert "📎 本轮附带 1 个文件" in body and "kernel-task.png" in body
+    # 无媒体路径的正文不加提示
+    asyncio.run(ad.notify_turn_reply("sub1", "纯文本结论"))
+    assert "📎 本轮附带" not in ad.client.pushes[-1][1]

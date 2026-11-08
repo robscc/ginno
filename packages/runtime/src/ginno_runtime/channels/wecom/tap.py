@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,16 @@ _SENDABLE = {"png", "jpg", "jpeg", "gif", "webp", "pdf", "docx", "xlsx",
 # 官方图片上传仅支持 png/jpg/jpeg/gif（docs/wecom-media-protocol.md §4）；
 # webp 走 file 类型发送，避免 init 即被格式白名单拒绝。
 _IMAGE_EXT = {"png", "jpg", "jpeg", "gif"}
+
+# markdown 正文/超长尾部里的本地媒体引用（2026-11-08 用户定向：正文或
+# attach_ref 中发现图片/文件即触发发送——attach_ref 走 ref.emit 既有
+# 路径，这里覆盖 markdown 文本）。只锚绝对路径（相对路径无稳定 cwd），
+# 扩展名集合与 _SENDABLE 对齐（多出的后缀 _send_artifact 会静默忽略，
+# 不必在此收紧）。
+_LOCAL_MEDIA_RE = re.compile(
+    r"/(?:[\w.\-]+/)*[\w.\-]+\.(?:png|jpe?g|gif|webp|pdf|docx|xlsx|pptx"
+    r"|txt|csv|md|html|zip|json|tsv|log|py|js|ts|go|rs)\b"
+)
 
 
 def _widget_to_markdown(data: dict) -> str:
@@ -101,6 +112,8 @@ class WeComTap(ChannelTap):
         self._options: list = []
         # P1 进展区：thinking/tool 帧 → markdown 引用块，流中原地更新、终稿清场
         self._progress = TurnProgressTracker()
+        # 正文媒体补发去重（_flush_text_media）：一路径一 turn 至多发一次
+        self._media_sent: set[str] = set()
 
     # ---- 流式输出 -----------------------------------------------------------
 
@@ -168,6 +181,28 @@ class WeComTap(ChannelTap):
                     self.chat_key, self._tail if self._tail.strip() else body)
             except Exception:  # noqa: BLE001
                 pass
+        # 正文/尾部的本地媒体引用补发（2026-11-08 用户定向）：markdown 里
+        # 的图片/文件路径在企微侧只是死文本——终稿后按 _send_artifact 全
+        # 链路真发（image→send_image、其余→send_file；push_only/缺失自动
+        # 降级路径回执）。放在 finish 之后：用户先读到文本，图片随后到达
+        # （与 image.emit 附件消息同序）。
+        try:
+            await self._flush_text_media()
+        except Exception:  # noqa: BLE001 — 补发失败绝不影响终态
+            log.warning("wecom_flush_text_media_failed chat=%s", self.chat_key,
+                        exc_info=True)
+
+    async def _flush_text_media(self) -> None:
+        """终稿文本媒体补发：见 _LOCAL_MEDIA_RE 注释。幂等由 _media_sent 保证。"""
+        text = f"{self._full}\n{self._tail}"
+        if "/" not in text:
+            return
+        for m in _LOCAL_MEDIA_RE.finditer(text):
+            path = m.group(0)
+            if path in self._media_sent:
+                continue
+            self._media_sent.add(path)
+            await self._send_artifact(path, Path(path).name)
 
     # ---- ask_user（文本作答路径）---------------------------------------------
 

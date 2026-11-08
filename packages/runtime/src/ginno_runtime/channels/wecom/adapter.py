@@ -247,7 +247,12 @@ class WeComChannelAdapter(ChannelAdapter):
         """无 tap 的 turn（子代理回传 / worker digest / 任务完成注入）收口
         补推：绑定该会话的全部 chat 各推一条 markdown（channels.base.
         relay_channel_reply 的企微侧出口）。📬 前缀标识这是主动推送而非
-        对某条消息的应答。"""
+        对某条消息的应答。
+
+        2026-11-08：正文里的本地媒体引用（markdown 路径）在企微侧是死文
+        本——主动推送协议发不了媒体（docs/wecom-media-protocol.md §1），
+        追加可达提示（文件名清单 + 桌面端指引）。被动流的媒体补发见
+        WeComTap._flush_text_media。"""
         assert self._mapper is not None
         text = (text or "").strip()
         if not text:
@@ -255,6 +260,15 @@ class WeComChannelAdapter(ChannelAdapter):
         chats = self._mapper.chats_for(session_id)
         if not chats:
             return
+        from .tap import _LOCAL_MEDIA_RE
+
+        media = sorted({m.group(0) for m in _LOCAL_MEDIA_RE.finditer(text)})
+        if media:
+            names = "、".join(p.rsplit("/", 1)[-1] for p in media[:5])
+            more = f" 等 {len(media)} 个文件" if len(media) > 5 else ""
+            text += (f"\n\n📎 本轮附带 {len(media)} 个文件（{names}{more}）："
+                     "企业微信主动通道暂不能直发媒体，请到桌面端会话查看；"
+                     "或回复「重发 <文件名>」由助手在应答中带上该文件。")
         body = f"📬 {text[:4000]}"
         for c in chats:
             try:
