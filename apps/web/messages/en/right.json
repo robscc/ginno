@@ -225,6 +225,7 @@
         "data": "Structured data",
         "text": "Plain text",
         "image": "Image",
+        "drawio": "Diagram",
         "unknown": "Unknown"
       },
       "meta": {

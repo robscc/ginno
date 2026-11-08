@@ -12,7 +12,7 @@ type FileBlock = Extract<Block, { kind: "file" }>;
 export const TABLE_KINDS = new Set(["spreadsheet", "table"]);
 
 // ---- chip → code-panel routing (docs/code-panel-design.md §3.4, D5) --------
-// The DEFAULT click on a chip is unchanged: it still opens the SheetViewer
+// The DEFAULT click on a chip is unchanged: it still opens the FileViewer
 // preview (tables/PDF/images/document extracts), so chat behaviour is
 // byte-for-byte the same. Text/code/data files additionally get an EXPLICIT
 // secondary entry ("在代码面板打开"). Should the default ever be re-routed by

@@ -176,6 +176,7 @@
         "text": "Text",
         "image": "Image",
         "html": "Web page",
+        "drawio": "Diagram",
         "unknown": "Unknown"
       },
       "nodeType": {

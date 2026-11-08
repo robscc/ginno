@@ -25,7 +25,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
 import { ConfirmModal } from "@/components/ConfirmModal";
-import { FILE_MISSING_EVENT } from "@/components/chat/SheetViewer";
+import { FILE_MISSING_EVENT } from "@/components/chat/FileViewer";
 import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
 
 export const ICON: Record<string, typeof FileText> = {
@@ -632,7 +632,7 @@ export function ArtifactsPanel() {
   };
 
   // ---- P3-2 rows whose file turned out to be gone (first failure only;
-  // in-memory). SheetViewer broadcasts the file id, mapped back to the row. ----
+  // in-memory). FileViewer broadcasts the file id, mapped back to the row. ----
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set());
   const fileToArtifactRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
@@ -747,7 +747,7 @@ export function ArtifactsPanel() {
     if (leaveTimer.current) clearTimeout(leaveTimer.current);
   }
 
-  // File artifacts open in the SheetViewer/document preview. The artifact
+  // File artifacts open in the FileViewer/document preview. The artifact
   // only carries a path (ref), so resolve the registry entry to get its id.
   async function openArtifact(a: Artifact) {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;

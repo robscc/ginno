@@ -204,7 +204,7 @@ export function fileDownloadUrl(
   return `${BASE}/files/${fileId}/download${q ? `?${q}` : ""}`;
 }
 
-// Sandbox-rendered html preview for the SheetViewer iframe (mirrors the code
+// Sandbox-rendered html preview for the FileViewer iframe (mirrors the code
 // panel's HtmlPreview): CSP header server-side + sandbox attr client-side.
 export function fileInlineUrl(fileId: string) {
   return `${BASE}/files/${fileId}/inline`;

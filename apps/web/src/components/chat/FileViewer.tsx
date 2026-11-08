@@ -7,6 +7,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
 import type { FilePreview } from "@/lib/types";
+import type { PreviewFile } from "@/lib/store";
 import { Markdown } from "./Markdown";
 
 const PAGE = 100;
@@ -35,13 +36,63 @@ function isMissingPreviewError(msg?: string | null): boolean {
   );
 }
 
+/** Build the self-contained host document for the vendored diagrams.net
+ *  GraphViewer. The drawio XML rides in the data-mxgraph attribute (JSON),
+ *  HTML-escaped for a double-quoted attribute; the script is served from
+ *  the web bundle (/vendor — srcdoc iframes inherit the parent base URL),
+ *  so preview works fully offline, no CDN dependency. */
+function buildDrawioShell(xml: string): string {
+  const cfg = JSON.stringify({
+    highlight: "none",
+    nav: true,
+    resize: true,
+    "auto-fit": true,
+    toolbar: "zoom layers",
+    xml,
+  });
+  const attr = cfg.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#fff}.mxgraph{width:100%;height:100%}</style></head><body><div class="mxgraph" data-mxgraph="${attr}"></div><script src="/vendor/viewer-static.min.js"></script></body></html>`;
+}
+
+/** .drawio preview: fetch the raw XML via the download URL and render it
+ *  with the embedded GraphViewer inside a sandboxed srcdoc iframe. */
+function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void }) {
+  const [doc, setDoc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setDoc(null);
+    // mtime busts the cache when the same-named diagram is regenerated.
+    fetch(`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .then((xml) => {
+        if (alive) setDoc(buildDrawioShell(xml));
+      })
+      .catch(() => {
+        if (alive) onError();
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.id, file.mtime]);
+  if (!doc) return <div className="px-4 py-6 text-center text-sm text-faint">Loading…</div>;
+  return (
+    <iframe
+      srcDoc={doc}
+      title={file.name}
+      sandbox="allow-scripts"
+      className="h-full min-h-[60vh] w-full border-0 bg-white"
+    />
+  );
+}
+
 /**
  * Full-width modal preview for attached/produced files (docs §7.2).
  * Tables → paginated grid with sheet tabs + dtype badges; documents →
  * extracted markdown. Refetches whenever the store's previewNonce bumps
  * (preview.invalidate for the open file, or a fresh open).
  */
-export function SheetViewer() {
+export function FileViewer() {
   const g = useGinno();
   // composer 域 catalog（本组件挂 AppShell 下，文案统一收在 composer.sheet）
   const t = useTranslations("composer");
@@ -92,9 +143,13 @@ export function SheetViewer() {
     if (!file) return;
     // Images are served raw by the sidecar (no extraction step) — the body
     // renders them directly from the download URL, so skip the preview fetch.
-    if (file.kind === "image" || file.kind === "html") {
+    if (file.kind === "image" || file.kind === "html" || file.kind === "drawio") {
       setErr(null);
-      setPv(file.kind === "html" ? ({ ok: true, kind: "html" } as FilePreview) : null);
+      setPv(
+        file.kind === "html" || file.kind === "drawio"
+          ? ({ ok: true, kind: file.kind } as FilePreview)
+          : null,
+      );
       setMissing(false);
       return;
     }
@@ -144,6 +199,11 @@ export function SheetViewer() {
   const isTable = pv?.kind === "spreadsheet" || pv?.kind === "table";
   const isImage = file?.kind === "image";
   const isHtml = file?.kind === "html" || /\.html?$/i.test(file?.name ?? "");
+  // .drawio sources render via the embedded GraphViewer (see DrawioFrame);
+  // the name-pattern fallback covers registry rows classified before the
+  // drawio kind existed.
+  const isDrawio =
+    file?.kind === "drawio" || /\.(drawio|dio)$/i.test(file?.name ?? "");
   // 服务端数据徽标兜底词：pv.kind 分类法值 → 本地化徽标（composer.badges.fileKind）；
   // 未知值仍回退英文原值（服务端新增 kind 无需前端同步）。
   const FILE_KINDS = [
@@ -156,6 +216,7 @@ export function SheetViewer() {
     "text",
     "image",
     "html",
+    "drawio",
     "unknown",
   ] as const;
   const fileKindBadge = (kind: string): string =>
@@ -267,8 +328,17 @@ export function SheetViewer() {
             </div>
           )}
           {!missing && err && <div className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {!missing && !err && !pv && !isImage && !isHtml && (
+          {!missing && !err && !pv && !isImage && !isHtml && !isDrawio && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
+          )}
+          {isDrawio && !missing && !err && (
+            <DrawioFrame
+              file={file}
+              onError={() => {
+                setMissing(true);
+                notifyFileMissing(file.id);
+              }}
+            />
           )}
           {isHtml && !missing && (
             <iframe
