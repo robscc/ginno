@@ -591,8 +591,9 @@
       "assignAcceptance": "验收标准",
       "viewWorker": "查看员工对话",
       "senderLabel": "派发方",
-      "worker.waitingNotice": "📡 已订阅「{title}」——它完成后结果会注入本会话（等待中，不是卡住）",
-      "worker.resumedNotice": "📡 订阅的会话已完成——结果注入中"
+      "worker.waitingNotice": "⏳ 已开始等待「{title}」——它完成后结果会自动带回本对话（正常等待，不是卡住）",
+      "worker.resumedNotice": "✅ 「{title}」已完成——结果正在带回本对话",
+      "worker.progressNotice": "🔄 「{title}」有新进展——进度节选已带入本对话"
     },
     "jumpLatest": "跳到最新一条信息",
     "deliver.started": "→ 已投递到「{label}」（新 turn）",

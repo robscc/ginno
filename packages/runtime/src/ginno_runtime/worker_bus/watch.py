@@ -100,6 +100,18 @@ async def watch_worker(
     _session_meta_patch(slug, tid, {"subscribers": [*kept, entry]})
     _WATCHED.add(tid)
     _log.info("worker_watch sub=%s target=%s want=%s", subscriber_id, tid, want)
+    # 等待可见化起场（2026-11-06「assign 后 5 分钟像卡死」）：订阅建立即
+    # 推 worker.waiting——前端弹「已开始等待」界定等待窗口起点。终态/
+    # digest 各自有专属事件（worker.resumed / worker.progress）收口。
+    # 直接 await：一次 enqueue 级轻量调用，不值得 spawn_bg 的时序不确定。
+    try:
+        await _push_session_event(
+            subscriber_id, "worker.waiting",
+            {"target": tid, "want": want,
+             "target_title": str(_meta.get("title") or tid[:8])}, "",
+        )
+    except Exception:
+        pass
     # 订阅方视角的关联戳(session_links):「我在 watch 谁」落在订阅者自己
     # meta——subscribers 在目标方,反向派生要跨项目全量扫,设计禁止。
     # 延迟导入破环(session_links → worker_bus.registry ← __init__)。
@@ -178,6 +190,16 @@ async def notify_settled(target_id: str) -> None:
     _log.info("worker_notify_settled target=%s status=%s subs=%s",
               target_id, st, ",".join(fire))
     for sid in fire:
+        # 等待可见化·收场：终态注入即「已完成」——与 digest 的
+        # worker.progress 区分，前端弹语义化完成提示。
+        try:
+            await _push_session_event(
+                sid, "worker.resumed",
+                {"target": target_id, "want": "terminal", "status": st,
+                 "target_title": str(meta.get("title") or target_id[:8])}, "",
+            )
+        except Exception:
+            pass
         # 复用注入管道：订阅者忙 → steer；闲 → coalesce wake。回执层级
         # 不追踪（协议 §11-2 一段式决策）。
         try:
@@ -243,11 +265,13 @@ async def on_turn_settled_hook(session_id: str) -> None:
         sid = str(s.get("session_id") or "")
         if not sid or sid == session_id:
             continue
-        # 等待可见化收口：digest 到达 = 等待结束（worker.waiting 起场于此撤）
+        # 等待可见化·进度：digest 到达 = 有新进展（不是完成！终态另有
+        # worker.resumed）。payload 带 target_title 供前端语义化提示。
         try:
             await _push_session_event(
-                sid, "worker.resumed",
-                {"target": session_id, "want": "digest"}, "",
+                sid, "worker.progress",
+                {"target": session_id, "want": "digest",
+                 "target_title": str(meta.get("title") or session_id[:8])}, "",
             )
         except Exception:
             pass
