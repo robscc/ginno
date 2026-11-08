@@ -408,3 +408,88 @@ def test_self_referential_delta_is_rejected_not_hung(isolated_home):
     log.write_text("".join(json.dumps(e) + "\n" for e in events))
     with pytest.raises(ValueError, match="cycle"):
         cp.get_tuple(_cfg())
+
+
+def test_tail_window_read_matches_full_fold(isolated_home):
+    """尾窗读 vs 全量 fold 等价（热路径治理回归，2026-11-08）。
+
+    大量 full/delta/writes 事件下 get_tuple（无 id）与全量读一致；
+    窗口首条 cp 之前的残余被丢弃（writes 引用闭合）。"""
+    import ginno_runtime.checkpointer as ck
+
+    cp = FileCheckpointer(project_slug="p")
+    prev = None
+    for step in range(30):
+        cfg = {"configurable": {"thread_id": "s1", **({"checkpoint_id": prev} if prev else {})}}
+        tup = cp.put(
+            cfg, _checkpoint_with_messages(None, [_msg(f"m{step}", f"m{step}")]),
+            {"source": "loop", "step": step, "writes": {}}, {})
+        prev = tup["configurable"]["checkpoint_id"]
+        cp.put_writes({"configurable": {"thread_id": "s1", "checkpoint_id": prev}},
+                      [{"x": step}], task_id=f"t{step}")
+    path = _log(isolated_home)
+    full = ck._read_log(path)
+    tail = ck._read_tail(path)
+    assert tail, "tail window produced entries"
+    assert tail[-1]["checkpoint_id"] == full[-1]["checkpoint_id"]
+    t1 = cp.get_tuple({"configurable": {"thread_id": "s1"}})
+    assert t1 is not None and t1.checkpoint is not None
+
+
+def test_tail_window_no_anchor_falls_back(monkeypatch, isolated_home):
+    """窗口内无 full 锚（超长 delta 链/窗口首 cp 被切）→ 翻倍仍无 → 回退全量。
+
+    用极小窗口参数逼出翻倍与 fallback 分支（真实 4MB 窗口下需 4MB+ 连续
+    delta 链才会走到，等价语义）。"""
+    import ginno_runtime.checkpointer as ck
+
+    cp = FileCheckpointer(project_slug="p")
+    prev = None
+    for step in range(6):  # 日志撑到数 KB，保证翻倍各轮 start>0 不短路
+        cfg = {"configurable": {"thread_id": "s1", **({"checkpoint_id": prev} if prev else {})}}
+        tup = cp.put(cfg, empty_checkpoint(),
+                     {"source": "loop", "step": step, "writes": {}}, {})
+        prev = tup["configurable"]["checkpoint_id"]
+    path = _log(isolated_home)
+    assert path.stat().st_size > 2_048
+    calls = {"n": 0}
+    real = ck._read_log
+
+    def spy(p):
+        calls["n"] += 1
+        return real(p)
+
+    monkeypatch.setattr(ck, "_read_log", spy)
+    monkeypatch.setattr(ck, "_TAIL_WINDOW_MIN_B", 64)
+    monkeypatch.setattr(ck, "_TAIL_WINDOW_MAX_B", 256)
+    # 模拟超长 delta 链：窗口内永远无 full 锚（真实场景需 4MB+ 连续 delta）
+    monkeypatch.setattr(ck, "_has_full_anchor", lambda e: False)
+    out = ck._read_tail(path)
+    assert out, "fallback returned entries"
+    assert calls["n"] >= 1
+    assert [c["checkpoint_id"] for c in out] == [c["checkpoint_id"] for c in real(path)]
+
+
+def test_head_tuple_cache_hit_and_invalidate(isolated_home):
+    """P0 物化缓存：二次读命中（不再解析），写入后 stat 变化自动失效。"""
+    FileCheckpointer._TUPLE_CACHE.clear()  # 类级缓存跨测试共享，先清场
+    cp = FileCheckpointer(project_slug="p")
+    cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})
+    cfg = {"configurable": {"thread_id": "s1"}}
+    import asyncio
+
+    t1 = asyncio.run(cp.aget_tuple(cfg))
+    assert t1 is not None
+    with FileCheckpointer._TUPLE_CACHE_LOCK:
+        assert len(FileCheckpointer._TUPLE_CACHE) == 1
+    # 命中路径：直接返回同一 tuple 对象
+    t2 = asyncio.run(cp.aget_tuple(cfg))
+    assert t2 is t1
+    # 写入 → mtime/size 变 → 缓存失效，返回新 tuple
+    cfg2 = {"configurable": {"thread_id": "s1", "checkpoint_id": t1.config["configurable"]["checkpoint_id"]}}
+    cp.put(cfg2, _checkpoint_with_messages(None, [_msg("n", "n")]),
+           {"source": "loop", "step": 1, "writes": {}}, {})
+    t3 = asyncio.run(cp.aget_tuple(cfg))
+    assert t3 is not t1
+    msgs = (t3.checkpoint.get("channel_values") or {}).get("messages") or []
+    assert len(msgs) == 1
