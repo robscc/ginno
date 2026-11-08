@@ -5,7 +5,7 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
@@ -119,6 +119,29 @@ export function TranscriptList({
     });
   }
 
+  // ── 窗口化渲染（2026-11-08 长会话切换卡顿治理）─────────────────────────
+  // 长会话（实测 60+ 条消息 / 834 blocks）一次性 mount 是切换卡顿主因之二。
+  // 首屏只挂最近 WINDOW_INITIAL 条，顶部「加载更早」按钮逐步扩窗——渲染
+  // 语义不变，只是分批挂载（全量数据仍在 store，⌘K 锚点命中窗口外消息
+  // 时 revealUpTo 先扩窗再滚）。数值：80 条 ≈ 数百 blocks 的首屏成本上
+  // 限，同时覆盖绝大多数会话的全量（不出现按钮）。
+  const WINDOW_INITIAL = 80;
+  const WINDOW_STEP = 60;
+  const [headKeep, setHeadKeep] = useState(WINDOW_INITIAL);
+  const sessionId = session?.id;
+  useEffect(() => {
+    setHeadKeep(WINDOW_INITIAL);
+  }, [sessionId]);
+  const hiddenCount = Math.max(0, messages.length - headKeep);
+  const visible = hiddenCount > 0 ? messages.slice(-headKeep) : messages;
+  const visibleOffset = messages.length - visible.length; // 窗口首条的全量索引
+  const revealUpTo = (id: string) => {
+    const i = messages.findIndex((m) => m.id === id);
+    if (i >= 0 && i < visibleOffset) {
+      setHeadKeep(messages.length - i + 8); // +8：目标行上方的少量上下文
+    }
+  };
+
   // ── V2 P0-1 message anchoring ────────────────────────────────────────────
   // data-msg-id mapping: user rows carry their own HumanMessage id; assistant
   // rows carry the merged bubble's id, which the backend (_messages_to_ui)
@@ -146,6 +169,7 @@ export function TranscriptList({
     const tick = () => {
       try {
         const el = scrollToMessageAnchor(anchor.id);
+        if (!el) revealUpTo(anchor.id); // 窗口外消息：先扩窗，下一帧重试
         if (el && !flashed) {
           flashed = true;
           flashMessageAnchor(el);
@@ -179,6 +203,7 @@ export function TranscriptList({
             flashMessageAnchor(el);
             return;
           }
+          revealUpTo(id); // 窗口外消息：扩窗后帧重试自然完成
         } catch {
           return;
         }
@@ -195,7 +220,19 @@ export function TranscriptList({
 
   return (
     <>
-      {messages.map((m, idx) =>
+      {hiddenCount > 0 && (
+        <div className="my-3 flex justify-center">
+          <button
+            type="button"
+            className="rounded-full border border-line bg-card px-3 py-1 text-[11px] text-faint transition-colors hover:bg-elev"
+            data-testid="load-earlier"
+            onClick={() => setHeadKeep((h) => h + WINDOW_STEP)}
+          >
+            ↑ {tc("loadEarlier", { hidden: hiddenCount, showingMore: Math.min(WINDOW_STEP, hiddenCount) })}
+          </button>
+        </div>
+      )}
+      {visible.map((m, idx) =>
         m.role === "system" ? (
           <div key={m.id} className="flex flex-col items-center gap-2">
             <ContextBlocks
@@ -363,7 +400,7 @@ export function TranscriptList({
           </div>
         ) : (
           <Fragment key={m.id}>
-            {handoffBefore[idx] && (
+            {handoffBefore[visibleOffset + idx] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
             <div data-msg-id={m.id} className="min-w-0 rounded-xl">
