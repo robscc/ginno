@@ -196,6 +196,7 @@ async def run_channel_turn(
     images: list[dict] | None = None,
     usage_source: str = "channel",
     agent_id: str | None = None,
+    channel_ctx: dict | None = None,
 ) -> list[str]:
     """Drive ONE headless turn on ``session`` with ``tap`` attached (F2 §7).
 
@@ -203,6 +204,13 @@ async def run_channel_turn(
     ``cli.py`` exec path — early-armed ``_RUNNING_TURNS``, tap attached for the
     whole turn, running-flag cleanup that KEEPS the registration when the turn
     parked at an interrupt (a pending question must stay answerable).
+
+    ``channel_ctx`` — ``{"kind", "userid", "admin_users"}`` from the adapter
+    (kind: "wecom"/"dingtalk"). When present, builtin commands are gated by
+    ``BuiltinCommand.channel_policy`` (docs/design/channel-devswap-
+    unattended-design.md §2): "admin" requires userid ∈ admin_users
+    (fail-closed when unset), "none" always rejects. Desktop WS passes no
+    ctx and is never gated.
 
     Returns the salvaged steer texts: entries enqueued mid-turn (steer_channel_
     turn) that the turn ended before absorbing. The caller (adapter) redelivers
@@ -256,6 +264,46 @@ async def run_channel_turn(
 
             plan = resolve_turn({"message": text}, session)
             if plan.builtin_reply is not None or plan.builtin_async is not None:
+                # ── G3 渠道命令权限闸（docs/design/channel-devswap-
+                # unattended-design.md §2）：channel 上下文按 BuiltinCommand
+                # .channel_policy 判定——"admin" 需 userid ∈ admin_users
+                # （fail-closed：名单空=全拒），"none" 一律拒。仅 async 命令
+                # 可标策略（TurnPlan 只携带 builtin_async 名；sync 命令恒
+                # all——dev-swap 这类高危命令本来就是 async）。拒绝走与放行
+                # 相同的 tap 微 turn 回执路径（真实翻译/卡片）；桌面 WS 无
+                # channel_ctx，永不进此分支。
+                if channel_ctx is not None and plan.builtin_async:
+                    from ..commands.registry import BUILTINS as _B
+
+                    _cmd = _B.get(plan.builtin_async)
+                    if _cmd is not None and _cmd.channel_policy != "all":
+                        _ok = (
+                            _cmd.channel_policy == "admin"
+                            and channel_ctx.get("userid")
+                            in (channel_ctx.get("admin_users") or [])
+                        )
+                        if not _ok:
+                            from ..lang import t as _t
+
+                            _kind = channel_ctx.get("kind", "channel")
+                            receipt = _t(
+                                f"⛔ `/{plan.builtin_async}` is admin-only on this "
+                                "channel — your userid is not in "
+                                f"channels.{_kind}.admin_users.",
+                                f"⛔ `/{plan.builtin_async}` 在渠道侧仅管理员可用"
+                                "——你的 userid 不在 channels."
+                                + _kind + ".admin_users 配置中。",
+                            )
+                            await tap.send_text(json.dumps(
+                                {"event": "turn.start", "turn_id": turn_id},
+                                ensure_ascii=False))
+                            await tap.send_text(json.dumps(
+                                {"event": "token.delta", "content": receipt},
+                                ensure_ascii=False))
+                            await tap.send_text(json.dumps(
+                                {"event": "message.end", "text": ""},
+                                ensure_ascii=False))
+                            return []
                 receipt = plan.builtin_reply
                 if plan.builtin_async is not None:
                     from ..commands.registry import BUILTINS

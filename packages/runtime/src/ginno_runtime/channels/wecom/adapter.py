@@ -285,11 +285,13 @@ class WeComChannelAdapter(ChannelAdapter):
         if session is None:
             await self._finish_stream(req_id, stream_id, "⚠️ 会话创建失败，请稍后重试")
             return
-        await self._run_text_turn(req_id, chat_key, session, stream_id, text)
+        await self._run_text_turn(req_id, chat_key, session, stream_id, text,
+                                  userid=userid)
 
     async def _run_text_turn(self, req_id: str, chat_key: str, session: dict,
                              stream_id: str, text: str,
-                             *, usage_source: str = "wecom") -> None:
+                             *, usage_source: str = "wecom",
+                             userid: str = "") -> None:
         """文本/语音共用的 turn 驱动：在途 steer → 串行锁 → turn → 补投。"""
         lock = self._session_locks.setdefault(session["session_id"], asyncio.Lock())
         if lock.locked():  # 在途/停车中 → steer 优先，其余不排队直接定格提示
@@ -311,8 +313,13 @@ class WeComChannelAdapter(ChannelAdapter):
             return
         async with lock:
             tap = WeComTap(self, req_id, chat_key, stream_id)
-            salvaged = await run_channel_turn(session, text, tap,
-                                              usage_source=usage_source)
+            salvaged = await run_channel_turn(
+                session, text, tap, usage_source=usage_source,
+                channel_ctx={
+                    "kind": "wecom",
+                    "userid": userid,
+                    "admin_users": self.config.get("admin_users") or [],
+                })
         if salvaged:
             await self._salvage_redeliver(session, chat_key, salvaged)
 
@@ -340,7 +347,7 @@ class WeComChannelAdapter(ChannelAdapter):
         shared._log.info("wecom_voice_ok chat=%s len=%d text=%r",
                          chat_key, len(text), text[:80])
         await self._run_text_turn(req_id, chat_key, session, stream_id, text,
-                                  usage_source="wecom_voice")
+                                  usage_source="wecom_voice", userid=userid)
 
     async def _salvage_redeliver(self, session: dict, chat_key: str,
                                  texts: list[str]) -> None:
@@ -429,7 +436,12 @@ class WeComChannelAdapter(ChannelAdapter):
             tap = WeComTap(self, req_id, chat_key, stream_id)
             salvaged = await run_channel_turn(
                 session, text, tap, attached_files=attached or None,
-                images=images, usage_source="wecom_file")
+                images=images, usage_source="wecom_file",
+                channel_ctx={
+                    "kind": "wecom",
+                    "userid": userid,
+                    "admin_users": self.config.get("admin_users") or [],
+                })
         if salvaged:
             # 文件 turn 收尾时未吸收的文本 steer 同样补投（同 _dispatch_text）
             await self._salvage_redeliver(session, chat_key, salvaged)
