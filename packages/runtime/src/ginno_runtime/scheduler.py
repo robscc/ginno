@@ -340,8 +340,11 @@ def _spawn_resumes(pairs: list[tuple[dict, dict]]) -> int:
 def reconcile_interrupted() -> int:
     """孤儿 running 行（上次崩溃/被杀）→ 窗口内自动续跑，否则 error("interrupted")。
 
-    扫今天与前一天两个日文件：跨午夜存活（昨天启动、今天被杀）的 running 行
-    落在前一天的文件里。按去重后的末行判断，天然不碰已有终态的 run。
+    扫窗口覆盖到的全部日文件：跨午夜存活的 running 行落在历史日文件里。
+    窗口 RESUME_WINDOW_S（24h）——UTC 00:01 时刻 now-24h-ε 的行恰好落
+    「前天」文件，只扫今天+昨天会漏（2026-11-08 CI 00:01 三用例红的
+    根因）；顺带把超窗未处理的更老孤儿也收编记 interrupted。
+    按去重后的末行判断，天然不碰已有终态的 run。
     返回值仍为改记 interrupted 的行数（续跑数单看日志 resumed=）。"""
     now = time.time()
     healed = 0
@@ -349,7 +352,9 @@ def reconcile_interrupted() -> int:
     resume_pairs: list[tuple[dict, dict]] = []
     cfg = store.load_config()
     tasks = {t.get("id"): t for t in cfg.get("tasks") or [] if t.get("id")}
-    for day in (store._date_str(now - 86400), store._today()):
+    _days = sorted({store._date_str(now - k * 86400)
+                    for k in range(int(RESUME_WINDOW_S // 86400) + 3)})
+    for day in _days:
         for e in store.dedupe_runs(store.load_day(day)):
             if e.get("status") != "running":
                 continue

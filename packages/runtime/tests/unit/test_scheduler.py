@@ -650,6 +650,53 @@ def test_reconcile_stale_run_marks_interrupted(isolated_home):
     assert scheduler._RUNNING.get("st-t1") is None
 
 
+def test_reconcile_utc_midnight_window(monkeypatch, isolated_home):
+    """冻结 UTC 00:01 复现 CI 翻车时刻（2026-11-08 CI runtime-tests 三用例红）。
+
+    旧实现只扫今天+昨天两个日文件：UTC 午夜刚过的 61 秒窗口内
+    ``now - RESUME_WINDOW_S - 60`` 落「前天」文件 → 扫不到 →
+    ``reconcile_interrupted() == 0``。修复后按 RESUME_WINDOW_S 动态展开
+    扫描天数，任何时区任何时刻不再依赖运气。进程 TZ 切 UTC 决定
+    ``_date_str/localtime`` 的文件归属（CI runner 同款语义）。"""
+    _save_task()
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    fake_now = datetime(2026, 11, 8, 0, 1, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+    monkeypatch.setattr(time, "time", lambda: fake_now)
+    ts = fake_now - scheduler.RESUME_WINDOW_S - 60
+    store.record_run({"run_id": "sr-utc-mid", "task_id": "st-t1", "task_name": "T",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": "sess-1",
+                      "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 1
+    day = store._date_str(ts)
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(day))}
+    assert rows["sr-utc-mid"]["status"] == "error"
+    assert rows["sr-utc-mid"]["error"] == "interrupted"
+
+
+def test_reconcile_old_orphan_across_midnight_window(isolated_home):
+    """跨午夜窗口回归（2026-11-08 CI 00:01 UTC 三用例红的根因）。
+
+    reconcile 旧实现只扫今天+昨天两个日文件；UTC 00:0x 时刻
+    ``now - RESUME_WINDOW_S - 60`` 落在「前天」文件里 → 扫不到 →
+    0 == 1 断言挂。修复后按 RESUME_WINDOW_S 动态展开扫描天数，
+    48h 前的老孤儿（任何时区任何时刻）也收编记 interrupted。"""
+    _save_task()
+    for rid, delta in (("sr-d1-old", 48 * 3600), ("sr-d2-edge", scheduler.RESUME_WINDOW_S + 60)):
+        ts = time.time() - delta
+        store.record_run({"run_id": rid, "task_id": "st-t1", "task_name": "T",
+                          "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                          "started_at": ts, "finished_at": None, "session_id": "sess-1",
+                          "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 2
+    for rid, delta in (("sr-d1-old", 48 * 3600), ("sr-d2-edge", scheduler.RESUME_WINDOW_S + 60)):
+        day = time.strftime("%Y-%m-%d", time.localtime(time.time() - delta))
+        rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(day))}
+        assert rows[rid]["status"] == "error", (rid, rows[rid])
+        assert rows[rid]["error"] == "interrupted"
+
+
 def test_reconcile_task_deleted_or_disabled_marks_interrupted(isolated_home):
     """任务已删除 / 已停用 → 不续跑，记 interrupted。"""
     _save_task(enabled=False)

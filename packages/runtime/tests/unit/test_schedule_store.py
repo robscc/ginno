@@ -178,7 +178,11 @@ def test_load_day_skips_corrupt_lines(isolated_home):
 
 
 def test_query_runs_filters_sort_page(isolated_home):
-    now = time.time()
+    # 过滤/排序/分页语义用例——时间基点钉在「今天」内：UTC 午夜刚过时
+    # ``now - 100`` 会落昨天文件（2026-11-08 CI 00:01红的家族成员之一；
+    # 跨天去重有专门用例，本用例不测跨天）。
+    midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, 0))
+    base = max(time.time() - 100, midnight + 1)
     for i, (tid, tt, st, trg) in enumerate([
         ("st-1", "prompt", "ok", "schedule"),
         ("st-2", "workflow", "error", "manual"),
@@ -187,8 +191,8 @@ def test_query_runs_filters_sort_page(isolated_home):
         store.record_run({
             "run_id": f"sr-{i}", "task_id": tid, "task_name": tid,
             "target_type": tt, "trigger": trg, "status": st,
-            "scheduled_at": now - 100 + i, "started_at": now - 100 + i,
-            "finished_at": now - 90 + i,
+            "scheduled_at": base + i, "started_at": base + i,
+            "finished_at": base + 10 + i,
         })
     res = store.query_runs()
     assert res["total"] == 3
