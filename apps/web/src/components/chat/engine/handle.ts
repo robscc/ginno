@@ -991,9 +991,15 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 事件契约：带 i18n_key 时落地即翻译，否则原样直显 message。
       markDelivered(ctx, sid);
       let _txt = ctx.i18nRef.current.evText(ev, (ev.message as string) || "");
-      // auto-retry 是瞬态系统提示——包成 code span + ⚠️，气泡里呈现为
-      // 琥珀色等宽小条而不是混入正文的普通文本（用户反馈样式不显眼）。
-      if ((ev.i18n_key as string) === "stream.auto_retry") {
+      // 瞬态模型错误提示（auto_retry / model_error_backoff）——包成 code
+      // span + ⚠️，气泡里呈现为琥珀色等宽小条而不是混入正文的普通文本
+      // （用户反馈样式不显眼）。model_error_backoff 于 2026-11-08 并入：
+      // 此前它走通用分支，GLM 429 退避横幅被拼进消息开头且重试成功后
+      // 不撤（用户截图实录），多轮退避还会堆多行。
+      if (
+        (ev.i18n_key as string) === "stream.auto_retry" ||
+        (ev.i18n_key as string) === "stream.model_error_backoff"
+      ) {
         // 原位更新（2026-10-11 用户反馈：此前每次 append，N 轮重试堆 N 行）：
         // 新一轮提示替换上一轮；文本里带分隔符整体进出，替换/撤行都精确。
         const prev = ctx.retryNoticeRef.current[sid];
