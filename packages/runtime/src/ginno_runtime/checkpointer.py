@@ -129,10 +129,14 @@ def existing_checkpoint_path(project_slug: str, session_id: str) -> Path | None:
 
 
 def remove_checkpoint_files(project_slug: str, session_id: str) -> bool:
-    """Delete every on-disk form of a session's checkpoints. True if any went."""
+    """Delete every on-disk form of a session's checkpoints. True if any went.
+
+    2026-11-08 切分感知：归档段（<sid>.seg.N.jsonl）与首次切分备份
+    （<sid>.jsonl.bak-first）一并清理。"""
     removed = False
+    main = checkpoint_path(project_slug, session_id)
     for p in (
-        checkpoint_path(project_slug, session_id),
+        main,
         legacy_checkpoint_path(project_slug, session_id),
     ):
         if not p.exists():
@@ -142,6 +146,18 @@ def remove_checkpoint_files(project_slug: str, session_id: str) -> bool:
             removed = True
         except OSError:
             _log.warning("checkpoint_unlink_failed path=%s", p)
+    main_gone = not main.exists()
+    if main_gone:
+        # 归档段与备份：按名字 glob（主文件删了它们也不该留）
+        import glob as _glob
+
+        for pat in (f"{session_id}.seg.*.jsonl", f"{session_id}.jsonl.bak-*"):
+            for extra in _glob.glob(str(main.parent / pat)):
+                try:
+                    Path(extra).unlink()
+                    removed = True
+                except OSError:
+                    _log.warning("checkpoint_unlink_failed path=%s", extra)
     return removed
 
 
@@ -243,8 +259,54 @@ def _fold_events(lines: list[str]) -> list[dict]:
 
 
 def _read_log(path: Path) -> list[dict]:
-    """Fold the whole event log into the entry list (see module docstring)."""
-    return _fold_events(path.read_text(encoding="utf-8").splitlines())
+    """Fold the whole event log into the entry list (see module docstring).
+
+    2026-11-08 切分感知：主文件首部 seg 事件引用的归档段（<sid>.seg.N.
+    jsonl，按 seq 升序）先于主段 fold——与切分前的全量语义完全一致
+    （checkpoint_segment.py 的事务顺序保证归档段只被 header 引用后生效）。
+    未切分/孤儿归档（header 未引用）天然忽略。"""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    # seg header 检测：首 2 行内找 {"op":"seg",...}（首行可能是 v2 header）
+    seg = None
+    for i, raw in enumerate(lines[:3]):
+        try:
+            ev = json.loads(raw)
+        except Exception:
+            break
+        if not isinstance(ev, dict):
+            break
+        if ev.get("op") == "seg":
+            seg = (i, ev)
+            break
+        if ev.get("op") not in ("header",):
+            break
+    if seg is None:
+        return _fold_events(lines)
+    idx, ev = seg
+    archives = [
+        path.parent / str(name)
+        for name in (ev.get("archives") or [])
+        if str(name)
+    ]
+    archives.sort(key=lambda p: _seg_seq(p.name))
+    all_lines: list[str] = []
+    for a in archives:
+        try:
+            all_lines.extend(
+                a.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            _log.warning("checkpoint_archive_missing path=%s", a)
+    all_lines.extend(lines[idx + 1:])  # 主段（跳过 seg header 行）
+    return _fold_events(all_lines)
+
+
+def _seg_seq(name: str) -> int:
+    """<sid>.seg.N.jsonl 的 N（排序用）。"""
+    try:
+        return int(name.rsplit(".seg.", 1)[-1].split(".")[0])
+    except Exception:  # noqa: BLE001
+        return 10**9
 
 
 # ---- 尾窗读（2026-11-08 切换会话卡顿治理） ---------------------------------
