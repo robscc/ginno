@@ -42,6 +42,10 @@ _KIND_BY_EXT = {
     # same double-sandbox treatment as the code panel's HtmlPreview.
     ".html": "html",
     ".htm": "html",
+    # diagrams.net drawio sources — rendered by the SheetViewer's embedded
+    # GraphViewer (vendored viewer-static.min.js, no CDN dependency).
+    ".drawio": "drawio",
+    ".dio": "drawio",
 }
 
 PREVIEWABLE_KINDS = {"spreadsheet", "table", "document", "presentation", "pdf"}

@@ -16,7 +16,7 @@ import { rememberMessageTarget } from "@/components/shell/searchShared";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
-import { SheetViewer } from "@/components/chat/SheetViewer";
+import { FileViewer } from "@/components/chat/FileViewer";
 import { NoticeHost, useNoticeNativeFallback } from "@/components/notice/NoticeHost";
 import { DevSwapCard } from "@/components/devswap/DevSwapCard";
 import { RightPanel } from "@/components/right/RightPanel";
@@ -1026,12 +1026,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         )}
       </main>
 
-      {/* 文件预览弹层（SheetViewer）：fixed 全局 modal，挂在 main 顶层——
+      {/* 文件预览弹层（FileViewer）：fixed 全局 modal，挂在 main 顶层——
           2026-11-08 修复：原挂工作区行内，/scheduled 等非工作区路由（或定时
           回放/RunSubSessionView 期间）工作区行被 CSS hidden，display:none
           祖先连 fixed 子层一起吃掉——定时任务实例里点 artifact「点不开」、
           切回 session 又突然显示。预览是全局 store 状态，弹层就该全应用常驻。 */}
-      <SheetViewer />
+      <FileViewer />
 
       {/* 右下角统一通知容器（notice-unification-design.md §2.2/§4）：全应用唯一
           悬浮 toast 层，fixed 定位类只在这里持有。NoticeHost（notice 总线）与

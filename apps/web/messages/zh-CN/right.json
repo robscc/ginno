@@ -225,6 +225,7 @@
         "data": "结构化数据",
         "text": "纯文本",
         "image": "图片",
+        "drawio": "流程图",
         "unknown": "未知"
       },
       "meta": {

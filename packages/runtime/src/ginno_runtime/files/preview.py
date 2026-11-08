@@ -70,6 +70,13 @@ def build_preview(
         # No extraction: the frontend streams the bytes into a sandboxed
         # iframe via GET /api/files/{id}/inline (same CSP as code panel).
         return {"kind": "html"}
+    if kind == "drawio":
+        # No extraction either: the frontend fetches the raw XML via the
+        # download URL and renders it with the vendored diagrams.net
+        # GraphViewer inside a sandboxed srcdoc iframe (same double-sandbox
+        # idea as html, but client-assembled so the viewer script is served
+        # from the web bundle instead of the sidecar).
+        return {"kind": "drawio"}
     if kind in ("spreadsheet", "table"):
         return _table_payload(p, kind, sheet, offset, limit)
     if kind in ("document", "presentation", "pdf", "data", "text"):

@@ -688,7 +688,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       break;
     case "preview.invalidate":
       // A tracked file changed (tool wrote it / mtime watcher) → the
-      // SheetViewer refetches if that file is the one being viewed.
+      // FileViewer refetches if that file is the one being viewed.
       if (ev.file_id) ctx.g.notifyPreviewInvalidate(ev.file_id as string);
       break;
     case "worker.waiting":

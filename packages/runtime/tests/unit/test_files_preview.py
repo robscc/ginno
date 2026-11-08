@@ -156,3 +156,14 @@ def test_csv_export_name_override(tmp_path):
     f.write_text("a\n1\n", encoding="utf-8")
     name, _ = build_csv_export(f, name="报表.csv")
     assert name == "报表.csv"
+
+
+def test_drawio_classified_and_previewable(tmp_path):
+    # .drawio/.dio → kind "drawio"; build_preview mirrors the html pattern
+    # (no extraction, frontend renders with the embedded GraphViewer).
+    xml = '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>'
+    for name in ("a.drawio", "b.dio"):
+        f = tmp_path / name
+        f.write_text(xml, encoding="utf-8")
+        assert ex.classify(f) == "drawio"
+        assert build_preview(f) == {"kind": "drawio"}
