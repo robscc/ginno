@@ -162,13 +162,17 @@ def test_mount_roots_never_include_the_session_workspace(tmp_path, tmp_path_fact
     assert [Path(p) for p in ctx["mount_roots"]] == [outside.resolve()]
 
 
-def test_workspace_in_mount_roots_would_punch_through_the_home_deny(tmp_path):
-    """The hazard the previous test pins, demonstrated directly.
+def test_workspace_in_mount_roots_punch_is_plugged_by_always_deny(tmp_path):
+    """The hazard the previous test pins, demonstrated directly — and now
+    plugged (runtime-data-access-design.md §3).
 
     With ``workspace == home`` (the workflow cwd fallback) ``_path_denied``
-    correctly denies ``~/.ginno/settings.json``; add the workspace to
-    ``extra_roots`` and the same path is allowed, because the extra_roots loop
-    short-circuits before the home deny.
+    correctly denies ``settings.json``; historically, adding the workspace to
+    ``extra_roots`` allowed the same path because the extra_roots loop
+    short-circuits before the home deny. Credential files now sit in
+    ``_always_deny_roots()``, which is checked BEFORE the extra_roots
+    exemption — so neither this cwd-fallback shape nor a full runtime-home
+    mount (the privileged session) can reach them.
     """
     home = paths.home()
     ws = home  # the cwd fallback shape
@@ -176,7 +180,8 @@ def test_workspace_in_mount_roots_would_punch_through_the_home_deny(tmp_path):
     secret.write_text("top secret", encoding="utf-8")
 
     assert _path_denied(secret, ws, []) is True
-    assert _path_denied(secret, ws, [ws]) is False  # <- the hole
+    # The hole (pre-2026-11-08: allowed) is plugged by always-deny precedence.
+    assert _path_denied(secret, ws, [ws]) is True
 
 
 # --------------------------------------------------------------------------- #
