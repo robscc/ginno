@@ -115,21 +115,40 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
   }, [file.id, file.mtime]);
   if (pages.length > 1) {
     const cur = pages[Math.min(page, pages.length - 1)];
+    // 页签名剥常见编号前缀（"2-模块级关系"→"模块级关系"），title 全名。
+    const short = (n: string) => n.replace(/^\d+[-._、]\s*/, "");
+    const onKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "ArrowLeft") setPage((p) => Math.max(0, p - 1));
+      else if (e.key === "ArrowRight") setPage((p) => Math.min(pages.length - 1, p + 1));
+    };
     return (
-      <div className="flex h-full min-h-[60vh] flex-col">
-        <div className="flex flex-wrap gap-1 border-b border-line2 px-3 py-1.5">
-          {pages.map((p, i) => (
-            <button
-              key={i}
-              onClick={() => setPage(i)}
-              className={
-                "rounded px-2.5 py-1 text-xs " +
-                (i === page ? "bg-accent text-white" : "text-muted hover:text-txt")
-              }
-            >
-              {p.name}
-            </button>
-          ))}
+      <div className="flex h-full min-h-[60vh] flex-col" onKeyDown={onKeyDown} tabIndex={0}>
+        {/* 分段药丸页签条：自带底色（不依赖画布白底，深浅主题均可读）；
+            长名截断，>6 页横向滚动 + 固定计数；←/→ 键翻页。 */}
+        <div className="flex items-center gap-2 bg-card2 px-3 py-2">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+            style={{ scrollbarWidth: "none" }}
+          >
+            {pages.map((p, i) => (
+              <button
+                key={i}
+                onClick={() => setPage(i)}
+                title={p.name}
+                className={
+                  "shrink-0 rounded-full px-3 py-1 text-xs transition-colors " +
+                  (i === page
+                    ? "bg-accent text-white"
+                    : "bg-line2/60 text-txt hover:bg-line2")
+                }
+              >
+                <span className="block max-w-32 truncate">{short(p.name)}</span>
+              </button>
+            ))}
+          </div>
+          <span className="shrink-0 text-xs tabular-nums text-faint">
+            {page + 1}/{pages.length}
+          </span>
         </div>
         <iframe
           srcDoc={cur.shell}
