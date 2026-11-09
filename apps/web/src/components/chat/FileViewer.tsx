@@ -138,7 +138,9 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
                 className={
                   "shrink-0 rounded-full px-3 py-1 text-xs transition-colors " +
                   (i === page
-                    ? "bg-accent text-white"
+                    ? // 选中态：accent 半透明底 + accent 描边/文字（不用白字，
+                      // 浅色 accent 主题下白字不可读，截图实测）。
+                      "bg-accent/15 font-medium text-accent ring-1 ring-accent"
                     : "bg-line2/60 text-txt hover:bg-line2")
                 }
               >
