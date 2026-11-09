@@ -48,7 +48,8 @@
         "floating": "悬浮窗",
         "toolLabels": "工具标签",
         "externalAgents": "外部代理",
-        "mods": "Mods 扩展"
+        "mods": "Mods 扩展",
+        "env": "环境变量"
       }
     },
     "view": {
@@ -1181,6 +1182,20 @@
         "emptyReset": "列表为空时将恢复默认源",
         "pulling": "正在拉取市场…（首次需 clone 源仓库，可能要等一会）"
       }
+    },
+    "env": {
+      "title": "环境变量注入",
+      "description": "配置一组环境变量，bash 工具（含 skill 执行的命令）起子进程时注入——GUI 启动不继承登录 shell 环境（如代理）时使用。保存即生效，无需重启。",
+      "namePlaceholder": "变量名（如 HTTPS_PROXY）",
+      "valuePlaceholder": "值（如 http://127.0.0.1:7890）",
+      "add": "添加变量",
+      "remove": "删除",
+      "save": "保存",
+      "saved": "已保存",
+      "saveFailed": "保存失败",
+      "saveFailedConn": "保存失败：无法连接 runtime",
+      "loadFailed": "读取失败",
+      "pathNote": "PATH 会被追加到现有值之后（不覆盖）；值支持字符串/数字/布尔。"
     }
   }
 }

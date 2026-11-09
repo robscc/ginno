@@ -48,7 +48,8 @@
         "floating": "Floating Window",
         "toolLabels": "Tool Labels",
         "externalAgents": "External Agents",
-        "mods": "Mods"
+        "mods": "Mods",
+        "env": "Env Vars"
       }
     },
     "view": {
@@ -1181,6 +1182,20 @@
         "emptyReset": "An empty list falls back to the default sources",
         "pulling": "Fetching the market… (first open clones the source repos)"
       }
+    },
+    "env": {
+      "title": "Environment Variables",
+      "description": "Define env vars injected into every bash tool subprocess (including commands run by skills) — useful when the GUI-launched sidecar does not inherit your login shell env (e.g. proxy). Takes effect on save, no restart needed.",
+      "namePlaceholder": "Name (e.g. HTTPS_PROXY)",
+      "valuePlaceholder": "Value (e.g. http://127.0.0.1:7890)",
+      "add": "Add variable",
+      "remove": "Remove",
+      "save": "Save",
+      "saved": "Saved",
+      "saveFailed": "Save failed",
+      "saveFailedConn": "Save failed: runtime unreachable",
+      "loadFailed": "Failed to load",
+      "pathNote": "PATH is appended after the existing value (not replaced); values accept string/number/boolean."
     }
   }
 }

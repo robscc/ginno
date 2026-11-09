@@ -34,6 +34,7 @@ export type SettingsTabKey =
   | "folders"
   | "permissions"
   | "hooks"
+  | "env"
   | "usage"
   | "sessionFiles"
   | "synthesis";
@@ -90,6 +91,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     tabs: [
       { id: "permissions", label: "permissions" },
       { id: "hooks", label: "hooks" },
+      { id: "env", label: "env" },
     ],
   },
   {
@@ -147,6 +149,7 @@ export const LEGACY_REDIRECT: Record<string, string> = {
   folders: "/settings/knowledge/folders",
   permissions: "/settings/security/permissions",
   hooks: "/settings/security/hooks",
+  env: "/settings/security/env",
   usage: "/settings/data/usage",
   "session-files": "/settings/data/session-files",
   "synthesis-quality": "/settings/data/synthesis-quality",

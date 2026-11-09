@@ -19,6 +19,7 @@ import { WebSearchSettings } from "./WebSearchSettings";
 import { ExternalAgentsSettings } from "./ExternalAgentsSettings";
 import { PermissionsSettings } from "./PermissionsSettings";
 import { HooksSettings } from "./HooksSettings";
+import { EnvVarsSettings } from "./EnvVarsSettings";
 import { SessionFilesSettings } from "./SessionFilesSettings";
 import { UsageSettings } from "./UsageSettings";
 import { ToolLabelsSettings } from "./ToolLabelsSettings";
@@ -52,6 +53,8 @@ function TabPanel({ tab }: { tab: string }) {
       return <PermissionsSettings />;
     case "hooks":
       return <HooksSettings />;
+    case "env":
+      return <EnvVarsSettings />;
     case "usage":
       return <UsageSettings />;
     case "session-files":
