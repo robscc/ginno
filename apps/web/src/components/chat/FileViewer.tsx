@@ -194,6 +194,21 @@ export function FileViewer() {
   const [note, setNote] = useState<string | null>(null);
   const noteTimer = useRef<number | null>(null);
 
+  // 预览打开时按 Esc 关闭（window 级监听；与页签 ←/→ 翻页不冲突，
+  // Esc 优先走关闭语义）。closePreview 是 store 的 useCallback，引用稳定。
+  const closePreview = g.closePreview;
+  useEffect(() => {
+    if (!file) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closePreview();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [file, closePreview]);
+
   function flashNote(msg: string) {
     setNote(msg);
     if (noteTimer.current) window.clearTimeout(noteTimer.current);
