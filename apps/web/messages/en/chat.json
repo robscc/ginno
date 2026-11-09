@@ -591,9 +591,9 @@
       "assignAcceptance": "Acceptance criteria",
       "viewWorker": "View worker conversation",
       "senderLabel": "Assigned by",
-      "worker.waitingNotice": "⏳ Now waiting for \"{title}\" — its result will arrive in this chat automatically when it finishes (normal waiting, not stuck)",
-      "worker.resumedNotice": "✅ \"{title}\" finished — its result is arriving in this chat",
-      "worker.progressNotice": "🔄 \"{title}\" has new progress — a digest excerpt just arrived in this chat"
+      "waitingNotice": "⏳ Now waiting for \"{title}\" — its result will arrive in this chat automatically when it finishes (normal waiting, not stuck)",
+      "resumedNotice": "✅ \"{title}\" finished — its result is arriving in this chat",
+      "progressNotice": "🔄 \"{title}\" has new progress — a digest excerpt just arrived in this chat"
     },
     "jumpLatest": "Jump to latest message",
     "deliver.started": "→ delivered to {label} (new turn)",
