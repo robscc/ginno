@@ -243,7 +243,7 @@ runtime: web
 # 内容戳：src/messages/配置/lockfile 未变且 out/ 在 → 跳过。
 web: pnpm-deps
 	@mkdir -p $(CACHE); \
-	h=$$( (find $(ROOT)/apps/web/src $(ROOT)/apps/web/messages -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
+	h=$$( (find $(ROOT)/apps/web/src $(ROOT)/apps/web/messages $(ROOT)/apps/web/public -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
 	       cat $(ROOT)/apps/web/package.json $(ROOT)/apps/web/next.config.* $(ROOT)/apps/web/tailwind.config.* $(ROOT)/pnpm-lock.yaml 2>/dev/null) | shasum | cut -d' ' -f1); \
 	if [ -f $(CACHE)/web.stamp ] && [ "$$(cat $(CACHE)/web.stamp)" = "$$h" ] && [ -d $(WEB_OUT) ]; then \
 	  echo "⏭️  web 未变，跳过 next build"; \
@@ -251,6 +251,10 @@ web: pnpm-deps
 	  cd $(ROOT) && pnpm --filter @ginno/web build && echo "$$h" > $(CACHE)/web.stamp; \
 	fi; \
 	# 防呆（2026-10-14 icon 事故）：next build 曾静默漏拷整个 public/ 到 out/
+	# （2026-11-09 svg 事故根因补丁）：public/ 此前不在内容戳里——新增
+	# fileicons/、vendor/ 等静态资产时 stamp 命中跳过重建，旧 out/ 永远缺
+	# 新资产，全靠下方补拷兜底自愈。现已把 public/ 纳入指纹：资产变更
+	# 正确触发重建，补拷保留作第二道防线（防 next build 偶发污染）。
 	# （app 内 /icon.png 被 sidecar catch-all 兜底成 index.html → icon 消失，
 	# 构建全程无报错；且 stamp 已写，后续构建跳过重建、沿用坏产物）。校验
 	# 因此必须独立于 skip/重建两条路径、每次都跑：缺了就补拷自愈，补不上
