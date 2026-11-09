@@ -454,7 +454,7 @@ def consume_lastwords(*, now: float | None = None) -> list[dict]:
             continue
         if not _worth_restoring(snap):
             eff = snap.get("effort") or {}
-            _log.debug(
+            _log.info(
                 "lastwords_low_effort_dropped session=%s reason=%s tool_calls=%s elapsed=%.0fs",
                 snap.get("session_id"),
                 snap.get("reason"),
