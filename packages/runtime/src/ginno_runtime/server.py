@@ -616,6 +616,7 @@ from .api import search as _search_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
 from .api import team_generate as _team_gen_api  # noqa: E402
+from .api import team_templates as _team_tpl_api  # noqa: E402
 from .api import teams as _teams_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
@@ -645,6 +646,7 @@ app.include_router(_sessions_api.router)
 app.include_router(_stream_api.router)
 app.include_router(_teams_api.router)
 app.include_router(_team_gen_api.router)
+app.include_router(_team_tpl_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
 app.include_router(_workflows_api.router)
