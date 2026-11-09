@@ -868,7 +868,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-base text-txt">
       {/* left nav */}
-      <aside className="flex w-64 shrink-0 select-none flex-col border-r border-line bg-panel">
+      <aside className="flex w-72 shrink-0 select-none flex-col border-r border-line bg-panel">
         <SidebarHeader
           groupView={groupView}
           onGroupViewChange={setGroupView}
