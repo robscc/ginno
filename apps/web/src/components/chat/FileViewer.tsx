@@ -54,18 +54,56 @@ function buildDrawioShell(xml: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#fff}.mxgraph{width:100%;height:100%}</style></head><body><div class="mxgraph" data-mxgraph="${attr}"></div><script src="/vendor/viewer-static.min.js"></script></body></html>`;
 }
 
+/** Split a drawio document into per-page shells.
+ *
+ *  Multi-page files are `<mxfile><diagram name="Page-1">…</diagram>…</mxfile>`;
+ *  GraphViewer renders only the first page when fed the whole mxfile (the
+ *  "only the first page" bug). We parse once, list the page names, and for
+ *  each page build a shell whose mxfile keeps only that `<diagram>` child
+ *  (compressed diagram payloads stay untouched — we never decode content,
+ *  just drop sibling nodes, so the vendored viewer handles the rest).
+ *  Uncompressed `<mxGraphModel>` roots pass through unchanged (single page).
+ */
+function splitDrawioPages(xml: string): { name: string; shell: string }[] {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const file = doc.documentElement;
+  if (!file || file.nodeName === "parsererror") return [{ name: "", shell: buildDrawioShell(xml) }];
+  const diagrams = Array.from(file.children).filter((c) => c.nodeName === "diagram");
+  if (file.nodeName !== "mxfile" || diagrams.length <= 1)
+    return [{ name: "", shell: buildDrawioShell(xml) }];
+  return diagrams.map((d, i) => {
+    const clone = file.cloneNode(false) as Element;
+    clone.appendChild(d.cloneNode(true));
+    return {
+      name: d.getAttribute("name") || `Page-${i + 1}`,
+      shell: buildDrawioShell(
+        `<?xml version="1.0" encoding="UTF-8"?>${new XMLSerializer().serializeToString(clone)}`,
+      ),
+    };
+  });
+}
+
 /** .drawio preview: fetch the raw XML via the download URL and render it
  *  with the embedded GraphViewer inside a sandboxed srcdoc iframe. */
 function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void }) {
   const [doc, setDoc] = useState<string | null>(null);
+  // 多页 drawio：每页一个 shell + 页签切换（单页文件 pages.length === 1
+  // 且 name 为空 → 不渲染页签，行为与之前完全一致）。
+  const [pages, setPages] = useState<{ name: string; shell: string }[]>([]);
+  const [page, setPage] = useState(0);
   useEffect(() => {
     let alive = true;
     setDoc(null);
+    setPages([]);
+    setPage(0);
     // mtime busts the cache when the same-named diagram is regenerated.
     fetch(`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`)
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
       .then((xml) => {
-        if (alive) setDoc(buildDrawioShell(xml));
+        if (!alive) return;
+        const ps = splitDrawioPages(xml);
+        if (ps.length > 1) setPages(ps);
+        else setDoc(ps[0].shell);
       })
       .catch(() => {
         if (alive) onError();
@@ -75,6 +113,33 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, file.mtime]);
+  if (pages.length > 1) {
+    const cur = pages[Math.min(page, pages.length - 1)];
+    return (
+      <div className="flex h-full min-h-[60vh] flex-col">
+        <div className="flex flex-wrap gap-1 border-b border-line2 px-3 py-1.5">
+          {pages.map((p, i) => (
+            <button
+              key={i}
+              onClick={() => setPage(i)}
+              className={
+                "rounded px-2.5 py-1 text-xs " +
+                (i === page ? "bg-accent text-white" : "text-muted hover:text-txt")
+              }
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <iframe
+          srcDoc={cur.shell}
+          title={`${file.name} — ${cur.name}`}
+          sandbox="allow-scripts"
+          className="min-h-[60vh] w-full flex-1 border-0 bg-white"
+        />
+      </div>
+    );
+  }
   if (!doc) return <div className="px-4 py-6 text-center text-sm text-faint">Loading…</div>;
   return (
     <iframe
