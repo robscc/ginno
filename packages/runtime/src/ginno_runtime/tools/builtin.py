@@ -1273,9 +1273,15 @@ def build_builtin_tools(
             from .rtk_bridge import rewrite as _rtk_rewrite
 
             effective_command = _rtk_rewrite(command) or command
+            # 环境变量注入（tools/env_inject.py）：settings.json 的 "env"
+            # 键合并进子进程 env（GUI 启动不继承代理等场景）；无需注入时
+            # 返回 None = 沿用继承语义，行为零变化。
+            from .env_inject import build_child_env
+
             proc = subprocess.Popen(
                 [user_shell, "-lc", effective_command],
                 cwd=cwd,
+                env=build_child_env(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
