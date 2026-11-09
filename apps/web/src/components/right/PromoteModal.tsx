@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { Loader2, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { PromotePreview } from "@/lib/types";
+import { useEscClose } from "@/lib/useEscClose";
 
 /** Gate 3 preview+confirm modal: a global-memory section becomes a knowledge
  * page in the vault's landing zone (``Ginno/Memory/``). The dedup gate runs
@@ -24,6 +25,7 @@ export function PromoteModal({
   onClose: () => void;
 }) {
   // i18n：晋升确认弹层框架文案（页面正文/路径是用户数据，不翻译）
+  useEscClose(onClose);
   const t = useTranslations("right.promote");
   const tc = useTranslations("right.common");
   const [preview, setPreview] = useState<PromotePreview | null>(null);

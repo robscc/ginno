@@ -6,6 +6,7 @@ import { Loader2, Pencil, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { MemoryDraft } from "@/lib/types";
 import { DiffView } from "@/components/workflow/DiffView";
+import { useEscClose } from "@/lib/useEscClose";
 
 /** Gate 2 review modal: distillation produces a DRAFT; MEMORY.md is only
  * written after the user reviews the diff (agent drafts, human approves).
@@ -24,6 +25,7 @@ export function MemoryDraftModal({
   onClose: () => void;
 }) {
   // i18n：审阅弹层框架文案（草稿正文是模型产物/用户数据，不翻译）
+  useEscClose(onClose);
   const t = useTranslations("right.memoryDraft");
   const tc = useTranslations("right.common");
   const [text, setText] = useState(draft.draft ?? "");

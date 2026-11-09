@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { Bot, Check, FlaskConical, Loader2, Plus, RotateCcw, Trash2, Workflow, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import { WorkflowDag } from "@/components/workflow/WorkflowDag";
+import { useEscClose } from "@/lib/useEscClose";
 
 type DslNode = { id: string; type?: string; title?: string; goal?: string; agent?: string; [k: string]: unknown };
 
@@ -37,6 +38,7 @@ export function SummarizeModal({
   onRetry?: () => void;
   onOpenDevSession?: (editedDsl: Record<string, unknown>) => void;
 }) {
+  useEscClose(onClose);
   const [local, setLocal] = useState<Record<string, unknown>>(dsl);
   const [showJson, setShowJson] = useState(false);
   // composer 域 catalog（summarize.modal 子树）
