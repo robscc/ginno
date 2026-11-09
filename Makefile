@@ -262,8 +262,19 @@ web: pnpm-deps
 	for f in $(ROOT)/apps/web/public/*; do \
 	  [ -e "$$f" ] || continue; \
 	  b=$$(basename "$$f"); \
-	  if [ ! -e "$(WEB_OUT)/$$b" ]; then \
-	    echo "⚠️  导出缺 public 资源 $$b，已补拷"; \
+	  ok=0; out_n=-1; src_n=0; \
+	  if [ -d "$$f" ]; then \
+	    src_n=$$(find "$$f" -type f 2>/dev/null | wc -l | tr -d ' '); \
+	    if [ -d "$(WEB_OUT)/$$b" ]; then \
+	      out_n=$$(find "$(WEB_OUT)/$$b" -type f 2>/dev/null | wc -l | tr -d ' '); \
+	    fi; \
+	    [ "$$src_n" = "$$out_n" ] && ok=1; \
+	  elif [ -e "$(WEB_OUT)/$$b" ]; then \
+	    ok=1; \
+	  fi; \
+	  if [ "$$ok" != "1" ]; then \
+	    echo "⚠️  导出缺/损 public 资源 $$b（源 $$src_n / 导出 $$out_n 个文件），已补拷"; \
+	    if [ -e "$(WEB_OUT)/$$b" ]; then rm -rf "$(WEB_OUT)/$$b"; fi; \
 	    cp -R "$$f" "$(WEB_OUT)/$$b" || { echo "❌ 补拷失败：$$b"; exit 1; }; \
 	  fi; \
 	done
