@@ -53,8 +53,9 @@ export function SidebarHeader({
           §5）——dev-swap 进度/确认卡已迁 AppShell 右下角统一容器（notice-
           unification §4）；非 dev bundle 时各自渲染 null 不占位；flex-wrap 兜窄侧栏。 */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-2 pt-4">
-        {/* 鸭子 logo 去掉（2026-11-05 用户反馈：窄侧栏品牌行被挤爆，砍掉
-            28px 吉祥物给徽标让位；GinnoWork 文字即品牌锚点）。 */}
+        {/* 鸭子 logo 恢复（2026-11-09 用户要求；侧栏已由 w-64 加宽到 w-72
+            给品牌行留位）。 */}
+        <img src="/icon.png" alt="" className="h-7 w-7 shrink-0" />
         <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
         <DevBuildBadge />
         <HotSwapButton />
