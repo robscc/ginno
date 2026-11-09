@@ -11,6 +11,7 @@ import {
   type McpServerEntry,
   type ParsedServer,
 } from "./mcpShared";
+import { useEscClose } from "@/lib/useEscClose";
 
 // Import JSON 模态（原型 v2 / 设计文档 §5.3 P1）：粘贴整段 mcpServers，
 // Detect & Parse 后逐服务器勾选，Import 走 putMcp 合并写回——不自动 reload，
@@ -25,6 +26,7 @@ export function McpImportModal({
   onImport: (servers: ParsedServer[]) => Promise<void>;
   onToast: (msg: string, tone?: "ok" | "err" | "warn") => void;
 }) {
+  useEscClose(onClose);
   const t = useTranslations("settings.mcp");
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState<ParsedServer[] | null>(null);

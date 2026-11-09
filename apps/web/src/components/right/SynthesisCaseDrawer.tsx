@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2, RotateCcw, X } from "lucide-react";
 import * as api from "@/lib/runtime";
+import { useEscClose } from "@/lib/useEscClose";
 
 type CaseDetail = Awaited<ReturnType<typeof api.getSynthesisCase>>["case"];
 
@@ -21,6 +22,7 @@ export function SynthesisCaseDrawer({
   onReplayed: () => void;
 }) {
   // i18n：用例抽屉框架文案（trace/parse/错误详情是数据，不翻译）
+  useEscClose(onClose);
   const t = useTranslations("right.case");
   const tc = useTranslations("right.common");
   const [detail, setDetail] = useState<CaseDetail | null>(null);

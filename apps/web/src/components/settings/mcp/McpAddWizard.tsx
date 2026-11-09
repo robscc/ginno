@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { Check, ChevronLeft, Loader2, X } from "lucide-react";
 import { MCP_TEMPLATES, parseMcpServersJson, type McpServerEntry } from "./mcpShared";
 import { testMcp } from "@/lib/api/workspace";
+import { useEscClose } from "@/lib/useEscClose";
 
 // "sse" 不单独出选项卡（远程卡注明 SSE also supported），但粘贴 sse 配置时会进入此态
 // 并按 sse 保存（registry 对 sse/streamable-http 走不同 client，不能混淆）。
@@ -31,6 +32,8 @@ export function McpAddWizard({
 }) {
   const t = useTranslations("settings.mcp");
   const [step, setStep] = useState(1);
+  // 向导防误触：仅第一步允许 Esc 关闭，后续步骤走显式取消按钮。
+  useEscClose(onClose, { guard: () => step > 1 });
   const [copiedError, setCopiedError] = useState(false);
   const [transport, setTransport] = useState<TransportPick>("http");
   const [tpl, setTpl] = useState<string | null>(null);

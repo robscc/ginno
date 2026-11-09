@@ -10,6 +10,7 @@ import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { InstallStep } from "@/lib/runtime";
 import { Check, Copy, ExternalLink, FolderOpen, Loader2, X } from "lucide-react";
+import { useEscClose } from "@/lib/useEscClose";
 
 const WIZARD_STEP_KEY = "ginno-wizard-step";
 
@@ -22,6 +23,7 @@ export function InstallWizard({
 }) {
   // conn 域 catalog（messages/{en,zh-CN}/conn.json）。壳文案走 tConn；步骤数据
   // 走契约（i18n-design.md §3）：runtime 下发 i18n_key + params 时翻译，否则回退原文。
+  // 向导防误触：仅第一步允许 Esc 关闭
   const tConn = useTranslations("conn");
   const tRoot = useTranslations(); // 根级：i18n_key 是含 conn. 前缀的 dot 路径
   const [steps, setSteps] = useState<InstallStep[]>([]);
@@ -63,6 +65,8 @@ export function InstallWizard({
 
   // "waitConnect" step: show elapsed seconds, auto-finish on connect
   const step = steps[i];
+  // 向导防误触：仅第一步允许 Esc 关闭，后续步骤走显式取消/关闭按钮。
+  useEscClose(onClose, { guard: () => i > 0 });
 
   // 步骤文案契约（同 blocks.tsx 的 useEventI18nText 范本）：i18n_key 存在且
   // catalog 命中时按 <key>.<field> 翻译（附 params），否则回退英文兜底原文。
