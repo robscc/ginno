@@ -75,3 +75,41 @@ export async function setKeepAwake(enabled: boolean): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Login-item autostart status — SMAppService registration is the ONLY source
+ * of truth (reboot-resume foundation): no local boolean is ever cached, every
+ * call re-reads the registration state, so drift caused by the user toggling
+ * Ginno off under System Settings → General → Login Items is reflected here
+ * faithfully. Returns null when not in the Tauri shell (browser dev) — the
+ * settings toggle hides itself in that case.
+ */
+export async function getAutostartEnabled(): Promise<boolean | null> {
+  if (!isDesktop()) return null;
+  try {
+    const m = await import("@tauri-apps/plugin-autostart");
+    return await m.isEnabled();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Register/unregister the login item via SMAppService. On failure returns the
+ * message (e.g. policy-blocked or approval-required states surface as a
+ * register error); on success callers should re-read getAutostartEnabled() to
+ * confirm the system-side state rather than trusting a local flag.
+ */
+export async function setAutostart(
+  enabled: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isDesktop()) return { ok: false, error: "not desktop" };
+  try {
+    const m = await import("@tauri-apps/plugin-autostart");
+    if (enabled) await m.enable();
+    else await m.disable();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}

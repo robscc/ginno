@@ -105,6 +105,15 @@
       "fixEquals": "Fix (append to ~/.zshenv)",
       "fixEqualsConfirm": "Append \"unsetopt EQUALS\" to ~/.zshenv to stop =xx errors in non-interactive zsh. Proceed?",
       "fixing": "Fixing…"
+    },
+    "autostart": {
+      "label": "Launch at login",
+      "title": "Start Ginno (shell + sidecar) automatically after macOS login",
+      "on": "On",
+      "off": "Off",
+      "refresh": "Re-check system registration state",
+      "hint": "The state mirrors the macOS login item (SMAppService). If you turn Ginno off in System Settings, this shows the truth and can re-register in one click.",
+      "errFailed": "Registration failed: blocked by policy, or needs approval under System Settings → General → Login Items."
     }
   }
 }

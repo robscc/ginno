@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getAutostartEnabled, setAutostart } from "@/lib/desktop";
 import { Eye, EyeOff, GripVertical } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno, type RightTab } from "@/lib/store";
@@ -30,6 +31,76 @@ export function applyTheme(t: string) {
  * One row per tab in the FULL order (`rightTabOrder`), so a hidden tab keeps its
  * slot and can be re-shown in place rather than jumping to the end.
  */
+/**
+ * 开机自启动（reboot-resume 地基）：开关态以 SMAppService 注册态为唯一
+ * 真源——每次 mount 实时查询、切换后回读校验，不缓存任何本地布尔。
+ * 用户在 系统设置→通用→登录项 手动关掉 Ginno（状态漂移）时，这里如实
+ * 显示系统真态，可一键重新注册同步。注册失败（策略禁用/待批准）以
+ * 行内红字呈现。非 Tauri 壳（浏览器 dev）整个 section 隐藏。
+ */
+function AutostartSection() {
+  const tSettings = useTranslations("settings");
+  const [sysOn, setSysOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    void getAutostartEnabled().then(setSysOn);
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  if (sysOn === null) return null; // 非 desktop / 桥不可用：隐藏
+
+  const flip = async (next: boolean) => {
+    setBusy(true);
+    setErr(null);
+    const r = await setAutostart(next);
+    if (!r.ok) {
+      setErr(tSettings("autostart.errFailed"));
+    }
+    // 回读系统真态而非信任本地结果：漂移/失败场景下 UI 永远与
+    // SMAppService 一致。
+    const v = await getAutostartEnabled();
+    setSysOn(v);
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <label className="field-label">{tSettings("autostart.label")}</label>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => void flip(!sysOn)}
+          disabled={busy}
+          title={tSettings("autostart.title")}
+          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+            sysOn
+              ? "border-green/50 bg-green/10 text-green"
+              : "border-line2 text-faint hover:text-muted"
+          }`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${sysOn ? "bg-green" : "bg-faint"}`}
+          />
+          {sysOn ? tSettings("autostart.on") : tSettings("autostart.off")}
+        </button>
+        <button
+          onClick={refresh}
+          disabled={busy}
+          title={tSettings("autostart.refresh")}
+          className="rounded-md px-1.5 py-0.5 text-xs text-faint hover:text-muted disabled:opacity-50"
+        >
+          ↻
+        </button>
+      </div>
+      {err && <div className="mt-1 text-xs text-red">{err}</div>}
+      <div className="mt-1 text-[11px] leading-relaxed text-faint">
+        {tSettings("autostart.hint")}
+      </div>
+    </div>
+  );
+}
+
 function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
   const g = useGinno();
   // right 域文案：tab 标签（right.tabs.* 注册表 key 引用）+ 排序列表自身的
@@ -550,6 +621,7 @@ export function GeneralSettings() {
           <label className="field-label">{tSettings("general.workingDirLabel")}</label>
           <div className="field bg-base/40 text-muted">{tSettings("general.workingDirValue")}</div>
         </div>
+        <AutostartSection />
         <RightTabsSection onMsg={setMsg} />
         {msg && <div className="text-xs text-muted">{msg}</div>}
       </div>
