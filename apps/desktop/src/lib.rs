@@ -123,6 +123,16 @@ pub fn run() {
         // `dialog:allow-open`, so the page can pick directories but cannot
         // spawn ask/message/confirm dialogs.
         .plugin(tauri_plugin_dialog::init())
+        // Login-item autostart (reboot-resume foundation, docs pending):
+        // macOS 13+ registers via SMAppService (visible & manageable under
+        // System Settings → General → Login Items). LaunchAgent launcher keeps
+        // it in the user domain — no daemon, no root. The enable/disable/
+        // is_enabled commands come from the plugin and are surfaced to the
+        // Settings → General toggle (apps/web desktop.ts bridge).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             pin::pin_toggle,
             pin::pin_set_mode,
