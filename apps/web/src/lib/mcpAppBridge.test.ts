@@ -151,7 +151,7 @@ describe("McpAppBridge tools/call 数据面", () => {
     ]);
     const pushes = dataPushes(h.posted);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0].params).toEqual({ content: ["ok"], structuredContent: { done: true } });
+    expect(pushes[0].params).toEqual({ content: [{ type: "text", text: "ok" }], structuredContent: { done: true } });
   });
 
   it("403/拒绝：错误文本经 ui/data error 字段推给 app，并回 JSON-RPC error", async () => {
@@ -236,9 +236,38 @@ describe("McpAppBridge 节流（串行 + 300ms 最小间隔）", () => {
     expect(h.callMcp).toHaveBeenCalledTimes(2); // 排队的第二个此刻才发
     release({ content: ["second-done"] }); // release 已指向第二个 promise
     await h.flush();
-    expect(dataPushes(h.posted).map((p) => (p.params as { content: Array<{ text?: string }> }).content?.[0])).toEqual([
-      "first-done",
-      "second-done",
+    expect(dataPushes(h.posted).map((p) => (p.params as { content: Array<{ text?: string }> }).content?.[0]?.text)).toEqual(["first-done", "second-done"]);
+  });
+});
+
+// 2026-11-11 trending 空表回归：初始推送的裸字符串 content 必须规整为
+// 官方 {type:"text"} 块——app SDK 读 content[i].text，裸串拿 undefined。
+describe("pushData content 规整化", () => {
+  it("裸字符串数组元素 → text 块", async () => {
+    const h = makeBridge();
+    h.bridge.pushData({ tool: "t", content: ['[{"full_name":"a/b"}]'] });
+    h.advance(300);
+    await h.flush();
+    const msg = h.posted.at(-1) as { method: string; params: { content: unknown[] } };
+    expect(msg.method).toBe("ui/notifications/tool-result");
+    expect(msg.params.content).toEqual([
+      { type: "text", text: '[{"full_name":"a/b"}]' },
+    ]);
+  });
+
+  it("字符串+块混合各自规整；已是块的不动", async () => {
+    const h = makeBridge();
+    h.bridge.pushData({
+      tool: "t",
+      content: ["裸串", { type: "text", text: "块" }, { type: "image", data: "x" }],
+    });
+    h.advance(300);
+    await h.flush();
+    const msg = h.posted.at(-1) as { params: { content: unknown[] } };
+    expect(msg.params.content).toEqual([
+      { type: "text", text: "裸串" },
+      { type: "text", text: "块" },
+      { type: "image", data: "x" },
     ]);
   });
 });
