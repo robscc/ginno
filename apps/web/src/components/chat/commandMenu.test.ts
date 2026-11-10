@@ -59,3 +59,46 @@ describe("mention display tokens (2026-11-10 显示形态化)", () => {
     expect(mentionAtomicDeleteStart("普通文本", 4)).toBeNull();
   });
 });
+
+import { limitMenuItems, matchScore, type MenuItem } from "./commandMenu";
+
+describe("mention P2：拼音首字母 + fuzzy + 菜单限量", () => {
+  it("matchScore：contains > 拼音首字母 > fuzzy 子序列", () => {
+    expect(matchScore("会话 热更新", "热更")).toBe(3);
+    expect(matchScore("会话 热更新", "hr")).toBe(2); // 拼音首字母 hhrgx
+    expect(matchScore("Ginno开发区", "gnn")).toBe(1); // fuzzy 子序列
+    expect(matchScore("Ginno开发区", "zzz")).toBe(0);
+    expect(matchScore("任意", "")).toBe(0);
+  });
+
+  it("limitMenuItems：每组 10 + 总 28 + 截断组 groupTotal 徽标", () => {
+    const items: MenuItem[] = [
+      ...Array.from({ length: 23 }, (_, i) => ({
+        kind: "session" as const, id: `s${i}`, label: `s${i}`, detail: "",
+        group: "会话", insert: "",
+      })),
+      ...Array.from({ length: 14 }, (_, i) => ({
+        kind: "artifact" as const, id: `a${i}`, label: `a${i}`, detail: "",
+        group: "产物", insert: "",
+      })),
+    ];
+    const out = limitMenuItems(items);
+    const sess = out.filter((x) => x.group === "会话");
+    const arts = out.filter((x) => x.group === "产物");
+    expect(sess).toHaveLength(10);
+    expect(sess[0].groupTotal).toBe(23);
+    expect(arts).toHaveLength(10); // 10+10=20 < 28 不触总上限
+    expect(out).toHaveLength(20);
+  });
+
+  it("limitMenuItems：28 行软上限从末尾组砍", () => {
+    const items: MenuItem[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({ kind: "session" as const, id: `s${i}`, label: "", detail: "", group: "A", insert: "" })),
+      ...Array.from({ length: 10 }, (_, i) => ({ kind: "artifact" as const, id: `a${i}`, label: "", detail: "", group: "B", insert: "" })),
+      ...Array.from({ length: 20 }, (_, i) => ({ kind: "result" as const, id: `r${i}`, label: "", detail: "", group: "C", insert: "" })),
+    ];
+    const out = limitMenuItems(items);
+    expect(out).toHaveLength(28);
+    expect(out.filter((x) => x.group === "C")).toHaveLength(8); // 28-20
+  });
+});

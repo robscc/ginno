@@ -64,8 +64,13 @@ export function ComposerMenu({
           return (
             <div key={`${item.kind}:${item.id}`}>
               {showHeader && (
-                <div className="px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-faint">
-                  {item.group}
+                <div className="flex items-center justify-between px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-faint">
+                  <span>{item.group}</span>
+                  {item.groupTotal !== undefined && (
+                    <span className="rounded bg-line/60 px-1 py-px text-[9px] font-normal normal-case tracking-normal">
+                      {items.filter((x) => x.group === item.group).length}/{item.groupTotal}
+                    </span>
+                  )}
                 </div>
               )}
               <button
