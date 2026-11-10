@@ -31,6 +31,10 @@ export interface DevSwapRun {
   ts?: number;
   /** run 起始墙钟（秒，后端快照带；结果落块算总耗时用）。 */
   startedAt?: number | null;
+  /** 当前 stage 的起始墙钟（秒，bus 层按 run_id+stage 维护——事件里
+   *  的 ts 是「本条事件到达时刻」，build 阶段 pct 每 2~5s 变一次会把
+   *  elapsed 计时反复重置，2026-11-10 用户实录）。 */
+  stageStartedAt?: number | null;
   /** 发起会话（/dev-swap 命令路径才有）：session 状态行与结果落块的
    * 会话门控（§4.5 B 会话不打扰）；终端 make dev-swap 无 sid。 */
   sid?: string | null;
