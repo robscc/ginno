@@ -288,11 +288,93 @@ export function applySelection(
       ? undefined
       : { kind: item.kind as MentionKind, id: item.id, label: item.label };
   return { text, caret: newCaret, mention };
+
 }
 
-/** Drop resolved mentions whose `@kind:label` token no longer appears. */
+/* ── Mention 显示态（2026-11-10 用户定稿）────────────────────────────
+ * 输入框里不再显示裸 `@kind:label` token：选中后插入「emoji + 名」的显示
+ * 形态（与气泡 MentionText chip 的图标语义一一对应），发送前经
+ * displayMap 还原为协议 token —— runtime 令牌语义零改动。
+ * displayMap miss（用户手改了显示文本）时按原样发送，降级不炸。
+ */
+
+/** mention kind → 输入框显示用的 emoji 图标（textarea 无法渲染组件）。 */
+export const MENTION_DISPLAY_EMOJI: Record<string, string> = {
+  agent: "🤖",
+  artifact: "📎",
+  session: "💬",
+  result: "📊",
+};
+
+/** 协议 token（`@kind:label `）→ 显示形态（`emoji label `）。 */
+export function mentionDisplayToken(kind: string, label: string): string {
+  const emoji = MENTION_DISPLAY_EMOJI[kind] ?? "🔗";
+  return `${emoji} ${label} `;
+}
+
+/**
+ * 发送前把输入框里的显示形态还原为协议 token。map 由每次菜单选中时
+ * 填充（display 串 → token 串）；同一 display 出现多次全部还原。
+ */
+/**
+ * 显示形态 → 协议 token 的全局映射（模块级单例）：pickItem 每次选中
+ * 写入（display 串 → `@kind:label `），发送时 materializeMentions 还原。
+ * 故意不清空：draft 跨 slot 保存/恢复后 display 仍在文本里，prune 与
+ * materialize 都要能查到；条目为短字符串，累积成本可忽略。
+ */
+export const mentionDisplayMap = new Map<string, string>();
+
+export function materializeMentions(
+  input: string,
+  displayMap: Map<string, string>,
+): string {
+  let out = input;
+  // 长串优先，防止 display 互为前缀时短串抢先替换。
+  const entries = [...displayMap.entries()].sort(
+    (a, b) => b[0].length - a[0].length,
+  );
+  for (const [display, token] of entries) {
+    if (out.includes(display)) out = out.split(display).join(token);
+  }
+  return out;
+}
+
+/**
+ * Backspace 原子删除：光标左侧若紧贴一个完整 mention（显示形态或裸
+ * token 形态，含尾随空格），返回应删除的起点——一次退格整块删掉；
+ * 否则返回 null（走原生逐字符删除）。
+ */
+export function mentionAtomicDeleteStart(
+  input: string,
+  caret: number,
+): number | null {
+  const before = input.slice(0, caret);
+  const displays = [...mentionDisplayMap.keys()].sort((a, b) => b.length - a.length);
+  for (const d of displays) {
+    if (before.endsWith(d)) return caret - d.length;
+  }
+  // label 可含 ASCII 词间空格（如 "Dev Agent"）；CJK/标点自然终止。
+  const m = before.match(/@(artifact|agent|session|result|workflow|memory):([\w.\-\/]+(?: [A-Za-z0-9_.\-\/]+)*) $/);
+  if (m) return caret - m[0].length;
+  // 用户把尾空格删了又按退格：无尾空格形态也整块删（再删一次的语义）。
+  const m2 = before.match(/@(artifact|agent|session|result|workflow|memory):([\w.\-\/]+(?: [A-Za-z0-9_.\-\/]+)*)$/);
+  if (m2 && caret - m2[0].length >= 0) return caret - m2[0].length;
+  return null;
+}
+
+/** Drop resolved mentions whose `@kind:label` token no longer appears.
+ * 2026-11-10：输入框显示形态化后，文本里可能是 display（emoji+名）而非
+ * token——两种形态任一出现即保留（display 查 mentionDisplayMap）。 */
 export function pruneMentions(mentions: ResolvedMention[], text: string): ResolvedMention[] {
-  return mentions.filter((m) => text.includes(`@${m.kind}:${m.label}`));
+  return mentions.filter((m) => {
+    const token = `@${m.kind}:${m.label}`;
+    if (text.includes(token)) return true;
+    // map 值是带尾空格的 insert 串，比对时去尾空格。
+    for (const [display, tok] of mentionDisplayMap) {
+      if (tok.replace(/\s+$/, "") === token && text.includes(display)) return true;
+    }
+    return false;
+  });
 }
 
 /** Dedupe by kind:id (send-time safety net). */

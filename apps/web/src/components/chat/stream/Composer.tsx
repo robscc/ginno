@@ -11,7 +11,7 @@ import { t } from "@/i18n/provider";
 import type { useGinno } from "@/lib/store";
 import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
-import { pruneMentions } from "@/components/chat/commandMenu";
+import { pruneMentions, mentionAtomicDeleteStart } from "@/components/chat/commandMenu";
 import type { MenuItem, ResolvedMention, Trigger } from "@/components/chat/commandMenu";
 import type { SessionMeta } from "@/lib/types";
 import {
@@ -236,6 +236,27 @@ export function Composer({
           // CJK candidate (e.g. Chinese) fires send() mid-composition and
           // posts partial/garbled text. isComposing + keyCode 229 cover it.
           const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+          // Mention 原子删除（2026-11-10 用户定稿）：光标左侧紧贴一个完整
+          // mention（显示形态 emoji+名 或裸 token）时，一次 Backspace 整块
+          // 删掉，替代逐字符退格——与气泡 chip 的整块观感一致。
+          if (e.key === "Backspace" && !composing) {
+            const el = textareaRef.current;
+            const caret = el?.selectionStart ?? input.length;
+            const selLen = el ? Math.abs((el.selectionEnd ?? 0) - (el.selectionStart ?? 0)) : 0;
+            if (el && selLen === 0) {
+              const start = mentionAtomicDeleteStart(input, caret);
+              if (start !== null) {
+                e.preventDefault();
+                const next = input.slice(0, start) + input.slice(caret);
+                setInput(next);
+                requestAnimationFrame(() => {
+                  el.focus();
+                  el.setSelectionRange(start, start);
+                });
+                return;
+              }
+            }
+          }
           // While the autocomplete menu is open, navigate/confirm it
           // instead of sending. (IME guard first — same as send.)
           if (menu && !composing) {

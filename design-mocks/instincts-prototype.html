@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ginno · Instincts 原型 — 本能规则沉淀（continuous learning）</title>
+<style>
+  :root {
+    --bg: #0a0a0f; --panel: #0e0e15; --panel-2: #15151d; --panel-3: #1b1b25; --card: #212129;
+    --border: #262632; --border-2: #343440;
+    --text: #e9e9f0; --dim: #9a9aa6; --faint: #62626e;
+    --accent: #8b5cf6; --accent-dim: rgba(139,92,246,.16);
+    --ok: #8b5cf6; --run: #22d3ee; --err: #f43f5e; --warn: #f59e0b; --info: #38bdf8; --gray: #8b8b96;
+    --c03: #64748b; --c05: #38bdf8; --c07: #f59e0b; --c09: #8b5cf6;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #07070a; color: var(--text); font-family: -apple-system, BlinkMacSystemFont,
+         "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif; height: 100vh;
+         display: flex; flex-direction: column; overflow: hidden; }
+  button { font-family: inherit; cursor: pointer; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2c2c38; border-radius: 4px; }
+
+  .demo-bar { background: #1a1408; border-bottom: 1px solid #3a2f12; color: #d8b45a; font-size: 12px;
+              padding: 7px 16px; display: flex; gap: 14px; align-items: center; flex-shrink: 0; }
+  .demo-bar b { color: #f0d080; }
+  .demo-bar .sp { margin-left: auto; opacity: .7; }
+  .app { flex: 1; display: flex; min-height: 0; }
+
+  /* ── 侧边栏 ── */
+  .sidebar { width: 232px; background: var(--panel); border-right: 1px solid var(--border);
+             display: flex; flex-direction: column; flex-shrink: 0; }
+  .side-head { padding: 13px 14px 10px; font-weight: 600; font-size: 13px; color: var(--dim); }
+  .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 14px; font-size: 12.5px;
+              color: var(--dim); cursor: pointer; border-left: 2px solid transparent; }
+  .nav-item:hover { background: var(--panel-2); color: var(--text); }
+  .nav-item.active { background: var(--panel-2); color: var(--text); border-left-color: var(--accent); }
+  .nav-item .badge { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+                     background: var(--accent-dim); color: #b79df8; }
+  .side-foot { margin-top: auto; padding: 10px 14px; font-size: 11px; color: var(--faint);
+               border-top: 1px solid var(--border); }
+
+  /* ── 主区 ── */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tab { padding: 10px 14px; font-size: 12.5px; color: var(--dim); border-bottom: 2px solid transparent; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .badge { font-size: 10px; padding: 0 5px; border-radius: 999px; background: var(--warn);
+                color: #1a1408; margin-left: 5px; font-weight: 600; }
+  .content { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  .pane { display: none; }
+  .pane.show { display: block; }
+
+  /* ── 页头/统计 ── */
+  .page-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 16px; font-weight: 650; }
+  .page-head .sub { font-size: 12px; color: var(--faint); }
+  .switch { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+  .toggle { width: 34px; height: 19px; border-radius: 999px; background: var(--accent); position: relative; cursor: pointer; border: none; }
+  .toggle.off { background: var(--panel-3); border: 1px solid var(--border-2); }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 17px; width: 15px; height: 15px;
+                   border-radius: 50%; background: #fff; transition: left .15s; }
+  .toggle.off::after { left: 2px; background: var(--dim); }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 13px; }
+  .stat .v { font-size: 19px; font-weight: 650; }
+  .stat .l { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .stat.hot .v { color: var(--warn); }
+
+  /* ── 过滤器 ── */
+  .filters { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .fgroup { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+  .fchip { font-size: 11.5px; color: var(--dim); padding: 4px 10px; border-radius: 6px; }
+  .fchip.sel { background: var(--accent-dim); color: #c4b0f8; }
+  .conf-filter { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--dim); }
+  .conf-filter input[type=range] { width: 130px; accent-color: var(--accent); }
+  .conf-filter b { color: var(--info); font-variant-numeric: tabular-nums; }
+
+  /* ── 区块标题 ── */
+  .sec { font-size: 11px; letter-spacing: .8px; color: var(--faint); text-transform: uppercase;
+         margin: 18px 0 9px; display: flex; align-items: center; gap: 8px; }
+  .sec .cnt { font-size: 10px; letter-spacing: 0; background: var(--panel-3); padding: 1px 7px; border-radius: 999px; }
+  .sec .hint { margin-left: auto; letter-spacing: 0; text-transform: none; font-size: 11px; }
+
+  /* ── Pending 卡 ── */
+  .pending-card { background: linear-gradient(90deg, rgba(245,158,11,.07), transparent 30%), var(--card);
+                  border: 1px solid #453a1a; border-radius: 10px;
+                  padding: 12px 14px; margin-bottom: 9px; }
+  .pending-card .row1 { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+  .pending-card .actions { display: flex; gap: 7px; }
+  .btn { font-size: 12px; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--border-2);
+         background: var(--panel-3); color: var(--dim); }
+  .btn:hover { border-color: var(--accent); color: var(--text); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #7c4ef0; }
+  .btn.danger { color: #f8a8b8; }
+  .btn.danger:hover { border-color: var(--err); color: var(--err); }
+  .btn.ghost { background: transparent; border-color: transparent; }
+  .src-note { font-size: 11px; color: var(--faint); }
+  .src-note b { color: var(--warn); font-weight: 600; }
+
+  /* ── 冲突区 ── */
+  .conflict-box { background: rgba(244,63,94,.05); border: 1px solid #4a2330; border-radius: 10px; padding: 12px 14px; }
+  .conflict-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 9px; }
+  .conflict-card { background: var(--card); border: 1px solid var(--border-2); border-radius: 9px; padding: 11px 12px; position: relative; }
+  .conflict-card .win { border-color: #2c5a3f; background: rgba(52,199,123,.05); }
+  .conflict-card .lose { opacity: .35; }
+
+  /* ── 规则卡 ── */
+  .rule-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+               padding: 12px 14px; margin-bottom: 9px; }
+  .rule-card:hover { border-color: var(--border-2); }
+  .rule-card.evolved-c { opacity: .75; }
+  .rc-head { display: flex; align-items: center; gap: 10px; }
+  .conf-bar { display: flex; align-items: center; gap: 7px; flex-shrink: 0; width: 118px; }
+  .conf-track { flex: 1; height: 5px; background: var(--panel-3); border-radius: 3px; overflow: hidden; }
+  .conf-fill { height: 100%; border-radius: 3px; }
+  .conf-num { font-size: 11.5px; font-weight: 650; width: 26px; font-variant-numeric: tabular-nums; }
+  .badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; font-weight: 600; flex-shrink: 0; }
+  .b-active { background: var(--accent-dim); color: #b79df8; }
+  .b-pending { background: rgba(245,158,11,.15); color: #f0c060; }
+  .b-evolved { background: rgba(52,199,123,.13); color: #6fd39a; }
+  .b-pruned { background: var(--panel-3); color: var(--gray); }
+  .b-conflict { background: rgba(244,63,94,.13); color: #f890a8; }
+  .b-scope-g { background: rgba(56,189,248,.12); color: #7cd0f8; }
+  .b-scope-p { background: rgba(139,92,246,.12); color: #b79df8; }
+  .b-dom { background: var(--panel-3); color: var(--dim); }
+  .b-src { background: transparent; border: 1px solid var(--border-2); color: var(--faint); font-weight: 500; }
+  .rc-body { margin: 8px 2px 0; }
+  .rc-trigger { font-size: 13px; line-height: 1.55; }
+  .rc-trigger::before { content: "何时 "; color: var(--faint); font-size: 11px; }
+  .rc-behavior { font-size: 13px; line-height: 1.55; color: #d6d6e0; }
+  .rc-behavior::before { content: "该做 "; color: var(--faint); font-size: 11px; }
+  .rc-meta { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
+  .ev-counts { display: flex; gap: 10px; font-variant-numeric: tabular-nums; }
+  .ev-counts .bad { color: #f890a8; font-weight: 600; }
+  .rc-actions { margin-left: auto; display: flex; gap: 6px; opacity: 0; transition: opacity .12s; }
+  .rule-card:hover .rc-actions { opacity: 1; }
+  .link { color: #7cd0f8; cursor: pointer; text-decoration: none; }
+  .link:hover { text-decoration: underline; }
+
+  /* ── Drawer ── */
+  .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; z-index: 40; }
+  .drawer-mask.show { display: block; }
+  .drawer { position: fixed; top: 0; right: -420px; width: 400px; height: 100vh; background: var(--panel-2);
+            border-left: 1px solid var(--border-2); z-index: 50; transition: right .2s; padding: 18px 20px;
+            overflow-y: auto; }
+  .drawer.show { right: 0; }
+  .drawer h3 { font-size: 14px; margin-bottom: 4px; }
+  .drawer .fid { font-size: 11px; color: var(--faint); font-family: ui-monospace, monospace; margin-bottom: 14px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 11.5px; color: var(--dim); margin-bottom: 5px; }
+  .field textarea, .field input, .field select { width: 100%; background: var(--panel); border: 1px solid var(--border-2);
+      border-radius: 7px; color: var(--text); font-size: 12.5px; padding: 7px 9px; font-family: inherit; resize: vertical; }
+  .field textarea:focus, .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .field .range-row { display: flex; align-items: center; gap: 10px; }
+  .field input[type=range] { flex: 1; accent-color: var(--accent); }
+  .field .rv { font-weight: 650; font-size: 14px; width: 30px; text-align: right; }
+
+  /* ── 观察 feed ── */
+  .feed { position: relative; padding-left: 18px; }
+  .feed::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--border-2); }
+  .obs { position: relative; margin-bottom: 11px; background: var(--panel-2); border: 1px solid var(--border);
+         border-radius: 9px; padding: 10px 13px; }
+  .obs::before { content: ""; position: absolute; left: -16.5px; top: 15px; width: 8px; height: 8px;
+                 border-radius: 50%; background: var(--panel-3); border: 2px solid var(--border-2); }
+  .obs.hi::before { border-color: var(--warn); background: var(--warn); }
+  .obs-head { display: flex; gap: 9px; align-items: center; font-size: 12px; }
+  .obs-type { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; }
+  .t-deny { color: #f890a8; } .t-retry { color: #7cd0f8; } .t-corr { color: #f0c060; } .t-blk { color: var(--gray); }
+  .obs .ts { margin-left: auto; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .obs code { display: inline-block; background: #0e0e14; border: 1px solid var(--border); border-radius: 5px;
+              padding: 1px 7px; font-size: 11px; color: #e9aac8; margin-top: 6px; font-family: ui-monospace, monospace; }
+  .obs .meta { font-size: 10.5px; color: var(--faint); margin-top: 5px; }
+  .observer-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+                   padding: 12px 14px; margin-bottom: 16px; display: flex; gap: 24px; align-items: center; }
+  .observer-card .kv .v { font-size: 15px; font-weight: 650; }
+  .observer-card .kv .l { font-size: 10.5px; color: var(--faint); }
+  .progress { width: 150px; height: 5px; background: var(--panel-3); border-radius: 3px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--info); border-radius: 3px; }
+
+  /* ── 演化 ── */
+  .evolve-grid { display: grid; grid-template-columns: 300px 1fr; gap: 14px; }
+  .pick-card { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px;
+               margin-bottom: 8px; display: flex; gap: 9px; cursor: pointer; }
+  .pick-card.sel { border-color: var(--accent); background: var(--accent-dim); }
+  .pick-card input { accent-color: var(--accent); margin-top: 3px; }
+  .pick-card .t { font-size: 12.5px; line-height: 1.45; }
+  .preview-pane { background: #0e0e14; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+                  font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; line-height: 1.7;
+                  white-space: pre-wrap; color: #cdd3e0; min-height: 200px; }
+  .preview-pane .k { color: #e9aac8; } .preview-pane .s { color: #8fd0a8; }
+
+  /* ── 设置 ── */
+  .settings-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+                   padding: 4px 16px; max-width: 640px; }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 12px 2px; border-bottom: 1px solid var(--border); }
+  .set-row:last-child { border-bottom: none; }
+  .set-row .t { font-size: 12.5px; }
+  .set-row .d { font-size: 11px; color: var(--faint); margin-top: 2px; }
+  .set-row input[type=number], .set-row select { margin-left: auto; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border-2); border-radius: 7px; padding: 5px 9px; font-size: 12px; width: 110px; }
+  .set-row .toggle { margin-left: auto; }
+
+  /* ── 注入预览 ── */
+  .chat-wrap { max-width: 760px; margin: 0 auto; }
+  .turn-ctx { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 13px 16px;
+              font-size: 12px; line-height: 1.65; margin-bottom: 12px; }
+  .turn-ctx .cap { font-size: 10.5px; color: var(--faint); letter-spacing: .6px; margin-bottom: 7px;
+                   display: flex; gap: 8px; align-items: center; }
+  .turn-ctx .cap .tok { margin-left: auto; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+  .tokbar { height: 4px; background: var(--panel-3); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .tokbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--info)); }
+  .inst-line { display: flex; gap: 8px; }
+  .inst-line .cf { color: #f0c060; font-weight: 650; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .inst-line.dim-rule .cf { color: var(--gray); }
+  .inst-line.dim-rule .tx { color: var(--dim); }
+  .ctx-other { color: var(--dim); font-size: 11.5px; }
+  .user-bubble { background: #1b1b25; border: 1px solid var(--border-2);
+                 border-radius: 12px; padding: 10px 14px; max-width: 75%; margin: 0 0 12px auto; font-size: 13px; }
+  .ai-note { font-size: 12px; color: var(--dim); border-left: 2px solid var(--accent); padding: 2px 0 2px 10px; margin-bottom: 12px; }
+  .ai-note b { color: var(--text); font-weight: 600; }
+
+  .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #1e2a1e;
+           border: 1px solid #2c5a3f; color: #9fdcb8; font-size: 12.5px; padding: 9px 18px; border-radius: 9px;
+           opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 99; }
+  .toast.show { opacity: 1; }
+  .fade-out { animation: fo .25s forwards; }
+  @keyframes fo { to { opacity: 0; transform: translateX(16px); } }
+</style>
+</head>
+<body>
+
+<div class="demo-bar">
+  <b>原型</b> Instincts 本能规则 · 交互式 mock（数据虚构）· 对应技术方案 §8/§9/§10/§11
+  <span class="sp">design-mocks/instincts-prototype.html · 2026-11-10</span>
+</div>
+
+<div class="app">
+  <div class="sidebar">
+    <div class="side-head">GinnoWork</div>
+    <div class="nav-item">💬 会话</div>
+    <div class="nav-item">🧭 Workflows</div>
+    <div class="nav-item">⏰ 定时任务</div>
+    <div class="nav-item active">⚡ 本能 Instincts <span class="badge">2 待确认</span></div>
+    <div class="nav-item">🧠 记忆</div>
+    <div class="nav-item">📚 知识库</div>
+    <div class="nav-item">⚙️ 设置</div>
+    <div class="side-foot">agent 在历史会话中沉淀的行为规则<br>全本地 · 可审计 · 可删除</div>
+  </div>
+
+  <div class="main">
+    <div class="tabs">
+      <div class="tab active" data-pane="p1">总览 <span class="badge">2</span></div>
+      <div class="tab" data-pane="p2">观察 Feed</div>
+      <div class="tab" data-pane="p3">演化</div>
+      <div class="tab" data-pane="p4">注入预览</div>
+      <div class="tab" data-pane="p5">设置</div>
+    </div>
+
+    <div class="content">
+      <!-- ═══════════ 总览 ═══════════ -->
+      <div class="pane show" id="p1">
+        <div class="page-head">
+          <h1>Instincts 本能规则</h1>
+          <span class="sub">错误 → 带置信度的行为规则 → 注入 → 演化</span>
+          <div class="switch">全局启用 <button class="toggle" onclick="this.classList.toggle('off')"></button></div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="v" style="color:var(--ok)">6</div><div class="l">生效中 active</div></div>
+          <div class="stat hot"><div class="v">2</div><div class="l">待确认 pending</div></div>
+          <div class="stat"><div class="v" style="color:#6fd39a">1</div><div class="l">已演化 → skill</div></div>
+          <div class="stat"><div class="v" style="color:var(--err)">1</div><div class="l">冲突待裁决</div></div>
+          <div class="stat"><div class="v">+4</div><div class="l">本周新增</div></div>
+        </div>
+
+        <div class="sec">待确认 <span class="cnt">2</span><span class="hint">观察满 3 次自动生成 · 采纳后从 0.3 起步</span></div>
+
+        <div class="pending-card" id="pd1">
+          <div class="row1"><span class="badge b-pending">pending · 模板规则</span>
+            <span class="src-note">来源：<b>权限拒绝 ×3</b> · 最近一次 2 小时前 · 项目 ginno</span></div>
+          <div class="rc-trigger">执行删除类命令（rm / 清空目录）时</div>
+          <div class="rc-behavior">先列出将删除的文件清单并请用户确认，确认后再执行</div>
+          <div class="actions" style="margin-top:10px">
+            <button class="btn primary" onclick="adopt('pd1')">✓ 采纳</button>
+            <button class="btn" onclick="openDrawer('删除类命令先确认', '先列出将删除的文件清单并请用户确认，确认后再执行')">编辑</button>
+            <button class="btn ghost danger" onclick="drop('pd1')">丢弃</button>
+          </div>
+        </div>
+
+        <div class="pending-card" id="pd2">
+          <div class="row1"><span class="badge b-pending">pending · 模板规则</span>
+            <span class="src-note">来源：<b>重试自救 ×2</b> · 昨天 · 项目 ginno</span></div>
+          <div class="rc-trigger">在本仓库跑 runtime 测试时</div>
+          <div class="rc-behavior">必须带 `--group test --extra docs`，否则 openpyxl/docx 依赖缺失导致 50+ 用例红</div>
+          <div class="actions" style="margin-top:10px">
+            <button class="btn primary" onclick="adopt('pd2')">✓ 采纳</button>
+            <button class="btn" onclick="openDrawer('在本仓库跑 runtime 测试时', '必须带 --group test --extra docs，否则依赖缺失')">编辑</button>
+            <button class="btn ghost danger" onclick="drop('pd2')">丢弃</button>
+          </div>
+        </div>
+
+        <div class="sec" style="color:#f890a8">⚠ 冲突待裁决 <span class="cnt">1 组</span></div>
+        <div class="conflict-box">
+          <div style="font-size:12px;color:var(--dim)">两条规则触发条件相近但行为相反，observer 已冻结双方置信度变动，请裁决：</div>
+          <div class="conflict-pair">
+            <div class="conflict-card" id="cfA">
+              <div class="rc-head"><span class="badge b-active">A · 0.7</span><span class="badge b-src">user-correction</span></div>
+              <div class="rc-body"><div class="rc-trigger">沉淀结构化知识条目时</div>
+              <div class="rc-behavior">用 YAML 单文件（与 SKILL.md frontmatter 同族）</div></div>
+              <div style="margin-top:9px"><button class="btn" onclick="resolve('cfA','cfB')">采用 A</button></div>
+            </div>
+            <div class="conflict-card" id="cfB">
+              <div class="rc-head"><span class="badge b-active">B · 0.5</span><span class="badge b-src">user-correction</span></div>
+              <div class="rc-body"><div class="rc-trigger">沉淀结构化知识条目时</div>
+              <div class="rc-behavior">用 Markdown 文档（人可直接在编辑器读改）</div></div>
+              <div style="margin-top:9px"><button class="btn" onclick="resolve('cfB','cfA')">采用 B</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">生效规则 <span class="cnt">6</span>
+          <span class="hint">按 置信度 × 与当前会话相关性 排序注入</span></div>
+
+        <div class="filters">
+          <div class="fgroup" id="f-scope">
+            <div class="fchip sel" data-v="all">全部</div><div class="fchip" data-v="g">全局</div><div class="fchip" data-v="p">项目</div>
+          </div>
+          <div class="fgroup" id="f-dom">
+            <div class="fchip sel" data-v="all">全部分域</div><div class="fchip" data-v="tool-usage">工具</div>
+            <div class="fchip" data-v="workflow">工作流</div><div class="fchip" data-v="user-preference">偏好</div><div class="fchip" data-v="code-style">代码风格</div>
+          </div>
+          <div class="conf-filter">注入门槛 ≥ <input type="range" min="3" max="9" value="3" oninput="this.previousElementSibling.nextElementSibling.textContent=(this.value/10).toFixed(1);confFilter(this.value/10)"><b>0.3</b></div>
+        </div>
+
+        <div class="rule-card" data-conf="0.9" data-scope="g" data-dom="tool-usage">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c09)">0.9</span><div class="conf-track"><div class="conf-fill" style="width:90%;background:var(--c09)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-g">全局</span><span class="badge b-dom">tool-usage</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="openDrawer('执行删除类命令（rm / 清空目录）时','先列出将删除的文件清单并请用户确认，确认后再执行')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删 → pruned，可在 pruned 区恢复）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">执行删除类命令（rm / 清空目录）时</div>
+            <div class="rc-behavior">先列出将删除的文件清单并请用户确认，确认后再执行</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">permission-deny</span>
+            <span class="ev-counts">观察 <b>9</b> · 应用 <b>21</b> · 未纠正 <b>21</b> · <span class="bad">被纠正 0</span></span>
+            <span>最后观察 2 小时前</span>
+          </div>
+        </div>
+
+        <div class="rule-card" data-conf="0.8" data-scope="p" data-dom="workflow">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c07)">0.8</span><div class="conf-track"><div class="conf-fill" style="width:80%;background:var(--c07)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-p">项目 · ginno</span><span class="badge b-dom">workflow</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="toast('已提升为全局规则（文件移至 global/）')">提升全局</button>
+              <button class="btn" onclick="openDrawer('在本仓库跑 runtime 测试时','必须带 --group test --extra docs')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">在本仓库跑 runtime 测试时</div>
+            <div class="rc-behavior">必须带 <code>--group test --extra docs</code>，否则依赖缺失 50+ 用例红</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">retry-recover</span>
+            <span class="ev-counts">观察 <b>6</b> · 应用 <b>14</b> · 未纠正 <b>14</b> · <span class="bad">被纠正 0</span></span>
+            <span>最后观察 昨天</span>
+          </div>
+        </div>
+
+        <div class="rule-card" data-conf="0.7" data-scope="g" data-dom="user-preference">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c07)">0.7</span><div class="conf-track"><div class="conf-fill" style="width:70%;background:var(--c07)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-g">全局</span><span class="badge b-dom">偏好</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="openDrawer('面向用户的回复','始终用简体中文；结构化输出用表格，结论先行')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">面向用户的回复</div>
+            <div class="rc-behavior">始终用简体中文；结构化输出用表格，结论先行</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">user-correction</span>
+            <span class="ev-counts">观察 <b>5</b> · 应用 <b>18</b> · 未纠正 <b>17</b> · <span class="bad">被纠正 1</span></span>
+            <span>最后观察 3 天前</span>
+          </div>
+        </div>
+
+        <div class="rule-card" data-conf="0.7" data-scope="p" data-dom="workflow">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c07)">0.7</span><div class="conf-track"><div class="conf-fill" style="width:70%;background:var(--c07)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-p">项目 · ginno</span><span class="badge b-dom">工作流</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="toast('已提升为全局规则')">提升全局</button>
+              <button class="btn" onclick="openDrawer('提交 python 变更前','先跑 ruff check，红了不要提交——CI 会拦')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">提交 python 变更前</div>
+            <div class="rc-behavior">先跑 <code>ruff check</code>，红了不要提交——CI 会拦</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">retry-recover</span>
+            <span class="ev-counts">观察 <b>4</b> · 应用 <b>7</b> · 未纠正 <b>7</b> · <span class="bad">被纠正 0</span></span>
+            <span>最后观察 5 天前</span>
+          </div>
+        </div>
+
+        <div class="rule-card" data-conf="0.5" data-scope="p" data-dom="code-style">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c05)">0.5</span><div class="conf-track"><div class="conf-fill" style="width:50%;background:var(--c05)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-p">项目 · workbuddy-bench</span><span class="badge b-dom">代码风格</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="openDrawer('画 mermaid 状态图时','不用虚线箭头（stateDiagram 不支持 -.->，只能 -->')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">画 mermaid 状态图时</div>
+            <div class="rc-behavior">不用虚线箭头（stateDiagram 不支持 <code>-.-&gt;</code>）</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">user-correction</span>
+            <span class="ev-counts">观察 <b>2</b> · 应用 <b>3</b> · 未纠正 <b>2</b> · <span class="bad">被纠正 1</span></span>
+            <span>低置信：注入时标注「用户当前指令优先」</span>
+          </div>
+        </div>
+
+        <div class="rule-card" data-conf="0.4" data-scope="g" data-dom="user-preference">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c03)">0.4</span><div class="conf-track"><div class="conf-fill" style="width:40%;background:var(--c03)"></div></div></div>
+            <span class="badge b-active">active</span><span class="badge b-scope-g">全局</span><span class="badge b-dom">偏好</span>
+            <div class="rc-actions">
+              <button class="btn" onclick="openDrawer('生成文档命名','用 YYYY-MM-DD 前缀 + 中文主题词')">编辑</button>
+              <button class="btn ghost danger" onclick="toast('已删除（软删）')">删除</button>
+            </div>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">生成文档命名</div>
+            <div class="rc-behavior">用 YYYY-MM-DD 前缀 + 中文主题词</div>
+          </div>
+          <div class="rc-meta">
+            <span class="badge b-src">user-correction</span>
+            <span class="ev-counts">观察 <b>1</b> · 应用 <b>0</b></span>
+            <span>低于默认注入门槛 0.7，不注入</span>
+          </div>
+        </div>
+
+        <div class="sec">已演化 <span class="cnt">1</span></div>
+        <div class="rule-card evolved-c" data-conf="0.9">
+          <div class="rc-head">
+            <div class="conf-bar"><span class="conf-num" style="color:var(--c09)">0.9</span><div class="conf-track"><div class="conf-fill" style="width:90%;background:var(--c09)"></div></div></div>
+            <span class="badge b-evolved">evolved → skill</span><span class="badge b-scope-g">全局</span><span class="badge b-dom">工作流</span>
+          </div>
+          <div class="rc-body">
+            <div class="rc-trigger">跨仓库做 CI 红转绿排障时</div>
+            <div class="rc-behavior">已聚类演化为技能 <a class="link" onclick="toast('跳转到 skills/ci-triage')">ci-triage</a>（含 5 条相关规则的完整工作流）</div>
+          </div>
+          <div class="rc-meta"><span class="badge b-src">多源</span><span>演化于 2026-11-05 · 溯源保留</span></div>
+        </div>
+      </div>
+
+      <!-- ═══════════ 观察 Feed ═══════════ -->
+      <div class="pane" id="p2">
+        <div class="page-head"><h1>观察 Feed</h1><span class="sub">捕获的原始纠偏事件 · args 已脱敏 · 只读</span></div>
+        <div class="observer-card">
+          <div class="kv"><div class="v" id="obsN">14<span style="font-size:11px;color:var(--faint)">/20</span></div><div class="l">新观察（达 20 触发分析）</div></div>
+          <div class="progress"><i style="width:70%"></i></div>
+          <div class="kv"><div class="v">11-10 08:47</div><div class="l">上次分析</div></div>
+          <div class="kv"><div class="v">glm-5.3-flash</div><div class="l">observer 模型</div></div>
+          <div class="kv"><div class="v" style="color:#6fd39a">空闲</div><div class="l">后台任务</div></div>
+        </div>
+        <div class="feed">
+          <div class="obs hi">
+            <div class="obs-head"><span class="obs-type t-deny">tool_denied</span><span style="color:var(--dim)">用户拒绝权限</span><span class="ts">10:42</span></div>
+            <code>rm -rf packages/runtime/build/</code>
+            <div class="meta">会话 a3f…91 · 项目 ginno · turn t82 · 同模式第 3 次 → 已生成 pending 规则</div>
+          </div>
+          <div class="obs hi">
+            <div class="obs-head"><span class="obs-type t-corr">correction_candidate</span><span style="color:var(--dim)">预筛命中：否定词 + 改向</span><span class="ts">10:38</span></div>
+            <code>「不对，我说的是 docs 目录，不是 dist」</code>
+            <div class="meta">会话 a3f…91 · 项目 ginno · 待 observer 判定是否成规则</div>
+          </div>
+          <div class="obs">
+            <div class="obs-head"><span class="obs-type t-retry">retry_recovered</span><span style="color:var(--dim)">重试自救成功</span><span class="ts">09:15</span></div>
+            <code>pytest 缺 --extra docs → 50 fail → 补参数后通过</code>
+            <div class="meta">会话 7c2…04 · 项目 ginno · turn t17</div>
+          </div>
+          <div class="obs">
+            <div class="obs-head"><span class="obs-type t-deny">tool_denied</span><span style="color:var(--dim)">策略静态拒绝</span><span class="ts">08:47</span></div>
+            <code>web_fetch → 内网地址 198.18.x.x</code>
+            <div class="meta">会话 7c2…04 · 静态 deny（非用户点击）· 权重较低</div>
+          </div>
+          <div class="obs">
+            <div class="obs-head"><span class="obs-type t-blk">injection_blocked</span><span style="color:var(--dim)">注入防御拦截</span><span class="ts">08:30</span></div>
+            <code>instinct 正文命中 wrapper 伪造模式 → 拒注该条</code>
+            <div class="meta">条目 ask-before-*** 未注入 · 已记录 blocked 计数</div>
+          </div>
+          <div class="obs">
+            <div class="obs-head"><span class="obs-type t-retry">retry_recovered</span><span style="color:var(--dim)">429 指数退避后成功</span><span class="ts">昨天 22:10</span></div>
+            <code>rate_limited_backoff 30s→60s → 成功</code>
+            <div class="meta">会话 e5d…77 · 项目 sopflow</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ 演化 ═══════════ -->
+      <div class="pane" id="p3">
+        <div class="page-head"><h1>演化 · Evolve</h1><span class="sub">同分域 ≥0.8 的规则聚类起草 SKILL.md → 确认后落地 skills/（复用 distill 落点）</span></div>
+        <div class="evolve-grid">
+          <div>
+            <div class="sec">工作流分域 · 可聚类 <span class="cnt">2 条 ≥0.8</span></div>
+            <div class="pick-card sel" onclick="this.classList.toggle('sel');updateEvolve()">
+              <input type="checkbox" checked>
+              <div class="t"><b style="font-size:11px;color:var(--c07)">0.8</b> 在本仓库跑 runtime 测试时：必须带 --group test --extra docs</div>
+            </div>
+            <div class="pick-card sel" onclick="this.classList.toggle('sel');updateEvolve()">
+              <input type="checkbox" checked>
+              <div class="t"><b style="font-size:11px;color:var(--c07)">0.8</b> 提交 python 变更前：先跑 ruff check，红了不要提交</div>
+            </div>
+            <div class="sec">历史演化</div>
+            <div class="pick-card" style="cursor:default;opacity:.7">
+              <div class="t">⚡ <a class="link" onclick="toast('跳转到 skills/ci-triage')">ci-triage</a> ← 5 条规则 · 11-05</div>
+            </div>
+          </div>
+          <div>
+            <div class="sec">SKILL.md 草稿预览 <span class="hint">LLM 起草 · 确认前可编辑</span></div>
+            <div class="preview-pane" id="skillPreview"></div>
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn primary" id="evolveBtn" onclick="toast('已演化：SKILL.md 落地 ~/.ginno/skills/ginno-test-gate/ · 原条目标记 evolved')">确认演化落地</button>
+              <button class="btn" onclick="toast('重新起草（再调一次 observer 模型）')">重新起草</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ 注入预览 ═══════════ -->
+      <div class="pane" id="p4">
+        <div class="page-head"><h1>注入预览</h1><span class="sub">agent 每轮实际收到的本能块 · volatile 层（不占 system · 保 prefix cache）· 用户在会话中透明可见</span></div>
+        <div class="chat-wrap">
+          <div class="user-bubble">帮我把 runtime 的测试跑一遍，看看有没有红的</div>
+          <div class="turn-ctx">
+            <div class="cap">⚡ INSTINCTS · 本轮注入 3 条 · 相关性排序 <span class="tok">418 / 600 tokens</span></div>
+            <div class="inst-line"><span class="cf">0.9</span><span class="tx">执行删除类命令时：先列清单请用户确认，再执行</span></div>
+            <div class="inst-line"><span class="cf">0.8</span><span class="tx">本仓库 runtime 测试必须带 --group test --extra docs（依赖缺失 50+ 红）</span></div>
+            <div class="inst-line dim-rule"><span class="cf">0.7</span><span class="tx">回复用简体中文，结论先行（低置信条目：与用户当前指令冲突时以用户为准）</span></div>
+            <div class="tokbar"><i style="width:70%"></i></div>
+          </div>
+          <div class="turn-ctx" style="opacity:.55">
+            <div class="cap">📚 INJECTED_WIKI（并列同层 · 供对照） <span class="tok">1.2k tokens</span></div>
+            <div class="ctx-other">Ginno 测试与 CI —— 「runtime-tests：uv run --group test --extra docs pytest -q …」</div>
+            <div class="tokbar"><i style="width:100%;background:var(--panel-3)"></i></div>
+          </div>
+          <div class="ai-note">✅ 已按规则带上 <b>--group test --extra docs</b> 直接跑全量（第 4 条本能命中，未再踩缺依赖的坑）；另按本能 0.9，后续如需清理 <b>build/ 产物</b> 会先列清单问你。</div>
+        </div>
+      </div>
+
+      <!-- ═══════════ 设置 ═══════════ -->
+      <div class="pane" id="p5">
+        <div class="page-head"><h1>设置 · instincts</h1><span class="sub">settings.json 的 instincts 段（方案 §10.1）</span></div>
+        <div class="settings-card">
+          <div class="set-row"><div><div class="t">启用 instincts</div><div class="d">总开关：捕获 + 注入</div></div><button class="toggle" onclick="this.classList.toggle('off')"></button></div>
+          <div class="set-row"><div><div class="t">捕获纠偏事件</div><div class="d">权限拒绝 / 重试自救（L1 确定性层）</div></div><button class="toggle" onclick="this.classList.toggle('off')"></button></div>
+          <div class="set-row"><div><div class="t">纠偏检测（L2）</div><div class="d">否定词预筛 + observer 小模型判定</div></div><button class="toggle" onclick="this.classList.toggle('off')"></button></div>
+          <div class="set-row"><div><div class="t">observer 模型</div><div class="d">空 = 跟随主模型；推荐 flash/Haiku 级</div></div><select><option>glm-5.3-flash</option><option>（跟随主模型）</option></select></div>
+          <div class="set-row"><div><div class="t">触发分析门槛</div><div class="d">新观察 ≥ N 条才跑 observer</div></div><input type="number" value="20"></div>
+          <div class="set-row"><div><div class="t">注入门槛</div><div class="d">低于该置信度不注入（0.7 = 至少 4 次独立观察）</div></div><input type="number" value="0.7" step="0.1"></div>
+          <div class="set-row"><div><div class="t">每轮注入上限</div><div class="d">条数 N（排序取 top）</div></div><input type="number" value="6"></div>
+          <div class="set-row"><div><div class="t">注入 token 预算</div><div class="d">硬上限，超出截断最低相关条</div></div><input type="number" value="600"></div>
+          <div class="set-row"><div><div class="t">衰减天数</div><div class="d">超期未观察 −0.1，<0.3 自动转 pruned</div></div><input type="number" value="90"></div>
+          <div class="set-row"><div><div class="t">导出内容</div><div class="d">只导 instinct 规则，绝不导原始观察（隐私边界）</div></div><button class="btn" onclick="toast('导出 instincts.yaml（不含 observations.jsonl）')">导出</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑 Drawer -->
+<div class="drawer-mask" id="mask" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <h3>编辑本能规则</h3>
+  <div class="fid" id="d-id">ask-before-rm</div>
+  <div class="field"><label>何时适用（trigger）</label><textarea id="d-trig" rows="2"></textarea></div>
+  <div class="field"><label>该做什么（behavior）</label><textarea id="d-beh" rows="3"></textarea></div>
+  <div class="field"><label>置信度（手动微调，后续仍自动升降）</label>
+    <div class="range-row"><input type="range" min="3" max="9" value="7" id="d-conf" oninput="document.getElementById('d-cv').textContent=(this.value/10).toFixed(1)"><span class="rv" id="d-cv">0.7</span></div>
+  </div>
+  <div class="field"><label>分域</label><select><option>tool-usage</option><option>code-style</option><option>workflow</option><option>security</option><option>user-preference</option></select></div>
+  <div class="field"><label>作用域</label><select><option>全局</option><option>项目 · ginno</option></select></div>
+  <div style="display:flex;gap:8px;margin-top:16px">
+    <button class="btn primary" onclick="toast('已保存（YAML 落盘，下轮注入生效）');closeDrawer()">保存</button>
+    <button class="btn" onclick="closeDrawer()">取消</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // tabs
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('show'));
+    t.classList.add('active');
+    document.getElementById(t.dataset.pane).classList.add('show');
+  });
+  // 过滤器
+  document.querySelectorAll('.fgroup').forEach(g => g.querySelectorAll('.fchip').forEach(c => c.onclick = () => {
+    g.querySelectorAll('.fchip').forEach(x => x.classList.remove('sel')); c.classList.add('sel'); applyFilters();
+  }));
+  function confFilter(v){ document.querySelectorAll('#p1 .rule-card[data-conf]').forEach(c =>
+    c.style.display = parseFloat(c.dataset.conf) >= v ? '' : 'none'); }
+  function applyFilters(){
+    const s = document.querySelector('#f-scope .sel').dataset.v;
+    const d = document.querySelector('#f-dom .sel').dataset.v;
+    document.querySelectorAll('#p1 .rule-card[data-conf]').forEach(c =>
+      c.style.display = ((s==='all'||c.dataset.scope===s) && (d==='all'||c.dataset.dom===d)) ? '' : 'none');
+  }
+  // pending 采纳/丢弃
+  function adopt(id){ const el = document.getElementById(id); el.classList.add('fade-out');
+    setTimeout(()=>el.remove(), 250); toast('已采纳 → active，置信度 0.3 起步，随验证升级'); }
+  function drop(id){ const el = document.getElementById(id); el.classList.add('fade-out');
+    setTimeout(()=>el.remove(), 250); toast('已丢弃（观察保留，不影响后续再生成）'); }
+  // 冲突裁决
+  function resolve(win, lose){ document.getElementById(win).classList.add('win');
+    document.getElementById(lose).classList.add('lose'); toast('已裁决：胜方解冻继续学习，败方转 pruned'); }
+  // drawer
+  function openDrawer(trig, beh){ document.getElementById('d-trig').value = trig;
+    document.getElementById('d-beh').value = beh;
+    document.getElementById('mask').classList.add('show');
+    document.getElementById('drawer').classList.add('show'); }
+  function closeDrawer(){ document.getElementById('mask').classList.remove('show');
+    document.getElementById('drawer').classList.remove('show'); }
+  // toast
+  let tt; function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg;
+    t.classList.add('show'); clearTimeout(tt); tt = setTimeout(()=>t.classList.remove('show'), 2600); }
+  // evolve 预览
+  function updateEvolve(){
+    const n = document.querySelectorAll('.pick-card.sel').length;
+    document.getElementById('evolveBtn').disabled = n === 0;
+    document.getElementById('skillPreview').innerHTML = n === 0
+      ? '<span style="color:var(--faint)">勾选左侧规则后生成草稿…</span>'
+      : `<span class="k">---</span>\n<span class="k">name:</span> ginno-test-gate\n<span class="k">description:</span> 本仓库 runtime 测试与提交门禁（由 ${n} 条本能规则聚类演化）\n<span class="k">trigger:</span> model-invocable\n<span class="k">---</span>\n\n跑 runtime 测试：<span class="s">uv run --group test --extra docs pytest -q</span>\n提交 python 变更前：先 ruff check，红了不提交\n\n<span style="color:var(--faint)"># 溯源：2 条 instinct（0.8/0.8）· 演化于 2026-11-10</span>`;
+  }
+  updateEvolve();
+</script>
+</body>
+</html>

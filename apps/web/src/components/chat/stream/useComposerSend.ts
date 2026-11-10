@@ -13,7 +13,7 @@ import type { QuestionBlock } from "@/components/chat/blocks";
 import type { useChatStreamEngine } from "../useChatStreamEngine";
 import type { useModelPick } from "../useModelPick";
 import type { useComposerFiles } from "../useComposerFiles";
-import { pruneMentions, dedupeMentions, type MenuItem, type ResolvedMention, type Trigger } from "../commandMenu";
+import { pruneMentions, dedupeMentions, type MenuItem, type ResolvedMention, type Trigger , materializeMentions, mentionDisplayMap} from "../commandMenu";
 import {
   appendEntry,
   initHistory,
@@ -168,7 +168,8 @@ export function useComposerSend({
   }
 
   function send() {
-    const text = input.trim();
+    // 显示形态 → 协议 token 还原（mention 选中后输入框存的是 emoji+名）。
+    const text = materializeMentions(input.trim(), mentionDisplayMap);
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
     // In-flight gate, image half (pre-existing bug, both plain sends and
     // steers): readImage is async, so `attachments` lags a just-dropped image.
