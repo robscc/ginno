@@ -279,6 +279,26 @@ async def post_progress(report: ProgressReport, request: Request) -> dict:
     return {"ok": True, **update_progress(report)}
 
 
+@router.post("/api/lastwords/resume")
+async def lastwords_resume(body: dict) -> dict:
+    """确认续跑（2026-11-10 产品化：auto 模式人工会话的待确认流）。
+
+    前端收 ``runtime.lastwords_pending`` 后引导用户进会话；用户确认续跑
+    时调用本端点（body ``{"session_id": "…"}``）。dismiss=true 表示放弃。
+    """
+    from .. import lastwords as _lw
+
+    sid = str((body or {}).get("session_id") or "")
+    if not sid:
+        return {"ok": False, "error": "session_id required"}
+    if body.get("dismiss"):
+        return _lw.dismiss_pending(sid)
+    snap = _lw.pending_resume_snapshot(sid)
+    if not snap:
+        return {"ok": False, "error": "no_pending"}
+    return await _lw.resume_pending(sid)
+
+
 @router.post("/api/devswap/lastwords/prepare")
 async def lastwords_prepare(request: Request, body: dict | None = None) -> dict:
     """遗言预告（docs/lastwords-design.md §1）：switch 段杀进程前的显式落盘。

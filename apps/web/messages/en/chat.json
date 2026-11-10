@@ -405,7 +405,11 @@
       "openModelSettings": "Model settings",
       "dismiss": "Dismiss",
       "homeModelPicked": "Next session will start on {model}",
-      "lastwordsRestored": "Restart restore: recovery context injected into the interrupted session"
+      "lastwordsRestored": "Restart restore: recovery context injected into the interrupted session",
+      "lastwordsPendingTitle": "Unfinished work detected",
+      "lastwordsPending": "A task was interrupted by the restart ({tools} tool calls / {elapsed} elapsed) — open the session and type \"continue\" to resume",
+      "lastwordsResumeBtn": "Resume unfinished work",
+      "lastwordsDismissBtn": "Discard recovery"
     },
     "planBoard": {
       "progress": "{done}/{total}",

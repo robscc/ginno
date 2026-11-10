@@ -405,7 +405,11 @@
       "openModelSettings": "模型设置",
       "dismiss": "关闭",
       "homeModelPicked": "下一个会话将使用 {model}",
-      "lastwordsRestored": "重启恢复：中断的会话已注入恢复上下文"
+      "lastwordsRestored": "重启恢复：中断的会话已注入恢复上下文",
+      "lastwordsPendingTitle": "检测到未完成的工作",
+      "lastwordsPending": "重启前有中断的任务（{tools} 次工具 / 已进行 {elapsed}）——点击进入会话，输入「继续」即可续跑",
+      "lastwordsResumeBtn": "继续未完成的工作",
+      "lastwordsDismissBtn": "放弃恢复"
     },
     "planBoard": {
       "progress": "{done}/{total}",
