@@ -294,6 +294,7 @@ class WeComConnector(Connector):
         return [
             {
                 "key": "intro",
+                "i18n_key": "conn.wizard.step.wecom.intro",
                 "title": "What is this",
                 "body": ("Ginno can be reached from your WeCom app: you chat "
                          "with the same agent, replies stream into the chat, "
@@ -301,6 +302,7 @@ class WeComConnector(Connector):
             },
             {
                 "key": "create_bot",
+                "i18n_key": "conn.wizard.step.wecom.create_bot",
                 "title": "Create a smart bot in API mode",
                 "body": ("Log in to the WeCom admin console (work.weixin.qq.com) "
                          "→ 应用管理 → 智能机器人 → 创建, choose API 模式 and "
@@ -310,6 +312,7 @@ class WeComConnector(Connector):
             },
             {
                 "key": "creds",
+                "i18n_key": "conn.wizard.step.wecom.creds",
                 "title": "Copy the credentials",
                 "body": ("On the bot's API 配置 page, copy BotID and Secret. "
                          "Add the bot to a chat (单聊 or 群聊) so users can "
@@ -317,6 +320,7 @@ class WeComConnector(Connector):
             },
             {
                 "key": "fill",
+                "i18n_key": "conn.wizard.step.wecom.fill",
                 "title": "Paste the credentials here and enable",
                 "body": ("Fill BotID/Secret above, optionally restrict allowed "
                          "userids, then toggle Enabled. The connector card "
@@ -463,6 +467,7 @@ class VibeIslandConnector(Connector):
         return [
             {
                 "key": "intro",
+                "i18n_key": "conn.wizard.step.vibe.intro",
                 "title": "What is this",
                 "body": ("Vibe Island shows what your AI agents are doing in "
                          "the Mac notch. With this connector, each Ginno "
@@ -473,6 +478,7 @@ class VibeIslandConnector(Connector):
             },
             {
                 "key": "install_app",
+                "i18n_key": "conn.wizard.step.vibe.install_app",
                 "title": "Install Vibe Island",
                 "body": ("Download the direct-download edition (1.0.53 or "
                          "newer) from vibeisland.app and open it once. The "
@@ -482,6 +488,7 @@ class VibeIslandConnector(Connector):
             },
             {
                 "key": "enable",
+                "i18n_key": "conn.wizard.step.vibe.enable",
                 "title": "Enable the connector",
                 "body": ("Toggle Enabled above. New Ginno sessions then show "
                          "up in the notch — move the pointer to the notch to "
@@ -592,6 +599,7 @@ class DingTalkConnector(Connector):
         return [
             {
                 "key": "intro",
+                "i18n_key": "conn.wizard.step.dingtalk.intro",
                 "title": "What is this",
                 "body": ("Ginno can be reached from your DingTalk: you chat "
                          "with the same agent, files preview inside DingTalk, "
@@ -599,6 +607,7 @@ class DingTalkConnector(Connector):
             },
             {
                 "key": "create_app",
+                "i18n_key": "conn.wizard.step.dingtalk.create_app",
                 "title": "Create an internal app on the DingTalk open platform",
                 "body": ("Log in to open.dingtalk.com with your organization "
                          "account → 开发配置 → 应用开发 → 企业内部应用 → 创建应用, "
@@ -607,6 +616,7 @@ class DingTalkConnector(Connector):
             },
             {
                 "key": "stream",
+                "i18n_key": "conn.wizard.step.dingtalk.stream",
                 "title": "Subscribe to bot messages in Stream mode",
                 "body": ("In the app's 事件订阅 page choose Stream 模式推送 "
                          "(no public IP needed). Copy the AppKey and AppSecret "
@@ -614,6 +624,7 @@ class DingTalkConnector(Connector):
             },
             {
                 "key": "fill",
+                "i18n_key": "conn.wizard.step.dingtalk.fill",
                 "title": "Paste the credentials here and enable",
                 "body": ("Fill AppKey/AppSecret above, optionally restrict "
                          "allowed staffIds, then toggle Enabled. The connector "
