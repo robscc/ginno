@@ -12,6 +12,9 @@ import { normalizeDevSwapRun, type DevSwapRun } from "./types";
 type Listener = (run: DevSwapRun | null) => void;
 
 let latest: DevSwapRun | null = null;
+// (run_id|stage) → 该阶段首次看到的墙钟秒。elapsed 计时锚点：同一阶段
+// 的后续事件（pct 递增等）复用它，而不是各自的事件 ts。
+const stageStart = new Map<string, number>();
 // run_id+stage+state+pct 去重键：同一事件经多会话 socket 重复投递/快照
 // 回放时静默吞掉，不触发多余渲染。
 let lastKey = "";
@@ -25,7 +28,18 @@ export function pushDevSwapRun(run: DevSwapRun) {
   const key = `${run.run_id}|${run.stage}|${run.state}|${run.pct ?? ""}`;
   if (key === lastKey) return;
   lastKey = key;
-  latest = run;
+  const sk = `${run.run_id}|${run.stage}`;
+  let started = stageStart.get(sk);
+  if (started === undefined) {
+    started = run.ts ?? Math.floor(Date.now() / 1000);
+    stageStart.set(sk, started);
+    // 防泄漏：只留最近 16 个键（一个 run 最多 6 阶段，两轮 run 足够）。
+    if (stageStart.size > 16) {
+      const first = stageStart.keys().next().value;
+      if (first !== undefined) stageStart.delete(first);
+    }
+  }
+  latest = { ...run, stageStartedAt: started };
   emit();
 }
 
@@ -35,6 +49,7 @@ export function getDevSwapRun(): DevSwapRun | null {
 
 export function clearDevSwapRun() {
   lastKey = "";
+  stageStart.clear();
   if (latest === null) return;
   latest = null;
   emit();

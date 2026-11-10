@@ -106,7 +106,15 @@ export function DevSwapCard() {
       ? "border-emerald-500/50"
       : "border-amber-500/50";
 
-  const stageElapsed = Math.max(0, Math.floor(Date.now() / 1000 - (run.ts ?? Math.floor(Date.now() / 1000))));
+  // elapsed 锚 stageStartedAt（bus 按 run_id+stage 维护）：事件 ts 每条都
+  // 会刷新，直接用会导致计时每 2~5s 归零（2026-11-10 修复）。
+  const stageElapsed = Math.max(
+    0,
+    Math.floor(
+      Date.now() / 1000 -
+        (run.stageStartedAt ?? run.ts ?? Math.floor(Date.now() / 1000)),
+    ),
+  );
   const exp = expectationFor(run.stage);
   const slow = exp.hasP90 && run.state === "running" && stageElapsed > exp.p90;
   const logLines = (run.log_tail ?? "").split("\n").filter(Boolean);

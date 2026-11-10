@@ -365,7 +365,11 @@ const dsLine = useMemo(() => {
   void dsTick; // 秒跳重渲染源
   const stageElapsed = Math.max(
     0,
-    Math.floor(Date.now() / 1000 - (dsRun.ts ?? Math.floor(Date.now() / 1000))),
+    Math.floor(
+      Date.now() / 1000 -
+        // stageStartedAt：bus 维护的阶段起始锚，事件 ts 会反复刷新
+        (dsRun.stageStartedAt ?? dsRun.ts ?? Math.floor(Date.now() / 1000)),
+    ),
   );
   const exp = expectationFor(dsRun.stage);
   const d = waitLineData(stageElapsed, dsRun.pct ?? null, exp);
