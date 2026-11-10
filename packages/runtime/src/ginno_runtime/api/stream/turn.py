@@ -626,6 +626,8 @@ async def _run_stream(
             # (projects.py). Empty for a fresh session → zero-cost.
             projects=projects_mod.known(slug, session_id),
             team_context=_team_memory.turn_context(session_id),
+            # instincts 注入按 project 隔离（docs/instincts-design.md §8）。
+            project_slug=slug,
         )
     finally:
         _citations_mod.CURRENT_TURN_SOURCES.reset(_src_token)

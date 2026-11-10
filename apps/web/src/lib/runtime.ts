@@ -17,6 +17,7 @@ export * from "./api/chat";
 export * from "./api/workflows";
 export * from "./api/code";
 export * from "./api/knowledge";
+export * from "./api/instincts";
 export * from "./api/connectors";
 export * from "./api/schedule";
 export * from "./api/tasks";

@@ -30,6 +30,7 @@ type SchedMessages = typeof import("../../messages/en/sched.json");
 type GoalMessages = typeof import("../../messages/en/goal.json");
 type TasksMessages = typeof import("../../messages/en/tasks.json");
 type DevswapMessages = typeof import("../../messages/en/devswap.json");
+type InstinctsMessages = typeof import("../../messages/en/instincts.json");
 
 type AppMessages =
   CoreMessages &
@@ -52,7 +53,8 @@ type AppMessages =
   SchedMessages &
   GoalMessages &
   TasksMessages &
-  DevswapMessages;
+  DevswapMessages &
+  InstinctsMessages;
 
 declare module "next-intl" {
   interface AppConfig {

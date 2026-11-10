@@ -15,6 +15,7 @@
       "tasks": "后台任务",
       "tasksRunning": "{n} 个后台任务运行中",
       "kb": "知识库",
+      "instincts": "本能",
       "workflows": "工作流",
       "settings": "设置",
       "hotSwap": "热更新",

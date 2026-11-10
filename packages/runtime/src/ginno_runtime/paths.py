@@ -131,6 +131,16 @@ _DEFAULT_SETTINGS = {
         "pill_click_through": False,
         "show_on_launch": False,
     },
+    "instincts": {
+        "enabled": True,
+        "capture": True,
+        "inject_enabled": True,
+        "inject_min_confidence": 0.7,
+        "inject_max_n": 6,
+        "inject_token_budget": 600,
+        "template_threshold": 3,
+        "decay_days": 90,
+    },
     "knowledge": {
         "enabled": False,
         "vault_path": "",
@@ -290,6 +300,7 @@ def ensure_layout() -> None:
         "schedule-runs",
         "mods",
         "teams",
+        "instincts",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 

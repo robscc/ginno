@@ -1159,6 +1159,15 @@ async def _stream_graph(
                 if _mem_cfg.capture:
                     append_to_pool(session_id, agent_id, _clean_text, cited=_verified > 0)
                     _maybe_auto_distill(_mem_cfg)
+            # instincts P0：turn 收尾触发模板规则分析（确定性、零 LLM、
+            # 异常全吞；docs/instincts-design.md §6）。project 从观察事件
+            # 自带字段取（capture 已写入），此处无需传。
+            try:
+                from ...instincts import maybe_analyze as _instinct_analyze
+
+                _instinct_analyze(session_id=session_id)
+            except Exception:
+                pass
             # LLM subject title (title_gen): armed by _touch_session_title on
             # the first invoke, fired by the first turn that completes without
             # an interrupt. Background + best-effort — failure keeps the
