@@ -837,11 +837,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       } else if (k === "k") {
         e.preventDefault();
         setSearchOpen(true);
+      } else if (k === "f") {
+        // ⌘F 会话内搜索（session-find-bar-design §6.1）：经 window 事件转发
+        // 给 ChatStream 的 useSessionFind；⌘K modal 打开时不响应（门控）。
+        if (searchOpen) return;
+        e.preventDefault(); // 接管：WKWebView 无原生 find；兜住 dev Chrome 原生 Ctrl+F
+        window.dispatchEvent(new CustomEvent("ginno:find-open"));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setActiveSessionForNav, router]);
+  }, [setActiveSessionForNav, router, searchOpen]);
 
   // Backspace 不触发页面后退（2026-10-11 用户反馈）。macOS WKWebView 的
   // 默认行为：非可编辑焦点处按 Backspace = history.back()，在 Tauri 壳里

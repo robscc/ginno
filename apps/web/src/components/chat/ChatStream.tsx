@@ -49,6 +49,8 @@ import { useSummarizeFlow } from "./useSummarizeFlow";
 import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
 import type { ModBandGroup } from "./mod/ModBand";
 import { DelegationStatusBar } from "./stream/DelegationStatusBar";
+import { useSessionFind } from "./stream/useSessionFind";
+import { FindBar } from "./stream/FindBar";
 import { ChannelStatusBar } from "./stream/ChannelStatusBar";
 import { ModelChipMenu } from "./stream/ModelChipMenu";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
@@ -174,6 +176,9 @@ export function ChatStream({
   // 滚动容器内的阅读列：内容高度变化时用它重新贴底（见下方 ResizeObserver）
   const innerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
+  // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
+  const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -911,6 +916,7 @@ export function ChatStream({
         </div>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">
+      <FindBar state={sessionFind} />
       <div
         ref={scrollRef}
         onScroll={(e) => {

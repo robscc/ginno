@@ -620,3 +620,13 @@ body.ginno-card-dragging * {
 .ginno-card-drag-ghost {
   will-change: left, top;
 }
+
+/* Cmd+F 会话内搜索（session-find-bar-design §5.2）——CSS Custom Highlight API */
+::highlight(find-hit) {
+  background-color: rgb(234 179 8 / 0.25);
+}
+::highlight(find-hit-active) {
+  background-color: rgb(139 92 246);
+  color: #fff;
+  border-radius: 2px;
+}
