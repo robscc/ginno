@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@ Mention 菜单减负 · 交互原型</title>
+<style>
+  :root {
+    --bg: #17181c; --panel: #1e2026; --panel2: #23262d;
+    --line: #2e323b; --line2: #3a3f4a;
+    --text: #e8eaf0; --muted: #9aa1af; --faint: #6b7280;
+    --violet: #8b7cf6; --green: #4ade80; --amber: #fbbf24;
+    --ease: cubic-bezier(.2,.8,.3,1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+    padding: 32px 16px; display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh;
+  }
+  .note {
+    width: min(680px, 92vw); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 18px; margin-bottom: 40px;
+  }
+  .note h1 { font-size: 15px; margin-bottom: 6px; }
+  .note p { color: var(--muted); font-size: 12.5px; }
+  .note b { color: var(--amber); font-weight: 600; }
+  kbd {
+    background: var(--panel2); border: 1px solid var(--line2); border-bottom-width: 2px;
+    border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, monospace; color: var(--text);
+  }
+
+  /* ── 模拟聊天底部 composer ─────────────────────────── */
+  .stage { width: min(680px, 92vw); }
+  .chatbg {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 220px 18px 16px; position: relative;
+  }
+  .chatbg::before {
+    content: "… 聊天上下文（被菜单遮挡的部分） …";
+    position: absolute; top: 34px; left: 0; right: 0; text-align: center;
+    color: var(--faint); font-size: 12px; letter-spacing: 1px;
+  }
+  .composer {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel2); border: 1px solid var(--line2); border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .composer .at { color: var(--violet); font-weight: 700; }
+  #input {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text); font: inherit; caret-color: var(--violet);
+  }
+  .hintline { color: var(--faint); font-size: 11.5px; margin-top: 8px; text-align: center; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
+    background: var(--panel2); border: 1px solid var(--green); color: var(--green);
+    padding: 6px 14px; border-radius: 8px; font-size: 12.5px; opacity: 0;
+    transition: opacity .18s var(--ease), transform .18s var(--ease); pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ── 菜单：弹出动画 + 高度过渡 ─────────────────────── */
+  .menu {
+    position: absolute; left: 12px; right: 12px; bottom: 88px;
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    overflow: hidden auto; max-height: min(58vh, 480px);
+    transform-origin: bottom center;
+    opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
+    transition: opacity .16s var(--ease), transform .16s var(--ease), max-height .18s var(--ease);
+  }
+  .menu.open { opacity: 1; transform: none; pointer-events: auto; }
+  .ghost {
+    position: sticky; top: 0; z-index: 2; background: var(--panel);
+    color: var(--faint); font-size: 11px; padding: 7px 12px 5px;
+    border-bottom: 1px solid var(--line);
+  }
+  .ghead {
+    position: sticky; top: 26px; z-index: 1; background: var(--panel);
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 12px 3px; color: var(--muted); font-size: 11px; font-weight: 600;
+    letter-spacing: .4px;
+  }
+  .ghead .cnt { color: var(--faint); font-weight: 400; font-size: 10.5px; }
+  .item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 12px; cursor: pointer; border-radius: 8px; margin: 0 4px;
+    transition: background .1s;
+    animation: fadein .12s var(--ease);
+  }
+  @keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
+  .item.sel { background: color-mix(in srgb, var(--violet) 16%, transparent); }
+  .item .ico { width: 18px; text-align: center; opacity: .9; font-size: 12px; }
+  .item .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .ds { color: var(--faint); font-size: 11.5px; margin-left: auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+  mark { background: color-mix(in srgb, var(--amber) 45%, transparent);
+    color: inherit; border-radius: 2px; padding: 0 1px; }
+  .more {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px 7px 18px; color: var(--violet);
+    font-size: 11.5px; cursor: pointer; user-select: none;
+  }
+  .more:hover { text-decoration: underline; }
+  /* 「剩余区」展开/收起：grid-rows 0fr→1fr 过渡（设计文档 §4）。
+     默认 0fr——组内前 LIMIT 条在 fold 之外直接渲染，永不被折。 */
+  .fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .18s var(--ease); }
+  .fold.open { grid-template-rows: 1fr; }
+  .fold > div { overflow: hidden; }
+  .empty { padding: 18px; text-align: center; color: var(--faint); font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <div class="note">
+    <h1>@ Mention 菜单减负 · 交互原型（方案 §2-§5 的动效实装）</h1>
+    <p>点击输入框敲 <b>@</b> 打开菜单 —— <b>每组只显示 10 条</b>（组头计数 N/M），继续输入即过滤+高亮；「还有 N 个」可展开（<b>grid-rows 动画</b>）；<kbd>↑</kbd><kbd>↓</kbd> 移动高亮、<kbd>↵</kbd> 插入/展开、<kbd>Tab</kbd> 折叠组、<kbd>Esc</kbd> 关闭。注意弹出/过滤时菜单主体的<b>高度过渡</b>。</p>
+  </div>
+  <div class="stage">
+    <div class="chatbg">
+      <div class="menu" id="menu"><div class="ghost" id="ghost"></div><div id="rows"></div></div>
+      <div class="composer">
+        <span class="at">@</span>
+        <input id="input" placeholder="输入 @ 打开提及菜单…" autocomplete="off">
+      </div>
+      <div class="hintline">模拟 composer —— 真实接入点：ComposerMenu.tsx + commandMenu.ts</div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+<script>
+// @ 菜单只有 mention 四类（commands/skills 走 / 触发，是另一套菜单——见设计文档 §2）
+const GROUPS = [
+  { key: "agents", name: "Agent", icon: "🤖", items: [
+    ["Dev Agent", "代码与仓库"], ["Ginno开发区", "主力开发"], ["Researcher", "联网调研"],
+    ["Reviewer", "代码评审"], ["Implementer", "并行实现"], ["explore", "只读探查"],
+  ]},
+  { key: "sessions", name: "会话", icon: "💬", items: Array.from({length: 23}, (_, i) =>
+    ["会话 " + String(i+1).padStart(2,"0"), i < 3 ? "刚刚活跃" : "近期"]) },
+  { key: "artifacts", name: "产物", icon: "📎", items: Array.from({length: 31}, (_, i) =>
+    ["产物-" + String(i+1).padStart(2,"0") + ".xlsx", i%5==0 ? "今天" : "本周"]) },
+  { key: "results", name: "运行结果", icon: "📊", items: Array.from({length: 18}, (_, i) =>
+    ["run-" + (1000+i), "已完成"]) },
+];
+const LIMIT = 10;
+const input = document.getElementById("input"), menu = document.getElementById("menu"),
+      rows = document.getElementById("rows"), ghost = document.getElementById("ghost"),
+      toast = document.getElementById("toast");
+let open = false, sel = 0, expanded = new Set();   // 展开态记忆（同一次触发会话）
+
+const flat = [];   // 可高亮元素序列（含 more 行）
+function hl(s, q) {
+  if (!q) return s;
+  const i = s.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return s;
+  return s.slice(0, i) + "<mark>" + s.slice(i, i + q.length) + "</mark>" + s.slice(i + q.length);
+}
+function makeItem(g, n, d, q) {
+  const it = document.createElement("div");
+  it.className = "item"; it.dataset.name = n;
+  it.innerHTML = `<span class="ico">${g.icon}</span><span class="nm">${hl(n, q)}</span><span class="ds">${hl(d, q)}</span>`;
+  it.onclick = () => insert(n);
+  flat.push(it);
+  return it;
+}
+function render() {
+  const q = input.value.startsWith("@") ? input.value.slice(1) : input.value;
+  rows.innerHTML = ""; flat.length = 0;
+  let total = 0;
+  for (const g of GROUPS) {
+    const hits = g.items.filter(([n, d]) =>
+      !q || n.toLowerCase().includes(q.toLowerCase()) || d.toLowerCase().includes(q.toLowerCase()));
+    if (!hits.length) continue;                      // 无匹配组隐藏
+    const isExp = expanded.has(g.key);
+    const shown = isExp ? hits.length : Math.min(hits.length, LIMIT);
+
+    const head = document.createElement("div");
+    head.className = "ghead";
+    head.innerHTML = `<span>${g.icon} ${g.name}</span><span class="cnt">${shown}/${hits.length}</span>`;
+    rows.appendChild(head);
+
+    // 前 shown 条：直接渲染（永远可见，不受 fold 影响）
+    for (let i = 0; i < shown; i++) rows.appendChild(makeItem(g, ...hits[i], q));
+    total += shown;
+
+    if (hits.length > LIMIT) {
+      if (!isExp) {
+        // 「还有 N 个」行：点击不重渲染组，直接展开下方剩余区（grid-rows 动画）
+        const m = document.createElement("div");
+        m.className = "more"; m.classList.add("is-more");
+        m.textContent = `还有 ${hits.length - LIMIT} 个 · 继续输入或点击展开`;
+        const fold = document.createElement("div");
+        fold.className = "fold"; fold.dataset.key = g.key;
+        const inner = document.createElement("div");
+        for (let i = LIMIT; i < hits.length; i++) inner.appendChild(makeItem(g, ...hits[i], q));
+        const less = document.createElement("div");
+        less.className = "more"; less.classList.add("is-more");
+        less.textContent = "收起 ▴";
+        less.onclick = () => { expanded.delete(g.key); render(); };
+        inner.appendChild(less);
+        fold.appendChild(inner);
+        m.onclick = () => {
+          expanded.add(g.key);
+          fold.classList.add("open");           // 0fr→1fr 过渡
+          m.replaceWith(fold);
+          // 计数徽标同步
+          head.querySelector(".cnt").textContent = `${hits.length}/${hits.length}`;
+          rebuildFlat();
+        };
+        rows.appendChild(m);
+        flat.push(m);
+      } else {
+        // 已展开（重渲染进入）：剩余区保持展开态渲染（无动画，属状态恢复）
+        const fold = document.createElement("div");
+        fold.className = "fold open"; fold.dataset.key = g.key;
+        const inner = document.createElement("div");
+        for (let i = LIMIT; i < hits.length; i++) inner.appendChild(makeItem(g, ...hits[i], q));
+        const less = document.createElement("div");
+        less.className = "more"; less.classList.add("is-more");
+        less.textContent = "收起 ▴";
+        less.onclick = () => { expanded.delete(g.key); render(); };
+        inner.appendChild(less);
+        fold.appendChild(inner);
+        rows.appendChild(fold);
+        flat.push(less);
+      }
+    }
+  }
+  if (!total) rows.innerHTML = `<div class="empty">没有匹配 “${q}”——清词或 Esc 关闭</div>`;
+  ghost.textContent = q ? `过滤 “${q}” · ↑↓ 选择 · ↵ 插入` :
+    "输入关键词过滤 · ↑↓ 选择 · ↵ 插入 · 前缀定向 @art / @agent / sess / res";
+  sel = Math.min(sel, Math.max(flat.length - 1, 0));
+  paint();
+}
+// 展开动画不重渲染 → flat 里 more 行已被替换，重建可高亮序列
+function rebuildFlat() {
+  flat.length = 0;
+  rows.querySelectorAll(".item").forEach(el => flat.push(el));
+  const less = rows.querySelectorAll(".more.is-more");
+  less.forEach(el => flat.push(el));
+  sel = Math.min(sel, Math.max(flat.length - 1, 0));
+  paint();
+}
+function paint() {
+  flat.forEach((el, i) => el.classList.toggle("sel", i === sel));
+  flat[sel]?.scrollIntoView({ block: "nearest" });
+}
+function insert(name) {
+  input.value = "@" + name;
+  close();
+  toast.textContent = "✓ 已插入 @" + name; toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 1200);
+}
+function openMenu() { open = true; expanded.clear(); menu.classList.add("open"); render(); }
+function close() { open = false; menu.classList.remove("open"); }
+
+input.addEventListener("input", () => {
+  const v = input.value;
+  if (v.startsWith("@")) { if (!open) openMenu(); else { sel = 0; render(); } }
+  else if (open) close();
+});
+input.addEventListener("focus", () => { if (input.value.startsWith("@")) openMenu(); });
+input.addEventListener("keydown", (e) => {
+  if (!open) return;
+  if (e.key === "ArrowDown") { sel = Math.min(sel + 1, flat.length - 1); paint(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); paint(); e.preventDefault(); }
+  else if (e.key === "Enter") {
+    const el = flat[sel]; if (!el) return;
+    if (el.classList.contains("is-more")) el.onclick();
+    else insert(el.dataset.name);
+    e.preventDefault();
+  } else if (e.key === "Tab") {
+    const el = flat[sel]?.closest("[data-key], .fold") || rows.querySelector(".fold.open");
+    if (el?.classList.contains("fold")) {
+      el.classList.remove("open");
+      expanded.delete(el.dataset.key);
+      rebuildFlat();
+    }
+    e.preventDefault();
+  } else if (e.key === "Escape") { close(); input.value = ""; }
+});
+render();
+</script>
+</body>
+</html>

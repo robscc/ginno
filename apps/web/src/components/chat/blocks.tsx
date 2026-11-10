@@ -507,7 +507,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
         {tc("steer.injected")}{clock ? ` · ${clock}` : ""}
       </span>
       <div className="selectable min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
-        {block.text}
+        <MentionText text={block.text} />
       </div>
       {total > 0 && (
         <span className="mt-[2px] flex shrink-0 items-center gap-1">

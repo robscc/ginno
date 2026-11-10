@@ -17,6 +17,8 @@ import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import {
   applySelection,
+  mentionDisplayMap,
+  mentionDisplayToken,
   buildMenuItems,
   detectTrigger,
   type MenuItem,
@@ -708,7 +710,21 @@ export function ChatStream({
     if (!menu) return;
     const caret = textareaRef.current?.selectionStart ?? input.length;
     const r = applySelection(input, caret, menu.trigger, item);
-    setInput(r.text);
+    let text = r.text;
+    let newCaret = r.caret;
+    // 显示形态化（2026-11-10 用户定稿）：mention 选中后输入框里插
+    // 「emoji + 名」而非裸 `@kind:label` token（协议 token 经
+    // mentionDisplayMap 在发送时还原，runtime 语义零改动）。
+    if (r.mention) {
+      const token = `@${r.mention.kind}:${r.mention.label} `;
+      const display = mentionDisplayToken(r.mention.kind, r.mention.label);
+      if (text.includes(token)) {
+        text = text.replace(token, display);
+        newCaret = r.caret - token.length + display.length;
+        mentionDisplayMap.set(display, token);
+      }
+    }
+    setInput(text);
     setMenu(null);
     if (r.mention && session) {
       const sid = session.id;
