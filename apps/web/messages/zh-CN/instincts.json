@@ -1,0 +1,49 @@
+{
+  "instincts": {
+    "title": "本能",
+    "subtitle": "行为规则沉淀：权限被拒/重试自救自动生成，按置信度注入新会话",
+    "create": "新建",
+    "refresh": "刷新",
+    "loadFail": "加载失败（sidecar 未起？）",
+    "empty": "暂无条目——同一项目拒绝 3 次同类操作后会自动生成待确认规则",
+    "edit": "编辑",
+    "delete": "删除（软删，可在 pruned 过滤器找回）",
+    "filter": {
+      "all": "全部状态",
+      "pending": "待确认",
+      "active": "生效中",
+      "pruned": "已废弃"
+    },
+    "status": {
+      "pending": "待确认",
+      "active": "生效",
+      "evolved": "已演化",
+      "pruned": "已废弃"
+    },
+    "scope": {
+      "global": "全局",
+      "project": "项目"
+    },
+    "field": {
+      "trigger": "何时适用",
+      "behavior": "该做什么",
+      "confidence": "置信度",
+      "status": "状态",
+      "project": "项目",
+      "observed": "观察"
+    },
+    "obs": {
+      "title": "观察事件流（只读，已脱敏）",
+      "empty": "暂无观察"
+    },
+    "editor": {
+      "createTitle": "新建本能",
+      "editTitle": "编辑本能",
+      "required": "ID/触发/行为均必填",
+      "triggerPh": "例：用户要求清理缓存目录或执行删除类命令时",
+      "behaviorPh": "例：先列出将删除的文件并请用户确认，再执行；不要直接 rm",
+      "cancel": "取消",
+      "save": "保存"
+    }
+  }
+}

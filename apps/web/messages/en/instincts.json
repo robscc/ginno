@@ -1,0 +1,49 @@
+{
+  "instincts": {
+    "title": "Instincts",
+    "subtitle": "Behavioral rules distilled from denials & retries, injected by confidence",
+    "create": "New",
+    "refresh": "Refresh",
+    "loadFail": "Load failed (sidecar down?)",
+    "empty": "Nothing yet — 3 denials of the same pattern auto-generate a pending rule",
+    "edit": "Edit",
+    "delete": "Delete (soft; find under pruned filter)",
+    "filter": {
+      "all": "All statuses",
+      "pending": "Pending",
+      "active": "Active",
+      "pruned": "Pruned"
+    },
+    "status": {
+      "pending": "Pending",
+      "active": "Active",
+      "evolved": "Evolved",
+      "pruned": "Pruned"
+    },
+    "scope": {
+      "global": "Global",
+      "project": "Project"
+    },
+    "field": {
+      "trigger": "Trigger",
+      "behavior": "Behavior",
+      "confidence": "Conf.",
+      "status": "Status",
+      "project": "Project",
+      "observed": "observed"
+    },
+    "obs": {
+      "title": "Observations (read-only, sanitized)",
+      "empty": "No observations yet"
+    },
+    "editor": {
+      "createTitle": "New instinct",
+      "editTitle": "Edit instinct",
+      "required": "ID / trigger / behavior required",
+      "triggerPh": "e.g. when asked to clean cache dirs or run delete-like commands",
+      "behaviorPh": "e.g. list files to delete and confirm first; never rm directly",
+      "cancel": "Cancel",
+      "save": "Save"
+    }
+  }
+}

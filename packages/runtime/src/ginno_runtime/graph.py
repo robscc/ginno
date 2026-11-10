@@ -653,6 +653,25 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                 if decision == "ask":
                     answer = interrupt({"kind": "permission_request", "tool": name, "args": args})
                     if answer.get("decision") == "deny":
+                        # instincts L1 捕获（P0）：用户拒绝 → 观察事件（异步无感，
+                        # 失败全吞）。project/session 从 LangGraph configurable 取。
+                        try:
+                            from .instincts import observe as _instinct_observe
+
+                            _rcfg = (config or {}).get("configurable") or {}
+                            _instinct_observe(
+                                {
+                                    "type": "tool_denied",
+                                    "tool": name,
+                                    "args_repr": repr(args),
+                                    "static": False,
+                                    "session": str(_rcfg.get("session_id") or _rcfg.get("thread_id") or ""),
+                                    "project": str(_rcfg.get("project_slug") or ""),
+                                    "turn": str(_rcfg.get("turn_id") or ""),
+                                }
+                            )
+                        except Exception:
+                            pass
                         return Command(
                             goto="agent",
                             update={

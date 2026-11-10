@@ -347,6 +347,7 @@ def build_turn_context(
     bound_workflow: dict | None = None,
     projects: list[dict] | None = None,
     team_context: str = "",
+    project_slug: str = "",
 ) -> str:
     """The PER-TURN volatile context (plan B1): wiki retrieval for this query,
     attached files, @mentions, discovered project roots, and (for workflow-dev
@@ -371,6 +372,16 @@ def build_turn_context(
         wiki_ctx = build_wiki_context(query)
         if wiki_ctx:
             parts.append(wrap_context_section("injected_wiki", wiki_ctx))
+    # instincts 注入（P0，docs/instincts-design.md §8）：与 wiki 同层同范式，
+    # volatile turn-context，零命中不占位。project_slug 由调用方上下文传入。
+    try:
+        from .instincts.inject import build_instinct_context as _bic
+
+        _ictx = _bic(query, project_slug or "")
+        if _ictx:
+            parts.append(wrap_context_section("instincts", _ictx))
+    except Exception:
+        pass
     if attached_files:
         lines = [
             t(

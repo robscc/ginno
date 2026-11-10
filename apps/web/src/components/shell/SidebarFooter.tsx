@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   AlarmClock,
+  Sparkles,
   BookOpen,
   Cable,
   Settings as SettingsIcon,
@@ -22,6 +23,7 @@ export interface SidebarFooterProps {
   onScheduled: boolean;
   onTasks: boolean;
   onKb: boolean;
+  onInstincts: boolean;
   onWorkflows: boolean;
   onSettings: boolean;
   /** Connector 聚合状态点："" | "warn" | "error"。 */
@@ -38,6 +40,7 @@ export function SidebarFooter({
   onScheduled,
   onTasks,
   onKb,
+  onInstincts,
   onWorkflows,
   onSettings,
   connectorDot,
@@ -120,6 +123,15 @@ export function SidebarFooter({
       <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>
         <BookOpen className="h-4 w-4 shrink-0" />
         <span className="truncate">{t("nav.kb")}</span>
+      </Link>
+      {/* 本能（instincts，docs/instincts-design.md）：行为规则沉淀层。
+          BETA 标（2026-11-10 用户点名）：P0 仅确定性捕获+模板规则。 */}
+      <Link href="/instincts" className={`nav-item ${onInstincts ? "nav-item-active" : ""}`}>
+        <Sparkles className="h-4 w-4 shrink-0" />
+        <span className="truncate">{t("nav.instincts")}</span>
+        <span className="ml-auto shrink-0 rounded border border-violet/50 bg-violet/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-violet">
+          Beta
+        </span>
       </Link>
       <Link href="/workflows" className={`nav-item ${onWorkflows ? "nav-item-active" : ""}`}>
         <WorkflowIcon className="h-4 w-4 shrink-0" />

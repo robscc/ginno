@@ -385,6 +385,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onWorkspace = pathname === "/";
   const onSettings = pathname.startsWith("/settings");
   const onKb = pathname.startsWith("/kb");
+  const onInstincts = pathname.startsWith("/instincts");
   const onWorkflows = pathname.startsWith("/workflows");
   const onConnectors = pathname.startsWith("/connectors");
   const onScheduled = pathname.startsWith("/scheduled");
@@ -954,6 +955,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onScheduled={onScheduled}
           onTasks={onTasks}
           onKb={onKb}
+          onInstincts={onInstincts}
           onWorkflows={onWorkflows}
           onSettings={onSettings}
           connectorDot={connectorDot}
