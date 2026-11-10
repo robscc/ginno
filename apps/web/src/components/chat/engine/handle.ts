@@ -27,7 +27,7 @@ import { reconcileTurnFromHistory } from "./connect";
 import { flushSteerQueue, recallSteers, settleRecalled } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
-import { ReplyMergeWindow, privacyBody, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
+import { ReplyMergeWindow, privacyBody, replyRateGate, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
 import { decideTurnAdoption, mismatchReportBudget } from "@/lib/streamTurnGuard";
 
 // ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
@@ -731,16 +731,31 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // subagent 的完成已有专属通道，服务端已过滤、此处不再判。
       {
         const targetSid = typeof ev.session_id === "string" ? ev.session_id : "";
-        if (targetSid && shouldNotify("reply", isWatching(ctx, sid))) {
+        // 60s 跨会话冷却（2026-11-10 治理刷屏）：窗口内后续 turn 完成不弹，
+        // 下一条放行时带「+N」。worker 语义修正：worker_status=working/
+        // waiting 说明它只是完成了一段（还在干活/等下一段），文案不再
+        // 说「回复完成」。
+        const gate = replyRateGate.hit("reply");
+        if (targetSid && gate.ok && shouldNotify("reply", isWatching(ctx, sid))) {
           const np = notifyPrefs();
           const title =
             ctx.g.sessions.find((x) => x.id === targetSid)?.title?.trim() || "…";
           const raw = typeof ev.text === "string" ? ev.text.trim() : "";
+          const wst = typeof ev.worker_status === "string" ? ev.worker_status : "";
+          let body: string;
+          if (wst === "working") {
+            body = ctx.i18nRef.current.tr("notify.linkedTurnOngoing");
+          } else if (wst === "waiting") {
+            body = ctx.i18nRef.current.tr("notify.linkedTurnWaiting");
+          } else {
+            body = raw || ctx.i18nRef.current.tr("notify.replyCompleted");
+          }
+          const suffix = gate.suppressed > 0 ? ` (+${gate.suppressed})` : "";
           void notifyNative({
             kind: "session",
             id: targetSid,
-            title: `📡 ${title}`,
-            body: privacyBody(np, raw || ctx.i18nRef.current.tr("notify.replyCompleted")),
+            title: `📡 ${title}${suffix}`,
+            body: privacyBody(np, body),
             sound: soundFor("reply"),
           });
         }

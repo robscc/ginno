@@ -62,7 +62,7 @@ export const DEFAULT_PREFS: NotifyPrefs = {
   enabled: true,
   sound: true,
   soundName: "Glass",
-  kinds: { reply: true, askUser: true, failure: true, workflow: true, subagent: true },
+  kinds: { reply: true, askUser: true, failure: true, workflow: false, subagent: false },
   privacy: "full",
   dnd: { enabled: false, from: "22:00", to: "08:00" },
 };

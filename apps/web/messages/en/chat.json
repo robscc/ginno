@@ -250,7 +250,9 @@
       "nCompleted": "{n} background tasks completed",
       "askPending": "Waiting for your answer — the task is paused",
       "workflowDone": "Workflow run completed",
-      "workflowFailed": "Workflow run failed"
+      "workflowFailed": "Workflow run failed",
+      "linkedTurnOngoing": "Still working — finished one reply, not done",
+      "linkedTurnWaiting": "Processed one task, waiting for the next (not done)"
     },
     "tools": {
       "prefix": "tool · ",

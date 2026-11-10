@@ -91,12 +91,41 @@ describe("inDndWindow", () => {
 });
 
 describe("fromWire 迁移", () => {
-  it("老格式（V1 三键）补默认：全 kind 开/完整正文/DnD 关", () => {
+  it("老格式（V1 三键）补默认：askUser/failure/reply 开、workflow/subagent 默认关（2026-11-10 收敛）", () => {
     const p = fromWire({ enabled: false, sound: true, sound_name: "Glass" });
     expect(p.enabled).toBe(false);
     expect(p.kinds.reply).toBe(true);
-    expect(p.kinds.workflow).toBe(true);
+    expect(p.kinds.workflow).toBe(false);
+    expect(p.kinds.subagent).toBe(false);
     expect(p.privacy).toBe("full");
     expect(p.dnd.enabled).toBe(false);
+  });
+});
+
+import { KindRateGate } from "./notifyHub";
+
+describe("KindRateGate（跨会话 reply 冷却）", () => {
+  let t = 0;
+  beforeEach(() => (t = 0));
+
+  it("窗口内吞并计数，放行时带回 suppressed 并清零", () => {
+    const g = new KindRateGate(60_000, () => t);
+    expect(g.hit("reply")).toEqual({ ok: true, suppressed: 0 });
+    t = 10_000;
+    expect(g.hit("reply")).toEqual({ ok: false, suppressed: 1 });
+    t = 30_000;
+    expect(g.hit("reply")).toEqual({ ok: false, suppressed: 2 });
+    t = 61_000;
+    expect(g.hit("reply")).toEqual({ ok: true, suppressed: 2 });
+    t = 61_001;
+    expect(g.hit("reply")).toEqual({ ok: false, suppressed: 1 });
+  });
+
+  it("各 kind 独立冷却", () => {
+    const g = new KindRateGate(60_000, () => t);
+    g.hit("reply");
+    t = 1_000;
+    expect(g.hit("subagent").ok).toBe(true);
+    expect(g.hit("reply").ok).toBe(false);
   });
 });
