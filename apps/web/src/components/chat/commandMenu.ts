@@ -40,6 +40,8 @@ export interface MenuItem {
   group: string;
   /** Token that replaces the trigger text on selection. */
   insert: string;
+  /** 组头计数徽标分母（limitMenuItems 截断时填在每组首条；渲染层显示 N/M）。 */
+  groupTotal?: number;
   /** 禁选（可见不可选）：@ 投递菜单里 blocked 成员——设计稿 ⛔ 不可投递。 */
   disabled?: boolean;
 }
@@ -113,6 +115,84 @@ function matches(haystack: string, needle: string): boolean {
   return haystack.toLowerCase().includes(needle.toLowerCase());
 }
 
+/* ── mention P2 匹配增强（mention-menu-limits-design §3 + 2026-11-10 派单）──
+ * 打分制：contains(3) > 拼音首字母串 contains(2) > fuzzy 子序列(1)。
+ * 拼音仅取首字母（多音字用常用读法，不做整词拼音——成本大收益小）；
+ * 子序列匹配允许跳跃但要求顺序（Levenshtein 太重，subsequence 足够）。 */
+import { pinyin } from "pinyin-pro";
+
+const pinyinCache = new Map<string, string>();
+
+function pinyinInitials(s: string): string {
+  const key = s;
+  let v = pinyinCache.get(key);
+  if (v === undefined) {
+    try {
+      // 数组含空格项（原文空白），过滤后拼接——「会话 热更新」→ "hhrgx"。
+      v = pinyin(s, { pattern: "first", toneType: "none", type: "array" })
+        .filter((x) => x.trim())
+        .join("");
+    } catch {
+      v = "";
+    }
+    if (pinyinCache.size > 2000) pinyinCache.clear(); // 防长会话膨胀
+    pinyinCache.set(key, v);
+  }
+  return v;
+}
+
+function isSubsequence(hay: string, needle: string): boolean {
+  let i = 0;
+  for (const ch of hay) {
+    if (ch === needle[i]) i++;
+    if (i === needle.length) return true;
+  }
+  return false;
+}
+
+/**
+ * 菜单减负限量（mention-menu-limits-design §2 同构规则）：每组 ≤10 条、
+ * 全列表 ≤28 行软上限（超出从末尾低优先组砍）。被截断的组在其首条
+ * item.groupTotal 记总数，渲染层组头显示 `shown/total` 徽标。
+ * 纯函数、构建侧应用——active 键盘索引与限量后列表天然一致。
+ */
+export function limitMenuItems(
+  items: MenuItem[],
+  perGroup = 10,
+  totalCap = 28,
+): MenuItem[] {
+  const groups: Array<{ name: string; all: MenuItem[] }> = [];
+  for (const it of items) {
+    const g = groups[groups.length - 1];
+    if (g && g.name === it.group) g.all.push(it);
+    else groups.push({ name: it.group, all: [it] });
+  }
+  const out: MenuItem[] = [];
+  let budget = totalCap;
+  for (const g of groups) {
+    if (budget <= 0) break;
+    const shown = g.all.slice(0, Math.min(perGroup, budget));
+    if (g.all.length > shown.length) {
+      shown[0] = { ...shown[0], groupTotal: g.all.length };
+    }
+    out.push(...shown);
+    budget -= shown.length;
+  }
+  return out;
+}
+
+export function matchScore(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  const hay = haystack.toLowerCase();
+  const q = needle.toLowerCase();
+  if (!q.trim()) return 0;
+  if (hay.includes(q)) return 3;
+  if (q.match(/[a-z]/) && pinyinInitials(haystack).toLowerCase().includes(q))
+    return 2;
+  if (isSubsequence(hay, q) && q.length >= 2) return 1;
+  return 0;
+}
+
 /** LinkedSessionsChip 的 members 投影（@session/@result 候选源，
  *  at-session-and-mention-scope-design §2.4/§5.5）。 */
 export interface LinkedMentionEntry {
@@ -181,30 +261,39 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
         });
       }
     }
-    return items;
+    return limitMenuItems(items);
   }
 
   // mention trigger
   const q = trigger.query.toLowerCase();
   const kindFilter = trigger.mentionKind; // null → all kinds
   const labelQ = trigger.labelQuery;
-  const items: MenuItem[] = [];
+  const scored: Array<{ item: MenuItem; score: number }> = [];
   const push = (kind: MentionKind, id: string, label: string, detail?: string, disabled?: boolean) => {
     if (kindFilter && kind !== kindFilter) return;
     const searchIn = kindFilter ? label : `${kind}:${label} ${detail ?? ""}`;
     const needle = kindFilter ? labelQ : q;
-    if (!matches(searchIn, needle)) return;
+    // P2 匹配增强：contains > 拼音首字母 > fuzzy 子序列（打分制）。
+    const score = matchScore(searchIn, needle);
+    if (needle && score === 0) return;
     const meta = mentionKindMeta(kind);
-    items.push({
-      kind,
-      id,
-      label,
-      detail: detail || meta.description,
-      group: meta.group,
-      insert: `@${kind}:${label} `,
-      disabled,
+    scored.push({
+      score,
+      item: {
+        kind,
+        id,
+        label,
+        detail: detail || meta.description,
+        group: meta.group,
+        insert: `@${kind}:${label} `,
+        disabled,
+      },
     });
   };
+  const items: MenuItem[] = scored
+    .map((x, i) => ({ ...x, i }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.item);
 
   // 团队主会话的 @ 菜单（独立空间语义，2026-10-14 用户定稿）：
   // 顺序 = 成员（投递目标，blocked 禁选）→ 产物（本团队范围，ChatStream 侧
@@ -221,7 +310,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     for (const a of src.artifacts) {
       push("artifact", a.id, a.name, a.kind);
     }
-    return items;
+    return limitMenuItems(items);
   }
   // 跨会话条目 detail 带来源标题——显式 @ 即授权（runtime 解析本就是项目级
   // 按名/id 精确命中），agent 文件工具的边界不受菜单影响。
@@ -263,7 +352,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     seen.add(r.id);
     push("result", r.id, r.title || r.id, "");
   }
-  return items;
+  return limitMenuItems(items);
 }
 
 export interface SelectionResult {
