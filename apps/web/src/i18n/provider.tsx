@@ -91,6 +91,8 @@ import tasksEn from "../../messages/en/tasks.json";
 import tasksZh from "../../messages/zh-CN/tasks.json";
 import devswapEn from "../../messages/en/devswap.json";
 import devswapZh from "../../messages/zh-CN/devswap.json";
+import instinctsEn from "../../messages/en/instincts.json";
+import instinctsZh from "../../messages/zh-CN/instincts.json";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -134,6 +136,7 @@ const MESSAGES: Record<Locale, Messages> = {
     goalEn,
     tasksEn,
     devswapEn,
+    instinctsEn,
   ) as Messages,
   "zh-CN": deepMerge(
     deepMerge(
@@ -155,6 +158,7 @@ const MESSAGES: Record<Locale, Messages> = {
     goalZh,
     tasksZh,
     devswapZh,
+    instinctsZh,
   ) as Messages,
 };
 

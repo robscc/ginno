@@ -129,7 +129,7 @@ export function SidebarFooter({
       <Link href="/instincts" className={`nav-item ${onInstincts ? "nav-item-active" : ""}`}>
         <Sparkles className="h-4 w-4 shrink-0" />
         <span className="truncate">{t("nav.instincts")}</span>
-        <span className="ml-auto shrink-0 rounded border border-violet/50 bg-violet/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-violet">
+        <span className="ml-auto shrink-0 rounded border border-amber-500/50 bg-amber-500/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-amber-600 dark:text-amber-400">
           Beta
         </span>
       </Link>
