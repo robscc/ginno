@@ -46,7 +46,28 @@ function isWatching(ctx: EngineCtx, sid: string): boolean {
 }
 
 /** 已通知过的 ask_user 问题 id（tool_call id，全局唯一）——重连重放不二次弹。 */
-const notifiedQuestionIds = new Set<string>();
+// 已通知过的 ask_user 问题 id（去重防「每次重连/重载都弹一遍等你回答」）。
+// 2026-11-10：落 sessionStorage——问题 id 存在 checkpointer 里跨重启稳定，
+// 但应用重启/webview 重载会清掉内存 Set，挂起未答的问题就会再弹一次
+// （用户实录：ec0c5453 的挂起问题反复打扰）。sessionStorage 生命周期
+// = 应用本次运行，退出即清，不越界持久。
+const _NQI_KEY = "ginno:notified-question-ids";
+function _loadNotifiedQuestionIds(): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(_NQI_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+const notifiedQuestionIds = _loadNotifiedQuestionIds();
+function _saveNotifiedQuestionIds() {
+  try {
+    sessionStorage.setItem(_NQI_KEY, JSON.stringify([...notifiedQuestionIds]));
+  } catch {
+    /* 私密模式等写失败静默 */
+  }
+}
 
 /** reply 合并条目：MergeItem + 多条时的计数文案（push 侧闭包捕获，
  *  i18nRef 延迟求值——ctx 长存所以安全）。 */
@@ -323,6 +344,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         if (!notifiedQuestionIds.has(qid)) {
           notifiedQuestionIds.add(qid);
           if (notifiedQuestionIds.size > 1000) notifiedQuestionIds.clear(); // 防泄漏兜底
+          _saveNotifiedQuestionIds();
           const watching = isWatching(ctx, sid);
           if (shouldNotify("askUser", watching)) {
             const np = notifyPrefs();
