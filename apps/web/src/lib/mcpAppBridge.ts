@@ -138,9 +138,18 @@ export class McpAppBridge {
    * 规整为 content-only（App.ontoolresult 只读 content）。 */
   pushData(payload: Record<string, unknown>): void {
     if (this.disposed) return;
-    const content = Array.isArray(payload.content)
+    // 规整为官方 CallToolResult content 块数组：裸字符串元素（如
+    // McpAppCard 初始推送的 [data]）映射为 {type:"text"} 块——app 侧
+    // SDK 读 content[i].text，裸字符串会让表格渲染成空（2026-11-11
+    // trending 空表根因）。
+    const raw = Array.isArray(payload.content)
       ? payload.content
       : [{ type: "text", text: String(payload.content ?? "") }];
+    const content = raw.map((el) =>
+      typeof el === "string"
+        ? { type: "text", text: el }
+        : (el as { type: string; text?: string }),
+    );
     const params: Record<string, unknown> = { content };
     const structured =
       payload.structuredContent ?? (payload as { structured?: unknown }).structured;
