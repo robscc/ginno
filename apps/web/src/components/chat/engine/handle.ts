@@ -949,6 +949,40 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (run) pushDevSwapRun(run);
       break;
     }
+    case "runtime.lastwords_pending": {
+      // auto 模式人工会话的待确认续跑（2026-11-10 产品化）：注入带已进
+      // 会话，本条引导用户进会话确认——收件箱点击直达；确认动作为打开
+      // 会话（带内含「继续」引导；正式续跑经会话内 /api/lastwords/resume）。
+      const lpSid = String(ev.session_id ?? "");
+      if (!lpSid) break;
+      {
+        const { tr } = ctx.i18nRef.current;
+        const tools = Number(ev.tool_calls ?? 0);
+        const secs = Math.max(0, Math.round(Number(ev.elapsed_s ?? 0)));
+        const mm = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+        pushNotice(
+          "info",
+          tr("notice.lastwordsPending", { tools, elapsed: mm }),
+          {
+            source: "general",
+            kind: "lastwords",
+            countInBadge: true,
+            dedupeKey: `lastwords-pending:${lpSid}`,
+            actionMeta: { kind: "session", id: lpSid },
+          },
+        );
+        // 同步发 OS 通知（待人确认的恢复属于高优先级，不走冷却门）。
+        const np = notifyPrefs();
+        void notifyNative({
+          kind: "session",
+          id: lpSid,
+          title: `⚡ ${tr("notice.lastwordsPendingTitle")}`,
+          body: privacyBody(np, tr("notice.lastwordsPending", { tools, elapsed: mm })),
+          sound: soundFor("reply"),
+        });
+      }
+      break;
+    }
     case "runtime.lastwords_restored": {
       // 遗言恢复回执（docs/lastwords-design.md P2 通知中心待恢复列表）：
       // 新 sidecar 启动扫描后广播——投一条收件箱条目（kind:"lastwords"，

@@ -362,9 +362,11 @@ class TestRecover:
         assert not g.updates
         assert not lastwords._path("s-off").exists()
 
-    async def test_auto_dev_swap_runs_headless_turn(
+    async def test_auto_dev_swap_pending_confirm_then_resume(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        """2026-11-10 产品化：人工会话 auto+dev-swap 不再直跑——注入带 +
+        挂起待确认（广播 lastwords_pending）；resume_pending 才 headless 续跑。"""
         (isolated_home / "settings.json").write_text(
             json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
         )
@@ -378,22 +380,42 @@ class TestRecover:
         async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
             calls.append({"config": config, "text": text, "kw": kw})
 
-        monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
         import ginno_runtime.api.stream as stream_mod
 
         monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
+        events: list[tuple] = []
+
+        async def fake_push(event, payload):
+            events.append((event, payload))
+
+        import ginno_runtime.server_shared as shared
+
+        monkeypatch.setattr(shared, "_push_global_event", fake_push)
+
+        # 第一段：recover → pending（不直跑）
         n = await lastwords.recover_lastwords()
-        assert n == 1
+        assert n == 0
+        assert calls == []
+        assert "s-auto" in lastwords._PENDING_RESUME
+        assert events and events[0][0] == "runtime.lastwords_pending"
+        assert events[0][1]["session_id"] == "s-auto"
+        # 遗言文件保留（resume/dismiss 才处置）
+        assert lastwords._path("s-auto").exists()
+
+        # 第二段：确认续跑 → headless turn
+        r = await lastwords.resume_pending("s-auto")
+        assert r["ok"] is True
         assert len(calls) == 1
         cfg = calls[0]["config"]["configurable"]
         assert cfg["thread_id"] == "s-auto"
         assert cfg["usage_source"] == "lastwords"
         assert calls[0]["text"].startswith("[lastwords]")
-        assert "原始请求" in calls[0]["text"]
         assert calls[0]["kw"]["origin"] == "lastwords"
-        assert calls[0]["kw"]["user_extra_kwargs"]["ginno_task_event"]["kind"] == "lastwords"
-        # headless turn 收尾清旗
-        assert "s-auto" not in server_shared._RUNNING_TURNS
+        assert not lastwords._path("s-auto").exists()
+        assert "s-auto" not in lastwords._PENDING_RESUME
+
+        # 第三段：重复确认 → no_pending（exactly-once）
+        assert (await lastwords.resume_pending("s-auto"))["ok"] is False
 
     async def test_auto_signal_stays_notify(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch

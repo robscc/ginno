@@ -73,6 +73,9 @@ _MARKER_NAME = "_marker.json"
 
 # 每 session 的上次 WAL 写时间（节流状态，进程内）。
 _LAST_WRITE_AT: dict[str, float] = {}
+# auto 模式人工会话的「待确认续跑」注册表（2026-11-10 产品化）：
+# sid → snap + pending_at。用户点通知进会话后经 resume_pending 确认。
+_PENDING_RESUME: dict[str, dict] = {}
 
 # 每 session 的 turn 工作量信号（进程内计数，WAL 写点维护）：
 # {"turn_id": str, "started_at": wall-clock ts, "tool_calls": int}。
@@ -582,6 +585,57 @@ def render_continuation(snap: dict) -> str:
 # --------------------------------------------------------------------------- #
 
 
+
+def pending_resume_snapshot(session_id: str) -> dict | None:
+    """待确认续跑条目（过期视为无）。"""
+    snap = _PENDING_RESUME.get(session_id)
+    if not snap:
+        return None
+    if time.time() - float(snap.get("pending_at") or 0) > TTL_S:
+        _PENDING_RESUME.pop(session_id, None)
+        drop_lastwords(session_id)
+        return None
+    return snap
+
+
+async def resume_pending(session_id: str) -> dict:
+    """确认续跑（/api/lastwords/resume）。"""
+    snap = pending_resume_snapshot(session_id)
+    if not snap:
+        return {"ok": False, "error": "no_pending"}
+    _PENDING_RESUME.pop(session_id, None)
+    from . import server_shared as shared
+    from .api.sessions import _ensure_session
+
+    session = _ensure_session(session_id)
+    ok = False
+    try:
+        ok = await _run_lastwords_turn(session, snap)
+    except Exception:  # noqa: BLE001
+        _log.exception("lastwords_resume_failed session=%s", session_id)
+    drop_lastwords(session_id)
+    if ok:
+        _log.info("lastwords_restored session=%s mode=auto-confirmed reason=%s",
+                  session_id, snap.get("reason"))
+        try:
+            await shared._push_global_event(
+                "runtime.lastwords_restored",
+                {"session_id": session_id, "mode": "auto-confirmed"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": ok}
+
+
+def dismiss_pending(session_id: str) -> dict:
+    """用户放弃续跑：清 pending + 删遗言文件。"""
+    had = _PENDING_RESUME.pop(session_id, None) is not None
+    drop_lastwords(session_id)
+    if had:
+        _log.info("lastwords_pending_dismissed session=%s", session_id)
+    return {"ok": True, "had": had}
+
+
 async def recover_lastwords() -> int:
     """启动扫描 → 按 mode 注入 → exactly-once 删文件。
 
@@ -633,10 +687,44 @@ async def recover_lastwords() -> int:
             # 续跑零打扰，reason 放宽到 dev-swap/signal/running；人工会话
             # 维持仅 dev-swap（有真人在看，自动续跑反而打扰 + 崩溃/信号
             # 场景自动烧 token 的既有安全分级不破）。
-            auto_ok = m == "auto" and (reason == REASON_DEV_SWAP or is_subagent_session(session))
-            if auto_ok:
-                ok = await _run_lastwords_turn(session, snap)
-                how = "auto"
+            # 2026-11-10 产品化：人工会话的 auto 不再直接续跑——注入带 +
+            # 挂起待确认（广播 runtime.lastwords_pending，用户点通知进会话
+            # 后经 /api/lastwords/resume 一键续跑）；subagent 保持无感直跑。
+            if is_subagent_session(session):
+                if m == "auto":
+                    # subagent 本就 headless：auto 下无感直跑（reason 不限，
+                    # 2026-11-07 首跑语义）。
+                    ok = await _run_lastwords_turn(session, snap)
+                    how = "auto"
+                else:
+                    ok = await _inject_lastwords_message(session, snap)
+                    how = "notify"
+            elif m == "auto" and reason == REASON_DEV_SWAP:
+                ok = await _inject_lastwords_message(session, snap)
+                how = "notify"
+                if ok:
+                    _PENDING_RESUME[sid] = {**snap, "pending_at": time.time()}
+                    try:
+                        eff = snap.get("effort") or {}
+                        await shared._push_global_event(
+                            "runtime.lastwords_pending",
+                            {
+                                "session_id": sid,
+                                "head": str(snap.get("head") or "")[:160],
+                                "tool_calls": eff.get("tool_calls", 0),
+                                "elapsed_s": max(
+                                    0.0,
+                                    float(snap.get("ts") or 0)
+                                    - float(eff.get("started_at") or 0),
+                                ),
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — 广播失败不拦注入
+                        _log.exception("lastwords_pending_broadcast_failed session=%s", sid)
+                    _log.info(
+                        "lastwords_pending_confirm session=%s reason=%s", sid, reason
+                    )
+                    continue  # 文件保留——resume/dismiss 时才处置
             else:
                 ok = await _inject_lastwords_message(session, snap)
                 how = "notify"
