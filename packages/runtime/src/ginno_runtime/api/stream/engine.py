@@ -1160,14 +1160,21 @@ async def _stream_graph(
                     append_to_pool(session_id, agent_id, _clean_text, cited=_verified > 0)
                     _maybe_auto_distill(_mem_cfg)
             # instincts P0：turn 收尾触发模板规则分析（确定性、零 LLM、
-            # 异常全吞；docs/instincts-design.md §6）。project 从观察事件
-            # 自带字段取（capture 已写入），此处无需传。
-            try:
-                from ...instincts import maybe_analyze as _instinct_analyze
+            # 异常全吞；docs/instincts-design.md §6——设计口径是 detached
+            # 不阻塞 turn：分析要读全量 observations + 扫条目目录，CI 慢盘
+            # 上同步执行会拖长收尾、放大 e2e 落盘竞态（PR #74 CI 红根因），
+            # 故 daemon 线程化）。
+            def _instincts_kick() -> None:
+                try:
+                    from ...instincts import maybe_analyze as _instinct_analyze
 
-                _instinct_analyze(session_id=session_id)
-            except Exception:
-                pass
+                    _instinct_analyze(session_id=session_id)
+                except Exception:
+                    pass
+
+            import threading as _threading
+
+            _threading.Thread(target=_instincts_kick, daemon=True).start()
             # LLM subject title (title_gen): armed by _touch_session_title on
             # the first invoke, fired by the first turn that completes without
             # an interrupt. Background + best-effort — failure keeps the
