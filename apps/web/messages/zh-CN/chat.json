@@ -250,7 +250,9 @@
       "nCompleted": "{n} 个后台任务完成",
       "askPending": "等你回答——任务已挂起",
       "workflowDone": "工作流已跑完",
-      "workflowFailed": "工作流失败"
+      "workflowFailed": "工作流失败",
+      "linkedTurnOngoing": "仍在进行中——刚完成一段回复，未结束",
+      "linkedTurnWaiting": "已处理一段任务，等待下一段（未结束）"
     },
     "tools": {
       "prefix": "工具 · ",

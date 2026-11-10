@@ -1273,6 +1273,19 @@ async def _stream_graph(
                     _inc = (linked_report(session_id) or {}).get("incoming") or []
                     if _inc:
                         _t = _clean_text.strip()[:160]
+                        # worker 语义修正（2026-11-10）：turn 完成 ≠ 任务完成
+                        # ——worker 会话处理完一段进入 waiting/继续 working 时，
+                        # 订阅方不该收到「已完成」。投影 live_status 给前端
+                        # 选文案；投影失败不带键（前端按普通完成显示）。
+                        _wst: str | None = None
+                        try:
+                            from ..worker_bus.registry import project_status
+
+                            _fm = _find_meta(session_id)
+                            if _fm:
+                                _wst = project_status(session_id, _fm[0])
+                        except Exception:
+                            _wst = None
                         for _w in _inc:
                             if isinstance(_w, dict) and _w.get("id"):
                                 await _push_session_event(
@@ -1282,6 +1295,7 @@ async def _stream_graph(
                                         "session_id": session_id,
                                         "text": _t,
                                         "origin": _origin,
+                                        "worker_status": _wst,
                                     },
                                     turn_id,
                                 )

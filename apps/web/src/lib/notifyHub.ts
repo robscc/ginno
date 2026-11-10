@@ -107,6 +107,43 @@ export function shouldNotify(kind: NotifyKind, watching: boolean): boolean {
   );
 }
 
+/** Per-kind OS 通知冷却门（2026-11-10：跨会话 reply 刷屏治理）。
+ *
+ * ReplyMergeWindow 只按「同一 session」合并；多 worker/多 watch 并行时
+ * 每个会话的 turn 完成各弹一条，通知中心瞬间刷屏。KindRateGate 在
+ * kind 维度加冷却窗：窗口内的同类通知被吞并计数，窗口结束后第一条
+ * fire 时带上 `suppressed` 数（调用方拼「+N 条已合并」后缀）。
+ * askUser/failure 不走此门（等人/出事绝不节流）——调用方自行选择。 */
+export class KindRateGate {
+  private last = new Map<string, number>();
+  private suppressed = new Map<string, number>();
+
+  constructor(
+    private readonly windowMs: number,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  /** 尝试放行一次 kind 通知；返回 {ok, suppressed}——suppressed 是本窗
+   *  口内被吞掉的数量（仅 ok=true 时非零，随后清零）。 */
+  hit(kind: string): { ok: boolean; suppressed: number } {
+    const t = this.now();
+    // 首次命中（无记录）必须放行：用 -Infinity 而非 0，t=0 起点不误吞。
+    const last = this.last.get(kind) ?? Number.NEGATIVE_INFINITY;
+    if (t - last < this.windowMs) {
+      const n = (this.suppressed.get(kind) ?? 0) + 1;
+      this.suppressed.set(kind, n);
+      return { ok: false, suppressed: n };
+    }
+    this.last.set(kind, t);
+    const sup = this.suppressed.get(kind) ?? 0;
+    this.suppressed.set(kind, 0);
+    return { ok: true, suppressed: sup };
+  }
+}
+
+/** reply 类全局冷却门：60s 内跨会话只弹一条，后续合并计数。 */
+export const replyRateGate = new KindRateGate(60_000);
+
 /** Body text after the privacy gate: `titleOnly` strips the content. */
 export function privacyBody(np: ReturnType<typeof notifyPrefs>, body: string): string {
   return np.privacy === "titleOnly" ? "" : body;
