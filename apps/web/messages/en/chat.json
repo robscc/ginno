@@ -601,6 +601,13 @@
     "deliver.missing": "→ {label} no longer exists",
     "deliver.noBody": "→ {label}: empty prompt, nothing delivered",
     "deliver.ctxSkipped": "(other @-mentions did not ride the delivery)",
-    "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)"
+    "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)",
+    "find": {
+      "placeholder": "Find in session…",
+      "none": "No hits",
+      "prev": "Previous (Shift+Enter)",
+      "next": "Next (Enter)",
+      "close": "Close (Esc)"
+    }
   }
 }

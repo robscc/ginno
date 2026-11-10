@@ -601,6 +601,13 @@
     "deliver.missing": "→ 「{label}」已不存在",
     "deliver.noBody": "→ 「{label}」：正文为空，未投递",
     "deliver.ctxSkipped": "（其余 @ 引用未随投递）",
-    "loadEarlier": "加载更早的 {showingMore} 条（还有 {hidden} 条未显示）"
+    "loadEarlier": "加载更早的 {showingMore} 条（还有 {hidden} 条未显示）",
+    "find": {
+      "placeholder": "会话内搜索…",
+      "none": "无命中",
+      "prev": "上一个 (Shift+Enter)",
+      "next": "下一个 (Enter)",
+      "close": "关闭 (Esc)"
+    }
   }
 }
