@@ -49,6 +49,14 @@ const SYSTEM_SOUNDS: &[&str] = &[
     "Tink",
 ];
 
+/// 并发等待上限：notify-rust 的 UN 后端靠轮询已投递列表检测点击/关闭，
+/// 每个未决通知一个轮询线程——通知风暴时几十路并发轮询曾把 ginno-desktop
+/// 打到 58% CPU、系统 usernoted 打到 84%（2026-11-10 实测，3s sample 里
+/// 159 帧在 getDeliveredNotifications）。超过上限的新通知 fire-and-forget：
+/// 保底 4 路点击跳转，更早的通知点击后仅弹窗不导航（信息也早已过时）。
+const MAX_ACTION_WAITERS: usize = 4;
+static ACTIVE_WAITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Fire a native macOS notification and wait for the user's reaction.
 ///
 /// Uses notify-rust's NSUserNotification path directly: Tauri's notification
@@ -86,7 +94,21 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
         &app,
         &format!("notification shown kind={} id={}", payload.kind, payload.id),
     );
+    let in_flight = ACTIVE_WAITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    if in_flight > MAX_ACTION_WAITERS {
+        // 超限：不再排队等点击（避免轮询线程无界增长），立即归还名额。
+        ACTIVE_WAITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        shell_log(
+            &app,
+            &format!(
+                "notification fire-and-forget ({} waiters in flight) kind={} id={}",
+                in_flight, payload.kind, payload.id
+            ),
+        );
+        return;
+    }
     handle.wait_for_action(|action| {
+        ACTIVE_WAITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         // "__closed" = dismissed without clicking; anything else = clicked.
         shell_log(
             &app,
