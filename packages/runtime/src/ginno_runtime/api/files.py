@@ -653,6 +653,34 @@ async def open_file_external_endpoint(file_id: str) -> dict:
     return {"ok": True}
 
 
+@router.post("/api/files/{file_id}/reveal")
+async def reveal_file_endpoint(file_id: str) -> dict:
+    """Reveal the file in the OS file manager (Finder / Explorer / xdg).
+
+    与 open-external 的区别：不打开文件本体，只定位——大产物（drawio/
+    xlsx/报告）经常需要「去所在目录看看还有什么」。Best-effort。"""
+    import subprocess
+    import sys
+
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        return {"ok": False, "error": f"file not found: {file_id}"}
+    p = Path(entry["path"])
+    if not p.exists():
+        return {"ok": False, "error": "File has been moved or deleted"}
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(p)])
+        elif sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", "/select,", str(p)])
+        else:
+            # Linux 无统一 select 语义：打开所在目录
+            subprocess.Popen(["xdg-open", str(p.parent)])
+    except OSError as e:
+        return {"ok": False, "error": f"Failed to open file manager: {e}"}
+    return {"ok": True}
+
+
 # ---- session files management (Settings → 会话文件) ----
 def _session_file_guard(slug: str, session_id: str, sub: str | None) -> Path | None:
     """Resolve ``sub`` (a path relative to the session dir) and require it to

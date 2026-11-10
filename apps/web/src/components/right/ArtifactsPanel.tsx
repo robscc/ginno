@@ -13,6 +13,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   FileText,
+  FolderOpen,
   Image as ImageIcon,
   Link2,
   Loader2,
@@ -788,6 +789,20 @@ export function ArtifactsPanel() {
     }
   }
 
+  // Reveal the artifact in Finder / Explorer — locate without opening
+  // (2026-11-10：与“用系统应用打开”并排的第二个行内动作)。
+  async function revealArtifact(e: React.MouseEvent, a: Artifact) {
+    e.stopPropagation();
+    if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
+    try {
+      const entry = matchByRef(await api.listFiles(), a.ref);
+      if (!entry) return;
+      await api.revealFileInFileManager(entry.id);
+    } catch {
+      /* best-effort */
+    }
+  }
+
   // Open the file with the OS default application (Preview, Excel, etc.).
   // Works in both desktop and dev modes — the sidecar runs on the same host.
   async function openExternalArtifact(e: React.MouseEvent, a: Artifact) {
@@ -862,6 +877,16 @@ export function ArtifactsPanel() {
               ) : (
                 <ExternalLink className="h-3.5 w-3.5" />
               )}
+            </button>
+          )}
+          {clickable && (
+            <button
+              onClick={(e) => void revealArtifact(e, a)}
+              title={t("reveal")}
+              aria-label={t("reveal")}
+              className="rounded-md p-1 text-muted hover:bg-card2 hover:text-txt invisible group-hover:visible"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
             </button>
           )}
           {clickable && (

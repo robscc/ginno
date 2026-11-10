@@ -275,6 +275,15 @@ export async function openFileExternal(fileId: string) {
   );
 }
 
+// Reveal the file in the OS file manager (Finder / Explorer) — locates the
+// artifact without opening it; sibling of openFileExternal (2026-11-10).
+export async function revealFileInFileManager(fileId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/files/${fileId}/reveal`,
+    { method: "POST", headers: H },
+  );
+}
+
 // ---- todo providers / sync (external TODO platforms) ----
 export async function listTodoProviders() {
   return json<{ ok: boolean; providers: import("../types").TodoProvider[] }>(`${BASE}/todo-providers`);

@@ -253,7 +253,8 @@
         "save": "Save",
         "saveFailed": "Failed to save",
         "noChanges": "No changes"
-      }
+      },
+      "reveal": "Reveal in Finder"
     },
     "synthesis": {
       "title": "Synthesis History",

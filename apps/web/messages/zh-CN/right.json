@@ -253,7 +253,8 @@
         "save": "保存",
         "saveFailed": "保存失败",
         "noChanges": "无改动"
-      }
+      },
+      "reveal": "在 Finder 中显示"
     },
     "synthesis": {
       "title": "总结历史",
