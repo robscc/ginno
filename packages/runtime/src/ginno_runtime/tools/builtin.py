@@ -250,13 +250,27 @@ class _DenyPolicy:
     sidecar home (the common repo case) never touch the skill-tree lookup.
     """
 
-    __slots__ = ("always_deny", "extra_real", "home_real", "base_real", "_skill_real", "_skill_at")
+    __slots__ = ("always_deny", "extra_real", "home_real", "base_real", "own_ws_real", "_skill_real", "_skill_at")
 
-    def __init__(self, base_dir: Path | None, extra_roots: list[Path] | None):
+    def __init__(self, base_dir: Path | None, extra_roots: list[Path] | None,
+                 own_ws: Path | None = None):
         self.always_deny: list[str] = [_realpath_str(r) for r in _always_deny_roots()]
         self.extra_real: list[str] = sorted({_realpath_str(r) for r in (extra_roots or [])})
         self.home_real = _realpath_str(paths.home())
         self.base_real = _realpath_str(base_dir) if base_dir is not None else None
+        # 当前会话自己的 workspace（uploads/产物/memory 所在地）。挂了
+        # primary 挂载后 base_dir 指向挂载目录，但会话自己的目录仍应
+        # 可读写（2026-11-10 实录：ec0c5453 读自己的 uploads/ 被拒）。
+        # 与 base_real 同样的「home 的真子目录」防线上限：workspace==home
+        # 的 workflow 兜底 cwd 不给豁免。
+        _own = _realpath_str(own_ws) if own_ws is not None else None
+        self.own_ws_real: str | None = (
+            _own
+            if _own is not None
+            and _own != self.home_real
+            and _own.startswith(self.home_real + os.sep)
+            else None
+        )
         self._skill_real: list[str] | None = None
         self._skill_at = 0.0
 
@@ -290,6 +304,12 @@ class _DenyPolicy:
             and _inside(real, self.base_real)
         ):
             return False  # inside the active session workspace → allowed
+        if (
+            self.own_ws_real is not None
+            and _inside(real, self.own_ws_real)
+        ):
+            return False  # inside the session's OWN workspace → allowed even
+            # when base_dir was overridden by a primary mount
         for root in self._skill_roots():
             if _inside(real, root):
                 return False  # skill trees are user content, not runtime secrets
@@ -299,24 +319,28 @@ class _DenyPolicy:
 _POLICY_CACHE: dict[tuple[str, ...], _DenyPolicy] = {}
 
 
-def _deny_policy(base_dir: Path | None, extra_roots: list[Path] | None) -> _DenyPolicy:
+def _deny_policy(base_dir: Path | None, extra_roots: list[Path] | None,
+                 own_ws: Path | None = None) -> _DenyPolicy:
     """Per-(workspace, mounts) `_DenyPolicy`, built once and reused.
 
     api/code.py's tree/search fences call `_path_denied` with the same
     (workspace, mount_roots) pair, so they hit this cache too and get the
-    same speedup for free.
+    same speedup for free. ``own_ws``（会话自己的 workspace，primary 挂载
+    场景下与 base_dir 不同）也参与缓存键。
     """
     key = (
         str(base_dir) if base_dir is not None else "",
         *sorted(str(p) for p in (extra_roots or [])),
+        str(own_ws) if own_ws is not None else "",
     )
     pol = _POLICY_CACHE.get(key)
     if pol is None:
-        pol = _POLICY_CACHE[key] = _DenyPolicy(base_dir, extra_roots)
+        pol = _POLICY_CACHE[key] = _DenyPolicy(base_dir, extra_roots, own_ws)
     return pol
 
 
-def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None = None) -> bool:
+def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None = None,
+                 own_ws: Path | None = None) -> bool:
     """True when ``p`` sits in a protected region (master-plan §2.3 baseline).
 
     Layers (semantics identical to the original inline version — see
@@ -336,7 +360,7 @@ def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None 
       SKILL.md and ``python3`` them. Settings / sessions / mcp / keys
       stay behind the home deny.
     """
-    return _deny_policy(base_dir, extra_roots).denied(p)
+    return _deny_policy(base_dir, extra_roots, own_ws).denied(p)
 
 
 def _deny_msg(p: str) -> str:
@@ -883,7 +907,7 @@ def build_builtin_tools(
         读锁（与 write/edit 的写锁互斥，读者之间共享）。"""
         try:
             p = _ws(base_dir, path)
-            if _path_denied(p, base_dir, mount_roots):
+            if _path_denied(p, base_dir, mount_roots, ws_root):
                 return _deny_msg(path)
             start = max(int(offset), 1) - 1
             cap = READ_HARD_MAX_LINES if limit else READ_MAX_LINES
@@ -942,7 +966,7 @@ def build_builtin_tools(
         instead of crashing the whole turn.
         """
         p = _ws(base_dir, path)
-        if _path_denied(p, base_dir, mount_roots):
+        if _path_denied(p, base_dir, mount_roots, ws_root):
             return _deny_msg(path)
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
@@ -1008,7 +1032,7 @@ def build_builtin_tools(
             guarded = _fs_root_guard(search_root)
             if guarded:
                 return guarded
-            policy = _deny_policy(base_dir, mount_roots)
+            policy = _deny_policy(base_dir, mount_roots, ws_root)
             hits: list[str] = []
             truncated = False
             budget_note = ""
@@ -1117,7 +1141,7 @@ def build_builtin_tools(
                 body = "\n".join(rg_hits) or "(no matches)"
                 return (header + "\n" + body) if header else body
             # --- Python fallback (no rg on PATH, or rg failed) ---
-            policy = _deny_policy(base_dir, mount_roots)
+            policy = _deny_policy(base_dir, mount_roots, ws_root)
             out: list[str] = []
             _t0 = time.monotonic()
             _dirs_seen = 0
@@ -1183,7 +1207,7 @@ def build_builtin_tools(
     def edit_file(path: str, old: str, new: str) -> str:
         """Replace a unique occurrence of `old` with `new` in a file."""
         p = _ws(base_dir, path)
-        if _path_denied(p, base_dir, mount_roots):
+        if _path_denied(p, base_dir, mount_roots, ws_root):
             return _deny_msg(path)
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
@@ -1247,7 +1271,7 @@ def build_builtin_tools(
             # exports this way. ~/.ssh / ~/.ginno stay denied.
             if _is_user_rc(candidate):
                 continue
-            if _path_denied(candidate, base_dir, mount_roots):
+            if _path_denied(candidate, base_dir, mount_roots, ws_root):
                 return _deny_msg(tok)
             # Project discovery: a repo reached only by absolute path in a bash
             # command is exactly the 2026-09-17 case (git clone into a repo the

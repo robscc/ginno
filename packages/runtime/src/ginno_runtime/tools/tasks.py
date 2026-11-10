@@ -53,7 +53,7 @@ def build_task_tools(
             candidate = Path(tok).expanduser()
             if _is_user_rc(candidate):
                 continue
-            if _path_denied(candidate, base_dir, mount_roots):
+            if _path_denied(candidate, base_dir, mount_roots, ws_root):
                 return _deny_msg(tok)
         return None
 
