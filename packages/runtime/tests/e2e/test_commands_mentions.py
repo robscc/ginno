@@ -340,7 +340,10 @@ def test_session_mention_delivers_to_idle_target(create_session, ws_conv):
         msgs = []
         for _ in range(50):
             tup = cp.get_tuple({"configurable": {"thread_id": target}})
-            msgs = (tup.checkpoint.get("channel_values") or {}).get("messages") if tup else []
+            # messages=None 是 turn 起步的合法中间态（channel 未初始化），
+            # 轮询必须跳过而不是炸（2026-11-11 CI：decay_scan 挂启动维护
+            # 后时序偏移，首轮即踩中该中间态）。
+            msgs = ((tup.checkpoint.get("channel_values") or {}).get("messages") or []) if tup else []
             humans_now = [getattr(m, "content", "") for m in msgs]
             if any(h.startswith("[来自") for h in humans_now) and any(
                 getattr(m, "type", "") == "ai" for m in msgs
