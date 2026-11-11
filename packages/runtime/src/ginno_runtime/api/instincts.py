@@ -1,7 +1,8 @@
 """Instincts REST API（P0，docs/instincts-design.md §10.2 子集）。
 
 列表 / 详情 / 创建 / 编辑 / 删除（软删默认）+ 观察 feed（只读）。
-P1+ 的 promote/evolve/prune-scan/export 留位不实现。
+P2 evolve：聚类预览 + 沉淀 SKILL.md（instincts/evolve.py）。
+promote/prune-scan/export 仍留位。
 """
 
 from __future__ import annotations
@@ -90,6 +91,33 @@ def api_delete_instinct(
     if not delete_instinct(scope, project_slug, instinct_id, hard=hard):
         raise HTTPException(404, "instinct not found")
     return {"ok": True}
+
+
+class EvolveBody(BaseModel):
+    scope: str = "project"
+    project_slug: str = ""
+    domain: str = "workflow"
+
+
+@router.get("/evolve/clusters")
+def api_evolve_clusters() -> list[dict[str, Any]]:
+    """可 evolve 的聚类预览（同域 ≥3 条 active 且 confidence ≥0.7）。"""
+    from ..instincts.evolve import find_clusters
+
+    return find_clusters()
+
+
+@router.post("/evolve")
+def api_evolve(body: EvolveBody) -> dict[str, Any]:
+    """把一个聚类沉淀为 SKILL.md 草稿；源规则置 evolved（不再注入）。"""
+    from ..instincts.evolve import evolve_cluster
+
+    if body.domain not in DOMAINS:
+        raise HTTPException(status_code=400, detail={"ok": False, "error": "bad domain"})
+    r = evolve_cluster(body.scope, body.project_slug, body.domain)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r)
+    return r
 
 
 def _validate(body: InstinctBody) -> None:
