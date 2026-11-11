@@ -85,6 +85,20 @@ NEW_DIR="ginno-runtime.v${SHA%%-*}.$TS"   # v{sha8}.{epoch}
 FINGERPRINT="$SHA"
 RUN_ID="$NEW_DIR"
 
+# ── 取消基建（2026-11-11 用户需求：取消热更新）─────────────────────────
+# 写 pidfile 供 /api/devswap/cancel 定位；TERM=优雅取消（切换点之前杀掉
+# 完全无副作用——blue-green：symlink 未切，当前运行零影响）；EXIT 清理。
+printf '%s\n' "$$" > "$OVERRIDE_DIR/current-run.pid"
+printf '{"run_id": "%s", "new_dir": "%s", "started": %s}\n' "$RUN_ID" "$NEW_DIR" "$(date +%s)" > "$OVERRIDE_DIR/current-run.json"
+on_cancel_term() {
+  report "${CURRENT_STAGE:-build}" cancelled "外部取消（/dev-swap-cancel）——切换点之前中止，当前运行不受影响"
+  rm -f "$OVERRIDE_DIR/current-run.pid" "$OVERRIDE_DIR/current-run.json"
+  exit 0
+}
+trap on_cancel_term TERM INT
+cleanup_pidfile() { rm -f "$OVERRIDE_DIR/current-run.pid" "$OVERRIDE_DIR/current-run.json"; }
+trap cleanup_pidfile EXIT
+
 # ---- 0.5 public 完整性快照（2026-11-11 svg 失踪案防御）--------------------
 # 三批 apps/web/public 静态资产丢失（fileicons ×24 等）全部发生在热切换
 # 窗口内（fs_usage 实锤：切换时刻 ginno-runtime 进程对 public 资产做
@@ -246,6 +260,10 @@ ln -sfn "$NEW_DIR" "$TMP_LINK" 2>/dev/null || ln -sf "$NEW_DIR" "$TMP_LINK"
 python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$TMP_LINK" "$LINK"
 # 切完即验：链接确实指到新目录，否则后面所有验证都在验错的 bundle。
 [ "$(readlink "$LINK" 2>/dev/null)" = "$NEW_DIR" ] || die_stage "symlink 切换未生效（仍指向 $(readlink "$LINK" 2>/dev/null || echo none)）"
+
+# 切换点已过：取消通道关闭（API 侧对 state=pending 拒绝；脚本侧摘 TERM
+# trap 防误杀——pending 之后杀脚本会留下未 finish 的状态机）。
+trap - TERM INT
 
 # ── public 完整性自检+自愈（同上快照；丢失 5 秒内恢复）─────────────────
 PUBLIC_NOW="$(find "$ROOT/apps/web/public" -type f 2>/dev/null | sort | xargs md5 -q 2>/dev/null | shasum | cut -d' ' -f1)"
