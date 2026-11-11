@@ -20,6 +20,7 @@ from .store import (
 )
 from .capture import observe, recent_observations, maybe_analyze
 from .inject import build_instinct_context
+from .observer import capture_correction_signal, maybe_run_observer, run_observer
 
 __all__ = [
     "Instinct",
@@ -35,4 +36,7 @@ __all__ = [
     "recent_observations",
     "maybe_analyze",
     "build_instinct_context",
+    "capture_correction_signal",
+    "maybe_run_observer",
+    "run_observer",
 ]

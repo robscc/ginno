@@ -25,6 +25,12 @@ class InstinctsConfig:
     inject_token_budget: int = 600
     template_threshold: int = 3  # 同类 tool_denied 观察达到该次数 → 生成 pending
     decay_days: int = 90
+    # L2 observer（docs/instincts-design.md §6）：provider 空 = 禁用 LLM 判定
+    # （纯模板模式）；model_id 空 = 供应商默认小模型。
+    observer_model: str = ""
+    observer_model_id: str = ""
+    min_observations: int = 20  # 新观察达到该数才触发一次分析
+    analyze_gap_min: int = 5    # 两次分析最小间隔（分钟）
 
 
 def _read_settings() -> dict[str, Any]:
@@ -49,10 +55,15 @@ def load_instincts_config(settings: dict[str, Any] | None = None) -> InstinctsCo
         v = raw.get(k)
         if isinstance(v, (int, float)):
             setattr(cfg, k, float(v))
-    for k in ("inject_max_n", "inject_token_budget", "template_threshold", "decay_days"):
+    for k in ("inject_max_n", "inject_token_budget", "template_threshold", "decay_days",
+              "min_observations", "analyze_gap_min"):
         v = raw.get(k)
         if isinstance(v, int) and v > 0:
             setattr(cfg, k, v)
+    for k in ("observer_model", "observer_model_id"):
+        v = raw.get(k)
+        if isinstance(v, str):
+            setattr(cfg, k, v.strip())
     return cfg
 
 
