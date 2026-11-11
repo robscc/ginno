@@ -9,6 +9,66 @@ versions.
 
 （暂无）
 
+## [0.2.1] - 2026-11-11
+
+40 commits since 0.2.0。主题：Instincts 本能学习、会话内搜索、通知治理、
+遗言确认续跑、热更新取消与自愈、drawio 多页预览。
+
+### Instincts（本能）— 行为规则沉淀
+- **P0 最小闭环**：L1 确定性捕获 + YAML 存储 + 模板规则生成 + 注入管道 +
+  管理页（左下角 BETA 入口）
+- **P1-lite**：retry_recovered 捕获 + 置信度衰减治理
+- **L2 纠偏检测**：启发式预筛 + observer 小模型判定（detached 任务化）
+- 修复：i18n 目录未注册致页面显示原始 key；收尾钩子线程化修 CI 落盘竞态
+
+### 会话内搜索与提及
+- **Cmd+F find bar**：数据层索引 + Highlight API 高亮，跨消息定位
+- mention P2：拼音首字母 + fuzzy 匹配排序；chip 图标化（气泡+输入框）
+- mention 投递 e2e 轮询补 messages=None 中间态防护
+
+### 通知治理（OS 通知不再刷屏/误报）
+- 跨会话 reply 节流：KindRateGate 60s 冷却 + 合并计数（+N）
+- worker 假完成修正：linked.done 附 worker_status，working/waiting 不再
+  显示「已完成」
+- ask_user 挂起通知去重集落 sessionStorage——重载不再重复弹
+- workflow/subagent 两类 OS 通知默认 OFF（应用内已有 notice/digest）
+- **桌面壳 CPU 修复**：通知等待线程无上限轮询 getDeliveredNotifications
+  致 ginno-desktop 58%/usernoted 84%——限 4 路 + fire-and-forget
+
+### 遗言模式（重启恢复）产品化
+- auto 模式人工会话改「待确认续跑」：注入带 + runtime.lastwords_pending
+  广播 + 收件箱点击直达 + POST /api/lastwords/resume（TTL 1h，exactly-once）
+- subagent 会话保持无感直跑；低工作量丢弃日志 debug→info
+
+### 热更新（dev-swap）
+- **取消功能补全**：pidfile + TERM 优雅取消 trap + 切换点安全门 +
+  命令路径可达（企微/桌面同口径）
+- public 资产完整性自检+自愈（fileicons 丢失自动恢复）
+- 进度计时修复：elapsed 锚 stageStartedAt，不再每 2-5s 归零
+- web 内容戳纳入 public/；补拷防线升级文件数比对
+
+### 文件预览与产物
+- **drawio 多页预览**：页签切换（分段药丸控件、横向滚动+N/M 计数、
+  ←/→ 键盘翻页、主题自适应配色）
+- 文件预览 Esc 关闭；Esc 统一 hook 补齐 7 个浮层（向导类带防误触 guard）
+- 产物面板「在 Finder 中显示」（open -R / explorer /select,）
+- 附件图标全类型化：vscode-icons 彩色图标替换 emoji 三态
+
+### 安全与权限
+- **保护区 own_ws 修复**：挂 primary 挂载后会话自己的 uploads/memory
+  目录不再被误拒（_DenyPolicy 独立豁免参）
+- G3 渠道命令权限闸：admin 级命令按 userid 判定 fail-closed
+- bash 工具环境变量注入：settings.json "env" 键 + 设置页可视化编辑
+  （PATH 追加语义，代理场景开箱即用）
+
+### 其他
+- 桌面壳开机自启动（SMAppService 注册态为唯一真源）
+- 内置 AgentTeam 团队模板（含内阁模式）
+- 断线补发窗口 6s→60s（冷启动/休眠恢复）
+- 连接器安装向导 i18n 补齐（wecom/vibe/dingtalk 双语）
+- 品牌行鸭子 logo 恢复 + 侧栏加宽 w-72
+- MCP app 初始数据推送 content 形态规整（trending 空表修复）
+
 ## [0.2.0] - 2026-11-09
 
 63 commits since 0.1.3。主题：MCP Apps 端到端打通、通知统一、遗言模式、
