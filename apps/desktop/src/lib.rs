@@ -295,6 +295,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // G1 无头热更新 watcher（L3+L4）：企微 y 授权后壳在无 webview 的
+            // 情况下也能 finish（含壳重启窗口的冷启动补执行）。
+            crate::dev_swap::spawn_unattended_watcher(app.handle().clone());
             // 双实例防呆：只改端口不换数据目录的话，两个 sidecar 会并发双写
             // 同一份 sessions/checkpoint —— 比端口冲突更糟，启动时就点名。
             if std::env::var_os("GINNO_RUNTIME_PORT").is_some()

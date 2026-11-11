@@ -1156,12 +1156,40 @@ async def _dev_swap_background(sid: str, repo: str) -> None:
 
     from ..server_shared import _push_global_event, _push_session_event
 
+    # G1 无头授权（channel-devswap-unattended-design.md §1.4）：channel 会话
+    # 发起时带 confirm 标记 + chat_key——构建完成后经企微 y/n 确认 finish。
+    _unattended_env: dict[str, str] = {}
+    if sid:
+        try:
+            from ..session_meta import _find_meta
+
+            _found = _find_meta(sid)
+            _meta = _found[0] if _found else None
+            if _meta and _meta.get("type") == "channel":
+                _ck = ""
+                try:
+                    from ..connectors.builtin import _wecom_adapter
+
+                    if _wecom_adapter is not None and _wecom_adapter._mapper:
+                        _chats = _wecom_adapter._mapper.chats_for(sid)
+                        _ck = str((_chats[0] or {}).get("chat_id") or "") if _chats else ""
+                except Exception:  # noqa: BLE001
+                    _ck = ""
+                if _ck:
+                    _unattended_env = {
+                        "DEV_SWAP_UNATTENDED": "confirm",
+                        "DEV_SWAP_CHAT_KEY": _ck,
+                    }
+        except Exception:  # noqa: BLE001 — 判定失败按桌面语义跑
+            _unattended_env = {}
+
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", "scripts/dev_swap.sh",
             cwd=repo,
             env={
                 **_os.environ,
+                **_unattended_env,
                 "DEV_SWAP_REQUESTED_BY": "agent",
                 # 发起会话随 env 传给 shell → state.json → 重启后新进程的
                 # finish 终态上报（api/devswap.watch_swap_finish）——前端

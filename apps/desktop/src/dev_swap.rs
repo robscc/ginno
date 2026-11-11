@@ -295,6 +295,63 @@ pub(crate) fn run_finish(app: &tauri::AppHandle) -> DevSwapResult {
     }
 }
 
+// ---- G1 unattended watcher（channel-devswap-unattended-design.md §1.3 L3/L4）----
+
+/// 判定 state.json 是否满足无头 finish 条件：
+/// state==pending && unattended=="go" && age < 600s。
+fn unattended_go(state: &Value) -> bool {
+    if state.get("state").and_then(Value::as_str) != Some("pending") {
+        return false;
+    }
+    if state.get("unattended").and_then(Value::as_str) != Some("go") {
+        return false;
+    }
+    let created = state
+        .get("created")
+        .and_then(Value::as_i64)
+        .unwrap_or(i64::MAX);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    created > 0 && now.saturating_sub(created) < 600
+}
+
+/// 单次判定（L3 轮询 / L4 冷启动共用）：满足条件即 try_lock → run_finish。
+/// unattended 字段缺省/非 "go" 一律不动——手动 dev-swap 的桌面确认弹窗
+/// 路径零变化（回归红线）。
+fn try_unattended_finish(app: &tauri::AppHandle) {
+    let Some(state) = read_state(app) else { return };
+    if !unattended_go(&state) {
+        return;
+    }
+    let Some(lock) = app.try_state::<crate::sidecar::RestartLock>() else {
+        return;
+    };
+    let Ok(_guard) = lock.0.try_lock() else {
+        return; // 前端 invoke 或另一次重启在途——让位
+    };
+    let result = run_finish(app);
+    let _ = app.emit("dev-swap:result", result);
+}
+
+/// 壳启动后 spawn 一次常驻 watcher：每 5s 轮询 state.json（L3 兜 webview
+/// 崩溃/挂起；L2 前端直通更快）。进程内只 spawn 一次。
+pub fn spawn_unattended_watcher(app: tauri::AppHandle) {
+    std::thread::Builder::new()
+        .name("devswap-unattended".into())
+        .spawn(move || {
+            // L4 冷启动判定：壳重启窗口内用户回了 y（sidecar 已写 state），
+            // 这里立即补执行（age 守卫防误吞陈旧 pending）。
+            try_unattended_finish(&app);
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                try_unattended_finish(&app);
+            }
+        })
+        .ok();
+}
+
 #[tauri::command]
 pub async fn finish_dev_swap(app: tauri::AppHandle) -> Result<DevSwapResult, String> {
     let handle = app.clone();
