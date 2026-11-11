@@ -19,6 +19,7 @@
       "node_timeout": "Turn failed: {error}\nA step exceeded its time budget — usually a slow provider or tool call, not a Ginno fault.\nRetry; if it repeats, check the provider's status (traceback: ~/.ginno/logs/sidecar.log).",
       "content_filter": "Turn failed: {error}\nThe provider's safety filter blocked the model's output while it was writing the answer — usually because a large amount of fetched material (many scraped pages, long documents) was summarized in one go.\nRetrying the same request will be blocked the same way. Ask for a narrower slice (fewer pages, or summarize them in batches), and quote sources instead of pasting long passages."
     },
-    "model_error_backoff": "Model API error: {error}. Auto-retry in {seconds}s ({attempt}/{max}) — for quota/permission errors, stop and switch models"
+    "model_error_backoff": "Model API error: {error}. Auto-retry in {seconds}s ({attempt}/{max}) — for quota/permission errors, stop and switch models",
+    "compact_started": "Compaction started; you'll be notified when it finishes"
   }
 }

@@ -1422,6 +1422,17 @@ async def bulk_sessions(req: BulkSessionsRequest) -> dict:
 # ---- session stop (P2 contract 4) ------------------------------------------
 
 
+@router.get("/api/sessions/{session_id}/state")
+async def get_session_state(session_id: str) -> dict:
+    """运行时状态机快照（重连 reconcile 用；不持久化，重启回落 idle）。"""
+    from .. import session_state
+
+    snap = session_state.get_state(session_id)
+    # 派生层：compacting/swapping 以显式写入为准，其余从注册表推导
+    snap = {**snap, "state": session_state.derive_state(session_id)}
+    return {"ok": True, **snap}
+
+
 @router.post("/api/sessions/{session_id}/stop", status_code=202)
 async def stop_session(session_id: str) -> dict:
     """Stop whatever the session is doing; ALWAYS 202 ``{"stopped": true}``.

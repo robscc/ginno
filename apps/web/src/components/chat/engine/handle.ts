@@ -963,6 +963,21 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       }
       break;
     }
+    case "session.state_changed": {
+      // P1 状态机（2026-11-11）：compacting → spinner + 输入锁定；
+      // idle → 解除。running/paused 由既有 turn 事件驱动，此处只补
+      // compacting/swapping 两个新态的 UI 映射。
+      const stSid = String(ev.session_id ?? "");
+      if (!stSid) break;
+      const st = String(ev.state ?? "");
+      if (st === "compacting") {
+        ctx.compactingBySessionRef.current[stSid] = true;
+      } else if (st === "idle") {
+        ctx.compactingBySessionRef.current[stSid] = false;
+      }
+      ctx.syncDisplay(stSid);
+      break;
+    }
     case "runtime.devswap_progress": {
       // dev-swap 热切换进度（docs/dev-swap-progress-design.md §2.2）：sidecar
       // 广播的阶段事件推入模块级总线，DevSwapCard / session 状态行订阅呈现。
