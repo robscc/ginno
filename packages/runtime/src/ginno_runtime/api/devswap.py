@@ -159,6 +159,17 @@ def update_progress(report: ProgressReport) -> dict:
     _broadcast_if_due(snap, immediate=immediate)
     if immediate:
         _last_broadcast_at = time.monotonic()
+
+    # G1 switch-ok 钩子（§1.4）：symlink 已切 + state.json 带
+    # unattended=confirm → 向发起 chat 发 y/n 确认（best-effort，
+    # 异步不阻塞进度通道）。
+    if report.stage == "switch" and report.state == "ok":
+        try:
+            import asyncio
+
+            asyncio.get_running_loop().create_task(_notify_unattended_confirm())
+        except Exception:  # noqa: BLE001
+            pass
     return {"changed": True, "broadcast": True}
 
 
@@ -305,6 +316,98 @@ async def post_progress(report: ProgressReport, request: Request) -> dict:
     if report.state not in STATES:
         return {"ok": False, "error": f"invalid state: {report.state}"}
     return {"ok": True, **update_progress(report)}
+
+
+
+
+# ---- G1 无头授权（channel-devswap-unattended-design.md §1.4 runtime 侧）----
+
+
+def _state_path() -> Path:
+    home = Path(os.environ.get("GINNO_HOME") or Path.home() / ".ginno")
+    return home / "dev-override" / "state.json"
+
+
+def _read_state() -> dict:
+    try:
+        return _json.loads(_state_path().read_text() or "{}")
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_state(st: dict) -> bool:
+    p = _state_path()
+    tmp = p.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(_json.dumps(st, ensure_ascii=False, indent=2))
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        return False
+
+
+UNATTENDED_TTL_S = 600  # 确认窗口 10 分钟（设计 §1.2）
+
+
+def mark_unattended(chat_key: str, verdict: str) -> dict:
+    """企微 y/n → state.json unattended: confirm→go/abort（原子改写）。
+
+    校验：state==pending && unattended=="confirm" && chat_key 匹配 &&
+    age<TTL。"go" 同时广播 runtime.dev_swap_pending {auto:true}——前端
+    活着直通 invoke，壳 watcher 兜底。
+    """
+    if verdict not in ("go", "abort"):
+        return {"ok": False, "error": "bad_verdict"}
+    st = _read_state()
+    if st.get("state") != "pending" or st.get("unattended") != "confirm":
+        return {"ok": False, "error": "not_confirmable"}
+    if str(st.get("chat_key") or "") != chat_key:
+        return {"ok": False, "error": "chat_key_mismatch"}
+    if time.time() - float(st.get("created") or 0) > UNATTENDED_TTL_S:
+        return {"ok": False, "error": "expired"}
+    st["unattended"] = verdict
+    if not _write_state(st):
+        return {"ok": False, "error": "write_failed"}
+    if verdict == "go":
+        import asyncio
+
+        async def _bcast() -> None:
+            await server_shared._push_global_event(
+                "runtime.dev_swap_pending",
+                {"auto": True, "run_id": str(st.get("new") or ""),
+                 "session_id": str(st.get("session_id") or "")},
+            )
+
+        try:
+            asyncio.get_running_loop().create_task(_bcast())
+        except RuntimeError:
+            pass
+    return {"ok": True, "verdict": verdict}
+
+
+async def _notify_unattended_confirm() -> None:
+    """switch-ok 钩子：向发起 chat 发「回复 y 生效 / n 丢弃」确认。
+
+    update_progress 在 stage=switch state=ok 且 state.json 带
+    unattended=confirm 时调用（旧进程侧，仍持有 channel 连接）。
+    """
+    st = _read_state()
+    if st.get("unattended") != "confirm":
+        return
+    chat_key = str(st.get("chat_key") or "")
+    if not chat_key:
+        return
+    try:
+        from ..connectors.builtin import _wecom_adapter
+
+        if _wecom_adapter is None:
+            return
+        await _wecom_adapter.register_devswap_confirm(chat_key)
+    except Exception:  # noqa: BLE001 — 回执失败不影响切换本身
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "devswap_unattended_confirm_notify_failed")
 
 
 @router.post("/api/lastwords/resume")

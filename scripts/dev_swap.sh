@@ -301,6 +301,14 @@ state = {
     # 重启后新进程的 finish 终态上报 + 前端结果落块都以此定位会话。
     "session_id": os.environ.get("DEV_SWAP_SESSION_ID", ""),
 }
+# G1 无头授权（channel-devswap-unattended-design.md §1.4）：channel 发起的
+# run 带 confirm 标记 + chat_key；手动 make dev-swap 无此 env，字段缺省，
+# 桌面确认弹窗路径零变化。
+for _k, _env in (("unattended", "DEV_SWAP_UNATTENDED"),
+                 ("chat_key", "DEV_SWAP_CHAT_KEY")):
+    _v = os.environ.get(_env, "")
+    if _v:
+        state[_k] = _v
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     json.dump(state, f, ensure_ascii=False, indent=2)

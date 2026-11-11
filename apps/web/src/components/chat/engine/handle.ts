@@ -1029,9 +1029,21 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 切到新 bundle。2026-11-05 用户需求：切换需用户确认——不再自动 invoke
       // finish_dev_swap，改为点亮确认条（DevSwapCard 确认区，TopBar 常驻可见）。
       // 「暂不」= 不重启，老 sidecar 继续跑，下次重启自然吃到新 bundle。
+      // G1（2026-11-11）：auto=true = 企微侧已 y 确认——跳过弹框直接 invoke
+      // （L2 低延迟路径；壳 watcher L3/L4 兜 webview 不在的情况）。
       markDelivered(ctx, sid);
       void (async () => {
         const { setDevSwapPendingConfirm } = await import("@/lib/devswap/bus");
+        if (ev.auto === true) {
+          setDevSwapPendingConfirm(null);
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("finish_dev_swap");
+          } catch {
+            /* invoke 失败（非桌面/webview 不可用）→ 壳 watcher 兜底 */
+          }
+          return;
+        }
         setDevSwapPendingConfirm("pending");
       })();
       break;

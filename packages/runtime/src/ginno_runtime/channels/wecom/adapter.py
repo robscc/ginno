@@ -161,10 +161,58 @@ class WeComChannelAdapter(ChannelAdapter):
                                        extra_text=text, image=image)
         # voice/video：P1 暂不消费（语音转写待 P2）
 
+    # ---- G1 无头热更新确认（channel-devswap-unattended-design.md §1.4）----
+
+    async def register_devswap_confirm(self, chat_key: str) -> None:
+        """switch-ok 后向发起 chat 发确认；后续 y/n 由 _try_answer 路由。"""
+        self._pending_q[chat_key] = {
+            "kind": "devswap", "session_id": "", "options": ["y", "n"],
+            "ts": time.time(),
+        }
+        if self.client is not None:
+            try:
+                await self.client.send_markdown(chat_key, (
+                    "**热切换就绪** —— 新 bundle 已挂上，回复确认：\n"
+                    "- `y` 生效（重启到新 bundle，约 10s）\n"
+                    "- `n` 搁置（桌面仍可补执行）\n"
+                    "_10 分钟内有效_"
+                ))
+            except Exception:  # noqa: BLE001 — 回执失败保留 pending 可补
+                pass
+
     async def _try_answer(self, req_id: str, chat_key: str, text: str) -> bool:
         """ask_user 停车中的会话：该消息按作答 resume，而非新 turn。"""
         pending = self._pending_q.get(chat_key)
         if pending is None:
+            return False
+        if pending.get("kind") == "devswap":
+            # y/n → api.devswap.mark_unattended；非 y/n 提示后继续等。
+            ans = text.strip().lower()
+            if ans not in ("y", "n"):
+                if self.client is not None:
+                    try:
+                        await self.client.send_markdown(chat_key,
+                            "请回复 `y`（生效）或 `n`（搁置）")
+                    except Exception:  # noqa: BLE001
+                        pass
+                return True
+            self._pending_q.pop(chat_key, None)
+            from ...api.devswap import mark_unattended
+
+            r = mark_unattended(chat_key, "go" if ans == "y" else "abort")
+            if self.client is not None:
+                ok = bool(r.get("ok"))
+                msg = ("已授权切换，重启进行中（约 10s）——结果见桌面指纹黄条"
+                       if ok and ans == "y" else
+                       "已搁置：桌面端进度徽标仍可点按补执行" if ok else
+                       f"确认失败（{r.get('error')}）：可能已过期，请到桌面处理")
+                try:
+                    await self.client.send_markdown(chat_key, msg)
+                except Exception:  # noqa: BLE001
+                    pass
+            return True
+        if pending.get("ts", 0) and time.time() - pending["ts"] > 600:
+            self._pending_q.pop(chat_key, None)
             return False
         if pending["session_id"] not in shared._PENDING_RESUME:
             # 问题已超时/已被消费：清登记，按普通消息继续
