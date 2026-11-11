@@ -69,14 +69,17 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
   }
   if (pending) {
     return (
-      <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5 font-mono text-xs">
+      // 2026-11-11 样式打磨：左缘琥珀状态条 + 轻呼吸光——比纯灰框更有
+      // 「正在执行」的存在感，又不至于抢正文注意力。
+      <div className="relative my-1.5 overflow-hidden rounded-lg border border-line bg-base/40 py-1.5 pl-3.5 pr-2.5 font-mono text-xs transition-colors hover:border-line2">
+        <span className="absolute inset-y-1 left-1 w-0.5 animate-pulse rounded-full bg-amber-500/70" />
         <span
           className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-faint"
           title={argsPreview ? `${name}\n${argsPreview}` : name}
         >
-          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-          <span className="shrink-0">{label}…</span>
-          {argsPreview && <span className="truncate text-muted">· {argsPreview}</span>}
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-amber-500/80" />
+          <span className="shrink-0 text-muted">{label}…</span>
+          {argsPreview && <span className="truncate text-faint">· {argsPreview}</span>}
         </span>
       </div>
     );
@@ -101,22 +104,40 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
     lineCount > LONG_OUTPUT_LINES ||
     content.length > LONG_OUTPUT_CHARS;
   const expanded = open ?? !isLong;
+  const fail = shell?.ok === false;
   return (
-    <div className="my-1.5 overflow-hidden rounded-md border border-line bg-base/40 font-mono text-xs">
+    // 2026-11-11 样式打磨：状态色左缘条（绿/红一眼分）+ 圆角升级 + 状态
+    // 点图标化；hover 边框反馈。视觉层级：条 > 标签 > 预览 > 统计。
+    <div
+      className={`group relative my-1.5 overflow-hidden rounded-lg border bg-base/40 font-mono text-xs transition-colors hover:border-line2 ${
+        fail ? "border-red-500/30" : "border-line"
+      }`}
+    >
+      <span
+        className={`absolute inset-y-1 left-1 w-0.5 rounded-full ${
+          fail ? "bg-red-500/60" : "bg-emerald-500/50"
+        }`}
+      />
       <button
         onClick={() => setOpen(!expanded)}
-        className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-card2/50"
+        className="flex w-full cursor-pointer items-center gap-1.5 py-1.5 pl-3.5 pr-2.5 text-left transition-colors hover:bg-card2/50"
         title={`${name} — ${expanded ? tc("tools.collapse") : tc("tools.expand")}`}
       >
         <ChevronRight
           className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
         />
         <span className="truncate text-faint" title={argsPreview || undefined}>
-          {tc("tools.prefix")}<span className="text-muted">{label}</span>
+          {tc("tools.prefix")}<span className="font-medium text-txt/80">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
-        <span className={shell?.ok === false ? "shrink-0 text-red-500" : "shrink-0 text-green"}>
-          {shell?.ok === false ? "✗" : "✓"}
+        <span
+          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] leading-none ${
+            fail
+              ? "bg-red-500/15 text-red-500"
+              : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+          }`}
+        >
+          {fail ? "✗" : "✓"}
         </span>
         {del && (
           <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
