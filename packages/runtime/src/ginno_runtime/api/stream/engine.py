@@ -233,6 +233,13 @@ async def _stream_graph(
             _SESSION_WS[session_id] = alive
             ws_closed = not alive
 
+        # token.delta/thinking.delta 合帧（delta_coalesce.py）：33ms 窗口
+        # ≈30fps，N 路并发时 WS send/json.dumps/前端 setState 同比例降频。
+        # 协议不变；非 delta 事件前 flush 保序；finally close 清残留。
+        from .delta_coalesce import DeltaCoalescer
+
+        _coal = DeltaCoalescer(safe_send, emit)
+
         async def keepalive() -> None:
             # The WS receive loop is sequential, so it can't answer the client's
             # app-level pings while a turn runs. If a tool/LLM step goes silent
@@ -573,7 +580,7 @@ async def _stream_graph(
                             if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
-                                await safe_send(emit("token.delta", {"content": txt}))
+                                await _coal.feed("token.delta", txt)
                         elif btype == "server_tool_use":
                             # Z.ai/GLM gateway server-side search request: open
                             # the tool bubble the moment the model "calls" it
@@ -613,10 +620,10 @@ async def _stream_graph(
                     if content:
                         turn_text.append(content)
                         seg_text.append(content)
-                        await safe_send(emit("token.delta", {"content": content}))
+                        await _coal.feed("token.delta", content)
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
-                    await safe_send(emit("thinking.delta", {"content": rk}))
+                    await _coal.feed("thinking.delta", rk)
                 tool_calls = getattr(chunk, "tool_call_chunks", None)
                 if tool_calls:
                     for tc in tool_calls:
@@ -704,6 +711,10 @@ async def _stream_graph(
                     )
                 continue
             elif mode == "updates":
+                # 合帧保序：updates 携带 tool.start/end、permission.request 等
+                # 非 delta 事件——先把缓冲里的文本 flush 出去，保证「文本在
+                # 工具事件前」的因果顺序不被窗口打乱。
+                await _coal.flush()
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
                     if node_name == "agent":
@@ -1255,6 +1266,7 @@ async def _stream_graph(
                     _f.write(json.dumps(_tm, ensure_ascii=False) + "\n")
             except Exception:
                 _log.debug("turn_meta_write_failed session=%s", session_id, exc_info=True)
+            await _coal.flush()
             await safe_send(
                 emit(
                     "message.end",
@@ -1534,6 +1546,11 @@ async def _stream_graph(
         except Exception:
             _log.exception("mods_turn_complete_failed session=%s", session_id)
     finally:
+        # 合帧器收尾：flush 残留 + 取消定时器（幂等；异常路径也清）。
+        try:
+            await _coal.close()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             _ka.cancel()
         except Exception:
