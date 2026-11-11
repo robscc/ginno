@@ -159,7 +159,7 @@ case "$BASE_KB" in ''|*[!0-9]*) BASE_KB=0 ;; esac
 # 第二次运行即 File exists——2026-11-07 实测教训）。
 BUILD_LOG="$(mktemp /tmp/devswap-build.XXXXXX).log"
 report build_runtime running "make runtime（PyInstaller）" 1
-log "make runtime …（构建日志: $BUILD_LOG）"
+log "make runtime …（构建日志: ${BUILD_LOG}）"
 T0=$(date +%s)
 ANCHOR_T=$T0
 LAST_ANCHOR=0
@@ -318,6 +318,6 @@ PY
 
 report switch ok "state=pending，等壳收尾"
 report finish running "壳重启 sidecar + 指纹验证"
-log "✅ symlink 已切到 $NEW_DIR，state=pending。"
+log "✅ symlink 已切到 ${NEW_DIR}，state=pending。"
 log "下一步（自动）：前端收到 runtime.dev_swap_pending 事件后 invoke finish_dev_swap；"
 log "手动等价：Debug 菜单 → 完成热切换（Finish Dev Swap）。"
