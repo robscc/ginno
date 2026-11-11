@@ -614,6 +614,11 @@
       "prev": "上一个 (Shift+Enter)",
       "next": "下一个 (Enter)",
       "close": "关闭 (Esc)"
+    },
+    "turnMeta": {
+      "detailIn": "输入",
+      "detailOut": "输出",
+      "detailElapsed": "耗时"
     }
   }
 }

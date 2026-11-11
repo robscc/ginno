@@ -148,6 +148,7 @@ export function TopBar({
   const tr = useTranslations("shell");
   const [menu, setMenu] = useState(false);
   const [exportMenu, setExportMenu] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const hex = agentHex(agent?.color);
 
@@ -235,16 +236,60 @@ export function TopBar({
               k/M/B（lib/format）——原始值动辄数十万 token，全数字在
               tooltip 里反而难读。 */}
           {usage && usage.calls > 0 && (
-            <TopBarFuncButton
-              title={tr("topbar.usageTitle", {
-                input: fmtTokens(usage.input_tokens),
-                cache: fmtTokens(usage.cache_read_tokens),
-                output: fmtTokens(usage.output_tokens),
-                calls: usage.calls,
-              })}
-            >
-              <ArrowDownUp className="h-4 w-4" />
-            </TopBarFuncButton>
+            <div className="relative">
+              <TopBarFuncButton
+                title={tr("topbar.usageTitle", {
+                  input: fmtTokens(usage.input_tokens),
+                  cache: fmtTokens(usage.cache_read_tokens),
+                  output: fmtTokens(usage.output_tokens),
+                  calls: usage.calls,
+                })}
+                onClick={() => setUsageOpen((v) => !v)}
+                open={usageOpen}
+              >
+                <ArrowDownUp className="h-4 w-4" />
+              </TopBarFuncButton>
+              {usageOpen && (
+                // 点击展开的分色明细卡（2026-11-11）：与 TurnMetaLine 胶囊
+                // 同一视觉语言（↑蓝/↓绿/中性），缓存命中率只在这可见。
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setUsageOpen(false)} />
+                  <div className="absolute right-0 top-9 z-50 w-64 rounded-lg border border-line bg-card p-2.5 font-mono text-[11px] shadow-lg">
+                    {(() => {
+                      const hit = usage.input_tokens > 0
+                        ? Math.round((usage.cache_read_tokens / usage.input_tokens) * 100)
+                        : 0;
+                      const row = "flex items-center justify-between py-0.5";
+                      return (
+                        <>
+                          <div className="mb-1 text-[10px] uppercase tracking-wide text-faint">
+                            {tr("topbar.usageHeading")}
+                          </div>
+                          <div className={row}>
+                            <span className="text-sky-600 dark:text-sky-400">{tr("topbar.usageIn")}</span>
+                            <span>{usage.input_tokens.toLocaleString()}</span>
+                          </div>
+                          <div className={row}>
+                            <span className="text-sky-500/60">{tr("topbar.usageCache")}</span>
+                            <span>
+                              {usage.cache_read_tokens.toLocaleString()} · {hit}%
+                            </span>
+                          </div>
+                          <div className={row}>
+                            <span className="text-emerald-600 dark:text-emerald-400">{tr("topbar.usageOut")}</span>
+                            <span>{usage.output_tokens.toLocaleString()}</span>
+                          </div>
+                          <div className={`${row} border-t border-line2/50 mt-1 pt-1`}>
+                            <span className="text-muted">{tr("topbar.usageCalls")}</span>
+                            <span>{usage.calls.toLocaleString()}</span>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

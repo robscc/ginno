@@ -216,7 +216,12 @@
       "exportFailed": "Export failed — check that the runtime is connected",
       "contextTitle": "Context {percent}%: {used} / {window} tokens (estimated from the last call)",
       "contextSuggestCompact": "approaching the compaction threshold — consider running /compact",
-      "noticeBell": "Notice inbox ({n} unread)"
+      "noticeBell": "Notice inbox ({n} unread)",
+      "usageHeading": "Session Usage",
+      "usageIn": "↑ Input",
+      "usageCache": "Cache hit",
+      "usageOut": "↓ Output",
+      "usageCalls": "Model calls"
     },
     "links": {
       "chipTitle": "Linked sessions",
