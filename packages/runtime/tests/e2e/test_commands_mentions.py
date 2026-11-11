@@ -150,9 +150,14 @@ def test_compact_empty_session_reports_nothing(create_session, ws_conv):
     sid = create_session(model, agent_id="dev")
     with ws_conv(sid) as conv:
         conv.invoke("/compact")
+        # 异步化（2026-11-11）：先收「已启动」notice + message.end（秒收口），
+        # 后台 job 的结果 notice 随后广播到达。
         events = conv.recv_until("message.end", "error")
-    assert event_names(events) == ["notice", "message.end"]
-    assert "no history messages to compact" in events_of(events, "notice")[0]["message"]
+        assert event_names(events) == ["notice", "message.end"]
+        assert "压缩已启动" in events_of(events, "notice")[0]["message"] or \
+               "Compaction started" in events_of(events, "notice")[0]["message"]
+        result = conv.recv_until("notice", "error")
+    assert "no history messages to compact" in events_of(result, "notice")[0]["message"]
     assert not model._captured  # no graph turn, no model call
 
 
@@ -172,12 +177,15 @@ def test_compact_forces_summary_regardless_of_threshold(
         conv.invoke("第二个问题")
         conv.recv_until("message.end", "error")
         conv.invoke("/compact")
+        # 异步化：message.end 秒到；context.compacting + 结果 notice 随后
         events = conv.recv_until("message.end", "error")
-    # 压缩开始先广播专用信号（前端 spinner 用），随后才是结果 notice
-    assert event_names(events) == ["context.compacting", "notice", "message.end"]
-    notice = events_of(events, "notice")[0]["message"]
-    assert "Context compacted" in notice
-    assert "tokens" in notice  # before → after estimate reported
+        assert "message.end" in event_names(events)
+        tail = conv.recv_until("notice", "error")
+    all_events = events + tail
+    assert "context.compacting" in event_names(all_events)
+    notices = events_of(all_events, "notice")
+    result_notice = next(n for n in notices if "Context compacted" in n["message"])
+    assert "tokens" in result_notice["message"]
     # 2 turn calls + 1 summarizer call (the summary SystemMessage is captured)
     assert len(model._captured) >= 3
 

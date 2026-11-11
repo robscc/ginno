@@ -447,8 +447,18 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             # immediately; the result notice (and, from the
                             # split form, the subagent.plan broadcast inside
                             # issue_plan) lands when the job finishes.
+                            # 2026-11-11: /compact 加入同一路径（异步化 P0）——
+                            # 60-90s 的摘要不再阻塞 receive loop，气泡秒收口，
+                            # 断线不再误标「未送达」。
                             from ...subagent_plan import run_background_command
 
+                            if plan.builtin_async == "compact":
+                                await _push_session_event(
+                                    session_id, "notice",
+                                    {"message": "压缩已启动，完成后通知结果",
+                                     "i18n_key": "stream.compact_started"},
+                                    turn_id,
+                                )
                             spawn_bg(
                                 run_background_command(
                                     session,

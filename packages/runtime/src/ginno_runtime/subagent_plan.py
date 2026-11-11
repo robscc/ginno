@@ -35,7 +35,7 @@ from .subagent_scheduler import max_concurrent
 # block the socket's ping/stop/steer. The invoking socket still gets an
 # immediate message.end; the result notice + the subagent.plan broadcast land
 # when the job finishes.
-BACKGROUND_ASYNC_COMMANDS = frozenset({"subagent", "subagent-split"})
+BACKGROUND_ASYNC_COMMANDS = frozenset({"subagent", "subagent-split", "compact"})
 
 # Per-session pending plan: {session_id: {plan_id, session_id, task, subtasks,
 # created}}. Keyed by SESSION (not plan_id) so a second ``/subagent 拆分``
@@ -307,7 +307,13 @@ async def run_background_command(
     decompose LLM call runs; the split form's ``subagent.plan`` broadcast
     happens inside issue_plan on the same completion path (契约不变)."""
     from .commands.registry import BUILTINS
+    from . import session_state
 
+    sid = session.get("session_id") or ""
+    # /compact 是 session 级状态重写：迁移 compacting（前端 spinner +
+    # 输入框锁定），完成/失败回 idle。subagent 族不迁（它们不改本会话状态）。
+    if name == "compact":
+        await session_state.set_state(sid, "compacting", detail="LLM 摘要中")
     try:
         reply = await BUILTINS[name].async_handler(
             session.get("project_slug"), session, args
@@ -321,6 +327,9 @@ async def run_background_command(
             f"/{name} failed: {type(e).__name__}: {e}",
             f"/{name} 失败：{type(e).__name__}: {e}",
         )
+    finally:
+        if name == "compact":
+            await session_state.set_state(sid, "idle")
     try:
         await _push_session_event(
             session.get("session_id") or "", "notice", {"message": reply}, turn_id

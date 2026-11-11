@@ -19,6 +19,7 @@
       "node_timeout": "回合失败：{error}\n某一步超出了时间预算——通常是 provider 或工具调用慢，不是 Ginno 的问题。\n直接重试；若复现，检查 provider 状态（堆栈见 ~/.ginno/logs/sidecar.log）。",
       "content_filter": "回合失败：{error}\nprovider 的安全过滤器在模型写答案的过程中拦截了它的输出——通常是一次性汇总了过多抓取来的素材（很多网页、长文档）导致的。\n同样的请求重试仍会被拦截。请缩小范围（少抓几页，或分批总结），并引用来源而不是大段粘贴原文。"
     },
-    "model_error_backoff": "模型接口报错：{error}。{seconds} 秒后自动重试（{attempt}/{max}）——配额/权限类错误可直接停止并更换模型"
+    "model_error_backoff": "模型接口报错：{error}。{seconds} 秒后自动重试（{attempt}/{max}）——配额/权限类错误可直接停止并更换模型",
+    "compact_started": "压缩已启动，完成后通知结果"
   }
 }
