@@ -57,6 +57,18 @@ interface _QueueItem {
 // 入站 method 白名单 = handleMessage 里显式分支的三个前缀：
 // ui/initialize、tools/call、logging/*（未知一律丢弃 + warn）。
 
+/** 规整为官方 CallToolResult content 块数组：裸字符串元素映射为
+ * {type:"text"} 块。server 侧（如 trending repo_detail）返回的 content
+ * 可能混裸 string——app 官方 SDK 的 zod 严格校验 content[i] 必须是
+ * object（2026-11-12 回调失败根因；与 pushData 的 #86 规整同语义）。 */
+function _normalizeContentBlocks(raw: unknown): unknown[] {
+  const arr = Array.isArray(raw) ? raw : [{ type: "text", text: String(raw ?? "") }];
+  // object（块）透传；string/number/boolean 等标量一律包成 text 块
+  return arr.map((el) =>
+    el !== null && typeof el === "object" ? el : { type: "text", text: String(el) },
+  );
+}
+
 function _isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -142,14 +154,7 @@ export class McpAppBridge {
     // McpAppCard 初始推送的 [data]）映射为 {type:"text"} 块——app 侧
     // SDK 读 content[i].text，裸字符串会让表格渲染成空（2026-11-11
     // trending 空表根因）。
-    const raw = Array.isArray(payload.content)
-      ? payload.content
-      : [{ type: "text", text: String(payload.content ?? "") }];
-    const content = raw.map((el) =>
-      typeof el === "string"
-        ? { type: "text", text: el }
-        : (el as { type: string; text?: string }),
-    );
+    const content = _normalizeContentBlocks(payload.content);
     const params: Record<string, unknown> = { content };
     const structured =
       payload.structuredContent ?? (payload as { structured?: unknown }).structured;
@@ -243,8 +248,14 @@ export class McpAppBridge {
         this.pushData({ tool: item.tool, error: message });
         return;
       }
-      this.reply(item.id, result);
-      this.pushData({ tool: item.tool, content: result.content, structured: result.structured });
+      // response 路径同 pushData 规整：reply 原样透传会让 app 侧 zod
+      // 校验炸「回调失败」（content[0] expected object, received string）。
+      const normalized = {
+        ...result,
+        content: _normalizeContentBlocks(result.content),
+      };
+      this.reply(item.id, normalized);
+      this.pushData({ tool: item.tool, content: normalized.content, structured: result.structured });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       // 403 / server 错误：错误文本经 ui/data 推给 app（goal：带 error 字段）
