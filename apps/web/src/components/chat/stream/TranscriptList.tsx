@@ -39,6 +39,7 @@ export function TranscriptList({
   liveId,
   running,
   compacting,
+  compactPct = null,
   serverRunning,
   wsStatus,
   parked,
@@ -56,6 +57,7 @@ export function TranscriptList({
   liveId: string | null;
   running: boolean;
   compacting: boolean;
+  compactPct: number | null;
   serverRunning: boolean;
   /** 本会话 WS 连接状态（ChatStream）：传给 live 气泡的等待行——断线期间
    *  改报连接中断，而不是让「等待下一轮」秒表空转。 */
@@ -418,7 +420,7 @@ export function TranscriptList({
               }
               blocks={m.blocks}
               streaming={m.id === liveId}
-              statusOverride={compacting ? tc("stream.compacting") : null}
+              statusOverride={compacting ? `${tc("stream.compacting")}${compactPct != null ? ` · ${compactPct}%` : ""}` : null}
               connState={wsStatus ?? null}
               parkedTurn={parked}
               turnId={m.turnId}

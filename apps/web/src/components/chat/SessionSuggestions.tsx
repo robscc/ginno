@@ -39,14 +39,19 @@ export function SessionSuggestions({
   busyId,
   onAction,
   onDismiss,
+  hideDuringCompact = false,
 }: {
   suggestions: SessionSuggestion[];
   /** Suggestion id whose action is in flight — disables every button. */
   busyId: string | null;
   onAction: (s: SessionSuggestion) => void;
   onDismiss: (id: string) => void;
+  /** 压缩进行中隐藏（2026-11-12）：黄色「上下文接近上限」建议与正在
+   * 执行的压缩互相矛盾——压缩期间不再劝用户压缩。 */
+  hideDuringCompact?: boolean;
 }) {
   const tc = useTranslations("chat");
+  if (hideDuringCompact) return null;
   if (suggestions.length === 0) return null;
 
   const actionLabel = (type: string): string | null => {

@@ -162,6 +162,12 @@ export function ChatStream({
   // E3 压缩进行中（context.compacting）：live 气泡状态行显示「压缩中…」。
   // 瞬态显示层状态,真源在 engine 的 compactingBySessionRef。
   const [compacting, setCompacting] = useState(false);
+  // 压缩进度（2026-11-12）：{stage,pct} 事件驱动 + 时间缓动（LLM 黑盒期
+  // 5→92 由前端推进，Claude Code 同款）；null = 不在压缩中。
+  const [compactStage, setCompactStage] = useState<{
+    stage: string;
+    pct: number;
+  } | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Command/mention autocomplete: open menu (items + active index + trigger).
   const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
@@ -179,6 +185,21 @@ export function ChatStream({
   // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
   // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
   const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
+
+  // 压缩进度缓动：summarizing 阶段每 1.8s +4 封顶 90；writing 事件自带
+  // 92；结束（stage null / compacting false）由引擎事件清。
+  useEffect(() => {
+    if (!compacting || !compactStage) return;
+    if (compactStage.stage !== "summarizing") return;
+    const t = setInterval(() => {
+      setCompactStage((p) =>
+        p && p.stage === "summarizing" ? { ...p, pct: Math.min(90, p.pct + 4) } : p,
+      );
+    }, 1800);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随阶段重建计时器；依赖整对象会让 pct 每跳一次就重置 1.8s 节奏
+  }, [compacting, compactStage?.stage]);
+  const compactPct = compacting ? (compactStage?.pct ?? 8) : null;
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -242,7 +263,7 @@ export function ChatStream({
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompacting, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
@@ -760,6 +781,7 @@ export function ChatStream({
   const isChannel = session?.type === "channel";
   const composerBoxEl = (
     <Composer
+            compacting={compacting}
       g={g}
       session={session}
       isHome={isHome}
@@ -940,6 +962,7 @@ export function ChatStream({
             liveId={liveId}
             running={running}
             compacting={compacting}
+            compactPct={compactPct}
             serverRunning={serverRunning}
             wsStatus={wsStatus}
             parked={parked}
@@ -1041,6 +1064,7 @@ export function ChatStream({
               composer; hidden while a turn runs (their actions would race it). */}
           {session && !running && visibleSuggestions.length > 0 && (
             <SessionSuggestions
+            hideDuringCompact={compacting}
               suggestions={visibleSuggestions}
               busyId={suggestBusy}
               onAction={(s) => void runSuggestionAction(s)}

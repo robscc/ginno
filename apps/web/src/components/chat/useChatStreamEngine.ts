@@ -16,7 +16,7 @@
 // engine/steer（steer 队列管线）、engine/actions（权限/重试等 socket 动作）。
 // 本文件保留 ref 表、syncDisplay、WS 连接生命周期与 session 切换编排。
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
@@ -112,6 +112,9 @@ export interface EngineDeps {
   // context.compacting 状态镜像（E3 压缩中的「压缩中…」提示）：set 仅写
   // 当前显示会话的布尔值，真源是 compactingBySessionRef。
   setCompacting: (v: boolean | ((p: boolean) => boolean)) => void;
+  setCompactStage: (
+    v: { stage: string; pct: number } | null | ((p: { stage: string; pct: number } | null) => { stage: string; pct: number } | null),
+  ) => void;
   setInput: (v: string | ((p: string) => string)) => void;
   setAttachments: (v: Attachment[] | ((p: Attachment[]) => Attachment[])) => void;
   setTarget: (v: string | null | ((p: string | null) => string | null)) => void;
@@ -219,6 +222,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
   // 置位只在总结 LLM 调用前发生,清除由「该会话任何下一个事件」兜底——
   // 压缩期间没有别的流事件,首个到达的事件必属压缩之后。
   const compactingBySessionRef = useRef<Record<string, boolean>>({});
+  // 压缩进度镜像（2026-11-12）：真源 compactStageRef（engine ctx），
+  // syncDisplay 时把当前显示会话的 stage 投到 React 状态供进度条渲染。
+  const compactStageRef = useRef<Record<string, { stage: string; pct: number } | null>>({});
+  const [compactStage, setCompactStage] = useState<{ stage: string; pct: number } | null>(null);
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
   // (remount mid-turn — the user navigated to another page while a reply was
@@ -283,6 +290,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     setStreamAgent(streamAgentRef.current[sid] ?? null);
     setServerRunning(!!serverRunningRef.current[sid]);
     setCompacting(!!compactingBySessionRef.current[sid]);
+    setCompactStage(compactStageRef.current[sid] ?? null);
     // The steer queue is no longer mirrored here — useSteerQueue re-renders the
     // component itself when the queue changes, and `steerItems` reads it live.
   };
@@ -299,7 +307,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     i18nRef,
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
     storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
-    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, streamAgentRef,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, compactStageRef, streamAgentRef, setCompactStage,
     orphanStreamRef, adoptedTurnRef, retryNoticeRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
     sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,
@@ -876,7 +884,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // refs
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
     storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
-    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, streamAgentRef,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, compactStageRef, streamAgentRef,
     orphanStreamRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
     sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,

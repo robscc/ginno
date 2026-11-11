@@ -38,6 +38,7 @@ export function Composer({
   isHome,
   running,
   parked,
+  compacting = false,
   wsStatus,
   onReconnect,
   composerHint,
@@ -79,6 +80,9 @@ export function Composer({
   isHome: boolean;
   running: boolean;
   parked: boolean;
+  /** 压缩进行中（2026-11-12）：锁输入与发送——压缩期间的消息会落进
+   * 旧历史被一并摘要，语义错误。 */
+  compacting?: boolean;
   wsStatus: "connecting" | "live" | "reconnecting" | "offline";
   onReconnect: () => void;
   composerHint: string | null;
@@ -211,6 +215,7 @@ export function Composer({
         <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
       )}
       <textarea
+          readOnly={compacting}
         ref={textareaRef}
         value={input}
         onChange={(e) => {
@@ -337,7 +342,7 @@ export function Composer({
           }
         }}
         rows={2}
-        placeholder={tc("composer.placeholder")}
+        placeholder={compacting ? tc("composer.compactingPlaceholder") : tc("composer.placeholder")}
         style={
           composerH != null
             ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
@@ -452,6 +457,7 @@ export function Composer({
           disabled={
             parked ||
             running ||
+            compacting ||
             // In-session uploads run immediately and gate the send; on
             // home they're deferred until lazy creation, so they must
             // not disable the button (same deadlock as send()'s guard).
