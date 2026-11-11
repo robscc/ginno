@@ -85,6 +85,15 @@ NEW_DIR="ginno-runtime.v${SHA%%-*}.$TS"   # v{sha8}.{epoch}
 FINGERPRINT="$SHA"
 RUN_ID="$NEW_DIR"
 
+# ---- 0.5 public 完整性快照（2026-11-11 svg 失踪案防御）--------------------
+# 三批 apps/web/public 静态资产丢失（fileicons ×24 等）全部发生在热切换
+# 窗口内（fs_usage 实锤：切换时刻 ginno-runtime 进程对 public 资产做
+# rename，具体触碰环节未定位——构建链/symlink 切/壳重启三者之一）。
+# 防御：构建前记内容指纹，切换完成后比对；丢失立即 git restore 自愈并
+# 大字告警——把「热切换窗口丢资产」从静默事故变成 5 秒内自愈事件。
+PUBLIC_SNAP="$(find "$ROOT/apps/web/public" -type f 2>/dev/null | sort | xargs md5 -q 2>/dev/null | shasum | cut -d' ' -f1)"
+log "public 快照指纹 $PUBLIC_SNAP"
+
 # ---- 1. quiesce：无运行中 turn（⌘Q gate 同款聚合）------------------------
 if [ "${FORCE:-0}" != "1" ]; then
   report quiesce running "检查运行中 turn"
@@ -237,6 +246,19 @@ ln -sfn "$NEW_DIR" "$TMP_LINK" 2>/dev/null || ln -sf "$NEW_DIR" "$TMP_LINK"
 python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$TMP_LINK" "$LINK"
 # 切完即验：链接确实指到新目录，否则后面所有验证都在验错的 bundle。
 [ "$(readlink "$LINK" 2>/dev/null)" = "$NEW_DIR" ] || die_stage "symlink 切换未生效（仍指向 $(readlink "$LINK" 2>/dev/null || echo none)）"
+
+# ── public 完整性自检+自愈（同上快照；丢失 5 秒内恢复）─────────────────
+PUBLIC_NOW="$(find "$ROOT/apps/web/public" -type f 2>/dev/null | sort | xargs md5 -q 2>/dev/null | shasum | cut -d' ' -f1)"
+if [ "$PUBLIC_NOW" != "$PUBLIC_SNAP" ]; then
+  log "⚠️⚠️ 检测到 public 资产在热切换窗口内丢失/变化——git restore 自愈中"
+  git -C "$ROOT" checkout -- apps/web/public 2>/dev/null || git -C "$ROOT" restore apps/web/public 2>/dev/null || true
+  PUBLIC_FIX="$(find "$ROOT/apps/web/public" -type f 2>/dev/null | sort | xargs md5 -q 2>/dev/null | shasum | cut -d' ' -f1)"
+  if [ "$PUBLIC_FIX" = "$PUBLIC_SNAP" ]; then
+    log "✅ public 已自愈（git restore）——事故被拦截，构建继续"
+  else
+    log "⚠️ public 自愈后指纹仍不一致（可能含未跟踪新文件）——继续切换，请人工核对 apps/web/public"
+  fi
+fi
 
 # 新 bundle 的 built_at（build-info.json）：壳的指纹验证除 fingerprint 外
 # 加验它——同一棵脏工作树连续构建 fingerprint 相同，只比指纹会把「ladder
