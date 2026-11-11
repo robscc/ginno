@@ -1167,8 +1167,20 @@ async def _stream_graph(
             def _instincts_kick() -> None:
                 try:
                     from ...instincts import maybe_analyze as _instinct_analyze
+                    from ...instincts.observer import (
+                        capture_correction_signal as _ics,
+                        maybe_run_observer as _mro,
+                    )
 
+                    # L2 预筛：用户输入含纠偏信号 → 观察 user_correction。
+                    _ics(
+                        str(((config or {}).get("configurable") or {}).get("user_text") or ""),
+                        session_id,
+                    )
                     _instinct_analyze(session_id=session_id)
+                    # observer 位点分析（含节流；LLM 判定仅在配置了
+                    # observer_model 且有 user_correction 观察时发生）。
+                    _mro(session_id)
                 except Exception:
                     pass
 

@@ -140,6 +140,10 @@ _DEFAULT_SETTINGS = {
         "inject_token_budget": 600,
         "template_threshold": 3,
         "decay_days": 90,
+        "observer_model": "",
+        "observer_model_id": "",
+        "min_observations": 20,
+        "analyze_gap_min": 5,
     },
     "knowledge": {
         "enabled": False,
