@@ -176,10 +176,39 @@ _STREAM_STALL_WAIT_S = 30.0
 async def _ainvoke_rate_limited(bound, msgs):
     waited = 0
     stalled = 0
+    _instinct_retry: dict | None = None  # instincts L1：记录退避形态，成功后捕获
     while True:
         try:
-            return await bound.ainvoke(msgs)
+            result = await bound.ainvoke(msgs)
+            # instincts L1 捕获（docs/instincts-design.md §5）：重试自救成功
+            # 事件（曾退避后成功）——观察失败绝不影响主 turn。
+            if _instinct_retry is not None:
+                try:
+                    from .instincts import observe as _instinct_observe
+
+                    _rcfg = (msgs[0] if not hasattr(msgs, "get") else {}) or {}
+                    _instinct_observe(
+                        {
+                            "type": "retry_recovered",
+                            "retry_kind": _instinct_retry.get("kind"),
+                            "attempts": _instinct_retry.get("attempts"),
+                            "tool": "llm",
+                            "args_repr": "",
+                            "static": False,
+                            "session": "",
+                            "project": "",
+                            "turn": "",
+                        }
+                    )
+                except Exception:
+                    pass
+            return result
         except Exception as exc:  # noqa: BLE001 — 只吞限流,其余照抛
+            if _is_stream_chunk_timeout(exc):
+                if stalled >= _STREAM_STALL_MAX_RETRIES:
+                    raise
+                stalled += 1
+                _instinct_retry = {"kind": "stream_stall", "attempts": stalled}
             if _is_stream_chunk_timeout(exc):
                 if stalled >= _STREAM_STALL_MAX_RETRIES:
                     raise
@@ -195,6 +224,7 @@ async def _ainvoke_rate_limited(bound, msgs):
                 raise
             delay = _RATE_LIMIT_WAIT_S * (2 ** waited)
             waited += 1
+            _instinct_retry = {"kind": "rate_limited", "attempts": waited}
             _log.warning(
                 "rate_limited_backoff wait=%.0fs attempt=%d/%d err=%.200s",
                 delay, waited, _RATE_LIMIT_MAX_WAITS, exc,

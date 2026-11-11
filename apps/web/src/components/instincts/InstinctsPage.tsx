@@ -116,6 +116,23 @@ export function InstinctsPage() {
                 {it.scope === "global" ? t("scope.global") : it.project_slug}
               </span>
               <span className="ml-auto flex items-center gap-1">
+                {it.status === "pending" && (
+                  <button
+                    onClick={async () => {
+                      // 一键采纳（P1 体验件）：pending → active，置信度保持。
+                      await updateInstinct(it.id, {
+                        id: it.id, trigger: it.trigger, behavior: it.behavior,
+                        confidence: it.confidence, domain: it.domain, scope: it.scope,
+                        project_slug: it.project_slug, source: it.source,
+                        status: "active", evidence: it.evidence,
+                      });
+                      void reload();
+                    }}
+                    className="rounded bg-green/15 px-1.5 py-0.5 text-[11px] text-green hover:bg-green/25"
+                  >
+                    {t("adopt")}
+                  </button>
+                )}
                 <button
                   onClick={() => setEditing(it)}
                   className="rounded px-1.5 py-0.5 text-[11px] text-violet hover:bg-violet/10"

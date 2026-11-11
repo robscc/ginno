@@ -685,6 +685,17 @@ def run_startup_maintenance() -> None:
         maybe_cleanup_logs_daily()
     except Exception:  # noqa: BLE001 — 日志清理绝不阻塞启动
         _log.exception("maintenance_logs_failed")
+    # instincts 衰减治理（docs/instincts-design.md §9/§6 防停摆）：
+    # pending 滞留 14 天过期、active 超 decay_days 降档/<0.3 软删。幂等，
+    # 失败不挡启动（decay_scan 内部逐条容错）。
+    try:
+        from .instincts.capture import decay_scan
+
+        n = decay_scan()
+        if n:
+            _log.info("instincts_decay_scanned changed=%d", n)
+    except Exception:  # noqa: BLE001
+        _log.exception("instincts_decay_scan_failed")
     slugs = _project_slugs()
     if not slugs:
         return
