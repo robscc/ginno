@@ -86,9 +86,10 @@ NEW_DIR="ginno-runtime.v${SHA%%-*}.$TS"   # v{sha8}.{epoch}
 # 跳过判定按 runtime 输入内容哈希——非 runtime 提交后跳过 PyInstaller
 # 重建，bundle 指纹停在最后一个 runtime 提交；而这里原来用 HEAD sha 做
 # 期望，必然失配 → preflight 必炸（bd613b7 scripts-only 提交实录）。
-# bundle 指纹才是「将要上线的东西」的唯一真源；读不到回退 HEAD。
-FINGERPRINT="$(python3 -c "import json;print(json.load(open('$ROOT/packages/runtime/build-info.json')).get('fingerprint',''))" 2>/dev/null || true)"
-[ -n "$FINGERPRINT" ] || FINGERPRINT="$SHA"
+# bundle 指纹才是「将要上线的东西」的唯一真源。⚠️ 实际读取必须在
+# make runtime 之后（2026-11-11 二段修：开头读的是旧 build-info.json，
+# build 重建后内嵌指纹已变 → preflight 又失配）。此处仅声明默认值。
+FINGERPRINT="$SHA"
 RUN_ID="$NEW_DIR"
 
 # ── 取消基建（2026-11-11 用户需求：取消热更新）─────────────────────────
@@ -208,6 +209,12 @@ PCT_PID=$!
 wait "$MAKE_PID" || { kill "$PCT_PID" 2>/dev/null; wait "$PCT_PID" 2>/dev/null || true; log "构建失败，日志尾部："; tail -20 "$BUILD_LOG"; die_stage "make runtime 失败"; }
 kill "$PCT_PID" 2>/dev/null; wait "$PCT_PID" 2>/dev/null || true
 report build_runtime ok "bundle 已重建" 100
+
+# 期望指纹以 build 产物为准（build-info.json 是 make runtime 刚写的；
+# 跳过重建时它是上一次的值——与 dist 内嵌一致，两种情况都对）。
+FINGERPRINT="$(python3 -c "import json;print(json.load(open('$ROOT/packages/runtime/build-info.json')).get('fingerprint',''))" 2>/dev/null || true)"
+[ -n "$FINGERPRINT" ] || FINGERPRINT="$SHA"
+log "期望指纹（bundle build-info）：$FINGERPRINT"
 
 # ---- 4. blue-green 预检：新 bundle 独立端口 + temp home 探活 -------------
 # 起不来/指纹不对 → 直接判失败，绝不进入切换（当前运行不受任何影响）。
