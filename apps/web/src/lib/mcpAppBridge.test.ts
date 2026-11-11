@@ -147,11 +147,39 @@ describe("McpAppBridge tools/call 数据面", () => {
     expect(h.callMcp).toHaveBeenCalledWith("draw", { x: 1 });
     const rs = responses(h.posted);
     expect(rs).toEqual([
-      { jsonrpc: "2.0", id: 21, result: { content: ["ok"], structured: { done: true } } },
+      // 2026-11-12 修复：response 路径同 pushData 规整——裸串包成 text 块
+      { jsonrpc: "2.0", id: 21, result: { content: [{ type: "text", text: "ok" }], structured: { done: true } } },
     ]);
     const pushes = dataPushes(h.posted);
     expect(pushes).toHaveLength(1);
     expect(pushes[0].params).toEqual({ content: [{ type: "text", text: "ok" }], structuredContent: { done: true } });
+  });
+
+  it("成功：server 返回混裸串 content（trending repo_detail 实况）→ reply 与推送均规整为 text 块", async () => {
+    const h = makeBridge({
+      // server 实况可能混块对象/裸串/标量——类型按 McpCallResult 放宽断言
+      callMcp: vi.fn(async () => ({
+        content: [
+          "raw-string-detail",
+          { type: "text", text: "already-block" },
+          42,
+        ] as unknown as string[],
+        structured: { stars: 1 },
+      })),
+    });
+    h.msg({ jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "repo_detail", arguments: { full_name: "a/b" } } });
+    await h.flush();
+    const rs = responses(h.posted) as Array<{
+      result: { content: unknown[]; structured: unknown };
+    }>;
+    expect(rs[0].result.content).toEqual([
+      { type: "text", text: "raw-string-detail" },
+      { type: "text", text: "already-block" },
+      { type: "text", text: "42" },
+    ]);
+    expect(rs[0].result.structured).toEqual({ stars: 1 });
+    const pushes = dataPushes(h.posted) as Array<{ params: { content: unknown[] } }>;
+    expect(pushes[0].params.content).toEqual(rs[0].result.content);
   });
 
   it("403/拒绝：错误文本经 ui/data error 字段推给 app，并回 JSON-RPC error", async () => {
