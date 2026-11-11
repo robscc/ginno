@@ -27,6 +27,12 @@ function emit() {
 export function pushDevSwapRun(run: DevSwapRun) {
   const key = `${run.run_id}|${run.stage}|${run.state}|${run.pct ?? ""}`;
   if (key === lastKey) return;
+  // 新 run 启动 → 清掉上一轮的「待切换」pill（2026-11-11 实案：上轮
+  // 构建切换后留了 ⏳ 待切换，新一轮构建开始后两个 pill 叠着显示、
+  // 状态矛盾）。pendingConfirm 的重开由 resyncDevSwapRun 的快照兜底。
+  if (lastKey && !lastKey.startsWith(`${run.run_id}|`) && pendingConfirm) {
+    setDevSwapPendingConfirm(null);
+  }
   lastKey = key;
   const sk = `${run.run_id}|${run.stage}`;
   let started = stageStart.get(sk);
