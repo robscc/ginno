@@ -262,7 +262,35 @@ async def devswap_cancel(request: Request) -> dict:
     task = server_shared._DEVSWAP_PROGRESS.get("task")
     if not task or task.done():
         return {"ok": False, "error": "not_running"}
+    # 2026-11-11 升级：安全门先于 cancel——state=pending（symlink 已切）
+    # 的 run 拒绝取消（杀脚本会留下未 finish 的状态机，该走 finish/回滚）；
+    # 通过后才 cancel，并清 pidfile 残留（killpg SIGKILL 后脚本 trap 不会跑）。
+    try:
+        from ..paths import home as _home
+
+        _od = _home() / "dev-override"
+        _state = {}
+        try:
+            _state = _json.loads((_od / "state.json").read_text() or "{}")
+        except Exception:
+            pass
+        if _state.get("state") == "pending":
+            return JSONResponse(
+                {"ok": False, "error": "past_switch_point",
+                 "hint": "symlink 已切换：等待 finish 验证或回滚，不能取消"},
+                status_code=409,
+            )
+    except Exception:
+        pass
     task.cancel()
+    try:
+        for _f in ("current-run.pid", "current-run.json"):
+            try:
+                (_od / _f).unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
     return {"ok": True}
 
 

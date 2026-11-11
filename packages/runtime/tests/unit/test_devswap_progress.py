@@ -270,3 +270,49 @@ class TestBroadcast:
     def test_update_progress_returns_broadcast_flag(self, client):
         r = _post(client, stage="build_runtime", state="running", detail="a")
         assert "changed" in r.json() and "broadcast" in r.json()
+
+
+async def test_cancel_rejects_past_switch_point(monkeypatch, tmp_path):
+    """取消安全门（2026-11-11）：state=pending（symlink 已切）拒绝取消。"""
+    from fastapi import Request
+    from ginno_runtime import server_shared
+    import asyncio
+
+    async def _noop():
+        await asyncio.sleep(0)
+
+    task = asyncio.get_event_loop().create_task(_noop())
+    server_shared._DEVSWAP_PROGRESS["task"] = task
+
+    class FakeReq:
+        class client:
+            host = "127.0.0.1"
+
+    # state.json = pending → 409 past_switch_point
+    from ginno_runtime.api import devswap as ds
+    monkeypatch.setattr(
+        "ginno_runtime.paths.home", lambda: tmp_path, raising=True
+    )
+    od = tmp_path / "dev-override"
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "state.json").write_text('{"state": "pending"}')
+    (od / "current-run.pid").write_text("12345\n")
+    resp = await ds.devswap_cancel(FakeReq())
+    assert getattr(resp, "status_code", 200) == 409
+    # 安全门先于 cancel：task 必须未被取消。
+    assert not task.cancelled()
+    await asyncio.sleep(0)  # 让 no-op task 正常收尾
+    server_shared._DEVSWAP_PROGRESS["task"] = None
+
+
+async def test_cancel_no_task_returns_not_running(monkeypatch):
+    from ginno_runtime import server_shared
+    from ginno_runtime.api import devswap as ds
+
+    class FakeReq:
+        class client:
+            host = "127.0.0.1"
+
+    server_shared._DEVSWAP_PROGRESS["task"] = None
+    r = await ds.devswap_cancel(FakeReq())
+    assert r == {"ok": False, "error": "not_running"}

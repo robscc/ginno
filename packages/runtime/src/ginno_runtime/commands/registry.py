@@ -1306,6 +1306,12 @@ async def _dev_swap_async_handler(
             "（/dev-swap 需要 ginno 源码树路径——用法：/dev-swap /path/to/ginno）",
         )
     task = asyncio.create_task(_dev_swap_background(sid, repo))
+    # 命令路径也注册到进度快照的 task 位（2026-11-11 补齐：此前只有
+    # /api/devswap/start 记 task，/dev-swap 命令发起的 run 对 cancel
+    # 端点不可见——「取消热更新」对命令路径失效）。
+    from ..server_shared import _DEVSWAP_PROGRESS as _DS_PROGRESS
+
+    _DS_PROGRESS["task"] = task
     _DEV_SWAP_TASKS.add(task)
     task.add_done_callback(_DEV_SWAP_TASKS.discard)
     return t(
