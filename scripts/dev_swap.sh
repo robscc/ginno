@@ -82,7 +82,13 @@ command -v uv >/dev/null || die "uv 不在 PATH（已兜底 Homebrew 前缀与 ~
 SHA="$(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet || printf -- -dirty)"
 TS="$(date +%s)"
 NEW_DIR="ginno-runtime.v${SHA%%-*}.$TS"   # v{sha8}.{epoch}
-FINGERPRINT="$SHA"
+# 期望指纹 = bundle 自带的 build-info.json（2026-11-11 修复）：Makefile 的
+# 跳过判定按 runtime 输入内容哈希——非 runtime 提交后跳过 PyInstaller
+# 重建，bundle 指纹停在最后一个 runtime 提交；而这里原来用 HEAD sha 做
+# 期望，必然失配 → preflight 必炸（bd613b7 scripts-only 提交实录）。
+# bundle 指纹才是「将要上线的东西」的唯一真源；读不到回退 HEAD。
+FINGERPRINT="$(python3 -c "import json;print(json.load(open('$ROOT/packages/runtime/build-info.json')).get('fingerprint',''))" 2>/dev/null || true)"
+[ -n "$FINGERPRINT" ] || FINGERPRINT="$SHA"
 RUN_ID="$NEW_DIR"
 
 # ── 取消基建（2026-11-11 用户需求：取消热更新）─────────────────────────
