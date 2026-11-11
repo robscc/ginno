@@ -631,10 +631,21 @@ async def _compact_async_handler(
         from ..server_shared import _push_global_event, _push_session_event
 
         async def _announce_compacting() -> None:
-            await _push_session_event(sid, "context.compacting", {})
+            # 进度条（2026-11-12）：stage + pct 事件；5→92 之间由前端
+            # 时间缓动推进（Claude Code 同款），完成态由下一个事件清。
+            await _push_session_event(
+                sid, "context.compacting", {"stage": "summarizing", "pct": 8}
+            )
+
+        async def _announce_summary_done() -> None:
+            await _push_session_event(
+                sid, "context.compacting", {"stage": "writing", "pct": 92}
+            )
 
         stats = await maybe_compact_history(
-            session, config, force=True, on_summary_start=_announce_compacting
+            session, config, force=True,
+            on_summary_start=_announce_compacting,
+            on_summary_done=_announce_summary_done,
         )
     except Exception as e:
         _log.exception("compact_cmd_failed session=%s", sid)

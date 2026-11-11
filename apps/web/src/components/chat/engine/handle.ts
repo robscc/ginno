@@ -316,6 +316,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
   // →turn 照常继续,compaction 从不当 blocker)。含 turn.stopped/error。
   if (ev.event !== "context.compacting" && ctx.compactingBySessionRef.current[sid]) {
     ctx.compactingBySessionRef.current[sid] = false;
+    ctx.compactStageRef.current[sid] = null;
     ctx.syncDisplay(sid);
   }
   switch (ev.event) {
@@ -1324,9 +1325,16 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       break;
     }
     case "context.compacting": {
-      // E3 总结 LLM 调用前发出的瞬态状态(无 payload):live 气泡状态行
+      // E3 总结 LLM 调用前发出的瞬态状态:live 气泡状态行
       // 从「正在思考…」切到「压缩中…」。不落 store,不进历史。
+      // 2026-11-12 payload 带 {stage,pct}（summarizing=8 / writing=92），
+      // 中间段由渲染层时间缓动推进——Claude Code 同款进度条体验。
       ctx.compactingBySessionRef.current[sid] = true;
+      const pl = ev as { stage?: string; pct?: number };
+      ctx.compactStageRef.current[sid] = {
+        stage: typeof pl.stage === "string" ? pl.stage : "summarizing",
+        pct: typeof pl.pct === "number" ? pl.pct : 8,
+      };
       ctx.syncDisplay(sid);
       break;
     }

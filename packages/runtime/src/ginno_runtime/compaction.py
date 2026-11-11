@@ -218,6 +218,7 @@ async def maybe_compact_history(
     ctx_factory=None,
     force: bool = False,
     on_summary_start=None,
+    on_summary_done=None,
     abort_event=None,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
@@ -347,6 +348,12 @@ async def maybe_compact_history(
             return None
         stop_task.cancel()
     summary_resp = await summary_task
+    if on_summary_done is not None:
+        # 摘要已返回、写回前（进度条 92% 档——最后一步是廉价的消息替换）。
+        try:
+            await on_summary_done()
+        except Exception:
+            log.warning("compaction_status_callback_failed session=%s", session_id)
     # 压缩摘要也是真金白银的模型调用：记入用量流水（source="compaction"，
     # 会话归属）。此前完全没记账——记账点挂在 _stream_graph 的消息流上，
     # 这里直连 model.ainvoke 绕过了它（2026-10-12 用户指出「压缩的也要
