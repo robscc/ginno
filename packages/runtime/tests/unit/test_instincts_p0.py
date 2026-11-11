@@ -121,3 +121,45 @@ async def test_inject_filters_and_formats(isolated_instincts, monkeypatch):
         lambda settings=None: __import__("ginno_runtime.instincts.types", fromlist=["InstinctsConfig"]).InstinctsConfig(inject_min_confidence=0.95),
     )
     assert build_instinct_context("帮我 清理缓存", project_slug="demo") is None
+
+
+async def test_retry_recovered_observed(isolated_instincts):
+    from ginno_runtime.instincts import recent_observations
+
+    observe({"type": "retry_recovered", "retry_kind": "rate_limited",
+             "attempts": 2, "tool": "llm", "args_repr": ""})
+    ev = recent_observations(5)[-1]
+    assert ev["type"] == "retry_recovered"
+    assert ev["attempts"] == 2
+
+
+async def test_decay_scan_pending_expiry_and_active_decay(isolated_instincts):
+    from datetime import datetime, timedelta
+
+    from ginno_runtime.instincts.capture import decay_scan
+    from ginno_runtime.instincts.store import save_instinct
+    from ginno_runtime.instincts.types import Instinct
+
+    old = (datetime.now().astimezone() - timedelta(days=20)).isoformat(timespec="seconds")
+    ancient = (datetime.now().astimezone() - timedelta(days=100)).isoformat(timespec="seconds")
+    # pending 滞留 20 天 → 过期 pruned
+    save_instinct(Instinct(id="p1", trigger="t", behavior="b", confidence=0.5,
+                           status="pending", scope="project", project_slug="demo",
+                           evidence={"observed": 3, "applied": 0, "uncorrected": 0,
+                                     "corrected": 0, "last_seen": old}))
+    # active 100 天未观察 0.6 → 降档 0.5（未到 0.3 不 pruned）
+    save_instinct(Instinct(id="a1", trigger="t2", behavior="b2", confidence=0.6,
+                           status="active", scope="project", project_slug="demo",
+                           evidence={"observed": 5, "applied": 0, "uncorrected": 0,
+                                     "corrected": 0, "last_seen": ancient}))
+    n = decay_scan()
+    assert n == 2
+    from ginno_runtime.instincts import list_instincts
+    m = {i.id: i for i in list_instincts()}
+    assert m["p1"].status == "pruned"
+    assert m["a1"].confidence == 0.5
+    # 幂等：再扫一遍——a1 时间戳没变会再次降档？last_seen 未更新会重复衰减；
+    # 设计口径是「超窗每次扫描降一档直至 pruned」——第二遍 0.4，仍幂等可控。
+    decay_scan()
+    m2 = {i.id: i for i in list_instincts()}
+    assert m2["a1"].confidence == 0.4

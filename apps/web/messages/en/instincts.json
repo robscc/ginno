@@ -44,6 +44,7 @@
       "behaviorPh": "e.g. list files to delete and confirm first; never rm directly",
       "cancel": "Cancel",
       "save": "Save"
-    }
+    },
+    "adopt": "Adopt"
   }
 }

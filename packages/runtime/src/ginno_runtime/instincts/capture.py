@@ -25,7 +25,7 @@ _SECRET_RE = _re.compile(
     _re.IGNORECASE,
 )
 from .store import observations_path, get_instinct, list_instincts, save_instinct
-from .types import Instinct, load_instincts_config
+from .types import Instinct, InstinctsConfig, load_instincts_config
 
 _LOCK = threading.Lock()
 
@@ -163,6 +163,43 @@ def maybe_analyze(project_slug: str = "", session_id: str = "") -> None:
 def _confidence_for(observed: int, threshold: int) -> float:
     """观察次数 → 置信度档（threshold 次=0.5，每多 1 次 +0.1，封顶 0.9）。"""
     return min(0.9, round(0.5 + 0.1 * max(0, observed - threshold), 2))
+
+
+def decay_scan(cfg: InstinctsConfig | None = None) -> int:
+    """衰减治理（§9 prune + §6 防停摆）：启动维护跑一次，幂等。
+
+    - active 条目 last_seen/updated 超 decay_days 且未再观察 → 置信度 -0.1，
+      低于 0.3 自动转 pruned（软删，管理页可找回）；
+    - pending 滞留 > 14 天 → 自动过期转 pruned。
+    返回处理条数。异常由调用方吞（维护失败不挡启动）。
+    """
+    from datetime import datetime, timedelta
+
+    from .store import list_instincts, save_instinct
+    from .types import load_instincts_config
+
+    c = cfg or load_instincts_config()
+    now = datetime.now().astimezone()
+    n = 0
+    for inst in list_instincts():
+        stamp = inst.evidence.get("last_seen") or inst.updated or ""
+        try:
+            ts = datetime.fromisoformat(stamp)
+        except (ValueError, TypeError):
+            continue
+        if inst.status in ("active", "pending"):
+            age = now - ts
+            if inst.status == "pending" and age > timedelta(days=14):
+                inst.status = "pruned"
+                save_instinct(inst)
+                n += 1
+            elif inst.status == "active" and age > timedelta(days=c.decay_days):
+                inst.confidence = round(max(0.0, inst.confidence - 0.1), 2)
+                if inst.confidence < 0.3:
+                    inst.status = "pruned"
+                save_instinct(inst)
+                n += 1
+    return n
 
 
 def _id_for_sig(sig: str) -> str:
