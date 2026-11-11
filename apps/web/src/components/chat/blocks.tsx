@@ -169,11 +169,37 @@ export function TurnMetaLine({ block }: { block: Extract<Block, { kind: "turn_me
     ? Math.max(0, Math.round((Date.now() - (block.t0Ms ?? Date.now())) / 1000))
     : block.elapsedS;
   const hasTok = typeof block.inputTokens === "number" || typeof block.outputTokens === "number";
+  // 2026-11-11 方案 A 分色胶囊：⏱ 中性 / ↑ 输入蓝 / ↓ 输出绿（绿与工具
+  // 块成功色呼应）；胶囊分组不占额外高度；hover tooltip 展开精确值。
+  const chip = "rounded-md bg-card2/60 px-1.5 py-px";
+  const tips: string[] = [];
+  if (typeof block.inputTokens === "number")
+    tips.push(`输入 ${block.inputTokens.toLocaleString()}`);
+  if (typeof block.outputTokens === "number")
+    tips.push(`输出 ${block.outputTokens.toLocaleString()}`);
+  if (typeof elapsed === "number") tips.push(`耗时 ${elapsed}s`);
   return (
-    <div className="flex select-none justify-end gap-1 pt-0.5 font-mono text-[11px] leading-4 text-muted/80">
-      {typeof elapsed === "number" && <span>{elapsed}s</span>}
-      {typeof block.inputTokens === "number" && <span>↑{fmtTokens(block.inputTokens)}</span>}
-      {typeof block.outputTokens === "number" && <span>↓{fmtTokens(block.outputTokens)}</span>}
+    <div
+      className="flex select-none justify-end gap-1 pt-0.5 font-mono text-[11px] leading-4"
+      title={tips.join(" · ")}
+    >
+      {typeof elapsed === "number" && (
+        <span className={`${chip} text-muted/90`}>
+          {elapsed}s
+        </span>
+      )}
+      {typeof block.inputTokens === "number" && (
+        <span className={`${chip} text-sky-600 dark:text-sky-400`}>
+          <span className="font-bold">↑</span>
+          {fmtTokens(block.inputTokens)}
+        </span>
+      )}
+      {typeof block.outputTokens === "number" && (
+        <span className={`${chip} text-emerald-600 dark:text-emerald-400`}>
+          <span className="font-bold">↓</span>
+          {fmtTokens(block.outputTokens)}
+        </span>
+      )}
     </div>
   );
 }
