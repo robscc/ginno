@@ -158,6 +158,7 @@ function RefChip({ refKind, name, refId }: { refKind: string; name: string; refI
 /** turn 级耗时+token 小字（turn 右下角）。live 版带 t0Ms → 每秒自跳；
  * 定格版（message.end 权威值 / history 投影）只有 elapsedS。 */
 export function TurnMetaLine({ block }: { block: Extract<Block, { kind: "turn_meta" }> }) {
+  const tm = useTranslations("chat.turnMeta");
   const [, tick] = React.useState(0);
   const live = typeof block.t0Ms === "number";
   React.useEffect(() => {
@@ -171,34 +172,62 @@ export function TurnMetaLine({ block }: { block: Extract<Block, { kind: "turn_me
   const hasTok = typeof block.inputTokens === "number" || typeof block.outputTokens === "number";
   // 2026-11-11 方案 A 分色胶囊：⏱ 中性 / ↑ 输入蓝 / ↓ 输出绿（绿与工具
   // 块成功色呼应）；胶囊分组不占额外高度；hover tooltip 展开精确值。
-  const chip = "rounded-md bg-card2/60 px-1.5 py-px";
+  const chip =
+    "rounded-md bg-card2/60 px-1.5 py-px transition-colors hover:bg-card2 cursor-pointer";
   const tips: string[] = [];
   if (typeof block.inputTokens === "number")
     tips.push(`输入 ${block.inputTokens.toLocaleString()}`);
   if (typeof block.outputTokens === "number")
     tips.push(`输出 ${block.outputTokens.toLocaleString()}`);
   if (typeof elapsed === "number") tips.push(`耗时 ${elapsed}s`);
+  const [open, setOpen] = React.useState(false);
+  const tps =
+    typeof block.outputTokens === "number" && elapsed
+      ? (block.outputTokens / Math.max(1, elapsed)).toFixed(1)
+      : null;
   return (
     <div
-      className="flex select-none justify-end gap-1 pt-0.5 font-mono text-[11px] leading-4"
-      title={tips.join(" · ")}
+      className="select-none pt-0.5 font-mono text-[11px] leading-4"
+      title={open ? undefined : tips.join(" · ")}
     >
+    <div className="flex justify-end gap-1">
       {typeof elapsed === "number" && (
-        <span className={`${chip} text-muted/90`}>
+        <span
+          className={`${chip} text-muted/90`}
+          onClick={() => setOpen((v) => !v)}
+        >
           {elapsed}s
         </span>
       )}
       {typeof block.inputTokens === "number" && (
-        <span className={`${chip} text-sky-600 dark:text-sky-400`}>
+        <span
+          className={`${chip} text-sky-600 dark:text-sky-400`}
+          onClick={() => setOpen((v) => !v)}
+        >
           <span className="font-bold">↑</span>
           {fmtTokens(block.inputTokens)}
         </span>
       )}
       {typeof block.outputTokens === "number" && (
-        <span className={`${chip} text-emerald-600 dark:text-emerald-400`}>
+        <span
+          className={`${chip} text-emerald-600 dark:text-emerald-400`}
+          onClick={() => setOpen((v) => !v)}
+        >
           <span className="font-bold">↓</span>
           {fmtTokens(block.outputTokens)}
         </span>
+      )}
+    </div>
+      {open && (
+        // 点击胶囊展开明细（2026-11-11）：精确千分位 + 吞吐率；再次点击收起。
+        <div className="mt-1 flex justify-end gap-2 rounded-md border border-line bg-card2/40 px-2 py-1 text-[10px] text-muted">
+          <span>{tm("detailIn")} {block.inputTokens?.toLocaleString() ?? "—"}</span>
+          <span className="text-sky-600 dark:text-sky-400">
+            {`${tm("detailOut")} ${block.outputTokens?.toLocaleString() ?? "—"}`}
+          </span>
+          {typeof elapsed === "number" && <span>{tm("detailElapsed")} {elapsed}s</span>}
+          {tps && <span>{tps} tok/s</span>}
+        </div>
       )}
     </div>
   );

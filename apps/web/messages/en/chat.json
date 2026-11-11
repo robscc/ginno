@@ -614,6 +614,11 @@
       "prev": "Previous (Shift+Enter)",
       "next": "Next (Enter)",
       "close": "Close (Esc)"
+    },
+    "turnMeta": {
+      "detailIn": "Input",
+      "detailOut": "Output",
+      "detailElapsed": "Elapsed"
     }
   }
 }
