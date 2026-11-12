@@ -5,7 +5,8 @@
 // 状态必须留在父级），这里只接收状态 + 回调并渲染。
 
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { Paperclip, Keyboard, ArrowUp, AlertCircle, Square, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { Boxes, Paperclip, Keyboard, ArrowUp, AlertCircle, Square, RotateCcw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import type { useGinno } from "@/lib/store";
@@ -25,6 +26,7 @@ import type { Attachment, FileAttachment } from "../streamCore";
 import type { SteerItem } from "@/lib/steerQueue";
 import { QueueBar } from "./QueueBar";
 import { ModelChipMenu } from "./ModelChipMenu";
+import { ToolPolicyPopover } from "./ToolPolicyPopover";
 import { ConnStatusChip } from "./ConnStatusChip";
 import { ComposerAttachmentRows, ImagesReadingRow } from "./ComposerAttachmentRows";
 import { ModBand, type ModBandGroup } from "../mod/ModBand";
@@ -119,6 +121,8 @@ export function Composer({
   onModUiPress: (sessionId: string, generation: number, actionId: string) => void;
   model: ReturnType<typeof useModelPick>;
 }) {
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const ctp = useTranslations("composer.toolPolicy");
   const tc = useTranslations("chat");
   const {
     pendingMounts, setPendingMounts, modelOpen, setModelOpen, pickModel,
@@ -421,6 +425,31 @@ export function Composer({
           >
             <Square className="h-3.5 w-3.5" />
           </button>
+        )}
+        {/* 上下文管理（Tool Policy P1，2026-11-12 拍板入口在输入框）：
+            黑名单勾选 MCP/skills，下一轮生效。仅 session 存在时显示。 */}
+        {session && (
+          <div className="relative">
+            <button
+              onClick={() => setPolicyOpen((v) => !v)}
+              className={
+                "rounded-md p-1.5 transition-colors hover:bg-card2 " +
+                (policyOpen ? "text-txt" : "text-muted")
+              }
+              title={ctp("title")}
+            >
+              <Boxes className="h-4 w-4" />
+            </button>
+            {policyOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setPolicyOpen(false)} />
+                <ToolPolicyPopover
+                  sessionId={session.id}
+                  onClose={() => setPolicyOpen(false)}
+                />
+              </>
+            )}
+          </div>
         )}
         {/* model chip: per-session provider/model switch (home: pick for
             the session that first send will create). Enabled while a
