@@ -550,7 +550,11 @@ async def _run_stream(
         from ...compaction import maybe_compact_history
         from ...server_shared import _TURN_STOP
 
+        compacting_armed = False
+
         async def _announce_compacting() -> None:
+            nonlocal compacting_armed
+            compacting_armed = True  # 真的进入压缩才需要终态（见 finally）
             await _push_session_event(
                 session_id, "context.compacting",
                 {"stage": "summarizing", "pct": 8}, turn_id,
@@ -582,7 +586,11 @@ async def _run_stream(
                 abort_event=_TURN_STOP.setdefault(session_id, asyncio.Event()),
             )
         finally:
-            await _announce_done()
+            # 仅当本回合真的进入过压缩（summarizing 事件已发）才补终态；
+            # 无条件发会让每个普通回合的 WS 流多一条 context.compacting，
+            # 打乱事件序断言（test_chat_happy_path 红，2026-11-12）。
+            if compacting_armed:
+                await _announce_done()
     except Exception:
         _log.exception("compaction_failed session=%s", session_id)
     if compaction_stats:
