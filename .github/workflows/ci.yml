@@ -166,6 +166,11 @@ jobs:
   # 真正跑过浏览器级用例。本 job 在 macos 上构建 runtime bundle（make runtime
   # 含 web build + PyInstaller）后跑全套 packaged UI e2e。
   ui-e2e:
+    # ⚠️ 2026-11-12 暂改手动触发：PR 触发实测 macOS runner 连续 cancelled
+    # （job 未启动无日志——当日 macOS 分钟池耗尽，rust job ×15 轮叠加）。
+    # 额度恢复后把 workflow_dispatch 改回 pull_request/push 即恢复自动闸门；
+    # 大发版/关键前端 PR 前手动跑一次（Actions 页 → ui-e2e → Run workflow）。
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     defaults:
       run:
