@@ -1817,8 +1817,6 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     folder_ids = meta.get("context_folders") or []
     primary_id = meta.get("primary_folder") or None
     context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
-    # Tool policy 随会话恢复（meta 真源 → 运行时 dict，供 turn 刷新/rebind 用）
-    s["tool_policy"] = meta.get("tool_policy")
     from ..tool_policy import filter_mcp_tools as _ftp
     mcp_tools = _ftp(shared._mcp.all_langchain_tools() if shared._mcp else [], meta)
     # Restore the subagent depth so the structural spawn cap survives a runtime
@@ -1874,6 +1872,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "primary_path": primary_path or "",
         "workflow_id": meta.get("workflow_id"),
         "restrict_tools": restrict_tools,
+        # Tool policy 随会话恢复（meta 真源 → 运行时 dict，供 turn 刷新/rebind 用）
+        "tool_policy": meta.get("tool_policy"),
     }
     if sub_depth is not None:
         s["type"] = "subagent"
