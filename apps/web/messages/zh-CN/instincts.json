@@ -45,6 +45,29 @@
       "cancel": "取消",
       "save": "保存"
     },
-    "adopt": "采纳"
+    "adopt": "采纳",
+    "conflict": {
+      "title": "规则冲突",
+      "overlap": "trigger 重叠度",
+      "keepA": "保留 A",
+      "keepB": "保留 B",
+      "freeze": "冻结",
+      "sideA": "A 规则",
+      "sideB": "B 规则",
+      "titleCount": "规则冲突（{n}）"
+    },
+    "evolve": {
+      "title": "可沉淀聚类",
+      "count": "{n} 条高置信规则",
+      "run": "沉淀为 Skill",
+      "done": "已沉淀：{skill}",
+      "fail": "沉淀失败"
+    },
+    "export": "导出",
+    "import": "导入",
+    "exportDone": "已导出 {n} 条",
+    "importDone": "导入完成：新增 {a}，更新 {u}，跳过 {s}",
+    "importFail": "导入失败",
+    "promoteBadge": "可沉淀"
   }
 }

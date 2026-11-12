@@ -205,3 +205,87 @@ def decay_scan(cfg: InstinctsConfig | None = None) -> int:
 def _id_for_sig(sig: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", sig.lower()).strip("-")[:48]
     return f"deny-{slug}"
+
+
+# ── P1 收尾：applied/uncorrected 归因（§7 confidence 引擎数据源）──────
+
+
+def note_injection_feedback(
+    user_query: str, project_slug: str = "", had_correction: bool = False
+) -> int:
+    """turn 收尾归因（幂等单次，由 engine._instincts_kick 每轮调用一次）。
+
+    本 turn 若注入过 instinct（select_for_injection 同口径重放）：
+    - 无纠偏：applied+1、uncorrected+1（行为被放行的证据）；
+    - 有纠偏：corrected+1 且置信度 -0.2（corrected 降档 §7——归因到
+      trigger 与纠偏文本词汇重叠最高的注入条目，宁缺毋滥：重叠<0.2 不归因）。
+    返回归因条数；异常由调用方吞。
+    """
+    try:
+        from .inject import select_for_injection, _relevance
+
+        items = select_for_injection(user_query, project_slug)
+        if not items:
+            return 0
+        if not had_correction:
+            for inst in items:
+                inst.evidence["applied"] = int(inst.evidence.get("applied", 0)) + 1
+                inst.evidence["uncorrected"] = int(inst.evidence.get("uncorrected", 0)) + 1
+                save_instinct(inst)
+            return len(items)
+        # 纠偏归因：最相关一条 corrected+1、confidence-0.2（floor 0.1）
+        best, best_score = None, 0.2
+        for inst in items:
+            sc = _relevance(inst.trigger, inst.behavior, user_query)
+            if sc > best_score:
+                best, best_score = inst, sc
+        if best is None:
+            return 0
+        best.evidence["corrected"] = int(best.evidence.get("corrected", 0)) + 1
+        best.confidence = max(0.1, round(best.confidence - 0.2, 2))
+        save_instinct(best)
+        return 1
+    except Exception:
+        return 0
+
+
+# ── P1 收尾：LLM trigger 泛化增强档（默认关，§14.3）───────────────────
+
+
+async def distill_trigger_llm(tool: str, args_repr: str) -> str | None:
+    """小模型把 ``rm -rf build`` 这类 args_repr 改写成泛化 trigger。
+
+    仅当 settings ``instincts.trigger_distill=true``（默认 false）且配置了
+    observer_model；一次调用、失败/超时返回 None（调用方回退模板原文）。
+    """
+    from .types import load_instincts_config
+
+    cfg = load_instincts_config()
+    if not (cfg.trigger_distill and cfg.observer_model):
+        return None
+    try:
+        from ..providers import get_provider
+
+        prov = get_provider(cfg.observer_model)
+        if prov is None:
+            return None
+        prompt = (
+            "Rewrite the following tool-call pattern into ONE short Chinese "
+            "trigger phrase (max 20 chars), generalized (drop volatile paths/"
+            "names, keep the tool & shape). Output ONLY the phrase.\n"
+            f"tool: {tool}\nargs: {args_repr[:200]}"
+        )
+        resp = await prov.chat(
+            [{"role": "user", "content": prompt}],
+            model_id=cfg.observer_model_id or None,
+            max_tokens=60,
+        )
+        text = (resp.get("text") or "").strip().strip('"“”「」')
+        # 防注入：改写结果含包装伪造模式 → 弃用（回退模板）
+        from ..knowledge.injection import _INJECTION_PATTERNS
+
+        if not text or len(text) > 60 or any(p.search(text) for p in _INJECTION_PATTERNS):
+            return None
+        return text
+    except Exception:
+        return None

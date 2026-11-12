@@ -24,24 +24,38 @@ def _relevance(trigger: str, behavior: str, query: str) -> float:
     return min(1.0, overlap / max(4, len(q) // 2))
 
 
+def select_for_injection(query: str, project_slug: str = "") -> list:
+    """按当前配置选出会被注入的条目（build_instinct_context 同口径）。
+
+    抽出供两处复用：注入本体 + turn 收尾的 applied/uncorrected 归因
+    （P1 收尾：本 turn 注入过的条目，无纠偏 → applied+1/uncorrected+1，
+    有纠偏 → corrected+1——evidence 闭环，confidence 引擎的数据源）。
+    """
+    cfg = load_instincts_config()
+    if not (cfg.enabled and cfg.inject_enabled):
+        return []
+    cands = [
+        i
+        for i in list_instincts(status="active")
+        if i.confidence >= cfg.inject_min_confidence
+        and (i.scope == "global" or not project_slug or i.project_slug == project_slug)
+    ]
+    if not cands:
+        return []
+    scored = sorted(
+        ((i.confidence * (0.5 + 0.5 * _relevance(i.trigger, i.behavior, query)), i) for i in cands),
+        key=lambda t: -t[0],
+    )[: cfg.inject_max_n]
+    return [i for _s, i in scored]
+
+
 def build_instinct_context(query: str, project_slug: str = "") -> str | None:
     """<instincts> 注入段；无合格条目返回 None（parts.append 跳过）。"""
     try:
         cfg = load_instincts_config()
-        if not (cfg.enabled and cfg.inject_enabled):
+        scored = [(0.0, i) for i in select_for_injection(query, project_slug)]
+        if not scored:
             return None
-        cands = [
-            i
-            for i in list_instincts(status="active")
-            if i.confidence >= cfg.inject_min_confidence
-            and (i.scope == "global" or not project_slug or i.project_slug == project_slug)
-        ]
-        if not cands:
-            return None
-        scored = sorted(
-            ((i.confidence * (0.5 + 0.5 * _relevance(i.trigger, i.behavior, query)), i) for i in cands),
-            key=lambda t: -t[0],
-        )[: cfg.inject_max_n]
 
         lines: list[str] = []
         budget = cfg.inject_token_budget

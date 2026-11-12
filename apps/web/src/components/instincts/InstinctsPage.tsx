@@ -2,13 +2,22 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { Download, Plus, RefreshCw, Sparkles, Trash2, Upload } from "lucide-react";
 import {
   createInstinct,
   deleteInstinct,
+  exportInstincts,
+  freezeConflict,
+  importInstincts,
+  listConflicts,
+  listEvolveClusters,
   listInstincts,
   listObservations,
+  resolveConflict,
+  runEvolve,
   updateInstinct,
+  type ConflictPair,
+  type EvolveCluster,
   type Instinct,
 } from "@/lib/runtime";
 
@@ -29,11 +38,16 @@ export function InstinctsPage() {
   const [editing, setEditing] = useState<Instinct | null>(null);
   const [creating, setCreating] = useState(false);
   const [msg, setMsg] = useState("");
+  // P1 收尾（2026-11-12）：冲突对 + evolve 聚类
+  const [conflicts, setConflicts] = useState<ConflictPair[]>([]);
+  const [clusters, setClusters] = useState<EvolveCluster[]>([]);
 
   const reload = useCallback(async () => {
     try {
       setItems(await listInstincts(status ? { status } : {}));
       setObs(await listObservations(30));
+      setConflicts(await listConflicts().catch(() => []));
+      setClusters(await listEvolveClusters().catch(() => []));
     } catch {
       setMsg(t("loadFail"));
     }
@@ -77,6 +91,46 @@ export function InstinctsPage() {
           <RefreshCw className="h-3.5 w-3.5" aria-hidden />
         </button>
         <button
+          onClick={async () => {
+            const dump = await exportInstincts();
+            const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "instincts-export.json";
+            a.click();
+            URL.revokeObjectURL(url);
+            setMsg(t("exportDone", { n: dump.instincts.length }));
+          }}
+          title={t("export")}
+          className="rounded-md p-1.5 text-faint hover:bg-card2 hover:text-muted"
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden />
+        </button>
+        <label
+          className="cursor-pointer rounded-md p-1.5 text-faint hover:bg-card2 hover:text-muted"
+          title={t("import")}
+        >
+          <Upload className="h-3.5 w-3.5" aria-hidden />
+          <input
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              try {
+                const dump = JSON.parse(await f.text());
+                const r = await importInstincts(dump);
+                setMsg(t("importDone", { a: r.added, u: r.updated, s: r.skipped }));
+                void reload();
+              } catch {
+                setMsg(t("importFail"));
+              }
+            }}
+          />
+        </label>
+        <button
           onClick={() => setCreating(true)}
           className="flex items-center gap-1 rounded-md bg-violet/15 px-2 py-1 text-xs text-violet hover:bg-violet/25"
         >
@@ -85,6 +139,77 @@ export function InstinctsPage() {
         </button>
       </header>
       {msg && <div className="mb-3 text-xs text-red">{msg}</div>}
+
+      {/* P1 冲突区（2026-11-12）：同 trigger 高重叠且行为肯/否对立的对，
+          用户裁决（保 A / 保 B）或先冻结；冻结态条目不注入。 */}
+      {conflicts.length > 0 && (
+        <section className="mb-4 rounded-lg border border-amber/40 bg-amber/5 px-3 py-2.5">
+          <h2 className="mb-2 text-xs font-semibold text-amber">
+            {t("conflict.titleCount", { n: conflicts.length })}
+          </h2>
+          <div className="space-y-2">
+            {conflicts.map((c) => (
+              <div key={`${c.a.id}-${c.b.id}`} className="rounded-md border border-line bg-card px-2.5 py-2 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate">{t("conflict.sideA")}: {c.a.trigger} → {c.a.behavior}</div>
+                    <div className="truncate">{t("conflict.sideB")}: {c.b.trigger} → {c.b.behavior}</div>
+                    <div className="mt-1 text-[10px] text-faint">{t("conflict.overlap")} {c.trigger_overlap}</div>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      className="rounded border border-line px-1.5 py-0.5 hover:bg-card2"
+                      onClick={async () => { await resolveConflict(c.a.id, c.b.id); void reload(); }}
+                    >
+                      {t("conflict.keepA")}
+                    </button>
+                    <button
+                      className="rounded border border-line px-1.5 py-0.5 hover:bg-card2"
+                      onClick={async () => { await resolveConflict(c.b.id, c.a.id); void reload(); }}
+                    >
+                      {t("conflict.keepB")}
+                    </button>
+                    <button
+                      className="rounded border border-line px-1.5 py-0.5 text-faint hover:bg-card2"
+                      onClick={async () => { await freezeConflict([c.a.id, c.b.id]); void reload(); }}
+                    >
+                      {t("conflict.freeze")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* P2 evolve 入口（2026-11-12）：同域 ≥3 条高置信规则可沉淀为 SKILL.md。 */}
+      {clusters.length > 0 && (
+        <section className="mb-4 rounded-lg border border-violet/30 bg-violet/5 px-3 py-2.5">
+          <h2 className="mb-2 text-xs font-semibold text-violet">{t("evolve.title")}</h2>
+          <div className="space-y-1.5">
+            {clusters.map((cl) => (
+              <div key={`${cl.scope}/${cl.project_slug}/${cl.domain}`} className="flex items-center justify-between text-xs">
+                <span className="text-faint">
+                  {cl.domain} · {t("evolve.count", { n: cl.count })}
+                </span>
+                <button
+                  className="rounded border border-violet/40 px-1.5 py-0.5 text-violet hover:bg-violet/10"
+                  onClick={async () => {
+                    try {
+                      const r = await runEvolve(cl);
+                      setMsg(r.ok ? t("evolve.done", { skill: r.skill ?? "" }) : t("evolve.fail"));
+                      void reload();
+                    } catch { setMsg(t("evolve.fail")); }
+                  }}
+                >
+                  {t("evolve.run")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="space-y-2">
         {sorted.length === 0 && (
@@ -154,6 +279,11 @@ export function InstinctsPage() {
             <div className="mt-1 text-[13px] leading-snug">
               <span className="text-muted">{t("field.trigger") + "："}</span>
               {it.trigger}
+              {(it.evidence?.observed ?? 0) >= 8 && it.confidence >= 0.8 && it.status === "active" && (
+                <span className="ml-1.5 rounded bg-violet/15 px-1 py-px align-middle text-[10px] text-violet">
+                  {t("promoteBadge")}
+                </span>
+              )}
             </div>
             <div className="text-[13px] leading-snug">
               <span className="text-muted">{t("field.behavior") + "："}</span>
