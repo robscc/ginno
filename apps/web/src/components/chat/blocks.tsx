@@ -535,6 +535,9 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
   // 消息图集同一查看器），文件 chip 走 openInCode 打开代码面板（同 chips.tsx
   // 既有惯例——session 根相对路径）。
   const [lb, setLb] = React.useState<number | null>(null);
+  // 注入长文本折叠态（2026-11-12：[world state update]/[turn context] 等
+  // 上下文注入数千字全量内联成文字墙；>240 字符折叠为预览+展开）。
+  const [foldOpen, setFoldOpen] = React.useState(false);
   const g = useGinno();
   const allImgUrls = (block.images ?? []).map(steerImgUrl).filter(Boolean);
   // Deliberately NOT the thinking block's shape or colour: that block is violet
@@ -561,8 +564,46 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
         <RotateCw className="h-2.5 w-2.5" aria-hidden />
         {tc("steer.injected")}{clock ? ` · ${clock}` : ""}
       </span>
-      <div className="selectable min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
-        <MentionText text={block.text} />
+      <div className="min-w-0 flex-1 text-[13px] leading-snug text-txt">
+        {(() => {
+          const t = block.text ?? "";
+          const FOLD_AT = 240;
+          if (t.length <= FOLD_AT) {
+            return (
+              <div className="selectable whitespace-pre-wrap break-words">
+                <MentionText text={t} />
+              </div>
+            );
+          }
+          const head = t.slice(0, FOLD_AT).replace(/\s+$/, "");
+          return (
+            <div className="whitespace-pre-wrap break-words">
+              <div className={foldOpen ? "" : "selectable text-muted/85"}>
+                {foldOpen ? (
+                  <MentionText text={t} />
+                ) : (
+                  <>
+                    <MentionText text={`${head}…`} />
+                    <button
+                      onClick={() => setFoldOpen(true)}
+                      className="ml-1 rounded bg-card2/70 px-1.5 py-px text-[10px] text-muted hover:text-txt"
+                    >
+                      {tc("steer.foldExpand", { n: t.length.toLocaleString() })}
+                    </button>
+                  </>
+                )}
+              </div>
+              {foldOpen && (
+                <button
+                  onClick={() => setFoldOpen(false)}
+                  className="mt-1 rounded bg-card2/70 px-1.5 py-px text-[10px] text-muted hover:text-txt"
+                >
+                  {tc("steer.foldCollapse")}
+                </button>
+              )}
+            </div>
+          );
+        })()}
       </div>
       {total > 0 && (
         <span className="mt-[2px] flex shrink-0 items-center gap-1">
