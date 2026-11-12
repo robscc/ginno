@@ -66,11 +66,26 @@ def _content_text(resp: Any) -> str:
 
 
 def _sanitize_title(raw: str) -> str:
-    """Model output -> usable single-line title; '' means unusable, abort."""
+    """Model output -> usable single-line title; '' means unusable, abort.
+
+    2026-11-12（session 70d8…事故）：glm-5.3-flash 幻觉输出
+    ``<system_warning>⚠️ 可能的记忆质量问题：</system_warning>smart-doc-title``
+    ——runtime/前端无此文案源，纯模型编造，被整串写成侧栏 title。新增
+    两道清洗：剥伪 XML 标签；警告句式（⚠️ 等前缀）整体弃用——标题里
+    不该出现警告文案，宁可保住截断 placeholder 下轮重试。
+    """
+    import re
+
     t = (raw or "").strip()
     if not t:
         return ""
     t = t.splitlines()[0].strip()
+    # 伪 XML/HTML 标签（<system_warning>…</system_warning> 等）：剥标签留
+    # 内文；内文若只剩警告文案会被下面的警告句式检查拦下。
+    t = re.sub(r"</?[A-Za-z_][\w.-]{0,40}>", "", t).strip()
+    # 警告/系统句式：⚠️ ❗ 🔴 等符号开头，或「警告/注意/质量问题」字样
+    if t.startswith(("⚠", "❗", "🔴", "‼", "❌")) or "记忆质量" in t or "质量问题" in t:
+        return ""
     if t and t[0] in "[{":
         return ""  # stringified list/dict structure, not a title
     t = t.lstrip("#-* \t").strip()  # markdown header/bullet leftovers
