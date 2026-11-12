@@ -513,3 +513,8 @@ export async function setToolPolicy(
     body: JSON.stringify(body),
   });
 }
+
+/** GET /api/sessions/{id}（会话详情；Tool Policy 等元信息读取用）。 */
+export async function getSessionDetail(sessionId: string): Promise<Record<string, unknown>> {
+  return json(`${BASE}/sessions/${sessionId}`);
+}
