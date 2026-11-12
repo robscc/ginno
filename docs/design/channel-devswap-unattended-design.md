@@ -1,7 +1,18 @@
 # 企微指挥热更新：无头 finish 闭环（G1）+ 命令权限闸（G3）技术方案
 
-> 状态：设计稿（未实施）。关联：`docs/runtime-hot-swap-design.md`、
+> 状态：**已实施**（G1 main commit 9923962；G3 main 见 channel_policy
+> 相关 PR #59）。关联：`docs/runtime-hot-swap-design.md`、
 > `docs/dev-swap-progress-design.md`。
+> 实施与设计的差异点（2026-11-12 回填）：
+> - L2 直通落点在 `engine/handle.ts` 的 `runtime.dev_swap_pending`
+>   case（设计写 bus.ts）——语义一致：`auto===true` 跳过确认框直接
+>   invoke `finish_dev_swap`，invoke 失败静默（壳 watcher 兜底）。
+> - 确认回执经 `api/devswap._notify_unattended_confirm` →
+>   `_wecom_adapter.register_devswap_confirm`（旧进程侧，与设计一致）。
+> - 钉钉侧答案路由未做对称适配（设计 §1.4 提及）——企微先行，钉钉
+>   复用时补 `register_devswap_confirm` 同构方法即可。
+> - 端到端真机演示（企微 y/n 全链）待补；runtime 状态机 7 用例绿
+>   （tests/unit/test_devswap_unattended.py）。
 > 范围裁定（2026-11-09）：G2（git pull 语义）与 G4（终态推企微）**明确不做**；
 > 本文只覆盖 G1 + G3。
 
