@@ -195,6 +195,19 @@
       "idle": "idle",
       "unknown": "unknown",
       "error": "error"
+    },
+    "toolPolicy": {
+      "title": "Context Manager",
+      "hint": "next turn",
+      "modeAll": "All",
+      "modeMinimal": "Minimal",
+      "modeCustom": "Custom",
+      "mcpSection": "MCP Servers",
+      "skillsSection": "Skills (non-builtin)",
+      "toolsUnit": "tools",
+      "saveTokens": "saves ~↑{n}k/turn",
+      "save": "Save",
+      "saved": "Saved"
     }
   }
 }

@@ -492,3 +492,24 @@ export async function importSkillsDir(path: string, overwrite = false) {
     body: JSON.stringify({ path, overwrite }),
   });
 }
+
+// ---- Session Tool Policy（2026-11-12 P1）----
+
+/** GET /api/mcp 轻负载（server 名 + 工具数）。 */
+export async function mcpStatus(): Promise<{
+  servers: string[]; status?: Array<Record<string, unknown>>;
+}> {
+  return json(`${BASE}/mcp`);
+}
+
+/** PUT /api/sessions/{id}/tool_policy —— 下一 turn 生效。 */
+export async function setToolPolicy(
+  sessionId: string,
+  body: { mode: string; mcp_disabled: string[]; skills_disabled: string[] },
+): Promise<{ ok: boolean; error?: string }> {
+  return json(`${BASE}/sessions/${sessionId}/tool_policy`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(body),
+  });
+}
