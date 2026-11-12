@@ -306,7 +306,9 @@
     "steer": {
       "injected": "运行中注入",
       "moreAttachments": "还有 {count} 个附件",
-      "imageAlt": "图片"
+      "imageAlt": "图片",
+      "foldExpand": "展开全文（{n} 字）",
+      "foldCollapse": "收起"
     },
     "taskCard": {
       "stop": "停止",

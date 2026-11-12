@@ -306,7 +306,9 @@
     "steer": {
       "injected": "Injected mid-run",
       "moreAttachments": "{count} more attachment(s)",
-      "imageAlt": "image"
+      "imageAlt": "image",
+      "foldExpand": "Show all ({n} chars)",
+      "foldCollapse": "Collapse"
     },
     "taskCard": {
       "stop": "Stop",
