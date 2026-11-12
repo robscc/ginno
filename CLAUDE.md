@@ -88,6 +88,7 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 | Job | 内容 |
 |---|---|
 | `runtime-tests` | `uv run --group test --extra docs pytest -q --cov`（coverage 上传 Codecov） |
+| `ui-e2e` | macos：`make runtime`（web+PyInstaller bundle）→ playwright 跑 `tests/e2e/test_packaged_ui_*.py` 浏览器级用例（@ mention 菜单/ask_user/MCP trending 等）。**前端交互改动必须在 `tests/e2e/` 加 packaged UI 用例**（2026-11-12 起，@ 菜单全灭三天才被发现的教训——vitest/tsc 抓不到渲染层断裂） |
 | `web` | pnpm lint + typecheck + **vitest** + next build |
 | `rust` | cargo fmt --check + cargo check（desktop + mod-broker；runner macos-14） |
 

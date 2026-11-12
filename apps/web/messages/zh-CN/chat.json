@@ -603,11 +603,6 @@
       "progressNotice": "🔄 「{title}」有新进展——进度节选已带入本对话"
     },
     "jumpLatest": "跳到最新一条信息",
-    "deliver.started": "→ 已投递到「{label}」（新 turn）",
-    "deliver.queued": "→ 「{label}」正忙，将在下个工具边界注入",
-    "deliver.missing": "→ 「{label}」已不存在",
-    "deliver.noBody": "→ 「{label}」：正文为空，未投递",
-    "deliver.ctxSkipped": "（其余 @ 引用未随投递）",
     "loadEarlier": "加载更早的 {showingMore} 条（还有 {hidden} 条未显示）",
     "find": {
       "placeholder": "会话内搜索…",
@@ -620,6 +615,13 @@
       "detailIn": "输入",
       "detailOut": "输出",
       "detailElapsed": "耗时"
+    },
+    "deliver": {
+      "started": "→ 已投递到「{label}」（新 turn）",
+      "queued": "→ 「{label}」正忙，将在下个工具边界注入",
+      "missing": "→ 「{label}」已不存在",
+      "noBody": "→ 「{label}」：正文为空，未投递",
+      "ctxSkipped": "（其余 @ 引用未随投递）"
     }
   }
 }

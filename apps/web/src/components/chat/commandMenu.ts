@@ -290,10 +290,8 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
       },
     });
   };
-  const items: MenuItem[] = scored
-    .map((x, i) => ({ ...x, i }))
-    .sort((a, b) => b.score - a.score || a.i - b.i)
-    .map((x) => x.item);
+  // 注意：items 快照必须在全部 push 循环结束后取（4029f35 曾把它提到
+  // 循环前——push 只写 scored，快照恒空 → @ 菜单全灭，2026-11-12 修复）。
 
   // 团队主会话的 @ 菜单（独立空间语义，2026-10-14 用户定稿）：
   // 顺序 = 成员（投递目标，blocked 禁选）→ 产物（本团队范围，ChatStream 侧
@@ -310,7 +308,11 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     for (const a of src.artifacts) {
       push("artifact", a.id, a.name, a.kind);
     }
-    return limitMenuItems(items);
+    const teamItems: MenuItem[] = scored
+      .map((x, i) => ({ ...x, i }))
+      .sort((a, b) => b.score - a.score || a.i - b.i)
+      .map((x) => x.item);
+    return limitMenuItems(teamItems);
   }
   // 跨会话条目 detail 带来源标题——显式 @ 即授权（runtime 解析本就是项目级
   // 按名/id 精确命中），agent 文件工具的边界不受菜单影响。
@@ -345,13 +347,19 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
   }
   // @result 兜底：最近会话（去重 linked 已推的；自身/subagent/渠道排除）。
   // linked 成员排前面（既有顺序），recent 补在后 —— 无 detail 区分来源。
-  const seen = new Set<string>(items.filter((i) => i.kind === "result").map((i) => i.id));
+  const seen = new Set<string>(
+    scored.filter((x) => x.item.kind === "result").map((x) => x.item.id),
+  );
   for (const r of src.recentSessions ?? []) {
     if (seen.has(r.id) || r.id === src.sessionId) continue;
     if ((r.type ?? "") === "subagent" || (r.type ?? "").startsWith("channel")) continue;
     seen.add(r.id);
     push("result", r.id, r.title || r.id, "");
   }
+  const items: MenuItem[] = scored
+    .map((x, i) => ({ ...x, i }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.item);
   return limitMenuItems(items);
 }
 
