@@ -45,6 +45,29 @@
       "cancel": "Cancel",
       "save": "Save"
     },
-    "adopt": "Adopt"
+    "adopt": "Adopt",
+    "conflict": {
+      "title": "Rule conflicts",
+      "overlap": "trigger overlap",
+      "keepA": "Keep A",
+      "keepB": "Keep B",
+      "freeze": "Freeze",
+      "sideA": "Rule A",
+      "sideB": "Rule B",
+      "titleCount": "Rule conflicts ({n})"
+    },
+    "evolve": {
+      "title": "Evolvable clusters",
+      "count": "{n} high-confidence rules",
+      "run": "Evolve to Skill",
+      "done": "Evolved: {skill}",
+      "fail": "Evolve failed"
+    },
+    "export": "Export",
+    "import": "Import",
+    "exportDone": "Exported {n} rules",
+    "importDone": "Imported: {a} added, {u} updated, {s} skipped",
+    "importFail": "Import failed",
+    "promoteBadge": "evolvable"
   }
 }

@@ -9,7 +9,7 @@ from typing import Any
 from .. import paths
 
 DOMAINS = ("tool-usage", "code-style", "workflow", "security", "user-preference")
-STATUSES = ("pending", "active", "evolved", "pruned")
+STATUSES = ("pending", "active", "evolved", "pruned", "conflict")
 SOURCES = ("permission-deny", "user-correction", "retry-recover", "manual")
 
 
@@ -31,6 +31,10 @@ class InstinctsConfig:
     observer_model_id: str = ""
     min_observations: int = 20  # 新观察达到该数才触发一次分析
     analyze_gap_min: int = 5    # 两次分析最小间隔（分钟）
+    # LLM trigger 泛化增强档（默认关，零 LLM 模板路径不变）：模板生成的
+    # pending 规则由小模型把 args_repr 改写为泛化 trigger（一次调用，
+    # 失败回退模板原文——§14.3 观察噪声的 P1 解法，做成 opt-in）。
+    trigger_distill: bool = False
 
 
 def _read_settings() -> dict[str, Any]:
@@ -48,6 +52,8 @@ def load_instincts_config(settings: dict[str, Any] | None = None) -> InstinctsCo
     doc = settings if settings is not None else _read_settings()
     raw = doc.get("instincts") or {}
     cfg = InstinctsConfig()
+    if isinstance(raw.get("trigger_distill"), bool):
+        cfg.trigger_distill = raw["trigger_distill"]
     for k in ("enabled", "capture", "inject_enabled"):
         if isinstance(raw.get(k), bool):
             setattr(cfg, k, raw[k])

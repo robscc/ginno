@@ -98,6 +98,15 @@ class EvolveBody(BaseModel):
     project_slug: str = ""
     domain: str = "workflow"
 
+class IdsBody(BaseModel):
+    ids: list[str] = []
+
+
+class ResolveBody(BaseModel):
+    keep_id: str
+    drop_id: str
+
+
 
 @router.get("/evolve/clusters")
 def api_evolve_clusters() -> list[dict[str, Any]]:
@@ -153,3 +162,91 @@ def _to_instinct(body: InstinctBody) -> Instinct:
             "last_seen": str(ev.get("last_seen", "")),
         },
     )
+
+
+# ── P1 收尾：冲突区 + export/import（2026-11-12）──────────────────────
+
+
+@router.get("/conflicts")
+def api_conflicts(project_slug: str = "") -> list[dict[str, Any]]:
+    """确定性冲突对扫描（trigger 重叠 ≥0.6 且 behavior 肯定/否定对立）。"""
+    from ..instincts.store import find_conflicts
+
+    pairs = find_conflicts(project_slug=project_slug)
+    # 附带双方摘要，前端冲突区直接渲染
+    out = []
+    for p in pairs:
+        a = get_instinct_by_id(p["a"])
+        b = get_instinct_by_id(p["b"])
+        if a and b:
+            out.append({
+                "a": a.to_yaml_dict(), "b": b.to_yaml_dict(),
+                "trigger_overlap": p["trigger_overlap"],
+            })
+    return out
+
+
+@router.post("/conflicts/freeze")
+def api_conflicts_freeze(body: IdsBody) -> dict[str, Any]:
+    """把冲突对双方置 conflict（冻结注入），待用户裁决。"""
+    from ..instincts.store import mark_conflict
+
+    n = mark_conflict(body.ids or [])
+    return {"ok": True, "frozen": n}
+
+
+@router.post("/conflicts/resolve")
+def api_conflicts_resolve(body: ResolveBody) -> dict[str, Any]:
+    """裁决：keep_id 回 active、drop_id 置 pruned。"""
+    from ..instincts.store import resolve_conflict
+
+    ok = resolve_conflict(body.keep_id, body.drop_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "not found"})
+    return {"ok": True}
+
+
+@router.get("/export")
+def api_export() -> dict[str, Any]:
+    """全部条目导出（跨机迁移用；YAML 单文件语义保留为 dict 列表）。"""
+    items = []
+    for st in ("active", "pending", "pruned", "evolved", "conflict"):
+        items.extend(i.to_yaml_dict() for i in list_instincts(status=st))
+    return {"version": 1, "exported_at": _now_iso(), "instincts": items}
+
+
+@router.post("/import")
+def api_import(body: dict[str, Any]) -> dict[str, Any]:
+    """导入（合并语义）：新 id 直接落盘；已有 id 仅当 updated 更新才覆盖。"""
+    incoming = body.get("instincts") or []
+    added = updated = skipped = 0
+    for raw in incoming:
+        try:
+            inst = Instinct.from_yaml_dict(raw)
+        except Exception:
+            skipped += 1
+            continue
+        cur = get_instinct_by_id(inst.id)
+        if cur is None:
+            save_instinct(inst)
+            added += 1
+        elif (inst.updated or "") > (cur.updated or ""):
+            save_instinct(inst)
+            updated += 1
+        else:
+            skipped += 1
+    return {"ok": True, "added": added, "updated": updated, "skipped": skipped}
+
+
+def get_instinct_by_id(id_: str):
+    """id 全局唯一：扫全部 status 目录定位（active/pending/pruned/…）。"""
+    for st in ("active", "pending", "conflict", "evolved", "pruned"):
+        for i in list_instincts(status=st):
+            if i.id == id_:
+                return i
+    return None
+
+
+def _now_iso() -> str:
+    import datetime
+    return datetime.datetime.now().isoformat(timespec="seconds")

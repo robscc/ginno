@@ -1184,10 +1184,25 @@ async def _stream_graph(
                     )
 
                     # L2 预筛：用户输入含纠偏信号 → 观察 user_correction。
-                    _ics(
-                        str(((config or {}).get("configurable") or {}).get("user_text") or ""),
-                        session_id,
+                    _utext = str(
+                        ((config or {}).get("configurable") or {}).get("user_text") or ""
                     )
+                    _corr = _ics(_utext, session_id)
+                    # P1 归因：本 turn 注入条目 applied/uncorrected/corrected
+                    # 闭环（select 同口径重放，零额外状态）。
+                    try:
+                        from ...instincts.capture import note_injection_feedback
+
+                        note_injection_feedback(
+                            _utext,
+                            project_slug=str(
+                                ((config or {}).get("configurable") or {}).get("project_slug")
+                                or ""
+                            ),
+                            had_correction=bool(_corr),
+                        )
+                    except Exception:
+                        pass
                     _instinct_analyze(session_id=session_id)
                     # observer 位点分析（含节流；LLM 判定仅在配置了
                     # observer_model 且有 user_correction 观察时发生）。
