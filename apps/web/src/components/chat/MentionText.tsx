@@ -31,7 +31,7 @@ function MentionIcon({ kind, name }: { kind: string; name: string }) {
       return <Bot className={cls} style={{ color: agentHex(agent?.color) }} />;
     }
     case "artifact":
-      // 全类型文件图标（public/fileicons，PR #57 资产复用）。
+      // 全类型文件图标（src/assets/fileicons 经 import 打包，PR #57 资产迁址）。
       return <FileTypeIcon name={name} className={cls} />;
     case "session":
       return <MessageSquare className={cls} />;
