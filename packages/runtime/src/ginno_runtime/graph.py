@@ -313,6 +313,7 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
                 context_dirs=state.get("context_dirs") or [],
                 primary_path=state.get("primary_path", "") or "",
                 extra_allow=extra,
+                tool_policy=state.get("tool_policy") or {},
             ),
             model,
         )

@@ -83,6 +83,7 @@ def build_stable_system(
     context_dirs: list[dict] | None = None,
     primary_path: str = "",
     extra_allow: list[str] | None = None,
+    tool_policy: dict | None = None,
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -119,6 +120,7 @@ def build_stable_system(
         workspace=workspace,
         context_dirs=list(context_dirs or []),
         primary_path=primary_path or "",
+        tool_policy=dict(tool_policy or {}),
     )
     world = WorldState(ctx)
     # Reply-language directive (i18n-design.md §6): pin the model's output

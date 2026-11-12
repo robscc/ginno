@@ -248,7 +248,10 @@ def _maybe_refresh_session_graph(session: dict) -> None:
     orphaned = reg.unconfigured_wrapped_names(frozen)
     if not gained and not orphaned:
         return
-    mcp_tools = reg.all_langchain_tools()
+    # Session Tool Policy（2026-11-12 P0）：按会话黑名单过滤 server 工具组。
+    from ...tool_policy import filter_mcp_tools
+
+    mcp_tools = filter_mcp_tools(reg.all_langchain_tools(), session)
     slug = session.get("project_slug") or "default"
     workspace = str(session.get("workspace") or "")
     all_tools = build_all_tools(
@@ -517,6 +520,7 @@ async def _run_stream(
             workspace=str(session.get("workspace") or ""),
             context_dirs=list(session.get("context_dirs") or []),
             primary_path=str(session.get("primary_path") or ""),
+            tool_policy=dict(session.get("tool_policy") or {}),
         )
 
     # Microcompact — clear stale tool outputs (rung below E3) BEFORE E3

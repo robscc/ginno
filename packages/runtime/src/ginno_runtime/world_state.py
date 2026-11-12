@@ -283,6 +283,9 @@ class SessionCtx:
     context_dirs: list[dict] = field(default_factory=list)
     # Resolved path of the primary mount ("" = session files dir stays cwd).
     primary_path: str = ""
+    # Session Tool Policy（2026-11-12 P0）：skills 索引按会话黑名单过滤
+    # （MCP 侧在 build/refresh 处过滤，不经这里）。
+    tool_policy: dict = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -729,6 +732,10 @@ class SkillsSection:
             # don't exist, so advertising (or activating) the skill would
             # bind nothing and mislead the model.
             skills = [s for s in skills if s.name != "browser"]
+        # Session Tool Policy：禁用 skill 不进索引（内置 skill 豁免）。
+        from .tool_policy import skill_visible
+
+        skills = [s for s in skills if skill_visible(s.name, ctx.tool_policy)]
         names = sorted(s.name for s in skills)
         agent = ctx.agent or _agent_by_id(ctx.agent_id)
         return {

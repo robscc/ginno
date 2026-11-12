@@ -111,6 +111,17 @@ def build_skill_tools(
         skill = SkillLoader(project_slug=slug or None).get(name)
         if not skill:
             return f"[error] unknown skill: {name}"
+        # Session Tool Policy（2026-11-12 P0）：被禁 skill 明确报错（内置豁免）。
+        try:
+            from ..session_meta import _find_meta
+            from ..tool_policy import skill_denial
+
+            _m = _find_meta(session_id or "")
+            _denial = skill_denial(name, (_m[0] if _m else None) or {})
+            if _denial:
+                return _denial
+        except Exception:  # noqa: BLE001 — 策略查询失败绝不挡 skill
+            pass
         if name == "browser":
             # Same gate as the skills index (world_state._browser_tools_enabled):
             # with browser disabled the browser_* tools don't exist, so
