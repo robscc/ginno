@@ -40,7 +40,7 @@ export function ToolPolicyPopover({
         const [mcpRes, skillsRes, sess] = await Promise.all([
           api.mcpStatus(),
           api.listSkills(),
-          fetch(`/api/sessions/${sessionId}`).then((r) => r.json()),
+          api.getSessionDetail(sessionId),
         ]);
         if (!alive) return;
         setMcp(
@@ -54,9 +54,10 @@ export function ToolPolicyPopover({
             (s: SkillRow) => !BUILTIN_SKILLS.has(s.name),
           ),
         );
-        const pol = sess?.tool_policy || {};
-        setMcpOff(new Set(pol.mcp_disabled || []));
-        setSkOff(new Set(pol.skills_disabled || []));
+        const pol =
+          (sess?.tool_policy as Record<string, unknown> | undefined) || {};
+        setMcpOff(new Set((pol.mcp_disabled as string[]) || []));
+        setSkOff(new Set((pol.skills_disabled as string[]) || []));
       } finally {
         if (alive) setLoading(false);
       }
