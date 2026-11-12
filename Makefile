@@ -279,6 +279,18 @@ web: pnpm-deps
 	  fi; \
 	done
 
+	# ── public 完整性自检+自愈（第三次 svg 失踪 2026-11-12；同 dev_swap §0.5）──
+	# 构建窗口内 public 资产物理清零已发生 ×3，元凶毫秒级未目击。fileicons
+	# 已迁 src/assets（import 打包，构建链摸不到）；本守卫护住 public 剩余
+	# 跟踪资产（icon.png、vendor/viewer-static.min.js 等）——构建不应修改
+	# git 跟踪的 public 文件，出现 D/改动即 git restore 拦截 + 告警。
+	@if git -C $(ROOT) status --porcelain -- apps/web/public 2>/dev/null | grep -q .; then \
+	  echo "⚠️⚠️  public 资产在构建窗口内被改动/删除——git restore 自愈中"; \
+	  git -C $(ROOT) status --porcelain -- apps/web/public | head -5; \
+	  git -C $(ROOT) checkout -- apps/web/public 2>/dev/null || true; \
+	  echo "✅ public 已对照 HEAD 自愈（构建继续）"; \
+	fi
+
 .PHONY: check
 ## check: i18n catalog 一致性检查（i18n-design.md §10.2；app 的前置依赖，构建即拦截）
 check:
