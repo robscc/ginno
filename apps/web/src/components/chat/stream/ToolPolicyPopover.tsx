@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Boxes, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/api/workspace";
@@ -32,6 +32,11 @@ export function ToolPolicyPopover({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState("");
+  // 勾选即自动保存（2026-11-13 修复：手动保存按钮摩擦——uncheck 后直接
+  // 点外部关闭=未保存，重开回读旧 policy 全 check，被用户报 bug）。
+  const autoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<[Set<string>, Set<string>] | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -64,6 +69,12 @@ export function ToolPolicyPopover({
     })();
     return () => {
       alive = false;
+      if (autoTimer.current) {
+        // 防抖窗内关闭：立即 flush 待存（否则最后一下勾选丢失）
+        clearTimeout(autoTimer.current);
+        const pending = pendingRef.current;
+        if (pending) void save(pending[0], pending[1]);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -75,22 +86,38 @@ export function ToolPolicyPopover({
   const offTools = [...mcpOff].reduce((a, n) => a + toolCount(n), 0);
   const savedK = (offTools * TOK_PER_TOOL) / 1000;
 
-  async function save() {
+  async function save(nextMcp: Set<string>, nextSk: Set<string>, closeAfter = false) {
     setSaving(true);
     setSaved(false);
+    setErr("");
     try {
       const r = await api.setToolPolicy(sessionId, {
-        mode: mcpOff.size || skOff.size ? "custom" : "all",
-        mcp_disabled: [...mcpOff],
-        skills_disabled: [...skOff],
+        mode: nextMcp.size || nextSk.size ? "custom" : "all",
+        mcp_disabled: [...nextMcp],
+        skills_disabled: [...nextSk],
       });
       if (r.ok) {
         setSaved(true);
-        setTimeout(onClose, 900);
+        if (closeAfter) setTimeout(onClose, 400);
+      } else {
+        // 版本错配/网络失败不再静默（PUT 405 时用户以为存住了）
+        setErr(t("saveFail"));
       }
+    } catch {
+      setErr(t("saveFail"));
     } finally {
       setSaving(false);
     }
+  }
+
+  /** 勾选变化 → 400ms 防抖自动落库（勾选即生效，无按钮摩擦）。 */
+  function scheduleAutoSave(nextMcp: Set<string>, nextSk: Set<string>) {
+    if (autoTimer.current) clearTimeout(autoTimer.current);
+    pendingRef.current = [nextMcp, nextSk];
+    autoTimer.current = setTimeout(() => {
+      pendingRef.current = null;
+      void save(nextMcp, nextSk);
+    }, 400);
   }
 
   const section = (label: string) => (
@@ -151,6 +178,7 @@ export function ToolPolicyPopover({
                   setMcpOff((m) => {
                     const n = new Set(m);
                     n.has(s.name) ? n.delete(s.name) : n.add(s.name);
+                    scheduleAutoSave(n, skOff);
                     return n;
                   }),
                 toolCount(s.name) > 0
@@ -169,6 +197,7 @@ export function ToolPolicyPopover({
                   setSkOff((m) => {
                     const n = new Set(m);
                     n.has(s.name) ? n.delete(s.name) : n.add(s.name);
+                    scheduleAutoSave(mcpOff, n);
                     return n;
                   }),
               ),
@@ -177,19 +206,19 @@ export function ToolPolicyPopover({
           <div className="mt-2 flex items-center gap-2 border-t border-line2/50 pt-2 text-[11px]">
             <span
               className={
-                savedK > 0
+                err ? "text-red" : savedK > 0
                   ? "text-emerald-600 dark:text-emerald-400"
                   : "text-faint"
               }
             >
-              {t("saveTokens", { n: savedK.toFixed(1) })}
+              {err || t("saveTokens", { n: savedK.toFixed(1) })}
             </span>
             <button
-              onClick={() => void save()}
+              onClick={() => void save(mcpOff, skOff, true)}
               disabled={saving}
               className="ml-auto rounded-md bg-accent px-3 py-1 text-xs text-white transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              {saved ? `✓ ${t("saved")}` : t("save")}
+              {saved ? `✓ ${t("saved")}` : t("done")}
             </button>
           </div>
         </>

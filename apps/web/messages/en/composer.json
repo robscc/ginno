@@ -205,7 +205,9 @@
       "saveTokens": "saves ~↑{n}k/turn",
       "save": "Save",
       "saved": "Saved",
-      "hintOff": "uncheck = skip in this session (saves context)"
+      "hintOff": "uncheck = skip in this session (saves context)",
+      "saveFail": "Save failed, retry",
+      "done": "Done"
     }
   }
 }
