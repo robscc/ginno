@@ -198,3 +198,16 @@ def test_spawn_title_gen_dedupes(monkeypatch):
         assert calls == [1]
     finally:
         title_gen._TITLE_INFLIGHT.discard("s1")
+
+def test_sanitize_strips_fake_system_warning_tags():
+    """2026-11-12 session 70d8… 事故：glm-5.3-flash 幻觉
+    <system_warning>⚠️ 可能的记忆质量问题：</system_warning>smart-doc-title
+    整串被写成侧栏 title——剥标签 + 警告句式弃用后必须留 placeholder。"""
+    from ginno_runtime.title_gen import _sanitize_title
+
+    bad = "<system_warning>⚠️ 可能的记忆质量问题：</system_warning>smart-doc-titl"
+    assert _sanitize_title(bad) == ""  # 剥标签后内文是警告句式 → 弃用
+    # 纯标签包裹的正常标题：剥标签留内文
+    assert _sanitize_title("<title>workbuddy verifier</title>") == "workbuddy verifier"
+    # 无标签正常路径不受影响
+    assert _sanitize_title("  压缩进度条修复  ") == "压缩进度条修复"
