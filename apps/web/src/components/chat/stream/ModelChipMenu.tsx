@@ -5,7 +5,8 @@
 // 的选择（含 agent 绑定与应用默认的解析结果）。thinking-effort-design §5：
 // 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
 
-import { Brain, ChevronDown, Globe } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, Brain, ChevronDown, Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
 import type { SessionMeta } from "@/lib/types";
@@ -51,6 +52,9 @@ export function ModelChipMenu({
   onPickEffort: (effort: string) => void;
 }) {
   const tc = useTranslations("chat");
+  // 二级化（2026-11-12 用户拍板）：一级选模型（点选即切换，现状语义），
+  // 点选后进入二级「思考强度」视图（带返回）；底部独立思考段移除。
+  const [level2, setLevel2] = useState<{ pid: string; m: string } | null>(null);
   const effortLabel: Record<string, string> = {
     auto: tc("model.thinkingAuto"),
     off: tc("model.thinkingOff"),
@@ -93,6 +97,50 @@ export function ModelChipMenu({
         <>
           <div className="fixed inset-0 z-40" onClick={onClose} />
           <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">
+            {level2 ? (
+              <div>
+                <button
+                  onClick={() => setLevel2(null)}
+                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-muted hover:bg-card2 hover:text-txt"
+                >
+                  <ArrowLeft className="h-3 w-3" />
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {level2.m}
+                  </span>
+                </button>
+                <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-faint">
+                  <Brain className="h-3 w-3" />
+                  {tc("model.thinkingTitle")}
+                </div>
+                {effortDisabled ? (
+                  <div className="px-3 py-1 text-[11px] text-faint">
+                    {tc("model.thinkingUnsupported")}
+                  </div>
+                ) : (
+                  EFFORTS.map((e) => {
+                    const on = thinkingEffort === e;
+                    return (
+                      <button
+                        key={e}
+                        onClick={() => onPickEffort(e)}
+                        title={
+                          e === "auto" ? tc("model.thinkingAutoHint") : undefined
+                        }
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
+                          on ? "text-txt" : "text-muted"
+                        }`}
+                      >
+                        <span className={on ? "" : "opacity-0"}>✓</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {effortLabel[e]}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+              <div>
             {enabledProviders.length === 0 && (
               <div className="px-3 py-2 text-xs text-faint">
                 {tc("model.noProviders")}
@@ -128,7 +176,10 @@ export function ModelChipMenu({
                       return (
                         <button
                           key={`${pid}:${m}`}
-                          onClick={() => onPick(pid, m)}
+                          onClick={() => {
+                            onPick(pid, m);
+                            setLevel2({ pid, m });
+                          }}
                           className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
                             on ? "text-txt" : "text-muted"
                           }`}
@@ -142,38 +193,8 @@ export function ModelChipMenu({
                 </div>
               );
             })}
-            {/* 思考档位分组(thinking-effort-design §5):5 档 radio,选定即
-                热切;provider 声明不支持时整体置灰。 */}
-            <div className="mt-1 border-t border-line pt-1">
-              <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-faint">
-                <Brain className="h-3 w-3" />
-                {tc("model.thinkingTitle")}
               </div>
-              {effortDisabled ? (
-                <div className="px-3 py-1 text-[11px] text-faint">
-                  {tc("model.thinkingUnsupported")}
-                </div>
-              ) : (
-                EFFORTS.map((e) => {
-                  const on = thinkingEffort === e;
-                  return (
-                    <button
-                      key={e}
-                      onClick={() => onPickEffort(e)}
-                      title={
-                        e === "auto" ? tc("model.thinkingAutoHint") : undefined
-                      }
-                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                        on ? "text-txt" : "text-muted"
-                      }`}
-                    >
-                      <span className={on ? "" : "opacity-0"}>✓</span>
-                      <span className="min-w-0 flex-1 truncate">{effortLabel[e]}</span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
+            )}
             <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
               {tc(session ? "model.footnote" : "model.footnoteHome")}
             </div>
