@@ -74,10 +74,12 @@
     "changes": {
       "title": "Changes",
       "empty": "No files changed in this session",
-      "view.current": "Current",
-      "view.turn": "Per-Turn",
-      "view.all": "All",
-      "turnUngrouped": "Ungrouped"
+      "turnUngrouped": "Ungrouped",
+      "view": {
+        "current": "Current",
+        "turn": "Per-Turn",
+        "all": "All"
+      }
     },
     "tree": {
       "label": "File tree",

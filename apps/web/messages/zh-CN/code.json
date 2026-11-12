@@ -74,10 +74,12 @@
     "changes": {
       "title": "变更文件",
       "empty": "本会话暂无改动文件",
-      "view.current": "当前",
-      "view.turn": "按轮次",
-      "view.all": "全部",
-      "turnUngrouped": "未分组"
+      "turnUngrouped": "未分组",
+      "view": {
+        "current": "当前",
+        "turn": "按轮次",
+        "all": "全部"
+      }
     },
     "tree": {
       "label": "文件树",

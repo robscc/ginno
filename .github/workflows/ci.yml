@@ -158,3 +158,49 @@ jobs:
       - name: Unit tests (vitest)
         working-directory: packages/mod-runner
         run: pnpm test
+
+  # ── UI e2e 闸门（2026-11-12 用户需求：合并前走全量 e2e，@ 提示等前端
+  # 交互必须覆盖）────────────────────────────────────────────────────────
+  # packaged UI 套件（tests/e2e/test_packaged_ui_*.py）需要 dist sidecar +
+  # 真实 Chromium——ubuntu 的 runtime-tests 无 bundle 恒 skip，此前 CI 从未
+  # 真正跑过浏览器级用例。本 job 在 macos 上构建 runtime bundle（make runtime
+  # 含 web build + PyInstaller）后跑全套 packaged UI e2e。
+  ui-e2e:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: packages/runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install deps
+        run: |
+          uv sync --group test --extra docs
+          pnpm install --frozen-lockfile
+
+      - name: Build runtime bundle (web + PyInstaller)
+        run: make runtime
+        working-directory: .
+
+      - name: Install Chromium (playwright)
+        run: uv run --group test python -m playwright install chromium
+
+      - name: Run packaged UI e2e
+        run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_mention.py tests/e2e/test_packaged_ui_playwright.py tests/e2e/test_packaged_ui_ask_user.py tests/e2e/test_playwright_mcp_trending.py -q
