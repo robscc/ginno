@@ -199,15 +199,13 @@
     "toolPolicy": {
       "title": "上下文管理",
       "hint": "下一轮生效",
-      "modeAll": "全部",
-      "modeMinimal": "最小",
-      "modeCustom": "自定义",
       "mcpSection": "MCP 服务器",
       "skillsSection": "Skills（非内置）",
-      "toolsUnit": "工具",
+      "toolsUnit": "{n} 工具",
       "saveTokens": "每轮约省 ↑{n}k",
       "save": "保存",
-      "saved": "已保存"
+      "saved": "已保存",
+      "hintOff": "勾掉 = 本会话不注入（省上下文）"
     }
   }
 }
