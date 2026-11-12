@@ -642,12 +642,32 @@ async def _compact_async_handler(
                 sid, "context.compacting", {"stage": "writing", "pct": 92}
             )
 
-        stats = await maybe_compact_history(
-            session, config, force=True,
-            on_summary_start=_announce_compacting,
-            on_summary_done=_announce_summary_done,
-        )
+        async def _announce_done() -> None:
+            # 终态必达（2026-11-12 卡死修复）：compact 是后台任务，结束后
+            # 若无后续事件，前端 compacting 镜像永不清 → Composer 永久
+            # readOnly（@ 打不进输入框）。done 事件让前端即时解锁。
+            await _push_session_event(
+                sid, "context.compacting", {"stage": "done", "pct": 100}
+            )
+
+        try:
+            stats = await maybe_compact_history(
+                session, config, force=True,
+                on_summary_start=_announce_compacting,
+                on_summary_done=_announce_summary_done,
+            )
+        except Exception as e:
+            _log.exception("compact_cmd_failed session=%s", sid)
+            await _announce_done()
+            return t(
+                f"Compaction failed: {type(e).__name__}: {e}",
+                f"压缩失败：{type(e).__name__}: {e}",
+            )
+        finally:
+            await _announce_done()
     except Exception as e:
+        # 外层（heal/前置段）兜底——原 try 的收尾；stats 自身的失败已在
+        # 内层捕获并连带发出 compacting 终态。
         _log.exception("compact_cmd_failed session=%s", sid)
         return t(
             f"Compaction failed: {type(e).__name__}: {e}",

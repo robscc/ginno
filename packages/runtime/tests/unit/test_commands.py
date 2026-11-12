@@ -383,7 +383,9 @@ async def _run_compact(monkeypatch, graph, *, running=(), compact_exc=None):
         calls["micro"] += 1
         return None
 
-    async def _compact(session, config, force=False, on_summary_start=None):
+    async def _compact(
+        session, config, force=False, on_summary_start=None, on_summary_done=None
+    ):
         calls["compact"] += 1
         assert force is True  # manual /compact must always force
         if compact_exc is not None:
