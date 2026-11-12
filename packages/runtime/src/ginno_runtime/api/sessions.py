@@ -596,7 +596,17 @@ async def create_session(req: CreateSessionRequest) -> dict:
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
-    mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
+    # Session Tool Policy（2026-11-12 P0）：显式传入优先；subagent/worker
+    # 继承父会话（子不宽于父）；普通会话缺省 all（现状零变化）。
+    from ..tool_policy import filter_mcp_tools, inherit, parse
+
+    _tp_src: dict = {"tool_policy": req.tool_policy} if getattr(req, "tool_policy", None) else {}
+    if req.parent_session_id and not _tp_src:
+        _parent_meta, _ = _find_meta(req.parent_session_id) or ({}, None)
+        _tp_src = inherit(_parent_meta or {})
+    mcp_tools = filter_mcp_tools(
+        shared._mcp.all_langchain_tools() if shared._mcp else [], _tp_src
+    )
     # Subagent depth (subagent-design.md §4.2): one above the parent's; the
     # depth caps the toolset STRUCTURALLY (a depth-2 child never gets
     # spawn_subagent) and is rejected outright beyond it.
@@ -685,6 +695,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
     # 静默当成 main 放进 worker 派活白名单）。特殊类型（subagent/team-member/
     # channel…）仍由各自分支显式覆盖。
     meta["type"] = req.type or "main"
+    if _tp_src:
+        meta["tool_policy"] = _tp_src["tool_policy"]
     if req.channel:
         meta["channel"] = req.channel
     if is_team_member:
@@ -1433,6 +1445,41 @@ async def get_session_state(session_id: str) -> dict:
     return {"ok": True, **snap}
 
 
+class ToolPolicyBody(BaseModel):
+    mode: str = "all"          # all | minimal | custom
+    mcp_disabled: list[str] = []
+    skills_disabled: list[str] = []
+
+
+@router.put("/api/sessions/{session_id}/tool_policy")
+async def set_tool_policy(session_id: str, body: ToolPolicyBody) -> dict:
+    """Session Tool Policy（2026-11-12 P0）：黑名单制，下一 turn 生效。
+
+    写 meta（真源）+ 运行时 dict；清空 mcp_tool_names 让下一轮的漂移
+    检查触发 graph 重建（重建时按 policy 过滤）。运行中 turn 不热插拔。
+    """
+    from ..tool_policy import VALID_MODES
+
+    if body.mode not in VALID_MODES:
+        return {"ok": False, "error": "bad mode"}
+    _m, _slug_dir = _find_meta(session_id) or (None, None)
+    if _m is None:
+        return {"ok": False, "error": "session not found"}
+    patch = {
+        "tool_policy": {
+            "mode": body.mode,
+            "mcp_disabled": sorted(set(body.mcp_disabled)),
+            "skills_disabled": sorted(set(body.skills_disabled)),
+        }
+    }
+    _session_meta_patch(_slug_dir, session_id, patch)
+    s = _SESSIONS.get(session_id)
+    if s is not None:
+        s["tool_policy"] = patch["tool_policy"]
+        s["mcp_tool_names"] = []  # 触发漂移重建（refresh 应用过滤）
+    return {"ok": True, **patch["tool_policy"]}
+
+
 @router.post("/api/sessions/{session_id}/stop", status_code=202)
 async def stop_session(session_id: str) -> dict:
     """Stop whatever the session is doing; ALWAYS 202 ``{"stopped": true}``.
@@ -1561,7 +1608,8 @@ def _apply_context_to_live_session(
     s["context_dirs"] = dirs
     s["primary_folder"] = primary_id
     s["primary_path"] = primary_path or ""
-    mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
+    from ..tool_policy import filter_mcp_tools as _ftp
+    mcp_tools = _ftp(shared._mcp.all_langchain_tools() if shared._mcp else [], s)
     all_tools = build_all_tools(
         mcp_tools,
         workspace=workspace,
@@ -1769,7 +1817,10 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     folder_ids = meta.get("context_folders") or []
     primary_id = meta.get("primary_folder") or None
     context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
-    mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
+    # Tool policy 随会话恢复（meta 真源 → 运行时 dict，供 turn 刷新/rebind 用）
+    s["tool_policy"] = meta.get("tool_policy")
+    from ..tool_policy import filter_mcp_tools as _ftp
+    mcp_tools = _ftp(shared._mcp.all_langchain_tools() if shared._mcp else [], meta)
     # Restore the subagent depth so the structural spawn cap survives a runtime
     # restart (subagent-design.md §4.2) — the meta is the source of truth.
     sub_depth = meta.get("depth") if meta.get("type") == "subagent" else None
