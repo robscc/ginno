@@ -126,6 +126,32 @@ export function ToolPolicyPopover({
     </div>
   );
 
+  /** iOS 风 switch（2026-11-13：checkbox 换开关——勾选态一眼可辨）。 */
+  const switchEl = (on: boolean, toggle: () => void, key: string) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={(e) => {
+        e.preventDefault(); // 整行 label 点击统一入口，避免双触发
+        toggle();
+      }}
+      className={
+        "relative h-[18px] w-[32px] shrink-0 rounded-full transition-colors duration-150 " +
+        (on ? "bg-accent" : "bg-line2")
+      }
+      tabIndex={-1}
+      key={key}
+    >
+      <span
+        className={
+          "absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-150 " +
+          (on ? "translate-x-[16px]" : "translate-x-[2px]")
+        }
+      />
+    </button>
+  );
+
   const row = (
     key: string,
     name: string,
@@ -141,7 +167,7 @@ export function ToolPolicyPopover({
         (dim ? "opacity-45" : "")
       }
     >
-      <input type="checkbox" checked={on} onChange={toggle} className="h-3.5 w-3.5" />
+      {switchEl(on, toggle, key)}
       <span className="min-w-0 flex-1 truncate text-xs text-txt">{name}</span>
       {right && (
         <span className="shrink-0 rounded bg-line2/50 px-1.5 py-px text-[10px] tabular-nums text-faint">
