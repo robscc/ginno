@@ -562,17 +562,27 @@ async def _run_stream(
                 {"stage": "writing", "pct": 92}, turn_id,
             )
 
+        async def _announce_done() -> None:
+            # 终态必达：自动压缩后若无后续事件，前端 compacting 永不清。
+            await _push_session_event(
+                session_id, "context.compacting",
+                {"stage": "done", "pct": 100}, turn_id,
+            )
+
         # setdefault 拿到与 WS stop 处理器同一个事件对象（用户在压缩期间按
         # ⏹ 时它已在那里被创建并置位）：summarizer 与 stop 赛跑，避免
         # 「stop 等压缩跑完才生效」（2026-10-27 session 150bcced）。
-        compaction_stats = await maybe_compact_history(
-            session,
-            config,
-            ctx_factory=_world_ctx,
-            on_summary_start=_announce_compacting,
-            on_summary_done=_announce_summary_done,
-            abort_event=_TURN_STOP.setdefault(session_id, asyncio.Event()),
-        )
+        try:
+            compaction_stats = await maybe_compact_history(
+                session,
+                config,
+                ctx_factory=_world_ctx,
+                on_summary_start=_announce_compacting,
+                on_summary_done=_announce_summary_done,
+                abort_event=_TURN_STOP.setdefault(session_id, asyncio.Event()),
+            )
+        finally:
+            await _announce_done()
     except Exception:
         _log.exception("compaction_failed session=%s", session_id)
     if compaction_stats:
