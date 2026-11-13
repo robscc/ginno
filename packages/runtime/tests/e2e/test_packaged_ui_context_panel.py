@@ -120,6 +120,32 @@ def test_packaged_ui_context_panel_ledger_and_search(tmp_path):
                 "search input should be present"
             )
 
+            # 真鼠标点击：server 开关与整行都应可切换（2026-11-13 用户报“没法点击”）
+            # 挑一个非 offline 的行（fake 环境会自动挂 playwright MCP，offline 行
+            # 的开关点不动）。若全部 offline，直接点 switch input 本身。
+            rows = panel.locator("label.cursor-pointer")
+            first_row = None
+            for i in range(rows.count()):
+                r = rows.nth(i)
+                if "offline" not in r.inner_text() and "disabled" not in r.inner_text():
+                    first_row = r
+                    break
+            if first_row is None:
+                pytest.skip("no interactive MCP rows in this environment")
+            sw = first_row.locator("input[type=checkbox]")
+            before = sw.is_checked()
+            first_row.click()
+            page.wait_for_timeout(250)
+            assert sw.is_checked() != before, "row click should toggle the switch"
+            first_row.click()
+            page.wait_for_timeout(250)
+            assert sw.is_checked() == before, "second row click should restore"
+            first_row.locator("span.flex-1").click()
+            page.wait_for_timeout(250)
+            assert sw.is_checked() != before, "name-span click should toggle"
+            first_row.locator("span.flex-1").click()
+            page.wait_for_timeout(250)
+
             page.get_by_role("button", name="Done").first.click()
             page.wait_for_timeout(300)
             assert page.locator("text=per request").count() == 0, "Done should close the panel"
