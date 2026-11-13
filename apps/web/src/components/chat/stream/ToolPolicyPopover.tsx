@@ -467,7 +467,10 @@ export function ToolPolicyPopover({
           </div>
         </div>
       ) : (
-        <div className="mb-2 h-8 animate-pulse rounded bg-card2" />
+        <div className="mb-2 flex items-center justify-between text-[10px] text-faint">
+          <span>{t("perRequest")}</span>
+          <span className="tabular-nums">≈{fmt(preview.used)}</span>
+        </div>
       )}
 
       <div className="mb-1.5 flex items-center gap-1.5 rounded-md bg-card2/60 px-2 py-1">
