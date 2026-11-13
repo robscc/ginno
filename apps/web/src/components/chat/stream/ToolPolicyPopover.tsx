@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/api/workspace";
+import { McpToggle } from "@/components/settings/mcp/McpToggle";
 
 /**
  * 上下文管理（2026-11-13 P0 重做）。
@@ -349,35 +350,17 @@ export function ToolPolicyPopover({
     (s) => !query || s.name.toLowerCase().includes(query) || toolMatches(s.name).length > 0,
   );
 
-  /** 原生 checkbox 驱动：整行（label）任意位置点击都能切换，且键盘/屏幕
-   *  阅读器可用。视觉由 CSS `:has(input:checked)` 驱动（globals.css 的
-   *  .tp-switch 规则），不依赖 JS 事件冒泡——修“点击无反应”。 */
+  /** 2026-11-13 拍板：直接复用设置页 McpToggle——同一视觉/交互/键盘语义，
+   *  不再自绘第三种开关。onChange 语义与 McpToggle 一致（next: boolean）。 */
   const switchEl = (
     on: boolean,
     toggle: (next: boolean) => void,
     label: string,
     disabled = false,
-    small = false,
+    _small?: boolean,
   ) => (
-    <span
-      className={
-        "tp-switch " + (small ? "tp-switch-sm h-4 w-7 " : "h-[18px] w-[32px] ") +
-        "relative inline-flex shrink-0 rounded-full" +
-        (disabled ? " opacity-40" : "")
-      }
-    >
-      <input
-        type="checkbox"
-        className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
-        checked={on}
-        onChange={(e) => toggle(e.target.checked)}
-        disabled={disabled}
-        aria-label={label}
-      />
-      <span className="tp-track absolute inset-0 rounded-full bg-line2 transition-colors duration-150 peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60" />
-      <span className="tp-knob absolute top-[2px] rounded-full bg-white shadow-sm transition-[left] duration-150"
-        style={{ left: 2, ...(small ? { height: 12, width: 12 } : { height: 14, width: 14 }) }}
-      />
+    <span className={disabled ? "pointer-events-none opacity-40" : ""}>
+      <McpToggle checked={on} onChange={toggle} label={label} />
     </span>
   );
 
@@ -516,7 +499,12 @@ export function ToolPolicyPopover({
             const disabled = st === "disabled";
             return (
               <div key={s.name} className="rounded-md">
-                <label
+                <div
+                  onClick={(e) => {
+                    if (e.target instanceof HTMLElement && e.target.closest("button")) return;
+                    if (disabled || st === "failed" || st === "offline") return;
+                    toggleServer(s, st === "off");
+                  }}
                   className={
                     "flex items-center gap-1.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-card2/60 " +
                     (disabled ? "opacity-45" : "cursor-pointer")
@@ -588,7 +576,7 @@ export function ToolPolicyPopover({
                   >
                     {statusChip(s)}
                   </span>
-                </label>
+                </div>
                 {open && !disabled && st !== "failed" && st !== "offline" && (
                   <div className="ml-8 border-l border-line2/50 pl-1.5">
                     {detailsLoading && !rowTools.length ? (
