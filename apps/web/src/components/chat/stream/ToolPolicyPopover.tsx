@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
+  Check,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -385,6 +386,29 @@ export function ToolPolicyPopover({
     </button>
   );
 
+  /** 工具级用轻量 checkbox：28px 开关在 40 条工具里会变成一列紫色胖条，
+   *  和 server 开关抢视觉；方框 + 对勾更符合“多选子项”的语义。 */
+  const checkEl = (on: boolean, toggle: () => void, label: string) => (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      aria-label={label}
+      onClick={(e) => {
+        e.preventDefault();
+        toggle();
+      }}
+      className={
+        "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
+        (on
+          ? "border-accent bg-accent text-white"
+          : "border-line2 bg-transparent text-transparent hover:border-faint")
+      }
+    >
+      <Check className="h-3 w-3" strokeWidth={3} />
+    </button>
+  );
+
   const chevron = (open: boolean) =>
     open ? (
       <ChevronDown className="h-3.5 w-3.5 shrink-0 text-faint" />
@@ -579,7 +603,7 @@ export function ToolPolicyPopover({
                             title={tool.description}
                             className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 hover:bg-card2/50"
                           >
-                            {switchEl(on, () => toggleTool(s.name, tool.fullName), tool.name, false, true)}
+                            {checkEl(on, () => toggleTool(s.name, tool.fullName), tool.name)}
                             <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
                               {tool.name}
                             </span>
