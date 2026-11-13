@@ -7,7 +7,7 @@ import { ChevronLeft, Copy, Eye, EyeOff, Plus } from "lucide-react";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import * as api from "@/lib/runtime";
 import type { McpServerStatus, McpToolDetail } from "@/lib/runtime";
-import { McpToggle } from "./McpToggle";
+import { Toggle as McpToggle } from "@/components/ui/Toggle";
 import {
   fmtClock,
   fullToolName,

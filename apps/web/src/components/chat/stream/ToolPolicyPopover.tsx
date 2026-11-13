@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/api/workspace";
-import { McpToggle } from "@/components/settings/mcp/McpToggle";
+import { Toggle as McpToggle } from "@/components/ui/Toggle";
 
 /**
  * 上下文管理（2026-11-13 P0 重做）。
@@ -350,8 +350,8 @@ export function ToolPolicyPopover({
     (s) => !query || s.name.toLowerCase().includes(query) || toolMatches(s.name).length > 0,
   );
 
-  /** 2026-11-13 拍板：直接复用设置页 McpToggle——同一视觉/交互/键盘语义，
-   *  不再自绘第三种开关。onChange 语义与 McpToggle 一致（next: boolean）。 */
+  /** 公共 ui/Toggle（原 settings/mcp/McpToggle，2026-11-13 提升）——
+   *  全站同一视觉/交互/键盘语义，不再自绘第三种开关。 */
   const switchEl = (
     on: boolean,
     toggle: (next: boolean) => void,

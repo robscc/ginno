@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { McpServerStatus } from "@/lib/runtime";
-import { McpToggle } from "./McpToggle";
+import { Toggle as McpToggle } from "@/components/ui/Toggle";
 import { serverLine, transportBadgeClass, transportOf, type McpServerEntry } from "./mcpShared";
 
 export type McpCardAction = "tools" | "perms" | "reconnect" | "remove";
