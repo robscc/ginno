@@ -18,6 +18,9 @@ const config: Config = {
         txt: "rgb(var(--txt) / <alpha-value>)",
         muted: "rgb(var(--muted) / <alpha-value>)",
         faint: "rgb(var(--faint) / <alpha-value>)",
+        // 品牌紫语义色（90c431b 重设计时被删，d93b96b 的 iOS 开关又引用了
+        // `bg-accent` → 编译为空、track 透明。2026-11-13 补回。）
+        accent: "rgb(var(--accent) / <alpha-value>)",
         // `bg-hover` / `hover:bg-hover` 的底色(此前未定义,编译为空)
         hover: "rgb(var(--card2) / <alpha-value>)",
         // 语义色:DEFAULT 保持既有 token 用法(text-green 等);数字档位补齐
