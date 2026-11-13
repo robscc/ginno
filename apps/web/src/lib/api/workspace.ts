@@ -495,17 +495,61 @@ export async function importSkillsDir(path: string, overwrite = false) {
 
 // ---- Session Tool Policy（2026-11-12 P1）----
 
-/** GET /api/mcp 轻负载（server 名 + 工具数）。 */
-export async function mcpStatus(): Promise<{
+/** GET /api/mcp 轻负载（server 名 + 工具数）；includeTools 时带 toolDetails。 */
+export async function mcpStatus(includeTools = false): Promise<{
   servers: string[]; status?: Array<Record<string, unknown>>;
 }> {
-  return json(`${BASE}/mcp`);
+  return json(`${BASE}/mcp${includeTools ? "?tools=1" : ""}`);
+}
+
+export type ContextToolPart = {
+  server: string;
+  connected: boolean;
+  enabled: boolean;
+  error: string;
+  tools: number;
+  enabledTools: number;
+  tokens: number;
+  disabledTokens: number;
+  byTool: { name: string; tokens: number; enabled: boolean }[];
+};
+
+export type ContextBreakdown = {
+  ok: boolean;
+  error?: string;
+  used: number;
+  measured: boolean;
+  window: number;
+  threshold: number;
+  counter: string;
+  tools: ContextToolPart[];
+  toolsTotal: number;
+  skills: { count: number; disabled: number; tokens: number };
+  system: number;
+  history: number;
+  fixed: number;
+  policy: {
+    mode: string;
+    mcp_disabled: string[];
+    mcp_tools_disabled: Record<string, string[]>;
+    skills_disabled: string[];
+  };
+};
+
+/** GET /api/sessions/{id}/context_breakdown —— 上下文账本（本地估算，≈）。 */
+export async function contextBreakdown(sessionId: string): Promise<ContextBreakdown> {
+  return json(`${BASE}/sessions/${sessionId}/context_breakdown`);
 }
 
 /** PUT /api/sessions/{id}/tool_policy —— 下一 turn 生效。 */
 export async function setToolPolicy(
   sessionId: string,
-  body: { mode: string; mcp_disabled: string[]; skills_disabled: string[] },
+  body: {
+    mode: string;
+    mcp_disabled: string[];
+    mcp_tools_disabled?: Record<string, string[]>;
+    skills_disabled: string[];
+  },
 ): Promise<{ ok: boolean; error?: string }> {
   return json(`${BASE}/sessions/${sessionId}/tool_policy`, {
     method: "PUT",

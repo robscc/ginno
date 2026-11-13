@@ -35,6 +35,9 @@ RUNTIME := $(ROOT)/packages/runtime
 # Where the onedir bundle is staged; tauri.conf.json bundles it into
 # Contents/Resources/resources/runtime/ and lib.rs launches the executable.
 RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
+# tiktoken o200k_base BPE, cached filename = sha1(url); fetched best-effort
+# before PyInstaller so the desktop bundle counts tokens offline.
+TK_VOCAB := $(RUNTIME)/vendor/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790
 # mod-runner.mjs staged beside it; tauri.conf.json bundles both under
 # Contents/Resources/resources/ and lib.rs points GINNO_MOD_RUNNER_PATH at it.
 RUNNER_RES := $(ROOT)/apps/desktop/resources/mod-runner.mjs
@@ -219,7 +222,10 @@ runtime: web
 	  printf '{"fingerprint": "%s", "channel": "app", "built_at": "%s", "repo": "%s"}\n' \
 	    "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)$$(git diff --quiet 2>/dev/null || printf -- -dirty)" \
 	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$(cd $(ROOT) && pwd)" > $(RUNTIME)/build-info.json; \
+	  python3 $(RUNTIME)/scripts/fetch_tiktoken_vocab.py || true; \
 	  cd $(RUNTIME) && set -o pipefail && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
+	  --collect-all tiktoken \
+	  --collect-all tiktoken_ext \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
@@ -231,6 +237,7 @@ runtime: web
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
 	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
+	  $(if $(wildcard $(TK_VOCAB)),--add-data "$(TK_VOCAB):tiktoken_cache",) \
 	  bin/ginno-runtime.py 2>&1 \
 	    | grep -vE "WARNING: (Failed to collect submodules for .(langchain_openai|langchain_anthropic)\.middleware.|Failed to collect submodules for .pandas\.plotting\._matplotlib.|Library (user32|msvcrt) required via ctypes not found)" \
 	  && echo "$$h" > $(CACHE)/runtime.stamp; \

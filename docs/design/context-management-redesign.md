@@ -167,7 +167,7 @@
 
 - 点 server 行左侧 chevron 展开工具清单，支持搜索；每项一个开关。
 - server 开关变三态：全开 / 部分（`12/40`）/ 全关。
-- 数据模型新增 `tool_policy.mcp_tools_disabled: {server: [raw_tool_name]}`；运行时过滤时先按 server 前缀、再按工具原始名精确剔除（工具名→graph 名走 `mcp_naming.tool_slug`，与设置页 `disabled_tools` 同一套映射）。
+- 数据模型新增 `tool_policy.mcp_tools_disabled: {server: [full_name]}`；存 `toolDetails[].fullName`（graph 面向的 ASCII 名，运行时可直接与 langchain 工具名比对，避免再走一次 slug 映射）；过滤时先按 server 前缀、再按全名精确剔除，只接受 `mcp_*`（builtin 永不可隐藏）。
 - 工具清单懒加载：展开某个 server 时才打 `GET /api/mcp?tools=1` 取 `toolDetails`，不随面板首屏拉 156 个工具的详情。
 - 与设置页的 `disabled_tools` 关系：设置页是**全局**默认，会话策略是**本会话叠加**；两层都关才算关。UI 上标注"设置中已禁用"的工具为只读行。
 - 继承：subagent/worker/delegation 复制父会话的 `mcp_tools_disabled`（与现有 server 黑名单同一继承路径）。

@@ -71,3 +71,60 @@ def test_inherit():
     assert inh["tool_policy"]["mcp_disabled"] == ["a"]
     assert tp.inherit({"tool_policy": {"mode": "all"}}) == {}
     assert tp.inherit({}) == {}
+
+
+def test_parse_tool_level_sanitises_non_mcp_names():
+    sess = {"tool_policy": {"mode": "all", "mcp_tools_disabled": {
+        "srv-docs": ["mcp_srv-docs_read", "read_file", 123],
+        "srv-empty": [],
+    }}}
+    pol = tp.parse(sess)
+    assert pol["mcp_tools_disabled"] == {"srv-docs": {"mcp_srv-docs_read"}}
+
+
+def test_tool_level_filters_even_in_all_mode():
+    sess = {"tool_policy": {"mode": "all", "mcp_tools_disabled": {
+        "srv-zhishui": ["mcp_srv-zhishui_get_user"],
+    }}}
+    out = tp.filter_mcp_tools(ALL, sess)
+    assert [t.name for t in out] == ["mcp_srv-docs_read", "read_file", "bash"]
+
+
+def test_tool_level_layers_on_server_level():
+    sess = {"tool_policy": {"mode": "custom",
+                            "mcp_disabled": ["srv-zhishui"],
+                            "mcp_tools_disabled": {"srv-docs": ["mcp_srv-docs_read"]}}}
+    out = tp.filter_mcp_tools(ALL, sess)
+    assert [t.name for t in out] == ["read_file", "bash"]
+
+
+def test_tool_level_with_minimal_still_keeps_builtin():
+    sess = {"tool_policy": {"mode": "minimal", "mcp_tools_disabled": {
+        "srv-docs": ["mcp_srv-docs_read", "read_file"],
+    }}}
+    out = tp.filter_mcp_tools(ALL, sess)
+    assert [t.name for t in out] == ["read_file", "bash"]  # builtin 永不被隐藏
+
+
+def test_mcp_tool_allowed_respects_tool_level():
+    sess = {"tool_policy": {"mode": "all", "mcp_tools_disabled": {
+        "srv-docs": ["mcp_srv-docs_read"],
+    }}}
+    assert tp.mcp_tool_allowed("mcp_srv-docs_read", sess) is False
+    assert tp.mcp_tool_allowed("mcp_srv-docs_write", sess) is True
+
+
+def test_inherit_carries_tool_level():
+    parent = {"tool_policy": {"mode": "custom", "mcp_disabled": [],
+                              "mcp_tools_disabled": {"srv-docs": ["mcp_srv-docs_read"]},
+                              "skills_disabled": []}}
+    inh = tp.inherit(parent)
+    assert inh["tool_policy"]["mcp_tools_disabled"] == {"srv-docs": ["mcp_srv-docs_read"]}
+
+
+def test_inherit_keeps_tool_level_even_in_all_mode():
+    parent = {"tool_policy": {"mode": "all", "mcp_tools_disabled": {
+        "srv-docs": ["mcp_srv-docs_read"],
+    }}}
+    inh = tp.inherit(parent)
+    assert inh["tool_policy"]["mcp_tools_disabled"] == {"srv-docs": ["mcp_srv-docs_read"]}

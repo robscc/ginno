@@ -211,14 +211,29 @@
       "hintAuto": "auto-saved",
       "hintSaved": "saved · next turn",
       "saving": "saving…",
-      "injected": "injecting ≈{n}k/req",
+      "injected": "injecting ≈{n}/req",
       "savedPerCall": "{n} off · saves ≈{k}k/req",
       "statusDisabled": "disabled in settings",
       "statusOffline": "offline",
       "statusFailed": "connect failed",
       "zeroTools": "0 tools",
       "retry": "retry",
-      "retrying": "retrying"
+      "retrying": "retrying",
+      "perRequest": "per request",
+      "history": "history",
+      "toolsLabel": "tools",
+      "skillsLabel": "skills",
+      "systemLabel": "system",
+      "estimated": "estimated",
+      "threshold": "compact threshold ≈{n}",
+      "search": "search servers / tools / skills",
+      "emptyMcp": "No MCP servers configured",
+      "expandTools": "expand tools",
+      "loadingTools": "loading tools…",
+      "noTools": "no matching tools",
+      "noSkills": "no matching skills",
+      "offShort": "off",
+      "offN": "{n} off"
     }
   }
 }
