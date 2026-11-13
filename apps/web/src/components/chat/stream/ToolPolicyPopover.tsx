@@ -348,6 +348,9 @@ export function ToolPolicyPopover({
     (s) => !query || s.name.toLowerCase().includes(query) || toolMatches(s.name).length > 0,
   );
 
+  /** 原生 checkbox 驱动：整行（label）任意位置点击都能切换，且键盘/屏幕
+   *  阅读器可用。视觉由 CSS `:has(input:checked)` 驱动（globals.css 的
+   *  .tp-switch 规则），不依赖 JS 事件冒泡——修“点击无反应”。 */
   const switchEl = (
     on: boolean,
     toggle: () => void,
@@ -355,54 +358,43 @@ export function ToolPolicyPopover({
     disabled = false,
     small = false,
   ) => (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      onClick={(e) => {
-        e.preventDefault();
-        toggle();
-      }}
+    <span
       className={
-        (small ? "h-4 w-7 " : "h-[18px] w-[32px] ") +
-        "relative shrink-0 rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
-        (on ? "bg-accent" : "bg-line2") +
-        (disabled ? " cursor-not-allowed opacity-40" : "")
+        "tp-switch " + (small ? "tp-switch-sm h-4 w-7 " : "h-[18px] w-[32px] ") +
+        "relative inline-flex shrink-0 rounded-full" +
+        (disabled ? " opacity-40" : "")
       }
     >
-      <span
-        className={
-          (small ? "left-[2px] top-[2px] h-3 w-3 " : "left-[2px] top-[2px] h-[14px] w-[14px] ") +
-          "absolute rounded-full bg-white shadow-sm transition-transform duration-150 " +
-          (on ? (small ? "translate-x-3" : "translate-x-[14px]") : "translate-x-0")
-        }
+      <input
+        type="checkbox"
+        className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
+        checked={on}
+        onChange={toggle}
+        disabled={disabled}
+        aria-label={label}
       />
-    </button>
+      <span className="tp-track absolute inset-0 rounded-full bg-line2 transition-colors duration-150 peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60" />
+      <span className="tp-knob absolute top-[2px] rounded-full bg-white shadow-sm transition-[left] duration-150"
+        style={{ left: 2, ...(small ? { height: 12, width: 12 } : { height: 14, width: 14 }) }}
+      />
+    </span>
   );
 
-  /** 工具级用轻量 checkbox：28px 开关在 40 条工具里会变成一列紫色胖条，
-   *  和 server 开关抢视觉；方框 + 对勾更符合“多选子项”的语义。 */
+  /** 工具级 16px 方框 checkbox（原生 input + 对勾），与 switchEl 同一套
+   *  原生语义。 */
   const checkEl = (on: boolean, toggle: () => void, label: string) => (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={on}
-      aria-label={label}
-      onClick={(e) => {
-        e.preventDefault();
-        toggle();
-      }}
-      className={
-        "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
-        (on
-          ? "border-accent bg-accent text-white"
-          : "border-line2 bg-transparent text-transparent hover:border-faint")
-      }
-    >
-      <Check className="h-3 w-3" strokeWidth={3} />
-    </button>
+    <span className="relative inline-flex h-4 w-4 shrink-0">
+      <input
+        type="checkbox"
+        className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
+        checked={on}
+        onChange={toggle}
+        aria-label={label}
+      />
+      <span className="absolute inset-0 flex items-center justify-center rounded-[4px] border border-line2 text-transparent transition-colors peer-checked:border-accent peer-checked:bg-accent peer-checked:text-white peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60">
+        <Check className="h-3 w-3" strokeWidth={3} />
+      </span>
+    </span>
   );
 
   const chevron = (open: boolean) =>
@@ -523,15 +515,20 @@ export function ToolPolicyPopover({
             const disabled = st === "disabled";
             return (
               <div key={s.name} className="rounded-md">
-                <div
+                <label
                   className={
                     "flex items-center gap-1.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-card2/60 " +
-                    (disabled ? "opacity-45" : "")
+                    (disabled ? "opacity-45" : "cursor-pointer")
                   }
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
+                  {/* 故意用 span[role=button]：button 是 labelable，会成为
+                      整行 <label> 的隐式激活目标，点行会先展开而不是切换开关。
+                      preventDefault 阻断 label 的合成 click 转发。 */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.preventDefault();
                       if (disabled || st === "failed" || st === "offline") return;
                       const next = new Set(expanded);
                       if (next.has(s.name)) next.delete(s.name);
@@ -539,11 +536,21 @@ export function ToolPolicyPopover({
                       setExpanded(next);
                       void ensureTools();
                     }}
-                    className="shrink-0 text-faint hover:text-txt"
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      if (disabled || st === "failed" || st === "offline") return;
+                      const next = new Set(expanded);
+                      if (next.has(s.name)) next.delete(s.name);
+                      else next.add(s.name);
+                      setExpanded(next);
+                      void ensureTools();
+                    }}
+                    className="shrink-0 cursor-pointer text-faint hover:text-txt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded"
                     aria-label={t("expandTools")}
                   >
                     {chevron(open)}
-                  </button>
+                  </span>
                   {switchEl(
                     st !== "off",
                     () => toggleServer(s),
@@ -580,7 +587,7 @@ export function ToolPolicyPopover({
                   >
                     {statusChip(s)}
                   </span>
-                </div>
+                </label>
                 {open && !disabled && st !== "failed" && st !== "offline" && (
                   <div className="ml-8 border-l border-line2/50 pl-1.5">
                     {detailsLoading && !rowTools.length ? (
