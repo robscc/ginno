@@ -295,11 +295,12 @@ export function ToolPolicyPopover({
     }
   }
 
-  function toggleServer(s: McpServer) {
-    const st = stateOf(s);
+  /** 原生 checkbox 直接给目标态，不读 stateOf——两次快速点击时 state
+   *  快照可能是旧的（batched updates），旧逻辑会把两次点击算成同一方向。 */
+  function toggleServer(s: McpServer, targetOn: boolean) {
     let nextMcp = new Set(mcpOff);
     let nextTools: ToolOff = { ...toolOff };
-    if (st === "on") {
+    if (!targetOn) {
       nextMcp.add(s.name);
     } else {
       nextMcp.delete(s.name);
@@ -313,9 +314,9 @@ export function ToolPolicyPopover({
     schedule(nextMcp, nextTools, skOff);
   }
 
-  function toggleTool(server: string, fullName: string) {
+  function toggleTool(server: string, fullName: string, next: boolean) {
     const set = new Set(toolOff[server] || []);
-    if (set.has(fullName)) set.delete(fullName);
+    if (next) set.delete(fullName);
     else set.add(fullName);
     const nextTools = { ...toolOff, [server]: set };
     const nextMcp = new Set(mcpOff);
@@ -325,10 +326,10 @@ export function ToolPolicyPopover({
     schedule(nextMcp, nextTools, skOff);
   }
 
-  function toggleSkill(name: string) {
+  function toggleSkill(name: string, targetOn: boolean) {
     const next = new Set(skOff);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
+    if (!targetOn) next.add(name);
+    else next.delete(name);
     setSkOff(next);
     schedule(mcpOff, toolOff, next);
   }
@@ -353,7 +354,7 @@ export function ToolPolicyPopover({
    *  .tp-switch 规则），不依赖 JS 事件冒泡——修“点击无反应”。 */
   const switchEl = (
     on: boolean,
-    toggle: () => void,
+    toggle: (next: boolean) => void,
     label: string,
     disabled = false,
     small = false,
@@ -369,7 +370,7 @@ export function ToolPolicyPopover({
         type="checkbox"
         className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
         checked={on}
-        onChange={toggle}
+        onChange={(e) => toggle(e.target.checked)}
         disabled={disabled}
         aria-label={label}
       />
@@ -382,13 +383,13 @@ export function ToolPolicyPopover({
 
   /** 工具级 16px 方框 checkbox（原生 input + 对勾），与 switchEl 同一套
    *  原生语义。 */
-  const checkEl = (on: boolean, toggle: () => void, label: string) => (
+  const checkEl = (on: boolean, toggle: (next: boolean) => void, label: string) => (
     <span className="relative inline-flex h-4 w-4 shrink-0">
       <input
         type="checkbox"
         className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
         checked={on}
-        onChange={toggle}
+        onChange={(e) => toggle(e.target.checked)}
         aria-label={label}
       />
       <span className="absolute inset-0 flex items-center justify-center rounded-[4px] border border-line2 text-transparent transition-colors peer-checked:border-accent peer-checked:bg-accent peer-checked:text-white peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60">
@@ -553,7 +554,7 @@ export function ToolPolicyPopover({
                   </span>
                   {switchEl(
                     st !== "off",
-                    () => toggleServer(s),
+                    (next) => toggleServer(s, next),
                     s.name,
                     disabled,
                   )}
@@ -606,7 +607,7 @@ export function ToolPolicyPopover({
                             title={tool.description}
                             className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 hover:bg-card2/50"
                           >
-                            {checkEl(on, () => toggleTool(s.name, tool.fullName), tool.name)}
+                            {checkEl(on, (next) => toggleTool(s.name, tool.fullName, next), tool.name)}
                             <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
                               {tool.name}
                             </span>
@@ -641,7 +642,7 @@ export function ToolPolicyPopover({
                 title={s.description}
                 className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-card2/60"
               >
-                {switchEl(!skOff.has(s.name), () => toggleSkill(s.name), s.name)}
+                {switchEl(!skOff.has(s.name), (next) => toggleSkill(s.name, next), s.name)}
                 <span className="min-w-0 flex-1 truncate text-xs text-txt">{s.name}</span>
                 {s.description && (
                   <span className="hidden max-w-[45%] truncate text-[10px] text-faint sm:inline">
