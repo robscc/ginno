@@ -374,13 +374,9 @@ export function ToolPolicyPopover({
     >
       <span
         className={
-          (small ? "top-[2px] h-3 w-3 " : "top-[2px] h-[14px] w-[14px] ") +
+          (small ? "left-[2px] top-[2px] h-3 w-3 " : "left-[2px] top-[2px] h-[14px] w-[14px] ") +
           "absolute rounded-full bg-white shadow-sm transition-transform duration-150 " +
-          (on
-            ? small
-              ? "translate-x-[14px]"
-              : "translate-x-[16px]"
-            : "translate-x-[2px]")
+          (on ? (small ? "translate-x-3" : "translate-x-[14px]") : "translate-x-0")
         }
       />
     </button>
