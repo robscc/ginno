@@ -632,17 +632,3 @@ body.ginno-card-dragging * {
   color: #fff;
   border-radius: 2px;
 }
-
-/* ---- 上下文管理面板开关（2026-11-13）：原生 input 驱动视觉，:has() 读 checked ---- */
-.tp-switch:has(input:checked) .tp-track {
-  background: rgb(var(--accent));
-}
-.tp-switch:has(input:checked) .tp-knob {
-  left: 16px;
-}
-.tp-switch-sm:has(input:checked) .tp-knob {
-  left: 14px;
-}
-.tp-switch:has(input:disabled) {
-  cursor: not-allowed;
-}
