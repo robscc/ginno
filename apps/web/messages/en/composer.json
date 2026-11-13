@@ -207,7 +207,18 @@
       "saved": "Saved",
       "hintOff": "uncheck = skip in this session (saves context)",
       "saveFail": "Save failed, retry",
-      "done": "Done"
+      "done": "Done",
+      "hintAuto": "auto-saved",
+      "hintSaved": "saved · next turn",
+      "saving": "saving…",
+      "injected": "injecting ≈{n}k/req",
+      "savedPerCall": "{n} off · saves ≈{k}k/req",
+      "statusDisabled": "disabled in settings",
+      "statusOffline": "offline",
+      "statusFailed": "connect failed",
+      "zeroTools": "0 tools",
+      "retry": "retry",
+      "retrying": "retrying"
     }
   }
 }

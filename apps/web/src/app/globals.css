@@ -13,6 +13,7 @@
   --txt: 233 233 240;
   --muted: 154 154 166;
   --faint: 98 98 110;
+  --accent: 139 92 246;
   --scroll: 44 44 56;
   --code-bg: 14 14 20;
   --inline-code: 233 170 200;
@@ -48,6 +49,7 @@ html.light {
   --txt: 23 23 30;
   --muted: 90 90 102;
   --faint: 130 130 142;
+  --accent: 124 58 237;
   --scroll: 212 212 220;
   --code-bg: 245 245 249;
   --inline-code: 170 60 105;

@@ -207,7 +207,18 @@
       "saved": "已保存",
       "hintOff": "勾掉 = 本会话不注入（省上下文）",
       "saveFail": "保存失败，请重试",
-      "done": "完成"
+      "done": "完成",
+      "hintAuto": "改动自动保存",
+      "hintSaved": "已保存 · 下一轮生效",
+      "saving": "保存中…",
+      "injected": "当前注入 ≈{n}k/次",
+      "savedPerCall": "已关 {n} 项 · ≈省 {k}k/次",
+      "statusDisabled": "设置中已停用",
+      "statusOffline": "未连接",
+      "statusFailed": "连接失败",
+      "zeroTools": "0 工具",
+      "retry": "重试",
+      "retrying": "重试中"
     }
   }
 }
