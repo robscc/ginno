@@ -32,19 +32,45 @@ def parse(session: dict | None) -> dict:
     """
     raw = (session or {}).get("tool_policy")
     if not isinstance(raw, dict):
-        return {"mode": "all", "mcp_disabled": set(), "skills_disabled": set()}
+        return {
+            "mode": "all",
+            "mcp_disabled": set(),
+            "mcp_tools_disabled": {},
+            "skills_disabled": set(),
+        }
     mode = raw.get("mode") if raw.get("mode") in VALID_MODES else "all"
     mcp_raw = raw.get("mcp_disabled")
     sk_raw = raw.get("skills_disabled")
+    tools_raw = raw.get("mcp_tools_disabled")
+    tools_disabled: dict[str, set[str]] = {}
+    if isinstance(tools_raw, dict):
+        for server, names in tools_raw.items():
+            if isinstance(names, (list, tuple, set)):
+                clean = {str(x) for x in names if str(x).startswith("mcp_")}
+                if clean:
+                    tools_disabled[str(server)] = clean
     return {
         "mode": mode,
         "mcp_disabled": (
             {str(x) for x in mcp_raw} if isinstance(mcp_raw, (list, tuple, set)) else set()
         ),
+        "mcp_tools_disabled": tools_disabled,
         "skills_disabled": (
             {str(x) for x in sk_raw} if isinstance(sk_raw, (list, tuple, set)) else set()
         ),
     }
+
+
+def _disabled_tool_names(policy: dict) -> set[str]:
+    """Flatten tool-level blacklist (graph-facing full names only).
+
+    Only ``mcp_*`` names are honoured: builtin tools must never be hideable
+    through a session policy (2026-11-12 拍板 ②).
+    """
+    out: set[str] = set()
+    for names in policy.get("mcp_tools_disabled", {}).values():
+        out |= set(names)
+    return {n for n in out if n.startswith("mcp_")}
 
 
 def _mcp_disabled_prefixes(policy: dict) -> set[str]:
@@ -55,25 +81,38 @@ def _mcp_disabled_prefixes(policy: dict) -> set[str]:
 
 
 def filter_mcp_tools(tools: list, session: dict | None) -> list:
-    """按 policy 过滤 langchain MCP 工具列表（保持入参顺序/排序）。"""
+    """按 policy 过滤 langchain MCP 工具列表（保持入参顺序/排序）。
+
+    两层黑名单叠加：server 级（``mcp_disabled``，砍整组前缀）与工具级
+    （``mcp_tools_disabled``，按 graph 面向全名精确剔除）。mode=all 只跳过
+    server 级，工具级仍生效。
+    """
     policy = parse(session)
-    if policy["mode"] == "all":
-        return tools
-    prefixes = _mcp_disabled_prefixes(policy)
-    if not prefixes:
+    disabled_tools = _disabled_tool_names(policy)
+    prefixes = (
+        _mcp_disabled_prefixes(policy) if policy["mode"] != "all" else set()
+    )
+    if not disabled_tools and not prefixes:
         return tools
     wildcard = "*" in prefixes
     # 通配（minimal）只砍 MCP 前缀工具；builtin 工具（read_file/bash/…）
     # 无 mcp_ 前缀，一律保留（用户拍板②：builtin 不参与裁剪）。
     if wildcard:
-        return [t for t in tools if not t.name.startswith("mcp_")]
+        return [
+            t for t in tools if not t.name.startswith("mcp_") and t.name not in disabled_tools
+        ]
     return [
-        t for t in tools if not any(t.name.startswith(p) for p in prefixes)
+        t
+        for t in tools
+        if t.name not in disabled_tools
+        and not any(t.name.startswith(p) for p in prefixes)
     ]
 
 
 def mcp_tool_allowed(tool_name: str, session: dict | None) -> bool:
     policy = parse(session)
+    if tool_name in _disabled_tool_names(policy):
+        return False
     if policy["mode"] == "all":
         return True
     prefixes = _mcp_disabled_prefixes(policy)
@@ -108,12 +147,23 @@ def inherit(parent_session: dict | None) -> dict[str, Any]:
     返回可直接存子 meta 的 dict；父无 policy 返回空 dict（=all）。
     """
     policy = parse(parent_session)
-    if policy["mode"] == "all":
+    if (
+        policy["mode"] == "all"
+        and not policy["mcp_disabled"]
+        and not policy["mcp_tools_disabled"]
+        and not policy["skills_disabled"]
+    ):
         return {}
+    tools_disabled = {
+        server: sorted(names)
+        for server, names in (policy.get("mcp_tools_disabled") or {}).items()
+        if names
+    }
     return {
         "tool_policy": {
             "mode": policy["mode"],
             "mcp_disabled": sorted(policy["mcp_disabled"]),
+            "mcp_tools_disabled": tools_disabled,
             "skills_disabled": sorted(policy["skills_disabled"]),
         }
     }

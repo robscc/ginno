@@ -73,3 +73,6 @@ packages/runtime/build-info.json
 
 # rtk local state
 .rtk/
+
+# tiktoken vocab fetched at build time
+packages/runtime/vendor/

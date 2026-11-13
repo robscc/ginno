@@ -18,6 +18,9 @@ dependencies = [
     "langchain-openai==1.7.3",
     "mcp>=1.0",
     "orjson>=3.10",
+    # 上下文面板本地计量：o200k_base 是跨 provider 最接近的本地近似；
+    # 真正精确值仍用最近一次 prompt_tokens 校准（2026-11-13 拍板）。
+    "tiktoken>=0.8",
     "pydantic>=2.7",
     # 14+：wecom WS 握手用 additional_headers 带统一 UA（12/13 是 extra_headers）
     "websockets>=14",

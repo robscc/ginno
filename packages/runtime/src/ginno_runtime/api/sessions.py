@@ -1448,7 +1448,35 @@ async def get_session_state(session_id: str) -> dict:
 class ToolPolicyBody(BaseModel):
     mode: str = "all"          # all | minimal | custom
     mcp_disabled: list[str] = []
+    # server -> graph-facing full names (mcp_<server>_<tool>). Tool-level
+    # blacklist layered on top of the server-level one (2026-11-13 拍板).
+    mcp_tools_disabled: dict[str, list[str]] = {}
     skills_disabled: list[str] = []
+
+
+@router.get("/api/sessions/{session_id}/context_breakdown")
+async def get_context_breakdown(session_id: str) -> dict:
+    """上下文管理面板的账本：工具/技能/系统/历史的 token 组成 + 窗口阈值。
+
+    只读、本地估算（tiktoken o200k_base），不调用模型；数字全标 ≈。
+    口径与 TopBar 圆环/压缩阈值共用同一条解析链（usage.context_state /
+    compaction._effective_compact_threshold）。
+    """
+    from ..context_breakdown import build as _build
+    from ..session_meta import _resolve_session_meta
+
+    snap = _resolve_session_meta(session_id)
+    if not snap:
+        return {"ok": False, "error": "session not found"}
+    found = _find_meta(session_id)
+    info = {**(found[0] if found else {}), **snap}
+    if found:
+        info["project_slug"] = found[1]
+    try:
+        return _build(session_id, info)
+    except Exception as exc:  # noqa: BLE001 — 面板是辅助视图，不能拖垮会话
+        _log.warning("context_breakdown failed session=%s: %s", session_id, exc)
+        return {"ok": False, "error": str(exc)}
 
 
 @router.put("/api/sessions/{session_id}/tool_policy")
@@ -1465,10 +1493,24 @@ async def set_tool_policy(session_id: str, body: ToolPolicyBody) -> dict:
     _m, _slug_dir = _find_meta(session_id) or (None, None)
     if _m is None:
         return {"ok": False, "error": "session not found"}
+    # 工具级黑名单只接受 graph 面向的 mcp_* 全名——builtin 工具永远不可
+    # 通过会话策略隐藏（2026-11-12 拍板 ②）。
+    tools_disabled: dict[str, list[str]] = {}
+    for server, names in (body.mcp_tools_disabled or {}).items():
+        clean = sorted(
+            {
+                str(n)
+                for n in (names or [])
+                if isinstance(n, str) and n.startswith("mcp_")
+            }
+        )
+        if clean:
+            tools_disabled[str(server)] = clean
     patch = {
         "tool_policy": {
             "mode": body.mode,
             "mcp_disabled": sorted(set(body.mcp_disabled)),
+            "mcp_tools_disabled": tools_disabled,
             "skills_disabled": sorted(set(body.skills_disabled)),
         }
     }

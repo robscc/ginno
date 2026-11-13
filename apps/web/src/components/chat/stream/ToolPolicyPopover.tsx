@@ -1,41 +1,50 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Boxes,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Search,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/api/workspace";
 
 /**
- * 上下文管理（Tool Policy P1，2026-11-12 二轮改版：去掉预设档，直接勾选）。
+ * 上下文管理（2026-11-13 P0 重做）。
  *
- * 2026-11-13 体验修复（用户反馈“界面有点错乱”）：
- * - iOS 开关的 track 用了 `bg-accent`，但该 token 在 90c431b UI redesign
- *   时被删掉 → 所有“开”的开关 track 透明，只剩一个白点；底栏“完成”按钮
- *   同样是白字透明底。这里补回 tailwind accent token（见 globals.css）。
- * - 底部不再显示“每轮约省 ↑0.0k”：改成“当前注入 ≈x k/次”，关掉后显示
- *   “已关 N 项 · ≈省 x k/次”，数字始终有基准。
- * - 区分四种状态：设置中停用 / 未连接 / 连接失败 / 已连接（0 工具）。
- *   不再把所有 tools=0 的行统一置灰（那会把“停用”和“故障”混成一类）。
- * - “✓ 已保存”不再永久占用“完成”按钮：单独做 1.5s 状态提示，按钮只负责关闭。
- * - 补 Esc 关闭、开关可键盘聚焦、MCP/技能分区显示数量。
- *
- * 勾掉 = 禁用（黑名单）；全勾 = all。MCP 服务器/非内置 skills 两节，
- * 内置（browser、builtin 工具）不参与不列出。保存走 PUT tool_policy，
- * 下一 turn 生效。
+ * 账本优先：顶部先回答“这一轮 prompt 被什么占满了”，再给可裁剪的开关。
+ * - 预算条：used/window + 压缩阈值刻度；分项 = 历史/工具/技能/系统。
+ * - 工具：server 级开关 + 展开到工具级（三态：全开/部分/全关）；token
+ *   数字来自 /context_breakdown（tiktoken o200k_base，固定项本地实测，
+ *   历史 = 上次 prompt_tokens − 固定项）。
+ * - 四态：设置中停用 / 未连接 / 连接失败（行内重试）/ 已连接。
+ * - 黑名单制：勾掉 = 禁用；内置 skill / builtin 工具不参与、不列出。
+ * - 保存 400ms 防抖自动落库；关闭只负责关面板。
  */
-type McpStatus = {
+type McpServer = {
   name: string;
   tools: number;
   connected: boolean;
   enabled: boolean;
-  error?: string;
+  error: string;
 };
+type ToolDetail = { name: string; fullName: string; description: string };
 type SkillRow = { name: string; description?: string };
+type ToolOff = Record<string, Set<string>>;
 
 const BUILTIN_SKILLS = new Set(["browser"]);
-const TOK_PER_TOOL = 330;
+const TOK_PER_TOOL_FALLBACK = 330;
 
-type RowState = "ok" | "disabled" | "offline" | "failed" | "empty";
+type RowState = "on" | "partial" | "off" | "disabled" | "offline" | "failed";
+
+function fmt(n: number): string {
+  if (!n) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
 
 export function ToolPolicyPopover({
   sessionId,
@@ -45,23 +54,28 @@ export function ToolPolicyPopover({
   onClose: () => void;
 }) {
   const t = useTranslations("composer.toolPolicy");
-  const [mcp, setMcp] = useState<McpStatus[]>([]);
+  const [mcp, setMcp] = useState<McpServer[]>([]);
   const [skills, setSkills] = useState<SkillRow[]>([]);
+  const [bd, setBd] = useState<api.ContextBreakdown | null>(null);
   const [mcpOff, setMcpOff] = useState<Set<string>>(new Set());
+  const [toolOff, setToolOff] = useState<ToolOff>({});
   const [skOff, setSkOff] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<Record<string, ToolDetail[]>>({});
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
   const [retrying, setRetrying] = useState("");
-  // 勾选即自动保存（2026-11-13 修复：手动保存按钮摩擦——uncheck 后直接
-  // 点外部关闭=未保存，重开回读旧 policy 全 check，被用户报 bug）。
   const autoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRef = useRef<[Set<string>, Set<string>] | null>(null);
+  const pendingRef = useRef<[Set<string>, ToolOff, Set<string>] | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const mapMcp = useCallback(
-    (list: Array<Record<string, unknown>> | undefined): McpStatus[] =>
+    (list: Array<Record<string, unknown>> | undefined): McpServer[] =>
       (list || []).map((s) => ({
         name: String(s.name),
         tools: typeof s.tools === "number" ? s.tools : 0,
@@ -76,10 +90,11 @@ export function ToolPolicyPopover({
     let alive = true;
     (async () => {
       try {
-        const [mcpRes, skillsRes, sess] = await Promise.all([
+        const [mcpRes, skillsRes, sess, breakdown] = await Promise.all([
           api.mcpStatus(),
           api.listSkills(),
           api.getSessionDetail(sessionId),
+          api.contextBreakdown(sessionId).catch(() => null),
         ]);
         if (!alive) return;
         setMcp(mapMcp(mcpRes.status));
@@ -89,9 +104,19 @@ export function ToolPolicyPopover({
           ),
         );
         const pol =
-          (sess?.tool_policy as Record<string, unknown> | undefined) || {};
+          (breakdown?.ok ? breakdown.policy : undefined) ||
+          ((sess?.tool_policy as Record<string, unknown> | undefined) || {});
         setMcpOff(new Set((pol.mcp_disabled as string[]) || []));
+        const rawTools = (pol.mcp_tools_disabled as Record<string, string[]> | undefined) || {};
+        setToolOff(
+          Object.fromEntries(
+            Object.entries(rawTools)
+              .filter(([, names]) => Array.isArray(names) && names.length)
+              .map(([server, names]) => [server, new Set(names)]),
+          ),
+        );
         setSkOff(new Set((pol.skills_disabled as string[]) || []));
+        setBd(breakdown?.ok ? breakdown : null);
       } finally {
         if (alive) setLoading(false);
       }
@@ -99,17 +124,15 @@ export function ToolPolicyPopover({
     return () => {
       alive = false;
       if (autoTimer.current) {
-        // 防抖窗内关闭：立即 flush 待存（否则最后一下勾选丢失）
         clearTimeout(autoTimer.current);
         const pending = pendingRef.current;
-        if (pending) void save(pending[0], pending[1]);
+        if (pending) void save(pending[0], pending[1], pending[2]);
       }
       if (savedTimer.current) clearTimeout(savedTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Esc 关闭：与全局浮层关闭语义一致（2026-11-13）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -118,39 +141,120 @@ export function ToolPolicyPopover({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const toolCount = (name: string) => {
-    const s = mcp.find((x) => x.name === name);
-    return s ? s.tools : 0;
-  };
+  const tokenByName = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const part of bd?.tools || []) {
+      for (const tool of part.byTool || []) map.set(tool.name, tool.tokens);
+    }
+    return map;
+  }, [bd]);
 
-  const stateOf = (s: McpStatus): RowState => {
-    if (!s.enabled) return "disabled";
-    if (!s.connected) return s.error ? "failed" : "offline";
-    if (s.tools === 0) return "empty";
-    return "ok";
-  };
-
-  // 只统计“真正会注入”的工具：全局停用/未连接的 server 本来就不占上下文。
   const injectable = mcp.filter((s) => s.enabled && s.connected);
   const injectableTools = injectable.reduce((a, s) => a + s.tools, 0);
-  const onTools = injectable.reduce(
-    (a, s) => a + (mcpOff.has(s.name) ? 0 : s.tools),
-    0,
-  );
-  const offTools = injectableTools - onTools;
-  const offCount =
-    injectable.filter((s) => mcpOff.has(s.name)).length + skOff.size;
-  const onK = (onTools * TOK_PER_TOOL) / 1000;
-  const savedK = (offTools * TOK_PER_TOOL) / 1000;
 
-  async function save(nextMcp: Set<string>, nextSk: Set<string>) {
+  const preview = useMemo(() => {
+    if (!bd) {
+      const onTools = injectable.reduce(
+        (a, s) => a + (mcpOff.has(s.name) ? 0 : s.tools),
+        0,
+      );
+      const total = injectableTools * TOK_PER_TOOL_FALLBACK;
+      const on = onTools * TOK_PER_TOOL_FALLBACK;
+      return { total, on, delta: 0, used: on, window: 0, threshold: 0 };
+    }
+    let on = 0;
+    let total = 0;
+    for (const part of bd.tools) {
+      for (const tool of part.byTool) {
+        total += tool.tokens;
+        const off =
+          mcpOff.has(part.server) || toolOff[part.server]?.has(tool.name);
+        if (!off) on += tool.tokens;
+      }
+    }
+    return {
+      total,
+      on,
+      delta: on - bd.toolsTotal,
+      used: Math.max(0, bd.used + (on - bd.toolsTotal)),
+      window: bd.window,
+      threshold: bd.threshold,
+    };
+  }, [bd, mcpOff, toolOff, injectable, injectableTools]);
+
+  const offToolCount = Object.values(toolOff).reduce((a, s) => a + s.size, 0);
+  const offCount = mcpOff.size + offToolCount + skOff.size;
+  const savedK = Math.abs(preview.delta) / 1000;
+
+  function stateOf(s: McpServer): RowState {
+    if (!s.enabled) return "disabled";
+    if (!s.connected) return s.error ? "failed" : "offline";
+    if (mcpOff.has(s.name)) return "off";
+    if ((toolOff[s.name]?.size || 0) > 0) return "partial";
+    return "on";
+  }
+
+  /** Local (unsaved-inclusive) stats for one server's row chip. */
+  function serverStats(s: McpServer): { enabled: number; tokens: number } {
+    const part = bd?.tools.find((p) => p.server === s.name);
+    if (!part) {
+      return {
+        enabled: Math.max(0, s.tools - (toolOff[s.name]?.size || 0)),
+        tokens: 0,
+      };
+    }
+    let enabled = 0;
+    let tokens = 0;
+    for (const tool of part.byTool) {
+      if (!tool.enabled) continue;
+      if (mcpOff.has(s.name) || toolOff[s.name]?.has(tool.name)) continue;
+      enabled += 1;
+      tokens += tool.tokens;
+    }
+    return { enabled, tokens };
+  }
+
+  async function ensureTools() {
+    if (Object.keys(details).length || detailsLoading) return;
+    setDetailsLoading(true);
+    try {
+      const r = await api.mcpStatus(true);
+      const map: Record<string, ToolDetail[]> = {};
+      for (const s of r.status || []) {
+        map[String(s.name)] = (
+          (s.toolDetails as Array<Record<string, unknown>> | undefined) || []
+        )
+          .map((d) => ({
+            name: String(d.name || ""),
+            fullName: String(d.fullName || ""),
+            description: String(d.description || ""),
+          }))
+          .filter((d) => d.fullName);
+      }
+      setDetails(map);
+    } catch {
+      /* 展开失败不阻塞面板；再点一次重试 */
+    } finally {
+      setDetailsLoading(false);
+    }
+  }
+
+  async function save(nextMcp: Set<string>, nextTools: ToolOff, nextSk: Set<string>) {
     setSaving(true);
     setSaved(false);
     setErr("");
     try {
+      const toolsDisabled: Record<string, string[]> = {};
+      for (const [server, names] of Object.entries(nextTools)) {
+        if (names.size) toolsDisabled[server] = [...names];
+      }
       const r = await api.setToolPolicy(sessionId, {
-        mode: nextMcp.size || nextSk.size ? "custom" : "all",
+        mode:
+          nextMcp.size || nextSk.size || Object.keys(toolsDisabled).length
+            ? "custom"
+            : "all",
         mcp_disabled: [...nextMcp],
+        mcp_tools_disabled: toolsDisabled,
         skills_disabled: [...nextSk],
       });
       if (r.ok) {
@@ -158,7 +262,6 @@ export function ToolPolicyPopover({
         if (savedTimer.current) clearTimeout(savedTimer.current);
         savedTimer.current = setTimeout(() => setSaved(false), 1500);
       } else {
-        // 版本错配/网络失败不再静默（PUT 405 时用户以为存住了）
         setErr(t("saveFail"));
       }
     } catch {
@@ -168,13 +271,12 @@ export function ToolPolicyPopover({
     }
   }
 
-  /** 勾选变化 → 400ms 防抖自动落库（勾选即生效，无按钮摩擦）。 */
-  function scheduleAutoSave(nextMcp: Set<string>, nextSk: Set<string>) {
+  function schedule(nextMcp: Set<string>, nextTools: ToolOff, nextSk: Set<string>) {
     if (autoTimer.current) clearTimeout(autoTimer.current);
-    pendingRef.current = [nextMcp, nextSk];
+    pendingRef.current = [nextMcp, nextTools, nextSk];
     autoTimer.current = setTimeout(() => {
       pendingRef.current = null;
-      void save(nextMcp, nextSk);
+      void save(nextMcp, nextTools, nextSk);
     }, 400);
   }
 
@@ -192,19 +294,65 @@ export function ToolPolicyPopover({
     }
   }
 
-  const section = (label: string, count: number) => (
-    <div className="sticky top-0 z-10 bg-card/95 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-faint backdrop-blur">
-      {label} · {count}
-    </div>
+  function toggleServer(s: McpServer) {
+    const st = stateOf(s);
+    let nextMcp = new Set(mcpOff);
+    let nextTools: ToolOff = { ...toolOff };
+    if (st === "on") {
+      nextMcp.add(s.name);
+    } else {
+      nextMcp.delete(s.name);
+      if (nextTools[s.name]?.size) {
+        nextTools = { ...nextTools };
+        delete nextTools[s.name];
+      }
+    }
+    setMcpOff(nextMcp);
+    setToolOff(nextTools);
+    schedule(nextMcp, nextTools, skOff);
+  }
+
+  function toggleTool(server: string, fullName: string) {
+    const set = new Set(toolOff[server] || []);
+    if (set.has(fullName)) set.delete(fullName);
+    else set.add(fullName);
+    const nextTools = { ...toolOff, [server]: set };
+    const nextMcp = new Set(mcpOff);
+    nextMcp.delete(server);
+    setToolOff(nextTools);
+    setMcpOff(nextMcp);
+    schedule(nextMcp, nextTools, skOff);
+  }
+
+  function toggleSkill(name: string) {
+    const next = new Set(skOff);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    setSkOff(next);
+    schedule(mcpOff, toolOff, next);
+  }
+
+  const query = q.trim().toLowerCase();
+  const skillsShown = skills.filter(
+    (s) => !query || s.name.toLowerCase().includes(query) || (s.description || "").toLowerCase().includes(query),
+  );
+  const showSkills = skillsOpen || Boolean(query);
+  const toolMatches = (server: string) =>
+    (details[server] || []).filter(
+      (tool) =>
+        tool.name.toLowerCase().includes(query) ||
+        tool.description.toLowerCase().includes(query),
+    );
+  const mcpShown = mcp.filter(
+    (s) => !query || s.name.toLowerCase().includes(query) || toolMatches(s.name).length > 0,
   );
 
-  /** iOS 风 switch（2026-11-13：checkbox 换开关——勾选态一眼可辨）。 */
   const switchEl = (
     on: boolean,
     toggle: () => void,
-    key: string,
     label: string,
     disabled = false,
+    small = false,
   ) => (
     <button
       type="button"
@@ -213,175 +361,291 @@ export function ToolPolicyPopover({
       aria-label={label}
       disabled={disabled}
       onClick={(e) => {
-        e.preventDefault(); // 整行 label 点击统一入口，避免双触发
+        e.preventDefault();
         toggle();
       }}
       className={
-        "relative h-[18px] w-[32px] shrink-0 rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
+        (small ? "h-4 w-7 " : "h-[18px] w-[32px] ") +
+        "relative shrink-0 rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
         (on ? "bg-accent" : "bg-line2") +
         (disabled ? " cursor-not-allowed opacity-40" : "")
       }
-      key={key}
     >
       <span
         className={
-          "absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-150 " +
-          (on ? "translate-x-[16px]" : "translate-x-[2px]")
+          (small ? "top-[2px] h-3 w-3 " : "top-[2px] h-[14px] w-[14px] ") +
+          "absolute rounded-full bg-white shadow-sm transition-transform duration-150 " +
+          (on
+            ? small
+              ? "translate-x-[14px]"
+              : "translate-x-[16px]"
+            : "translate-x-[2px]")
         }
       />
     </button>
   );
 
-  const row = (
-    key: string,
-    name: string,
-    on: boolean,
-    toggle: () => void,
-    state: RowState,
-    right?: string | null,
-    error?: string,
-  ) => {
-    const disabled = state === "disabled";
-    return (
-      <label
-        key={key}
-        title={error || undefined}
-        className={
-          "flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-card2/60 " +
-          (disabled ? "opacity-45" : "")
-        }
-      >
-        {switchEl(on, toggle, key, name, disabled)}
-        <span className="min-w-0 flex-1 truncate text-xs text-txt">{name}</span>
-        {state === "failed" && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void retry(name);
-            }}
-            className="shrink-0 rounded bg-red/15 px-1.5 py-px text-[10px] text-red hover:bg-red/25"
-          >
-            {retrying === name ? t("retrying") : t("retry")}
-          </button>
-        )}
-        {right && (
-          <span
-            className={
-              "shrink-0 text-[10px] tabular-nums " +
-              (state === "failed"
-                ? "text-red"
-                : state === "offline"
-                  ? "text-amber-500"
-                  : "rounded bg-line2/50 px-1.5 py-px text-faint")
-            }
-          >
-            {right}
-          </span>
-        )}
-      </label>
+  const chevron = (open: boolean) =>
+    open ? (
+      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-faint" />
+    ) : (
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" />
     );
-  };
 
-  const statusRight = (s: McpStatus): string => {
+  const statusChip = (s: McpServer) => {
     const st = stateOf(s);
     if (st === "disabled") return t("statusDisabled");
     if (st === "failed") return t("statusFailed");
     if (st === "offline") return t("statusOffline");
-    if (st === "empty") return t("zeroTools");
-    return t("toolsUnit", { n: s.tools });
+    if (st === "off") return `${s.tools} · ${t("offShort")}`;
+    const { enabled, tokens } = serverStats(s);
+    return `${enabled === s.tools ? s.tools : `${enabled}/${s.tools}`} · ${
+      tokens ? `≈${fmt(tokens)}` : "—"
+    }`;
   };
 
-  const hint = saving
-    ? t("saving")
-    : saved
-      ? t("hintSaved")
-      : t("hintAuto");
+  useEffect(() => {
+    if (q.trim()) void ensureTools();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
 
+  const hint = saving ? t("saving") : saved ? t("hintSaved") : t("hintAuto");
+  const pct = preview.window
+    ? Math.min(100, Math.max(0, (preview.used / preview.window) * 100))
+    : 0;
+  const thresholdPct = preview.window
+    ? Math.min(100, Math.max(0, (preview.threshold / preview.window) * 100))
+    : 0;
+  const near = preview.window > 0 && preview.used >= preview.threshold;
   const footerText = err
     ? err
     : saved
       ? `✓ ${t("hintSaved")}`
-      : offCount > 0
+      : preview.delta < -10
         ? t("savedPerCall", { n: offCount, k: savedK.toFixed(1) })
-        : t("injected", { n: onK.toFixed(1) });
+        : t("injected", { n: fmt(preview.used) });
 
   return (
-    <div className="absolute bottom-full right-0 z-50 mb-1 w-[360px] rounded-xl border border-line bg-card p-3 shadow-2xl">
+    <div className="absolute bottom-full right-0 z-50 mb-1 flex max-h-[min(72vh,560px)] w-[400px] flex-col rounded-xl border border-line bg-card p-3 shadow-2xl">
       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-txt">
         <Boxes className="h-3.5 w-3.5 text-accent" />
         {t("title")}
-        <span className="ml-auto text-[10px] font-normal text-faint">
-          {hint}
-        </span>
+        <span className="ml-auto text-[10px] font-normal text-faint">{hint}</span>
       </div>
-      <div className="mb-1 text-[10px] text-faint">{t("hintOff")}</div>
+
+      {/* 账本：先给总量与组成，再给开关 */}
+      {bd ? (
+        <div className="mb-2">
+          <div className="flex items-baseline justify-between text-[10px] text-faint">
+            <span>{t("perRequest")}</span>
+            <span className="tabular-nums">
+              ≈{fmt(preview.used)} / {fmt(preview.window)}
+            </span>
+          </div>
+          <div className="relative mt-1 h-1.5 overflow-hidden rounded-full bg-line2">
+            <div
+              className={
+                "h-full rounded-full transition-all " +
+                (near ? "bg-red" : "bg-accent")
+              }
+              style={{ width: `${pct}%` }}
+            />
+            {thresholdPct > 0 && (
+              <span
+                className="absolute -top-0.5 h-2.5 w-px bg-amber-500/80"
+                style={{ left: `${thresholdPct}%` }}
+                title={t("threshold", { n: fmt(preview.threshold) })}
+              />
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-faint">
+            <span>{t("history")} {fmt(bd.history)}</span>
+            <span>{t("toolsLabel")} ≈{fmt(preview.on)}</span>
+            <span>{t("skillsLabel")} {fmt(bd.skills.tokens)}</span>
+            <span>{t("systemLabel")} {fmt(bd.system)}</span>
+            {bd.counter === "estimate" && <span>· {t("estimated")}</span>}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-2 h-8 animate-pulse rounded bg-card2" />
+      )}
+
+      <div className="mb-1.5 flex items-center gap-1.5 rounded-md bg-card2/60 px-2 py-1">
+        <Search className="h-3 w-3 shrink-0 text-faint" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={t("search")}
+          className="w-full bg-transparent text-[11px] text-txt placeholder:text-faint focus:outline-none"
+        />
+      </div>
+
       {loading ? (
-        <div className="flex items-center justify-center py-8 text-muted">
+        <div className="flex flex-1 items-center justify-center py-8 text-muted">
           <Loader2 className="h-4 w-4 animate-spin" />
         </div>
       ) : (
-        <>
-          <div className="max-h-[300px] space-y-0.5 overflow-y-auto pr-1">
-            {section(t("mcpSection"), mcp.length)}
-            {mcp.map((s) => {
-              const st = stateOf(s);
-              return row(
-                s.name,
-                s.name,
-                !mcpOff.has(s.name),
-                () =>
-                  setMcpOff((m) => {
-                    const n = new Set(m);
-                    n.has(s.name) ? n.delete(s.name) : n.add(s.name);
-                    scheduleAutoSave(n, skOff);
-                    return n;
-                  }),
-                st,
-                statusRight(s),
-                s.error,
-              );
-            })}
-            {section(t("skillsSection"), skills.length)}
-            {skills.map((s) =>
-              row(
-                s.name,
-                s.name,
-                !skOff.has(s.name),
-                () =>
-                  setSkOff((m) => {
-                    const n = new Set(m);
-                    n.has(s.name) ? n.delete(s.name) : n.add(s.name);
-                    scheduleAutoSave(mcpOff, n);
-                    return n;
-                  }),
-                "ok",
-              ),
-            )}
+        <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
+          <div className="sticky top-0 z-10 bg-card/95 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wider text-faint backdrop-blur">
+            {t("mcpSection")} · {mcpShown.length}
           </div>
-          <div className="mt-2 flex items-center gap-2 border-t border-line2/50 pt-2 text-[11px]">
-            <span
-              className={
-                err
-                  ? "text-red"
-                  : saved || offCount > 0
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : "text-faint"
-              }
-            >
-              {footerText}
+          {mcpShown.length === 0 && (
+            <div className="px-2 py-3 text-[11px] text-faint">{t("emptyMcp")}</div>
+          )}
+          {mcpShown.map((s) => {
+            const st = stateOf(s);
+            const rowTools = details[s.name] || [];
+            const visibleTools = toolMatches(s.name);
+            const open = expanded.has(s.name) || (Boolean(query) && visibleTools.length > 0);
+            const disabled = st === "disabled";
+            return (
+              <div key={s.name} className="rounded-md">
+                <div
+                  className={
+                    "flex items-center gap-1.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-card2/60 " +
+                    (disabled ? "opacity-45" : "")
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (disabled || st === "failed" || st === "offline") return;
+                      const next = new Set(expanded);
+                      if (next.has(s.name)) next.delete(s.name);
+                      else next.add(s.name);
+                      setExpanded(next);
+                      void ensureTools();
+                    }}
+                    className="shrink-0 text-faint hover:text-txt"
+                    aria-label={t("expandTools")}
+                  >
+                    {chevron(open)}
+                  </button>
+                  {switchEl(
+                    st !== "off",
+                    () => toggleServer(s),
+                    s.name,
+                    disabled,
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-xs text-txt" title={s.error || s.name}>
+                    {s.name}
+                  </span>
+                  {st === "failed" && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void retry(s.name);
+                      }}
+                      className="shrink-0 rounded bg-red/15 px-1.5 py-px text-[10px] text-red hover:bg-red/25"
+                    >
+                      {retrying === s.name ? t("retrying") : t("retry")}
+                    </button>
+                  )}
+                  <span
+                    className={
+                      "shrink-0 text-[10px] tabular-nums " +
+                      (st === "failed"
+                        ? "text-red"
+                        : st === "offline"
+                          ? "text-amber-500"
+                          : st === "on" || st === "partial"
+                            ? "text-faint"
+                            : "text-faint")
+                    }
+                  >
+                    {statusChip(s)}
+                  </span>
+                </div>
+                {open && !disabled && st !== "failed" && st !== "offline" && (
+                  <div className="ml-8 border-l border-line2/50 pl-1.5">
+                    {detailsLoading && !rowTools.length ? (
+                      <div className="flex items-center gap-1 px-2 py-1 text-[10px] text-faint">
+                        <Loader2 className="h-3 w-3 animate-spin" /> {t("loadingTools")}
+                      </div>
+                    ) : visibleTools.length === 0 ? (
+                      <div className="px-2 py-1 text-[10px] text-faint">{t("noTools")}</div>
+                    ) : (
+                      visibleTools.map((tool) => {
+                        const on = !toolOff[s.name]?.has(tool.fullName);
+                        const tokens = tokenByName.get(tool.fullName) || 0;
+                        return (
+                          <label
+                            key={tool.fullName}
+                            title={tool.description}
+                            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 hover:bg-card2/50"
+                          >
+                            {switchEl(on, () => toggleTool(s.name, tool.fullName), tool.name, false, true)}
+                            <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+                              {tool.name}
+                            </span>
+                            <span className="shrink-0 text-[9px] tabular-nums text-faint">
+                              {tokens ? `≈${fmt(tokens)}` : ""}
+                            </span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={() => setSkillsOpen((v) => !v)}
+            className="sticky top-0 z-10 flex w-full items-center gap-1 bg-card/95 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-faint backdrop-blur"
+          >
+            {chevron(showSkills)}
+            <span className="flex-1 text-left">
+              {t("skillsSection")} · {skills.length}
+              {skOff.size > 0 ? ` · ${t("offN", { n: skOff.size })}` : ""}
             </span>
-            <button
-              onClick={onClose}
-              disabled={saving}
-              className="ml-auto rounded-md bg-accent px-3 py-1 text-xs text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {t("done")}
-            </button>
-          </div>
-        </>
+          </button>
+          {showSkills &&
+            skillsShown.map((s) => (
+              <label
+                key={s.name}
+                title={s.description}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-card2/60"
+              >
+                {switchEl(!skOff.has(s.name), () => toggleSkill(s.name), s.name)}
+                <span className="min-w-0 flex-1 truncate text-xs text-txt">{s.name}</span>
+                {s.description && (
+                  <span className="hidden max-w-[45%] truncate text-[10px] text-faint sm:inline">
+                    {s.description}
+                  </span>
+                )}
+              </label>
+            ))}
+          {showSkills && skillsShown.length === 0 && (
+            <div className="px-2 py-2 text-[10px] text-faint">{t("noSkills")}</div>
+          )}
+        </div>
       )}
+
+      <div className="mt-2 flex items-center gap-2 border-t border-line2/50 pt-2 text-[11px]">
+        <span
+          className={
+            err
+              ? "text-red"
+              : saved || preview.delta < -10
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-faint"
+          }
+        >
+          {footerText}
+        </span>
+        <button
+          onClick={onClose}
+          disabled={saving}
+          className="ml-auto rounded-md bg-accent px-3 py-1 text-xs text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {t("done")}
+        </button>
+      </div>
     </div>
   );
 }

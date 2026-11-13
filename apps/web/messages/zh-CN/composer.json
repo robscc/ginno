@@ -211,14 +211,29 @@
       "hintAuto": "改动自动保存",
       "hintSaved": "已保存 · 下一轮生效",
       "saving": "保存中…",
-      "injected": "当前注入 ≈{n}k/次",
+      "injected": "当前注入 ≈{n}/次",
       "savedPerCall": "已关 {n} 项 · ≈省 {k}k/次",
       "statusDisabled": "设置中已停用",
       "statusOffline": "未连接",
       "statusFailed": "连接失败",
       "zeroTools": "0 工具",
       "retry": "重试",
-      "retrying": "重试中"
+      "retrying": "重试中",
+      "perRequest": "每次请求",
+      "history": "历史",
+      "toolsLabel": "工具",
+      "skillsLabel": "技能",
+      "systemLabel": "系统",
+      "estimated": "估算",
+      "threshold": "压缩阈值 ≈{n}",
+      "search": "搜索服务器 / 工具 / 技能",
+      "emptyMcp": "没有配置 MCP 服务器",
+      "expandTools": "展开工具",
+      "loadingTools": "加载工具…",
+      "noTools": "没有匹配的工具",
+      "noSkills": "没有匹配的技能",
+      "offShort": "已关",
+      "offN": "已关 {n}"
     }
   }
 }
