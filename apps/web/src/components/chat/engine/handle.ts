@@ -69,6 +69,56 @@ function _saveNotifiedQuestionIds() {
   }
 }
 
+/** 去重集上限：超出按插入序淘汰最旧（JS Set 保序）。
+ *  2026-11-14 改：旧实现是 `size > 1000 → clear()` 整表清空——delta 洪水把集
+ *  灌满时会连**真实挂起问题**的去重记录一起抹掉，让 b088cc0 修的「重连重复弹」
+ *  复发。逐条淘汰只丢最旧的，正在挂起的问题（最新）永远留着。 */
+const _NQI_MAX = 1000;
+function _pruneNotifiedQuestionIds() {
+  while (notifiedQuestionIds.size > _NQI_MAX) {
+    const oldest = notifiedQuestionIds.values().next().value;
+    if (oldest === undefined) break;
+    notifiedQuestionIds.delete(oldest);
+  }
+}
+
+/** ask_user 挂起的 OS 通知（V2：最急的通知类，即时弹不合并——不看就永远卡着）。
+ *
+ *  **只允许 `case "user.question"` 调用**：见 handle() switch 里 tool.* 共享
+ *  case 体的警告注释，与 docs/notifications-audit-2026-11-14.md P0-1。
+ *
+ *  去重（2026-11-05 真机回归）：WS 重连时服务端会把 parked 的挂起问题重发一遍
+ *  （ws.py:244，给前端重建问题卡用，id 不变）——不按 id 去重的话每次重连/切会话
+ *  都弹一遍「等你回答」（用户报：没有 ask_user 也弹）。
+ *
+ *  2026-11-14 加固（通知风暴根因）：
+ *   - **没有 `ev.id` 就直接 return**。真挂起问题必带 tool_call id；id 缺失说明
+ *     调用方把别的事件误路由进来了——正是本次事故的形态。旧兜底
+ *     `${sid}:${Date.now()}` 等于给每个 delta 帧发一把新钥匙，去重形同虚设。
+ *   - 记 id 在闸门判定**之前**（与原实现同语义）：通知关着时也不会在开启后补弹。 */
+function maybeNotifyAskUser(
+  ctx: EngineCtx,
+  sid: string,
+  ev: { event: string; [k: string]: unknown },
+) {
+  const qid = typeof ev.id === "string" ? ev.id : "";
+  if (!qid) return;
+  if (notifiedQuestionIds.has(qid)) return;
+  notifiedQuestionIds.add(qid);
+  _pruneNotifiedQuestionIds();
+  _saveNotifiedQuestionIds();
+  if (!shouldNotify("askUser", isWatching(ctx, sid))) return;
+  const np = notifyPrefs();
+  const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+  void notifyNative({
+    kind: "session",
+    id: sid,
+    title: `⏸ ${sTitle}`,
+    body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
+    sound: soundFor("askUser"),
+  });
+}
+
 /** reply 合并条目：MergeItem + 多条时的计数文案（push 侧闭包捕获，
  *  i18nRef 延迟求值——ctx 长存所以安全）。 */
 interface ReplyItem extends MergeItem {
@@ -333,33 +383,20 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     case "tool.start":
     case "tool.args":
     case "tool.end":
+      // ⚠️ 共享 case 体：token.delta / thinking.delta 会 fall through 到这里，
+      // 本体会被 **5 个事件**执行。任何「只对某一类事件成立」的副作用都不能放
+      // 这里。2026-11-14 事故（docs/notifications-audit-2026-11-14.md P0-1）：
+      // ask_user 的 OS 通知曾被塞进这个共享体，而 delta 帧没有 ev.id → 去重键
+      // 退化成 `${sid}:${Date.now()}` 每帧唯一 → 每个 token 弹一条「等你回答」
+      // （单会话实测 1583 条，shell.log 里 77% 是通知流量，40% 投递失败）。
+      // 事件专属副作用一律拆到自己的 case 里（见下面 user.question）。
+      adoptOrphanStream(ctx, sid);
+      mutateLive(ctx, sid, ev);
+      break;
     // Transcript block, not a ref-based prompt like permission.request: the
     // card lives (and is merged by id) inside the live bubble's blocks.
     case "user.question": {
-      // V2：审批/提问挂起等人——最急的通知类，即时弹不合并（不看就永远卡着）。
-      // 去重（2026-11-05 真机回归）：WS 重连时服务端会把 parked 的挂起问题
-      // 重发一遍（ws.py:244，给前端重建问题卡用，id 不变）——不按 id 去重
-      // 的话每次重连/切会话都弹一遍「等你回答」（用户报：没有 ask_user 也弹）。
-      {
-        const qid = typeof ev.id === "string" ? ev.id : `${sid}:${Date.now()}`;
-        if (!notifiedQuestionIds.has(qid)) {
-          notifiedQuestionIds.add(qid);
-          if (notifiedQuestionIds.size > 1000) notifiedQuestionIds.clear(); // 防泄漏兜底
-          _saveNotifiedQuestionIds();
-          const watching = isWatching(ctx, sid);
-          if (shouldNotify("askUser", watching)) {
-            const np = notifyPrefs();
-            const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
-            void notifyNative({
-              kind: "session",
-              id: sid,
-              title: `⏸ ${sTitle}`,
-              body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
-              sound: soundFor("askUser"),
-            });
-          }
-        }
-      }
+      maybeNotifyAskUser(ctx, sid, ev);
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
       break;
