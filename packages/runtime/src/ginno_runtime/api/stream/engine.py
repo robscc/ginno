@@ -646,6 +646,13 @@ async def _stream_graph(
                             await safe_send(
                                 emit("tool.start", {"name": tc_name, "id": tc_id})
                             )
+                            # AgentTeam working 展示文本的数据源（backlog P2-10）：
+                            # teams.status._working_detail 读 last_tool，但此前
+                            # 全仓无任何写入点 → working 永远显示「正在运行」。
+                            # 纯展示字段，绝不参与语义态判断（设计 §3.4）。
+                            _sess_entry = shared._SESSIONS.get(session_id)
+                            if _sess_entry is not None:
+                                _sess_entry["last_tool"] = tc_name
                         # Accumulate args fragments from streaming chunks.
                         # Streaming chunks only carry ``id`` on the first
                         # fragment; subsequent ones use ``index``. Resolve

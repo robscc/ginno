@@ -111,7 +111,7 @@ async def _drain_queue(team_id: str) -> None:
     if team is None:
         _QUEUES.pop(team_id, None)
         return
-    while queue and _running_members(team) < store.MAX_CONCURRENT_RUNNING:
+    while queue and _running_members(team) < store.max_concurrent_running():
         entry = queue.pop(0)
         # 成员已被移除 → 丢弃这条（failed 语义，无人可通知也不再有回执通道）。
         if store.get_member(team_id, entry["instance_id"]) is None:
@@ -439,7 +439,7 @@ async def deliver(
                 "steer_id": steer_id, "channel": "steer"}
 
     # ── 并发闸（§5.6）：满员排队，turn 结束自动 drain ──
-    if _running_members(team) >= store.MAX_CONCURRENT_RUNNING:
+    if _running_members(team) >= store.max_concurrent_running():
         _QUEUES.setdefault(team_id, []).append({
             "instance_id": instance_id, "text": text, "client": client,
         })
@@ -450,7 +450,7 @@ async def deliver(
         await _broadcast_status(team_id, client)
         _log.info(
             "team_deliver_queued team=%s instance=%s running=%d queue=%d",
-            team_id, instance_id, store.MAX_CONCURRENT_RUNNING,
+            team_id, instance_id, store.max_concurrent_running(),
             len(_QUEUES.get(team_id) or []),
         )
         # 证据 = 队列里确实有这条（纪律 3 的队列版）。

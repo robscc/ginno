@@ -225,6 +225,11 @@ async def teams_badge() -> dict:
     blocked = 0
     done_unread = 0
     for t in team_store.list_teams():
+        # 归档团队不点亮徽标（backlog P2-8）：与前端行徽标行为一致
+        # （TeamShell 对 archived 团队不亮）。归档 ≠ 解散，仍可路由，
+        # 但「需要用户行动」的信号不该来自已收起的团队。
+        if t.get("archived"):
+            continue
         r = team_status.rollup(t)
         blocked += r.get("blocked", 0)
         done_unread += r.get("done_unread", 0)

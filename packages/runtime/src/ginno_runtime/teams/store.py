@@ -35,6 +35,45 @@ MAX_MEMBERS = 6
 # （它本来就依附在跑着的 turn 上）。满了排队，turn 结束自动 drain。
 MAX_CONCURRENT_RUNNING = 3
 
+# 可配置范围（照 subagent_scheduler/meta.py 的 settings+env 范式）。
+MIN_CONCURRENT_RUNNING = 1
+MAX_CONCURRENT_RUNNING_LIMIT = 8
+
+
+def max_concurrent_running() -> int:
+    """同团队同时在跑的成员 turn 上限（backlog P2-9）。
+
+    优先级：env ``GINNO_TEAM_MAX_CONCURRENT``（测试用）> settings
+    ``team.max_concurrent`` > 默认 3。**每次调用都读**，settings 写入即生效、
+    无需重启（设计 §5.6 明文「settings 可调」，此前是硬常量）。
+    """
+    import os
+
+    raw = os.environ.get("GINNO_TEAM_MAX_CONCURRENT")
+    if raw and raw.strip():
+        try:
+            return _clamp_concurrent(int(raw.strip()))
+        except ValueError:
+            pass
+    try:
+        p = paths.settings_path()
+        if p.exists():
+            from .. import jsonx as _json
+
+            settings = _json.loads(p.read_text() or "{}")
+            val = ((settings.get("team") or {}) if isinstance(settings, dict) else {}).get(
+                "max_concurrent"
+            )
+            if val is not None:
+                return _clamp_concurrent(int(val))
+    except (OSError, ValueError, TypeError):
+        pass
+    return MAX_CONCURRENT_RUNNING
+
+
+def _clamp_concurrent(value: int) -> int:
+    return max(MIN_CONCURRENT_RUNNING, min(MAX_CONCURRENT_RUNNING_LIMIT, int(value)))
+
 
 def _write(team_id: str, data: dict) -> None:
     paths.teams_dir().mkdir(parents=True, exist_ok=True)

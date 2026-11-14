@@ -25,11 +25,23 @@ from . import store
 # 「已安定」的语义态：等待的终点候选。working/waiting 是仍在产出，不算。
 SETTLED_STATUSES = ("blocked", "unknown", "error", "done", "idle")
 
+# 全部合法语义态（until 传错名字必须报错，否则默认 timeout=0 时永久死等）。
+VALID_STATUSES = ("idle", "working", "blocked", "waiting", "done", "unknown", "error")
+
 _POLL_S = 0.2
 
 
 def _settled(status: str, until: list[str] | None) -> bool:
-    return status in (until or SETTLED_STATUSES)
+    """是否到达等待终点。
+
+    ``idle`` 蕴含 ``done``（backlog P2-20）：done = 完成未读，用户看过工作台
+    就转 idle。若 until=["done"] 只认字面 done，用户一查看就永不收敛——
+    「用户看了结果」不该把 Lead 的等待卡死。
+    """
+    targets = until or SETTLED_STATUSES
+    if status in targets:
+        return True
+    return status == "idle" and "done" in targets
 
 
 async def wait_for_members(
@@ -49,6 +61,17 @@ async def wait_for_members(
     deadline = (
         time.monotonic() + max(0, int(timeout_s or 0)) if (timeout_s or 0) > 0 else None
     )
+    # until 枚举校验（backlog P2-22）：传错状态名会永不匹配，而默认
+    # timeout_s=0 → 永久死等，是 Lead 场景的卡死形状。宁可立刻报错。
+    if until:
+        bad = [s for s in until if s not in VALID_STATUSES]
+        if bad:
+            return t(
+                f"[error] Invalid until status: {', '.join(bad)}. "
+                f"Valid: {', '.join(VALID_STATUSES)}",
+                f"[error] until 状态名非法：{', '.join(bad)}。"
+                f"合法值：{', '.join(VALID_STATUSES)}",
+            )
 
     def _rows() -> list[dict]:
         team = store.get_team(team_id)

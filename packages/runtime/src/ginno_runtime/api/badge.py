@@ -29,6 +29,9 @@ async def badge() -> dict:
     blocked = 0
     done_unread = 0
     for t in team_store.list_teams():
+        # 归档团队不计入全局徽标（backlog P2-8，与 /api/teams/badge 同口径）。
+        if t.get("archived"):
+            continue
         r = team_status.rollup(t)
         blocked += r.get("blocked", 0)
         done_unread += r.get("done_unread", 0)
