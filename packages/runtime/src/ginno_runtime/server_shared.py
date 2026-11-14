@@ -420,9 +420,11 @@ def steer_keep_channel(session_id: str) -> None:
     同待遇：tasks/inject 的补投 watcher 会在 turn 收尾后捞回重投。worker
     协议注入（origin="worker"，2026-10-29）同待遇：未吸收的派活/回传
     留在 stash，等目标的下一个 turn（用户消息/另一次 wake）排水——
-    eventual delivery，不静默丢。"""
+    eventual delivery，不静默丢。AgentTeam 投递（origin="team"）同待遇：
+    团队投递没有「客户端会重发」这个兜底方（广场发完就 continue），
+    清场即永久丢失，而回执已报 delivered——正是本函数要防的空头支票。"""
     for _e in steer_drain(session_id):
-        if _e.get("origin") in ("channel", "task", "worker"):
+        if _e.get("origin") in ("channel", "task", "worker", "team"):
             steer_enqueue(session_id, _e)
 
 

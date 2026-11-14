@@ -166,6 +166,18 @@ async def recover_teams() -> None:
             _log.exception("team_leader_backfill_failed team=%s", team.get("id"))
 
     # 孤儿清理：roster 引用集之外的所有团队类会话。
+    #
+    # ⚠️ 数据安全守卫（backlog P0-5）：list_teams 对坏文件静默跳过（读函数契约），
+    # 若直接拿它当引用集，**读不出的 roster 会被当成「不存在」**，其全部会话被
+    # 当孤儿 force 删除——不可逆。所以任何删除前先探测不可读编制，非空即放弃
+    # 本轮清理：宁可留下孤儿，不可误删数据。
+    _bad = team_store.unreadable_rosters()
+    if _bad:
+        _log.warning(
+            "team_orphan_cleanup_skipped unreadable_rosters=%s — "
+            "编制文件损坏，跳过孤儿清理以免误删其会话（请修复后重启）", _bad,
+        )
+        return
     referenced: set[str] = set()
     for team in team_store.list_teams():
         referenced.add(str(team.get("main_session_id") or ""))
@@ -173,7 +185,16 @@ async def recover_teams() -> None:
             referenced.update(str(x) for x in (m.get("session_ids") or []))
             if m.get("session_id"):
                 referenced.add(str(m["session_id"]))
+    # slug 集要覆盖**所有项目**，不只是现存团队的 slug（backlog P2-27）：
+    # 某 slug 的团队被全删后，它遗留的团队类会话仍须被清理，否则永久残留。
     slugs = {str(t.get("project_slug") or "default") for t in team_store.list_teams()} | {"default"}
+    try:
+        from .. import paths as _paths
+        for _p in (_paths.home() / "projects").iterdir():
+            if _p.is_dir():
+                slugs.add(_p.name)
+    except OSError:
+        pass
     for slug in sorted(slugs):
         for s in _session_meta_list(slug):
             if s.get("type") in ("team", "team-member") and s.get("id") not in referenced:

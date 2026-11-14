@@ -82,11 +82,43 @@ _ASSIGN_DOC_EN = """Assign a self-contained task to one team member instance:
         """
 
 
+def _is_leader(team: dict, member: dict) -> bool:
+    """该成员是否本团队领队——与 ``teams/route.py`` 的「双保险」判据**逐字一致**：
+    ``leader_instance_id``（API 层维护的冗余）若指向现存成员则以其为准，
+    否则回落到任一 ``role == "leader"``（store 层事实）。
+
+    两处必须同源：否则「路由投给谁」与「谁能分派」会打架（backlog P1-8）。
+    """
+    from ..teams import store as team_store
+
+    iid = str(member.get("instance_id") or "")
+    if not iid:
+        return False
+    leader = str(team.get("leader_instance_id") or "")
+    members = team_store.list_members(str(team.get("id") or ""))
+    if not any(m.get("instance_id") == leader for m in members):
+        leader = next(
+            (str(m["instance_id"]) for m in members if m.get("role") == "leader"),
+            "",
+        )
+    return bool(leader) and leader == iid
+
+
 def build_team_tools(session_id: str | None) -> list:
-    """The lead toolset for ONE session — bound only to a team MAIN session
-    (meta type == "team"); everyone else gets []. The team itself is resolved
-    per call (team_of_session), so a roster rebuilt/renamed around the session
-    keeps working without a graph rebuild."""
+    """The lead toolset for ONE session.
+
+    绑定对象（backlog P0-2 修复）：
+      · 团队**主会话**（meta type == "team"）——历史语义，保留兼容；
+      · 该团队的**领队成员实例会话**（role == "leader"）——**实际生效的那个**。
+
+    为什么必须绑领队实例：P2 产品重构后主会话是「群聊广场」，对任何正常文本
+    消息都只路由给成员、**永不自跑 turn**（ws.py「主会话永不自跑 turn」）。
+    真正思考的是领队实例会话（type == "team-member"）。只绑主会话等于把工具
+    挂在一个永不思考的会话上——P3「Lead 自主分派」整条能力空转。
+
+    非领队成员仍拿 []（成员间不直连，一切经广场/领队，设计 §5.2 要点 3）。
+    团队本身每次调用时解析（team_of_session），所以编制重建/改名后无需重建图。
+    """
     if not session_id:
         return []
     from ..session_meta import _find_meta
@@ -94,17 +126,30 @@ def build_team_tools(session_id: str | None) -> list:
     from ..teams import wait as team_wait
 
     found = _find_meta(session_id)
-    if not found or (found[0].get("type") or "") != "team":
+    meta_type = (found[0].get("type") or "") if found else ""
+    if meta_type not in ("team", "team-member"):
         return []
+    if meta_type == "team-member":
+        # 成员会话：只有**领队**才配拿工具集。
+        located = team_store.team_of_session(session_id)
+        if located is None:
+            return []
+        _t, _m = located
+        if _m is None or not _is_leader(_t, _m):
+            return []
 
     def _team() -> tuple[str, dict | None]:
-        """(team_id, team) of THIS session's team; ("", None) when it is no
-        longer a roster main (disbanded / orphaned)."""
+        """(team_id, team) of THIS session's team; ("", None) when this session
+        is no longer a roster main **nor its leader** (disbanded / demoted)."""
         located = team_store.team_of_session(session_id)
-        if located is None or located[1] is not None:
-            # 不是任何团队的主会话（成员命中也算不合法——一切经主会话）。
+        if located is None:
             return "", None
-        return str(located[0].get("id") or ""), located[0]
+        team, member = located
+        if member is not None:
+            # 成员命中：仅领队合法（非领队不得分派——一切经广场/领队）。
+            if not _is_leader(team, member):
+                return "", None
+        return str(team.get("id") or ""), team
 
     async def list_members(
         wait: bool = False,

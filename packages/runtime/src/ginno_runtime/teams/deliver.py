@@ -375,6 +375,10 @@ async def deliver(
             "turn_id": _RUNNING_TURNS.get(sid) or "",
             "text": text,
             "injected_at": time.time(),
+            # origin="team"：段末清场（steer_keep_channel）保留本条目，等成员
+            # 下一个 turn 排水。团队投递没有「客户端重发」兜底方，清场即永久
+            # 丢失而回执已报 delivered——与 channel/task/worker 同待遇。
+            "origin": "team",
             "extra_kwargs": {"ginno_team_delivery": {
                 "team_id": team_id, "instance_id": instance_id,
             }},

@@ -82,6 +82,35 @@ def get_team(team_id: str) -> dict | None:
         return _read(team_id)
 
 
+def unreadable_rosters() -> list[str]:
+    """存在但**读不出**的团队编制文件名（不含 .tmp）。
+
+    ``list_teams`` 对坏文件静默跳过（模块契约：读函数不抛），这对「列表展示」
+    是对的，但对**孤儿清理**是致命的：清理逻辑把「读不出」当成「不存在」，
+    于是坏 roster 团队的全部会话被当孤儿删掉（不可逆）。
+
+    调用方（``api/teams.recover_teams``）在做任何删除前必须先问这里：
+    非空即放弃本轮清理——宁可留下孤儿，不可误删数据。
+    """
+    bad: list[str] = []
+    try:
+        for p in sorted(paths.teams_dir().glob("*.json")):
+            if p.name.endswith(".tmp"):
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8") or "{}")
+            except (json.JSONDecodeError, OSError):
+                bad.append(p.stem)
+                continue
+            # 结构不合法（非 dict / 无 id）同样视为读不出：list_teams 也会跳过它。
+            if not isinstance(data, dict) or not data.get("id"):
+                bad.append(p.stem)
+    except OSError:
+        # 目录都读不了 → 无法判断，保守视为「有不可读编制」。
+        return ["<teams_dir unreadable>"]
+    return bad
+
+
 def create_team(
     name: str,
     project_slug: str,

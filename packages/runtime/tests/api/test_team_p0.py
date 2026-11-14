@@ -417,7 +417,11 @@ def test_badge_endpoint_counts_blocked_and_unread(client, patch_build_model):
 
 
 def test_lead_tools_bound_only_to_team_main(client, patch_build_model):
-    """build_team_tools：团队主会话拿全 3 件；普通会话/成员会话为空表。"""
+    """build_team_tools：主会话 + **领队实例**拿全 3 件；非领队成员/普通会话为空表。
+
+    领队实例必须拿到工具（backlog P0-2 回归）：主会话是群聊广场、永不自跑
+    turn，真正思考的是领队实例会话。只绑主会话 = P3 自主分派整条空转。
+    """
     from ginno_runtime.tools.team import build_team_tools
 
     patch_build_model(script(text="ok"))
@@ -425,7 +429,14 @@ def test_lead_tools_bound_only_to_team_main(client, patch_build_model):
     m = _add_member(client, team["id"], "dev")
     main_tools = {t.name for t in build_team_tools(team["main_session_id"])}
     assert main_tools == {"list_members", "deliver_to_member", "assign_task"}
+    # 非领队成员：不得分派（一切经广场/领队）
     assert build_team_tools(m["session_id"]) == []
+
+    # 领队实例：必须拿到同一套工具（P0-2 的核心断言）
+    leader = _add_member(client, team["id"], "research", role="leader")
+    leader_tools = {t.name for t in build_team_tools(leader["session_id"])}
+    assert leader_tools == main_tools, "领队实例会话必须拿到 Lead 工具集"
+
     # 普通会话 / 无 session
     sid = client.post("/api/sessions", json={
         "project_slug": "default", "workspace": "/tmp/x",
