@@ -332,3 +332,78 @@ Chromium（playwright）+ 真 WebSocket + 真 `handle()` reducer + 真 `notifyPr
 `show FAILED` / `fire-and-forget` / `wait_for_action`），按 `id=(\S+)` 提取 session id
 做 Counter，再以 50 行步长滑窗（窗宽 200 行）求 `notification shown` 密度峰值。
 注意日志无时间戳，故用**文件行号位置**代替时间轴做趋势判断。
+
+## 7. P1 施工记录（2026-11-14 当日续）
+
+P0 三项已在 `438f88d` / `95d0790` 合入 main。本节记录 P1 的实际改动、施工中
+**新发现的一个生产 bug**，以及真实运行时验证矩阵。
+
+### 7.1 改动清单
+
+| # | 审计条目 | 落地方式 |
+|---|---|---|
+| 5 | 闸门覆盖不全 | `notifyNative()` 成为**唯一出口**并施加完整闸门：owner-window → `osGateOpen(notifyKind)`（总开关 ∧ 分类开关 ∧ 勿扰窗）→ 隐私裁正文 → 按分类推导提示音 → emit。`store/notifications.ts` 三个函数删掉各自的 `prefs.enabled` / `sound` 手搓逻辑 |
+| 6 | 两个死开关 | `workflow` 接真到 `notifyRunTransitions`；**`subagent` 删除**——它在 V2 里就标注「预留」，至今无生产者：`linked.done` 在服务端已过滤掉 subagent/schedule origin（`engine.py:1303` 只放行 `interactive`/`deliver`），子代理结果走「注入父对话 + `worker.*` 应用内 notice」，从不发 OS 通知。留一个拨了没反应的开关比没有更糟 |
+| 5b | 分类不全 | `NotifyKind` 补 `schedule` / `bgTask`，定时任务与后台任务从此有独立开关，也才第一次受勿扰窗与隐私模式约束 |
+| 7 | reply 双轨节流 | `message.end` 与 `linked.done` 改为 push 进**同一个** `replyMerge`；60s 全局冷却移到 flush 时统一施加（修复前只有 linked.done 那一路有）；flush 时**重新**判定注意力；`cancelPendingReplyNotice()` 接进 `useChatStreamEngine` 的 activeSessionId effect——`ReplyMergeWindow.cancel` 自 V2 起注释就写着这个用途，但此前**全仓库零调用点** |
+| 8 | 注意力判据不一 | 抽 `isAppAttentive()` / `isSessionAttentive(activeSid, sid)`，7 个站点共用。**刻意只用 `visibilityState`、不引入 `hasFocus`**：后者会让「窗口在屏幕上但焦点在别的 App」也判成没在看从而**增加**通知量，而 WKWebView 的遮挡语义尚未实机核实（§5 待核实 1）——在核实前引入它，风险是把「该弹不弹」换成「不该弹的又弹」，正是本次要治的病。NoticeHost 原有的 `hasFocus` 因此被移除（收敛到统一口径，方向是更保守） |
+| 9 | lastwords / 失焦兜底绕过偏好 | 两者都改为经 `notifyNative` 出口，正常受闸门约束。lastwords 归类 `askUser`（等人确认），保留「不走合并窗与冷却门」的高优先级语义；NoticeHost 的 error 级兜底归类 `failure`（点击目标仍是 `test` = 仅 refocus，因为泛化 notice 没有合理跳转目标） |
+| 10 | 壳侧日志不可定位 | `NotifyPayload` 增 `notify_kind`（`serde(default)`，旧 web bundle 兼容）；`log_ctx()` 统一输出 `kind / notify_kind / id / title前40字符`，5 处日志行全部改用它；`shell_log` 加进程内 `Mutex` 串行化 append |
+| — | `kind` 一词两义 | 类型上拆开：`kind` = **点击目标**（wire 兼容，Rust 用），`notifyKind` = **通知分类**（闸门轴）。`notifyKind` 设为**必填**，让 TS 逼每个调用点声明分类——本次改造中正是它把遗漏的调用点全部暴露成编译错误（只剩 2 处，都在测试里） |
+
+### 7.2 施工中新发现的生产 bug：`fromWire` 就地改写模块级默认值
+
+`notifyPrefs.fromWire` 原本是：
+
+```ts
+const d = { ...DEFAULT_PREFS, kinds: { ...DEFAULT_PREFS.kinds } };
+…
+if (typeof w.enabled === "boolean") d.dnd.enabled = w.enabled;   // ← 写穿到 DEFAULT_PREFS
+```
+
+`{...DEFAULT_PREFS}` 是**浅**拷贝，`d.dnd` 与 `DEFAULT_PREFS.dnd` 是同一个对象
+引用；`kinds` 单独展开过所以没事，`dnd` 没有。后果：用户设过一次勿扰窗（例如
+00:00–23:59）后，**模块级默认值被永久污染**，此后任何 settings.json 缺 `dnd`
+键、或 `dnd` 畸形而需要回退默认的场景，都会落到那个被污染的「默认」上——
+勿扰再也关不掉，且重启不愈（因为每次 fromWire 都会再写一遍）。
+
+由 P1 的闸门测试暴露：同一文件里前一个用例设了 DnD，后一个用例明明传了不含
+`dnd` 的偏好却仍在勿扰窗内。修复是补一层 `dnd: { ...DEFAULT_PREFS.dnd }`，
+并加了三条回归（写入 dnd 不改默认 / 连续两次 fromWire 互不影响 / kinds 同样
+不被污染）。
+
+> 教训：这个 bug 在纯函数测试里藏了很久，是**把闸门收口到唯一出口、再对出口
+> 做端到端断言**才把它逼出来的——与 P0-1 的 switch 穿透同理，结构性问题需要
+> 结构性测试。
+
+### 7.3 真实运行时验证矩阵（P1）
+
+同一套台子（§6：真 sidecar 源码起 + 真 Chromium + 真 WS + 真 reducer，delta
+按 33ms 合帧节奏放大 200 份，`visibilityState` 覆写为 hidden），只改
+settings.json 里的 `notifications` 偏好：
+
+| 偏好 | 201 个 delta 帧 | 1 个真 ask_user |
+|---|---|---|
+| 默认（全开） | **0 条** | **1 条**，body「等你回答——任务已挂起」 |
+| `kinds.askUser = false` | 0 条 | **0 条** ← 分类开关真的生效了 |
+| `enabled = false` | 0 条 | **0 条** ← 总开关真的关得掉 |
+| `privacy = "titleOnly"` | 0 条 | 1 条，**body 为空**、标题保留 |
+
+修复前这四行里，后三行都会照弹 1 条（`kinds` 只对 4/7 个站点生效、总开关对
+lastwords 与失焦兜底无效、隐私对一半站点无效）。
+
+单测侧：`vitest` 24 文件 **228 例**通过（P0 时是 204，本轮 +24）；
+`tsc --noEmit` 干净；`next lint` 0 error；`cargo fmt --check`（desktop +
+mod-broker）与 `cargo check`（desktop）通过。
+
+### 7.4 仍未做（P2）
+
+- 重写被 `3ccf0af` 删除的 OS 通知 spec；`handle.ts` 与 `notifyHub.ts` 里指向
+  `docs/os-notifications-v2-design.md` 的注释仍指向不存在的文件。
+- `notice-unification-design.md` 的 P2（Rust 通知窗）：做 / 标 ARCHIVED 待定。
+- `shell.log` 加时间戳：`apps/desktop` 依赖里没有 `chrono`/`time`，加可读时间
+  戳要么手写 civil-time 换算要么新增依赖，超出 P1-10 范围（原文只要求
+  notifyKind + 标题 + 带锁 append）。当前仍只能用行号位置代替时间轴。
+- `hasFocus` 是否纳入统一注意力判据：待实机核实 WKWebView 遮挡语义（§5 待核实 1）。
+- 打包 UI e2e：CLAUDE.md 要求前端交互改动配 `tests/e2e/` 用例，本轮与 P0 都
+  只加了 vitest 层（reducer + 闸门出口），浏览器级用例仍欠。

@@ -561,10 +561,7 @@ pub fn run() {
                     return;
                 };
                 let h = notify_handle.clone();
-                shell_log(
-                    &h,
-                    &format!("ginno:notify kind={} id={}", payload.kind, payload.id),
-                );
+                shell_log(&h, &format!("ginno:notify{}", payload.log_ctx()));
                 std::thread::spawn(move || show_notification_and_wait(h, payload));
             });
 

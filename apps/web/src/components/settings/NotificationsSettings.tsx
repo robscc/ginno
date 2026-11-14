@@ -46,6 +46,10 @@ export function NotificationsSettings() {
     if (!prefs) return;
     void notifyNative({
       kind: "test",
+      // 显式声明为 test 类：刻意绕过 enabled / kinds / DnD 三层偏好闸门
+      // （见 notifyPrefs.osGateOpen）——测试按钮是用户的显式动作，必须在任何
+      // 偏好下都给出可见反馈，否则「按了没反应」会被误读成通知系统坏了。
+      notifyKind: "test",
       id: "test",
       title: t("testTitle"),
       body: prefs.sound ? t("testBodySound", { sound: prefs.soundName }) : t("testBodySilent"),

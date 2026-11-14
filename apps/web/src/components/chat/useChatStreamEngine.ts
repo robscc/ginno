@@ -75,6 +75,7 @@ import {
   ensureLive as ensureLiveImpl,
   mutateLive as mutateLiveImpl,
   handle as handleImpl,
+  cancelPendingReplyNotice as cancelPendingReplyNoticeImpl,
 } from "./engine/handle";
 import {
   retryFailed as retryFailedImpl,
@@ -193,6 +194,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
   // so they capture stale context — anything they need live must come from refs.
   const activeSidRef = useRef<string | null>(g.activeSessionId);
   activeSidRef.current = g.activeSessionId;
+  // 切进某个会话时丢弃它待发的 reply 合并通知（P1-3）：30s 合并窗里可能正躺着
+  // 这个会话的「回复完成」，用户既然已经切进来了，再弹就是纯打扰。
+  // ReplyMergeWindow.cancel 的注释从 V2 起就写着 "e.g. user switched to the
+  // session"，但直到本次修复**全仓库零调用点**——API 造好了没接线。
+  useEffect(() => {
+    cancelPendingReplyNoticeImpl(g.activeSessionId);
+  }, [g.activeSessionId]);
   // socket-ready promises per sid (lazy-creation send awaits the socket).
   const socketReadyRef = useRef<
     Record<string, { promise: Promise<void>; resolve: () => void; reject: (e: unknown) => void }>
