@@ -80,14 +80,48 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
             shell_log(&app, &format!("ignoring unknown sound name {name:?}"));
         }
     }
-    let handle = match n.show() {
-        Ok(h) => h,
-        Err(e) => {
-            // 2026-08-10: notifications silently died here — macOS auth was
-            // denied (request_auth_blocking → false) and show()'s error was
-            // swallowed by a bare `return`. Never drop the only trace.
-            shell_log(&app, &format!("notification show FAILED: {e}"));
-            return;
+    // 有界重试投递（2026-11-14，docs/notifications-audit-2026-11-14.md P0-2）。
+    //
+    // `show()` 在 UN 后端要过 mac-usernotifications 的 `block_on_current`：不在
+    // 主线程时，它要求 `CFRunLoop::main().is_waiting()` 为真才肯发送，否则直接
+    // 返回 `MainThreadNotRunning`。而 `is_waiting()` 只在主 run loop **睡在等待
+    // 相位**时为真——主线程正在执行回调（例如正在派发触发本通知的那个
+    // `ginno:notify` 事件）时它是 false。这是个**假阴性**：run loop 明明在跑、
+    // 响应迟早会送达，库却拒发。
+    //
+    // 实测：shell.log 里 2357 次 `show FAILED: Mainthread not running`，占投递
+    // 尝试的 40%；失败率随通知密度变化——低负载区 0-5%，风暴区 30-53%。是负载
+    // 相关的竞态，不是「线程用错了」。
+    //
+    // 所以这里做有界重试，而**不是**把 show() 搬到 `run_on_main_thread`：搬过去
+    // 会让紧随其后的 `wait_for_action`（等用户点击，可能几分钟）也跑在主线程上，
+    // 直接冻住 UI。重试只是等主线程派发完、回到等待相位。
+    //
+    // 重试不会重复投递：`block_on_current` 在 poll future **之前**就做该判定，
+    // 返回 Err 时通知根本没发出去。
+    const SHOW_ATTEMPTS: u32 = 5;
+    let mut attempt = 0u32;
+    let handle = loop {
+        attempt += 1;
+        match n.show() {
+            Ok(h) => break h,
+            Err(e) if attempt < SHOW_ATTEMPTS => {
+                shell_log(
+                    &app,
+                    &format!("notification show retry {attempt}/{SHOW_ATTEMPTS}: {e}"),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => {
+                // 2026-08-10: notifications silently died here — macOS auth was
+                // denied (request_auth_blocking → false) and show()'s error was
+                // swallowed by a bare `return`. Never drop the only trace.
+                shell_log(
+                    &app,
+                    &format!("notification show FAILED after {attempt} attempts: {e}"),
+                );
+                return;
+            }
         }
     };
     shell_log(

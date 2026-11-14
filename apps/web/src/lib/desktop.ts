@@ -39,15 +39,46 @@ export interface NativeNotification {
 }
 
 /**
+ * Is this window allowed to own OS notifications?
+ *
+ * Only the main window is. The floating quick-chat window (`/pin`) mounts
+ * AppShell for its hooks, and every hook runs BEFORE AppShell's
+ * `if (pathname === "/pin") return <>{children}</>` early-exit (AppShell.tsx:56
+ * `useNoticeNativeFallback`, :522 schedule WS → `notifyScheduleRunFinished`,
+ * store.tsx:309 `useWorkflows` polling → `notifyRunTransitions`). The pin
+ * window is created hidden and kept alive hidden (pin.rs `ensure_pin_window`),
+ * so its `document.visibilityState !== "visible"` is ALWAYS true — the "only
+ * notify when the user isn't looking" premise those three sites gate on can
+ * never fail there. Result: scheduled/workflow completions fired a banner even
+ * while the user stared at the main window, and fired TWICE whenever the main
+ * window was hidden as well (per-window module state, no cross-window dedupe).
+ *
+ * Gating here (the single funnel every OS notification passes through) covers
+ * all six call sites at once, including ones added later.
+ * See docs/notifications-audit-2026-11-14.md P0-3.
+ */
+export function isNotifyOwnerWindow(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.location.pathname !== "/pin";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Ask the Tauri shell to fire a native macOS notification.
  *
  * Returns true when the event was handed to the shell. Returns false when not
- * running in Tauri or when the bridge is unavailable (e.g. the splash-page
- * location.replace path) — callers should fall back to the HTML5 Notification
- * API, which covers plain-browser dev (it is a no-op inside WKWebView anyway).
+ * running in Tauri, when this window is not the notification owner (see
+ * `isNotifyOwnerWindow`), or when the bridge is unavailable (e.g. the
+ * splash-page location.replace path) — callers should fall back to the HTML5
+ * Notification API, which covers plain-browser dev (it is a no-op inside
+ * WKWebView anyway).
  */
 export async function notifyNative(n: NativeNotification): Promise<boolean> {
   if (!isDesktop()) return false;
+  if (!isNotifyOwnerWindow()) return false;
   try {
     await emit("ginno:notify", n);
     return true;
