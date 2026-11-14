@@ -1712,6 +1712,49 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     // 去重：用服务端的 message_id 作 ChatMsg.id。它与 history reload 时
     // mapHistory 读到的 AIMessage.id 相同，所以「实时追加」与「之后 reload」
     // 指向同一条，不会双渲染。
+    case "team.delivered": {
+      // AgentTeam 投递回执（backlog P0-1）。此前全仓库零 handler：runtime 发完
+      // 就 continue，前端 busy 恒真 → composer 永久锁死、后续输入进 steer 死队列。
+      // runtime 侧已补 message.end（照 mods 命令分支范式），这里再做一层防御
+      // 并把回执语义落对：
+      //   delivered → 清 sending（已送达）
+      //   stalled   → **也已发送**，只是 turn 没在窗口内起来。绝不标 failed：
+      //               标 failed 会给重试按钮，一点就是重复投递（§5.3.3 原子性）
+      //   failed    → 真没发出去，标 failed 允许重试才是对的
+      const receipt = (ev.receipt as string) || "delivered";
+      const list = ctx.storeRef.current[sid] ?? [];
+      if (receipt === "failed") {
+        const reason = (ev.error as string) || (ev.reason as string) || "delivery failed";
+        ctx.storeRef.current[sid] = list.map((m) =>
+          m.status === "sending"
+            ? { ...m, status: "failed" as const, failReason: reason }
+            : m,
+        );
+      } else {
+        markDelivered(ctx, sid);
+        if (receipt === "stalled") {
+          // 已发送但未确认起跑 → 如实告知，不给重试入口。
+          ctx.storeRef.current[sid] = [
+            ...(ctx.storeRef.current[sid] ?? []),
+            {
+              id: mid(),
+              role: "assistant" as const,
+              agentId: null,
+              blocks: [{
+                kind: "text",
+                text: ctx.i18nRef.current.tr("team.deliveryStalled"),
+              } as Block],
+            },
+          ];
+        }
+      }
+      // 防御性收口：即使 message.end 因故未到，也不让 composer 卡死。
+      ctx.busyBySessionRef.current[sid] = false;
+      ctx.serverRunningRef.current[sid] = false;
+      ctx.liveBySessionRef.current[sid] = null;
+      ctx.syncDisplay(sid);
+      break;
+    }
     case "team.reply": {
       const msgId = (ev.message_id as string) || mid();
       const store = ctx.storeRef.current[sid] ?? [];

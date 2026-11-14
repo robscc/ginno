@@ -612,7 +612,8 @@
       "atDeliveryNote": "@ a member in the main session = deliver to its own session (not a persona swap for this turn)",
       "digestTitleNoAway": "The team did this while you were away",
       "digestCollapsedLine": "{n} item(s) need you",
-      "digestExpand": "Expand"
+      "digestExpand": "Expand",
+      "deliveryStalled": "Delivered to the member, but its turn has not started yet. It will run when the member is free — do not resend (that would duplicate the delivery)."
     },
     "worker": {
       "resultTitle": "Worker return: {from}",

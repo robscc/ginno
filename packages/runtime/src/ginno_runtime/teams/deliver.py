@@ -278,6 +278,67 @@ async def post_reply(
     return True
 
 
+async def record_plaza_message(
+    main_sid: str, text: str, turn_id: str, *, routed_to: str = "",
+) -> bool:
+    """把用户在广场发的那条消息写进主会话 checkpoint（backlog P0-1 后半）。
+
+    **为什么必须落盘**：投递分支不起主会话 turn，用户消息此前只经 WS 事件
+    一闪而过、从不进 checkpoint。重载后 history 里没有这条 → 前端对账把它
+    标成「未送达」并给出重试 → 用户一点就是**重复投递**（违反设计 §5.3.3
+    的投递原子性）。落盘后重载能看见「我发过这条、已投递给谁」。
+
+    走 ``aupdate_state(..., as_node="agent")``——与 post_reply / 
+    ``_heal_interrupted_turn`` 同一范式（turn 外写 checkpoint 的既有先例），
+    派生 turn_id 避开 FileCheckpointer 对已放弃 turn 的拒绝。
+
+    绝不抛异常：落盘失败只记日志，投递本身已经发生，不能因记账失败而报错。
+    """
+    if not main_sid or not text:
+        return False
+    session = _SESSIONS.get(main_sid)
+    if session is None or session.get("graph") is None:
+        try:
+            from ..api.sessions import _ensure_session  # lazy: cycle
+
+            session = _ensure_session(main_sid)
+        except Exception:  # noqa: BLE001
+            _log.exception("team_plaza_ensure_failed main=%s", main_sid)
+            return False
+    if session is None or session.get("graph") is None:
+        return False
+
+    from langchain_core.messages import HumanMessage
+
+    from ..session_meta import _find_meta
+
+    found = _find_meta(main_sid)
+    slug = found[1] if found else "default"
+    msg_id = f"team-plaza-{uuid.uuid4().hex[:12]}"
+    msg = HumanMessage(
+        content=text,
+        id=msg_id,
+        additional_kwargs={
+            # 前端据此渲染「已投递给 X」而不是普通用户气泡，并知道不该重试。
+            "ginno_team_delivery": {"routed_to": routed_to, "message_id": msg_id},
+        },
+    )
+    try:
+        await session["graph"].aupdate_state(
+            {"configurable": {
+                "thread_id": main_sid,
+                "project_slug": slug,
+                "turn_id": f"{msg_id}:plaza",
+            }},
+            {"messages": [msg], "pending_tool_calls": []},
+            as_node="agent",
+        )
+    except Exception:  # noqa: BLE001
+        _log.exception("team_plaza_write_failed main=%s", main_sid)
+        return False
+    return True
+
+
 async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     """跑成员的一个 turn。
 

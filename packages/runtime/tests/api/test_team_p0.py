@@ -312,17 +312,34 @@ def test_ws_agent_mention_in_team_main_routes_to_delivery(client, create_session
             "把 token 刷新改一下",
             mentions=[{"kind": "agent", "id": "dev"}],
         )
-        # 投递分支发 team.delivered 事件后 continue，不进 turn（无 message.end）。
-        # 注意：deliver 会先广播 team.changed（状态回流），所以用 recv_until
-        # 收到 team.delivered 为止，不假设它是第一个事件。
-        events = conv.recv_until("team.delivered", "message.end", "error")
+        # 投递分支发 team.delivered 后**必须收 message.end**（backlog P0-1）：
+        # 没有它前端 busy 恒真、composer 永久锁死。照 mods 命令分支的既有范式。
+        # 注意：deliver 会先广播 team.changed，所以收到 message.end 为止，
+        # 不假设 team.delivered 是第一个事件。
+        events = conv.recv_until("message.end", "error")
         names = [e.get("event") for e in events]
         assert "team.delivered" in names, names
-        # 关键：投递分支**没有**起主会话 turn（消息被投递走了）
-        assert "message.end" not in names, names
+        assert "message.end" in names, f"投递分支必须收 message.end（P0-1）：{names}"
+        # 关键：投递分支**没有**起主会话 turn（消息被投递走了）——
+        # 判据是没有 message.start / 没有 assistant 正文，而不是没有 message.end。
+        assert "message.start" not in names, names
         ev = next(e for e in events if e.get("event") == "team.delivered")
         assert ev.get("receipt") in ("delivered", "stalled"), ev
         assert ev.get("agent_id") == "dev"
+
+    # P0-1 后半：用户那条消息必须落 checkpoint——否则重载后 history 里没有它，
+    # 前端对账标「未送达」给重试，一点就是重复投递（违反 §5.3.3 原子性）。
+    hist = client.get(f"/api/sessions/{main_sid}/history").json()
+    _texts = [
+        str(m.get("text") or "") + " ".join(
+            str(b.get("text") or "") for b in (m.get("blocks") or [])
+            if isinstance(b, dict) and b.get("kind") == "text"
+        )
+        for m in (hist.get("messages") or [])
+        if (m.get("role") or m.get("type")) in ("human", "user")
+    ]
+    assert any("把 token 刷新改一下" in t for t in _texts), \
+        f"广场用户消息未落盘（P0-1）：{hist.get('messages')}"
 
     # dev 的 session 最终跑出回帖（等 bg turn）。
     deadline = _time.time() + 15

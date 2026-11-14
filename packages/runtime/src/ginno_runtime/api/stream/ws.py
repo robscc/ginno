@@ -569,12 +569,22 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # 投递目标是另一个 session，主会话自身忙不忙与它无关。
                     # 非团队会话（found is None）走原路径，行为完全不变。
                     if plan.agent_override:
-                        from ...teams.deliver import resolve_agent_mention
+                        from ...teams.deliver import (
+                            record_plaza_message,
+                            resolve_agent_mention,
+                        )
 
                         _team_receipt = await resolve_agent_mention(
                             session_id, plan.agent_override, user_text
                         )
                         if _team_receipt is not None:
+                            # P0-1：用户消息必须落 checkpoint——否则重载后
+                            # history 里没有这条，前端对账标「未送达」给重试，
+                            # 一点就是重复投递（违反 §5.3.3 投递原子性）。
+                            await record_plaza_message(
+                                session_id, user_text, turn_id,
+                                routed_to=str(_team_receipt.get("instance_id") or ""),
+                            )
                             await _push_session_event(
                                 session_id,
                                 "team.delivered",
@@ -584,6 +594,13 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                     **_team_receipt,
                                 },
                                 turn_id,
+                            )
+                            # P0-1：必须收 message.end——投递分支不起主会话
+                            # turn，没有它前端 busy 恒真、composer 永久锁死。
+                            # 照上方 mods 命令分支的既有范式（同样 continue
+                            # 前先 message.end）。
+                            await _push_session_event(
+                                session_id, "message.end", {}, turn_id
                             )
                             continue
 
@@ -620,6 +637,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                     },
                                     turn_id,
                                 )
+                            if _targets:
+                                # P0-1：落盘一次（不是每个目标一次——用户只发了
+                                # 一条消息，广播给 N 个成员仍是一条）。
+                                from ...teams.deliver import record_plaza_message
+
+                                await record_plaza_message(
+                                    session_id, user_text, turn_id,
+                                    routed_to=",".join(str(i) for i in _targets),
+                                )
                             if not _targets:
                                 # 空团队：广场无对话功能，提示先加成员（不起 turn）。
                                 from ...lang import t
@@ -634,6 +660,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                     turn_id,
                                 )
                             # 已路由给成员（或空团队提示）——主会话永不自跑 turn。
+                            # P0-1：同样必须收 message.end，否则 composer 锁死。
+                            await _push_session_event(
+                                session_id, "message.end", {}, turn_id
+                            )
                             continue
 
                     # Busy check: a turn task is already live for this session
