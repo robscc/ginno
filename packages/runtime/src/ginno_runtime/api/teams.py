@@ -41,12 +41,19 @@ class CreateTeamRequest(BaseModel):
     workspace: str = ""
     context_folders: list[str] = []
     primary_folder: str | None = None
+    # 领队实例的显示名与职责说明（backlog P0-6）。缺省回落到主会话标题，
+    # 但模板/一句话建队必须能传 spec 里的名字，否则领队名变成「👥 队名」。
+    leader_display_name: str = ""
+    leader_instructions: str = ""
 
 
 class AddMemberRequest(BaseModel):
     agent_id: str
     display_name: str = ""
     role: str = "member"                 # "leader" | "member"
+    # 成员职责说明 → 写实例 notes.md，经既有记忆注入到该成员每个 turn
+    # （backlog P0-6：此前生产方有、消费方无，内阁「反糊弄三件套」到不了成员）。
+    instructions: str = ""
 
 
 class DeliverRequest(BaseModel):
@@ -278,8 +285,16 @@ async def create_team_endpoint(req: CreateTeamRequest) -> dict:
     if req.agent_id:
         from ..session_meta import _find_meta as _fm
         _meta, _ = _fm(main_sid) or ({}, None)
-        await appoint_leader(team, str(req.agent_id),
-                             display_name=str((_meta or {}).get("title") or "")[:24])
+        # 显示名优先用调用方给的（模板/一句话建队的 spec 名），否则回落主会话标题。
+        _lname = (req.leader_display_name or "").strip() or str((_meta or {}).get("title") or "")[:24]
+        _leader = await appoint_leader(team, str(req.agent_id), display_name=_lname)
+        # 领队职责说明 → 实例 notes.md（与普通成员同一落点，P0-6）。
+        if _leader and (req.leader_instructions or "").strip():
+            from ..teams import memory as _team_memory
+            _team_memory.set_member_notes(
+                str(team["id"]), str(_leader["instance_id"]),
+                req.leader_instructions.strip(),
+            )
     _log.info("team_created id=%s name=%r main=%s", team["id"], name, main_sid)
     return {"ok": True, "team": _payload(team_store.get_team(team["id"]) or team)}
 
@@ -419,6 +434,14 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
 
     if req.role == "leader" and not team.get("leader_instance_id"):
         team_store.update_team(team_id, {"leader_instance_id": member["instance_id"]})
+
+    # 职责说明 → 实例 notes.md（backlog P0-6）。走既有记忆注入链路，
+    # 该成员每个 turn 都会读到；上限由 memory._clip 兜（4000 字符）。
+    if (req.instructions or "").strip():
+        from ..teams import memory as _team_memory
+        _team_memory.set_member_notes(
+            team_id, str(member["instance_id"]), req.instructions.strip(),
+        )
 
     _log.info(
         "team_member_added team=%s instance=%s agent=%s session=%s",

@@ -182,12 +182,20 @@ async def team_from_spec(req: FromSpecRequest) -> dict:
             detail={"ok": False, "error": "at least one member is required"},
         )
     leader = next((m for m in spec["members"] if m["role"] == "leader"), spec["members"][0])
+    # 实际任命的领队 agent：调用方可用 req.agent_id 覆盖。只有当它与 spec 的
+    # 领队是同一个时，才把 spec 的名字/职责给它——否则会把 A 的名字安到 B 头上。
+    _leader_agent = req.agent_id or leader["agent_id"]
+    _same_leader = _leader_agent == leader["agent_id"]
     created = await teams_api.create_team_endpoint(
         teams_api.CreateTeamRequest(
             name=spec["name"],
             project_slug=req.project_slug or "default",
-            agent_id=req.agent_id or leader["agent_id"],
+            agent_id=_leader_agent,
             workspace=req.workspace or "",
+            # 领队名/职责用 spec 的，否则 appoint_leader 会拿主会话标题
+            # 「👥 队名」当领队名，且 instructions 丢失（backlog P0-6）。
+            leader_display_name=leader["display_name"] if _same_leader else "",
+            leader_instructions=(leader.get("instructions") or "") if _same_leader else "",
         )
     )
     if not created.get("ok"):
@@ -196,14 +204,27 @@ async def team_from_spec(req: FromSpecRequest) -> dict:
             detail={"ok": False, "error": str(created.get("error") or "create failed")},
         )
     team_id = str((created.get("team") or {}).get("id") or "")
+    # 建队端点已 appoint_leader 落地领队实例——循环里必须跳过它，否则
+    # 「一个团队只能有一个领队」的校验必然拒绝，member_errors 每次都含领队
+    # （backlog P0-6）。用 agent_id + role 双判据认出那个已落地的领队。
+    _appointed = str((created.get("team") or {}).get("leader_instance_id") or "")
     member_errors: list[str] = []
     for m in spec["members"]:
+        if _appointed and m is leader and m["agent_id"] == _leader_agent:
+            continue
+        # 调用方用 req.agent_id 指定了**别的**领队时，spec 的领队仍带
+        # role="leader"，会被「一队一领队」校验拒绝 → 该成员整个丢失。
+        # 正确行为：降级为普通成员加入（不丢人，也不造双领队）。
+        _role = m["role"]
+        if _appointed and _role == "leader":
+            _role = "member"
         resp = await teams_api.add_member_endpoint(
             team_id,
             teams_api.AddMemberRequest(
                 agent_id=m["agent_id"],
                 display_name=m["display_name"],
-                role=m["role"],
+                role=_role,
+                instructions=m.get("instructions") or "",
             ),
         )
         if not resp.get("ok"):
@@ -212,8 +233,13 @@ async def team_from_spec(req: FromSpecRequest) -> dict:
         await teams_api.put_team_md(team_id, {"text": spec["charter_md"]})
     delivered = None
     if spec["first_task"]:
+        # 必须带投递目标：DeliverRequest 两者皆空会直接 no_target 失败，
+        # 开场任务静默丢弃（backlog P0-6）。投给领队实例。
         resp = await teams_api.deliver_endpoint(
-            team_id, teams_api.DeliverRequest(text=spec["first_task"])
+            team_id,
+            teams_api.DeliverRequest(
+                text=spec["first_task"], instance_id=_appointed,
+            ),
         )
         delivered = bool(resp.get("ok"))
     team = teams_api._payload(teams_api.team_store.get_team(team_id) or {})
