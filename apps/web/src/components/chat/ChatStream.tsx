@@ -873,6 +873,25 @@ export function ChatStream({
         }
         setTarget(id);
       }}
+      onDeliver={(agentId) => {
+        // P1-20：广场 chip = 插入 @mention 投递，不换 persona。
+        // 照 pickItem 的显示形态化范式：输入框插「🤖 名字」，协议 token
+        // 经 mentionDisplayMap 在发送时还原，并登记结构化 mention。
+        if (!session) return;
+        const t = g.teams.find((x) => x.main_session_id === session.id);
+        const row = (t?.member_rows ?? []).find((r) => r.agent_id === agentId);
+        if (!row || row.status === "blocked") return;
+        const label = row.display_name;
+        const token = `@agent:${label} `;
+        const display = mentionDisplayToken("agent", label);
+        mentionDisplayMap.set(display, token);
+        setInput((cur) => (cur.includes(display) ? cur : `${cur}${cur && !cur.endsWith(" ") ? " " : ""}${display}`));
+        const sid = session.id;
+        const rest = (mentionsRef.current[sid] ?? []).filter(
+          (m) => !(m.kind === "agent" && m.id === agentId),
+        );
+        mentionsRef.current[sid] = [...rest, { kind: "agent", id: agentId, label }];
+      }}
     />
   );
 

@@ -613,7 +613,10 @@
       "digestTitleNoAway": "你不在的时候，团队做了这些",
       "digestCollapsedLine": "{n} 项需要你处理",
       "digestExpand": "展开",
-      "deliveryStalled": "已投递给成员，但它的回合尚未起跑。成员空闲时会自动运行——请勿重发（重发会造成重复投递）。"
+      "deliveryStalled": "已投递给成员，但它的回合尚未起跑。成员空闲时会自动运行——请勿重发（重发会造成重复投递）。",
+      "chipDeliver": "投递给 {name}",
+      "chipDeliverTitle": "插入 @ 提及，把这条消息投递给该成员",
+      "chipBlocked": "成员被卡住——先处理它待确认的提示"
     },
     "worker": {
       "resultTitle": "员工回传：{from}",

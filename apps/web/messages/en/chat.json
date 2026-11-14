@@ -613,7 +613,10 @@
       "digestTitleNoAway": "The team did this while you were away",
       "digestCollapsedLine": "{n} item(s) need you",
       "digestExpand": "Expand",
-      "deliveryStalled": "Delivered to the member, but its turn has not started yet. It will run when the member is free — do not resend (that would duplicate the delivery)."
+      "deliveryStalled": "Delivered to the member, but its turn has not started yet. It will run when the member is free — do not resend (that would duplicate the delivery).",
+      "chipDeliver": "Deliver to {name}",
+      "chipDeliverTitle": "Insert an @mention to deliver this message to the member",
+      "chipBlocked": "Member is blocked — resolve its pending prompt first"
     },
     "worker": {
       "resultTitle": "Worker return: {from}",
