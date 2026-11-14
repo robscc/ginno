@@ -35,7 +35,7 @@ export interface NotifyPrefs {
 
 /** Notification event classes. `reply` covers plain turn completion (V1
  *  behaviour); the rest are the V2 trigger-surface extensions. */
-export type NotifyKind = "reply" | "askUser" | "failure" | "workflow" | "subagent";
+export type NotifyKind = "reply" | "askUser" | "failure" | "workflow" | "subagent" | "team";
 
 export type NotifyKinds = Record<NotifyKind, boolean>;
 
@@ -56,13 +56,13 @@ export const SOUND_NAMES = ["Glass", "Ping", "Pop", "Funk", "Hero", "Tink"] as c
  *  the completion sound — one glance/earful tells done from broken. */
 export const FAILURE_SOUND = "Basso";
 
-export const KINDS: readonly NotifyKind[] = ["reply", "askUser", "failure", "workflow", "subagent"];
+export const KINDS: readonly NotifyKind[] = ["reply", "askUser", "failure", "workflow", "subagent", "team"];
 
 export const DEFAULT_PREFS: NotifyPrefs = {
   enabled: true,
   sound: true,
   soundName: "Glass",
-  kinds: { reply: true, askUser: true, failure: true, workflow: false, subagent: false },
+  kinds: { reply: true, askUser: true, failure: true, workflow: false, subagent: false, team: true },
   privacy: "full",
   dnd: { enabled: false, from: "22:00", to: "08:00" },
 };

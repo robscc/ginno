@@ -616,7 +616,9 @@
       "deliveryStalled": "Delivered to the member, but its turn has not started yet. It will run when the member is free — do not resend (that would duplicate the delivery).",
       "chipDeliver": "Deliver to {name}",
       "chipDeliverTitle": "Insert an @mention to deliver this message to the member",
-      "chipBlocked": "Member is blocked — resolve its pending prompt first"
+      "chipBlocked": "Member is blocked — resolve its pending prompt first",
+      "notifyReply": "{name} replied in the team plaza",
+      "notifyBlocked": "{name} is blocked and needs your answer"
     },
     "worker": {
       "resultTitle": "Worker return: {from}",

@@ -80,7 +80,8 @@
         "askUser": "Waiting for your answer (approvals, questions)",
         "failure": "Turn failed",
         "workflow": "Workflow run finished",
-        "subagent": "Subagent result (reserved)"
+        "subagent": "Subagent result (reserved)",
+        "team": "Agent team (member replies / blocked)"
       },
       "privacyLabel": "Notification body",
       "privacy": {

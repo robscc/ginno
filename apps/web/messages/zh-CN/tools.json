@@ -80,7 +80,8 @@
         "askUser": "等你回答（审批、提问）",
         "failure": "任务失败",
         "workflow": "工作流跑完",
-        "subagent": "子代理结果（预留）"
+        "subagent": "子代理结果（预留）",
+        "team": "智能体团队（成员回帖 / 被卡住）"
       },
       "privacyLabel": "通知正文",
       "privacy": {

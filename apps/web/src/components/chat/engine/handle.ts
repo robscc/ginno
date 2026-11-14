@@ -124,6 +124,11 @@ const replyMerge = new ReplyMergeWindow<ReplyItem>({
 });
 
 
+// AgentTeam blocked 跃迁去重（P1-18）：记录当前处于 blocked 的成员实例，
+// 只在「非 blocked → blocked」时通知一次；离开 blocked 即移除，下次再卡可再弹。
+const _teamBlockedSeen = new Set<string>();
+
+
 // Delivery confirmed (the server started or finished the turn) → clear the
 // "sending" marker off user bubbles.
 export function markDelivered(ctx: EngineCtx, sid: string) {
@@ -1134,6 +1139,37 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     case "team.changed":
       // AgentTeam 聚合状态回流：@ 投递菜单可见范围/总览卡都吃 store.teams。
       if (ev.team) ctx.g.notifyTeamUpdated(ev.team as never);
+      // P1-18：成员**转入** blocked → 通知（设计里最有价值的一态：它卡住了，
+      // 需要用户去代答）。只在状态跃迁时弹，不是每次 team.changed 都弹。
+      {
+        const t = ev.team as { id?: string; member_rows?: Array<{ instance_id?: string; display_name?: string; status?: string }> } | undefined;
+        const rows = t?.member_rows ?? [];
+        for (const r of rows) {
+          const iid = String(r.instance_id || "");
+          if (!iid) continue;
+          if (r.status === "blocked") {
+            if (!_teamBlockedSeen.has(iid)) {
+              _teamBlockedSeen.add(iid);
+              const body = ctx.i18nRef.current.tr("team.notifyBlocked", {
+                name: r.display_name || iid,
+              });
+              pushNotice("warn", body, { dedupeKey: `team-blocked-${iid}` });
+              if (shouldNotify("team", isWatching(ctx, sid))) {
+                const title = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+                void notifyNative({
+                  kind: "session",
+                  id: sid,
+                  title: `⛔ ${title}`,
+                  body: privacyBody(notifyPrefs(), body),
+                  sound: soundFor("askUser"),
+                });
+              }
+            }
+          } else {
+            _teamBlockedSeen.delete(iid);
+          }
+        }
+      }
       break;
     case "plan.updated":
       // 任务清单实时刷（plan-orchestration §2）：watcher 每次落盘推整张
@@ -1777,6 +1813,25 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         },
       ];
       ctx.syncDisplay(sid);
+      // P1-18：成员回帖 → 通知中心 + OS 通知（此前 team.reply 零通知，
+      // 用户离开广场就不知道成员干完了）。走与 reply 同一套门：
+      // 总开关 ∧ kinds.team ∧ 不在盯 ∧ 不在 DnD。
+      {
+        const watching = isWatching(ctx, sid);
+        const name = (ev.display_name as string) || (ev.agent_id as string) || "";
+        const body = ctx.i18nRef.current.tr("team.notifyReply", { name });
+        pushNotice("info", body, { dedupeKey: `team-reply-${ev.instance_id}` });
+        if (shouldNotify("team", watching)) {
+          const title = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+          void notifyNative({
+            kind: "session",
+            id: sid,
+            title: `👥 ${title}`,
+            body: privacyBody(notifyPrefs(), body),
+            sound: soundFor("reply"),
+          });
+        }
+      }
       break;
     }
     // ─── Claude Code Mods(claude-code-mods-design.md §7)──────────────────────
