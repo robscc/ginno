@@ -6,7 +6,7 @@
 // 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
 
 import { useState } from "react";
-import { ArrowLeft, Brain, ChevronDown, ChevronRight, Globe } from "lucide-react";
+import { ChevronDown, ChevronRight, Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
 import type { SessionMeta } from "@/lib/types";
@@ -52,9 +52,11 @@ export function ModelChipMenu({
   onPickEffort: (effort: string) => void;
 }) {
   const tc = useTranslations("chat");
-  // 二级化（2026-11-12 用户拍板）：一级选模型（点选即切换，现状语义），
-  // 点选后进入二级「思考强度」视图（带返回）；底部独立思考段移除。
-  const [level2, setLevel2] = useState<{ pid: string; m: string } | null>(null);
+  // 手风琴内联（2026-11-14 用户反馈「选模型还要点两次+难度要优化」）：
+  // 点模型行 = 选择 + 关闭（一次完成）；行尾箭头 = 内联展开该模型的思考
+  // 强度档（不跳页、无返回键），点强度档 = 选模型+设档+关闭。取代旧二级
+  // 导航（旧版点模型强制跳二级，选模型还得点返回，改强度又要进二级）。
+  const [expanded, setExpanded] = useState<string | null>(null);
   const effortLabel: Record<string, string> = {
     auto: tc("model.thinkingAuto"),
     off: tc("model.thinkingOff"),
@@ -97,68 +99,18 @@ export function ModelChipMenu({
         <>
           <div className="fixed inset-0 z-40" onClick={onClose} />
           <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">
-            {level2 ? (
-              <div>
-                <button
-                  onClick={() => setLevel2(null)}
-                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-muted hover:bg-card2 hover:text-txt"
-                >
-                  <ArrowLeft className="h-3 w-3" />
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {level2.m}
-                  </span>
-                </button>
-                <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[10px] uppercase tracking-wider text-faint">
-                  <Brain className="h-3 w-3" />
-                  {tc("model.thinkingTitle")}
-                </div>
-                {effortDisabled ? (
-                  <div className="px-3 py-1 text-[11px] text-faint">
-                    {tc("model.thinkingUnsupported")}
-                  </div>
-                ) : (
-                  EFFORTS.map((e) => {
-                    const on = thinkingEffort === e;
-                    return (
-                      <button
-                        key={e}
-                        onClick={() => onPickEffort(e)}
-                        title={
-                          e === "auto" ? tc("model.thinkingAutoHint") : undefined
-                        }
-                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                          on ? "text-txt" : "text-muted"
-                        }`}
-                      >
-                        <span className={on ? "" : "opacity-0"}>✓</span>
-                        <span className="min-w-0 flex-1 truncate">
-                          {effortLabel[e]}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            ) : (
-              <div>
+            <div>
             {enabledProviders.length === 0 && (
               <div className="px-3 py-2 text-xs text-faint">
                 {tc("model.noProviders")}
               </div>
             )}
             {enabledProviders.map(([pid, p]) => {
-              // One row per MODEL, not per provider. The store keeps a
-              // list (`models`) and a session can be pinned to any entry,
-              // but showing only `default_model` left every extra model
-              // unreachable from chat — which is exactly the "I cannot
-              // pick GLM" report. Grouped by provider instead, and the
-              // dangling `· ` disappears along with the single-row shape.
               const models = (
                 Array.isArray(p.models) && p.models.length
                   ? p.models
                   : [p.default_model || p.model || ""]
               ).filter((m): m is string => !!m);
-              // 菜单 ✓ 跟随「将要生效」的模型(含 agent 绑定/默认),与 chip 一致
               const curProvider = session ? session.provider : homeEffective?.provider;
               const curModel = session ? session.model : homeEffective?.model;
               return (
@@ -173,45 +125,81 @@ export function ModelChipMenu({
                   ) : (
                     models.map((m) => {
                       const on = curProvider === pid && curModel === m;
+                      const key = `${pid}:${m}`;
+                      const isOpen = expanded === key;
                       return (
-                        <button
-                          key={`${pid}:${m}`}
-                          onClick={() => {
-                            onPick(pid, m);
-                            setLevel2({ pid, m });
-                          }}
-                          className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                            on ? "text-txt" : "text-muted"
-                          }`}
-                        >
-                          <span className={on ? "" : "opacity-0"}>✓</span>
-                          <span className="min-w-0 flex-1 truncate">{m}</span>
-                          {/* 当前选中行尾箭头（2026-11-14 用户需求）：点箭头
-                              只进思考强度二级、不触发模型重选——原来改强度
-                              要「点两次」（重选模型+选强度）。 */}
-                          {on && (
+                        <div key={key}>
+                          <button
+                            onClick={() => {
+                              onPick(pid, m);
+                              onClose();
+                            }}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
+                              on ? "text-txt" : "text-muted"
+                            }`}
+                          >
+                            <span className={on ? "" : "opacity-0"}>✓</span>
+                            <span className="min-w-0 flex-1 truncate">{m}</span>
+                            {/* 行尾箭头：内联展开该模型思考强度（不跳页）。
+                                选中行额外显示当前档角标。 */}
                             <span
                               role="button"
                               tabIndex={-1}
                               title={tc("model.thinkingTitle")}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setLevel2({ pid, m });
+                                setExpanded(isOpen ? null : key);
                               }}
-                              className="-m-1 shrink-0 rounded p-1 text-faint hover:bg-line2/60 hover:text-txt"
+                              className="-m-1 flex shrink-0 items-center gap-1 rounded p-1 text-faint hover:bg-line2/60 hover:text-txt"
                             >
-                              <ChevronRight className="h-3 w-3" />
+                              {on && EFFORT_BADGE[thinkingEffort] && (
+                                <span className="text-[9px] font-medium text-violet">
+                                  {EFFORT_BADGE[thinkingEffort]}
+                                </span>
+                              )}
+                              <ChevronRight
+                                className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`}
+                              />
                             </span>
+                          </button>
+                          {isOpen && !effortDisabled && (
+                            <div className="mb-1 ml-6 flex flex-wrap gap-1 px-3">
+                              {EFFORTS.map((e) => {
+                                const eOn = thinkingEffort === e && on;
+                                return (
+                                  <button
+                                    key={e}
+                                    onClick={() => {
+                                      onPick(pid, m);
+                                      onPickEffort(e);
+                                      onClose();
+                                    }}
+                                    title={e === "auto" ? tc("model.thinkingAutoHint") : undefined}
+                                    className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                                      eOn
+                                        ? "border-violet bg-violet/15 text-violet"
+                                        : "border-line text-faint hover:border-line2 hover:text-muted"
+                                    }`}
+                                  >
+                                    {effortLabel[e]}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           )}
-                        </button>
+                          {isOpen && effortDisabled && (
+                            <div className="mb-1 ml-6 px-3 text-[10px] text-faint">
+                              {tc("model.thinkingUnsupported")}
+                            </div>
+                          )}
+                        </div>
                       );
                     })
                   )}
                 </div>
               );
             })}
-              </div>
-            )}
+            </div>
             <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
               {tc(session ? "model.footnote" : "model.footnoteHome")}
             </div>
