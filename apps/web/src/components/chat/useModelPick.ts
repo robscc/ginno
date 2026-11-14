@@ -164,27 +164,55 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   const effortDisabled =
     effortProviderId != null && g.providers[effortProviderId]?.thinking_mode === "none";
 
-  async function pickThinking(value: string) {
+  // 选模型 + 设思考档位的**原子**操作（2026-11-14 用户反馈「难度要点两次才到位」）。
+  // 旧实现里 ModelChipMenu 的难度档 onClick 分别调 pickModel + pickThinking，两条
+  // 并发 PATCH 各自用完整 r.session 覆盖本地状态——模型 PATCH 的应答带着服务端处理
+  // 它那一刻的旧 thinking_effort，只要它晚于思考 PATCH 到达，就把乐观更新的新档位
+  // 冲回旧值，读作「点了没生效」；第二次点时服务端已存住新值，模型应答不再陈旧，
+  // 才到位。合并成单条 PATCH（provider+model+thinking_effort 一次下发）根除竞态，
+  // 顺带省掉一次冗余往返。
+  async function pickModelAndThinking(pid: string, model: string, value: string) {
     setModelOpen(false);
+    if (!model) return;
     if (!session) {
-      setHomeModel((prev) => ({ ...prev, thinking_effort: value }));
+      // 首页态：会话未建，三字段一并写进 homeModel，随懒创建下发。
+      setHomeModel({ provider: pid, model, thinking_effort: value });
+      pushNotice("info", tc("notice.homeModelPicked", { model }), {
+        source: "model",
+        dedupeKey: "model:__home__",
+      });
       return;
     }
-    const prev = session.thinking_effort || "auto";
+    const prevProvider = session.provider;
+    const prevModel = session.model;
+    const prevEffort = session.thinking_effort || "auto";
     g.applySessionPatch(session.id, {
+      provider: pid,
+      model,
       thinking_effort: value as SessionMeta["thinking_effort"],
     });
     try {
       const r = await api.patchSession(session.id, {
+        provider: pid,
+        model,
         thinking_effort: value as SessionMeta["thinking_effort"],
       });
       if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
       g.applySessionPatch(session.id, r.session);
     } catch {
       g.applySessionPatch(session.id, {
-        thinking_effort: prev as SessionMeta["thinking_effort"],
+        provider: prevProvider,
+        model: prevModel,
+        thinking_effort: prevEffort as SessionMeta["thinking_effort"],
       });
-      pushNotice("error", tc("notice.thinkingSwitchFailed"), { source: "model" });
+      pushNotice("error", tc("notice.modelSwitchFailed", { model }), {
+        source: "model",
+        duration: 0,
+        action: {
+          label: tc("notice.openModelSettings"),
+          onClick: () => router.push("/settings/connections/model-api"),
+        },
+      });
     }
   }
 
@@ -192,6 +220,6 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
     modelOpen, setModelOpen, pickModel, enabledProviders, defaultProviderCfg,
     targetAgent, agentBindingPid, homeEffective, homeModelSource, modelChipLabel,
-    thinkingEffort, effortDisabled, pickThinking,
+    thinkingEffort, effortDisabled, pickModelAndThinking,
   };
 }

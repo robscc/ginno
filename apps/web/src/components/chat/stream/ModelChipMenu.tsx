@@ -33,7 +33,7 @@ export function ModelChipMenu({
   onToggle,
   onClose,
   onPick,
-  onPickEffort,
+  onPickModelEffort,
 }: {
   session: SessionMeta | null;
   label: string;
@@ -49,7 +49,8 @@ export function ModelChipMenu({
   onToggle: () => void;
   onClose: () => void;
   onPick: (pid: string, model: string) => void;
-  onPickEffort: (effort: string) => void;
+  /** 选模型 + 设思考档位的原子回调（合并成单条 PATCH，根除并发覆盖竞态）。 */
+  onPickModelEffort: (pid: string, model: string, effort: string) => void;
 }) {
   const tc = useTranslations("chat");
   // 手风琴内联（2026-11-14 用户反馈「选模型还要点两次+难度要优化」）：
@@ -170,8 +171,7 @@ export function ModelChipMenu({
                                   <button
                                     key={e}
                                     onClick={() => {
-                                      onPick(pid, m);
-                                      onPickEffort(e);
+                                      onPickModelEffort(pid, m, e);
                                       onClose();
                                     }}
                                     title={e === "auto" ? tc("model.thinkingAutoHint") : undefined}

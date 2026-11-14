@@ -312,7 +312,7 @@ export function ChatStream({
     homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
     modelOpen, setModelOpen, pickModel, enabledProviders,
     targetAgent, homeEffective, homeModelSource, modelChipLabel,
-    thinkingEffort, effortDisabled, pickThinking,
+    thinkingEffort, effortDisabled, pickModelAndThinking,
   } = modelPick;
 
   // V2 P2-3 首启引导（仅首页、且还没有任何会话）。
@@ -885,7 +885,7 @@ export function ChatStream({
       onToggle={() => setModelOpen((v) => !v)}
       onClose={() => setModelOpen(false)}
       onPick={(pid, m) => void pickModel(pid, m)}
-      onPickEffort={(e) => void pickThinking(e)}
+      onPickModelEffort={(pid, m, e) => void pickModelAndThinking(pid, m, e)}
     />
   );
 
