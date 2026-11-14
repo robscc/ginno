@@ -630,11 +630,12 @@ async def _compact_async_handler(
         # 只在真正决定压缩（过完所有早退检查）后、总结 LLM 调用前发出。
         from ..server_shared import _push_global_event, _push_session_event
 
-        async def _announce_compacting() -> None:
-            # 进度条（2026-11-12）：stage + pct 事件；5→92 之间由前端
-            # 时间缓动推进（Claude Code 同款），完成态由下一个事件清。
+        async def _announce_compacting(predicted_s=None) -> None:
+            # 进度条（2026-11-12）：stage + pct 事件；2026-11-14 增 predicted_s
+            # （历史压缩时长预估），前端据此走时间轴进度 + ETA，无预估时回退缓动。
             await _push_session_event(
-                sid, "context.compacting", {"stage": "summarizing", "pct": 8}
+                sid, "context.compacting",
+                {"stage": "summarizing", "pct": 8, "predicted_s": predicted_s},
             )
 
         async def _announce_summary_done() -> None:

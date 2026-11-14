@@ -49,9 +49,9 @@ export interface EngineCtx extends EngineDeps {
   hintTimerRef: { current: ReturnType<typeof setTimeout> | null };
   serverRunningRef: { current: Record<string, boolean> };
   compactingBySessionRef: { current: Record<string, boolean> };
-  setCompactStage: (v: { stage: string; pct: number } | null | ((p: { stage: string; pct: number } | null) => { stage: string; pct: number } | null)) => void;
+  setCompactStage: (v: { stage: string; pct: number; predicted_s?: number; eta?: number } | null | ((p: { stage: string; pct: number; predicted_s?: number; eta?: number } | null) => { stage: string; pct: number; predicted_s?: number; eta?: number } | null)) => void;
   /** 压缩进度（2026-11-12）：context.compacting 事件携带 {stage,pct}。 */
-  compactStageRef: { current: Record<string, { stage: string; pct: number } | null> };
+  compactStageRef: { current: Record<string, { stage: string; pct: number; predicted_s?: number; eta?: number } | null> };
   streamAgentRef: { current: Record<string, string | null> };
   orphanStreamRef: { current: Record<string, boolean> };
   // 孤儿流是否已认领服务端 turn id（见 mutateLive 的认领逻辑）

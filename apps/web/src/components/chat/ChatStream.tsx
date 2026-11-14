@@ -167,6 +167,8 @@ export function ChatStream({
   const [compactStage, setCompactStage] = useState<{
     stage: string;
     pct: number;
+    predicted_s?: number;
+    eta?: number;
   } | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Command/mention autocomplete: open menu (items + active index + trigger).
@@ -186,20 +188,34 @@ export function ChatStream({
   // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
   const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
 
-  // 压缩进度缓动：summarizing 阶段每 1.8s +4 封顶 90；writing 事件自带
-  // 92；结束（stage null / compacting false）由引擎事件清。
+  // 压缩进度（2026-11-14 升级）：有 predicted_s（历史压缩时长预估）→ 按时间轴
+  // 走进度 + 显示 ETA；无预估（历史样本不足）→ 回退旧的每 1.8s +4 缓动。
+  const compactStartRef = useRef(0);
   useEffect(() => {
     if (!compacting || !compactStage) return;
     if (compactStage.stage !== "summarizing") return;
+    const predicted = compactStage.predicted_s;
+    compactStartRef.current = Date.now();
     const t = setInterval(() => {
-      setCompactStage((p) =>
-        p && p.stage === "summarizing" ? { ...p, pct: Math.min(90, p.pct + 4) } : p,
-      );
-    }, 1800);
+      const elapsed = (Date.now() - compactStartRef.current) / 1000;
+      setCompactStage((p) => {
+        if (!p || p.stage !== "summarizing") return p;
+        if (predicted && predicted > 0) {
+          const frac = Math.min(1, elapsed / predicted);
+          return {
+            ...p,
+            pct: Math.min(90, Math.round(8 + frac * 82)),
+            eta: Math.max(0, Math.round(predicted - elapsed)),
+          };
+        }
+        return { ...p, pct: Math.min(90, p.pct + 4) };
+      });
+    }, predicted ? 500 : 1800);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随阶段重建计时器；依赖整对象会让 pct 每跳一次就重置 1.8s 节奏
-  }, [compacting, compactStage?.stage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随阶段/预估重建计时器；依赖整对象会让 pct 每跳一次就重置节奏
+  }, [compacting, compactStage?.stage, compactStage?.predicted_s]);
   const compactPct = compacting ? (compactStage?.pct ?? 8) : null;
+  const compactEta = compacting ? (compactStage?.eta ?? null) : null;
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -963,6 +979,7 @@ export function ChatStream({
             running={running}
             compacting={compacting}
             compactPct={compactPct}
+            compactEta={compactEta}
             serverRunning={serverRunning}
             wsStatus={wsStatus}
             parked={parked}

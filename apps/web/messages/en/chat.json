@@ -212,6 +212,7 @@
       "connecting": "Connecting to model…",
       "thinking": "Model is thinking…",
       "compacting": "Compacting… older messages are being summarized",
+      "compactEta": "~{s}s left",
       "stillThinking": "Still thinking — this may take a moment… ({seconds}s)",
       "waitNextRound": "Waiting for the next round… ({seconds}s)",
       "connLostReconnecting": "Connection lost — reconnecting…",

@@ -113,7 +113,7 @@ export interface EngineDeps {
   // 当前显示会话的布尔值，真源是 compactingBySessionRef。
   setCompacting: (v: boolean | ((p: boolean) => boolean)) => void;
   setCompactStage: (
-    v: { stage: string; pct: number } | null | ((p: { stage: string; pct: number } | null) => { stage: string; pct: number } | null),
+    v: { stage: string; pct: number; predicted_s?: number; eta?: number } | null | ((p: { stage: string; pct: number; predicted_s?: number; eta?: number } | null) => { stage: string; pct: number; predicted_s?: number; eta?: number } | null),
   ) => void;
   setInput: (v: string | ((p: string) => string)) => void;
   setAttachments: (v: Attachment[] | ((p: Attachment[]) => Attachment[])) => void;
@@ -224,8 +224,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const compactingBySessionRef = useRef<Record<string, boolean>>({});
   // 压缩进度镜像（2026-11-12）：真源 compactStageRef（engine ctx），
   // syncDisplay 时把当前显示会话的 stage 投到 React 状态供进度条渲染。
-  const compactStageRef = useRef<Record<string, { stage: string; pct: number } | null>>({});
-  const [compactStage, setCompactStage] = useState<{ stage: string; pct: number } | null>(null);
+  const compactStageRef = useRef<Record<string, { stage: string; pct: number; predicted_s?: number; eta?: number } | null>>({});
+  const [compactStage, setCompactStage] = useState<{ stage: string; pct: number; predicted_s?: number; eta?: number } | null>(null);
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
   // (remount mid-turn — the user navigated to another page while a reply was
