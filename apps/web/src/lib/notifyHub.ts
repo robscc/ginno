@@ -35,19 +35,29 @@ export function privacyBody(np: ReturnType<typeof notifyPrefs>, body: string): s
 
 /** 用户是否正盯着**这个应用**。
  *
- *  单一判据（P1-4）：修复前 6 个发通知的站点各写各的——5 处只看
+ *  单一判据（P1-4）：修复前 7 个发通知的站点各写各的——6 处只看
  *  `document.visibilityState`，只有 NoticeHost 的失焦兜底额外看了
- *  `document.hasFocus()`。口径不一意味着同一个「用户在看吗」的问题在不同
- *  站点有不同答案。
+ *  `document.hasFocus()`。口径不一意味着同一个「用户在看吗」的问题在不同站点
+ *  有不同答案。P1 先统一成只看 visibilityState（保守方向），P2 经实测后把
+ *  hasFocus 补回来。
  *
- *  这里刻意**只用 visibilityState、不引入 hasFocus**：hasFocus 会让「窗口在
- *  屏幕上但焦点在别的 App」也判成没在看，从而**增加**通知量；而 WKWebView 在
- *  这种遮挡/失焦状态下究竟报 visible 还是 hidden 尚未实机核实（见审计文档 §5
- *  待核实 1）。在核实之前引入它，风险是把「该弹不弹」换成「不该弹的又弹」——
- *  正是本次要治的病。核实后再单独收口。 */
+ *  **为什么必须两个条件合取**（实测见 scripts/probe-wkwebview-attention.README.md，
+ *  macOS 15.6 / WKWebView，2026-11-15）：
+ *   - `visibilityState` **不追踪窗口焦点**：窗口可见但焦点在别的 App（或同 App
+ *     的另一个窗口）时它仍报 `visible`。只用它 → 用户 ⌘Tab 切走而 Ginno 窗口
+ *     还在屏上时通知被抑制，即「该弹不弹」。这是最常见的场景。
+ *   - `hasFocus()` **在焦点位于页面内 iframe 时仍为 true**（activeElement 已是
+ *     IFRAME），所以纳入它不会把「用户正在操作 MCP app 卡 / 代码面板 viewer」
+ *     误判成没在看——这是纳入的主要风险，实测排除。
+ *   - 单独用 `hasFocus()` 也不行：App 隐藏时它曾滞后报 true，而 visibilityState
+ *     已正确翻成 hidden。
+ *
+ *  `hasFocus` 不存在时（node/SSR、老环境）退回只看 visibilityState，即 P1 的
+ *  保守行为，不会因为拿不到信息就判成「没在看」而狂弹。 */
 export function isAppAttentive(): boolean {
   if (typeof document === "undefined") return false;
-  return document.visibilityState === "visible";
+  if (document.visibilityState !== "visible") return false;
+  return typeof document.hasFocus === "function" ? document.hasFocus() : true;
 }
 
 /** 用户是否正盯着**这个会话**：应用可见 ∧ 在工作区路由 ∧ 它就是当前会话。

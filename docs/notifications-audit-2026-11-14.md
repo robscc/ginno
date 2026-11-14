@@ -283,12 +283,23 @@ tool.args / tool.end` 逐个喂进 `handle()`，断言 `notifyNative` **零调�
 量测 shell.log 通知流量的**唯一上游**（web 侧 `emit("ginno:notify")`）。合并后按 §4 的
 步骤重建重启，即可用附录脚本补上 shell.log 侧的数字。
 
-**待核实**（两项，实机 5 分钟可定）：
+**待核实**（原两项，2026-11-15 更新状态）：
 
-1. macOS 上「窗口可见但失焦」时 WKWebView 的 `visibilityState` 究竟是 `visible` 还是
-   `hidden`——决定 P1-4 的严重度是「该弹不弹」还是仅口径不统一；
-2. `Mainthread not running` 是否**全部**由并发风暴诱发（线程数暴涨时 notify-rust 内部
-   状态失效），还是低频下也会稳定复现——决定 P0-2 的有界重试在低负载下是否只是纯保险。
+1. ~~macOS 上「窗口可见但失焦」时 WKWebView 的 `visibilityState` 究竟是 `visible`
+   还是 `hidden`~~ → **已实测：报 `visible`**。用自打的 WKWebView 探针（正规 .app
+   bundle + `open` 启动；裸可执行文件拿不到 frontmost 状态，第一轮数据全废）逐步
+   制造 11 种窗口/App 状态得出：`visibilityState` **不追踪窗口焦点**，切到别的 App
+   而窗口仍在屏上时仍报 `visible` → P1-4 的严重度确证是「**该弹不弹**」，不只是
+   口径不统一。同时测得焦点位于页面内 iframe 时顶层 `hasFocus()` 仍为 true，故把
+   它纳入判据是安全的（不会误判 MCP app 卡 / 代码面板 viewer 的使用）。据此 P2 已
+   把判据改为合取 `visible && hasFocus()`。探针、跑法与完整数据表固化在
+   `scripts/probe-wkwebview-attention.swift` + `.README.md`，结论写入
+   `docs/notifications-design.md` §4。
+2. `Mainthread not running` 是否**全部**由并发风暴诱发（线程数暴涨时 notify-rust
+   内部状态失效），还是低频下也会稳定复现——决定 P0-2 的有界重试在低负载下是否
+   只是纯保险。**仍未核实**：需重建重启桌面应用后在低负载下观察 `show retry` /
+   `show FAILED` 计数。按 §1 的分桶数据（低负载区 0-5%、风暴区 30-53%）推断重试
+   在低负载下大概率只是纯保险，但推断不等于实测。
 
 ## 6. 修复后真实运行时复测（前后同口径）
 
@@ -398,12 +409,20 @@ mod-broker）与 `cargo check`（desktop）通过。
 
 ### 7.4 仍未做（P2）
 
-- 重写被 `3ccf0af` 删除的 OS 通知 spec；`handle.ts` 与 `notifyHub.ts` 里指向
-  `docs/os-notifications-v2-design.md` 的注释仍指向不存在的文件。
-- `notice-unification-design.md` 的 P2（Rust 通知窗）：做 / 标 ARCHIVED 待定。
-- `shell.log` 加时间戳：`apps/desktop` 依赖里没有 `chrono`/`time`，加可读时间
-  戳要么手写 civil-time 换算要么新增依赖，超出 P1-10 范围（原文只要求
-  notifyKind + 标题 + 带锁 append）。当前仍只能用行号位置代替时间轴。
-- `hasFocus` 是否纳入统一注意力判据：待实机核实 WKWebView 遮挡语义（§5 待核实 1）。
+- ~~重写被 `3ccf0af` 删除的 OS 通知 spec~~ → **已完成**：`docs/notifications-design.md`
+  （按已合入 main 的实际代码回写，非提案）。指向不存在文件的注释已在 P0/P1 清理，
+  全仓搜 `os-notifications-v2` 只剩本审计文档的历史记述。
+- ~~`notice-unification-design.md` 的 P2（Rust 通知窗）：做 / 标 ARCHIVED 待定~~ →
+  **已标 ARCHIVED**（2026-11-15）。四条理由 + 复议条件写在 §5.1，§2.3 抬头也加了
+  警示；并注明「若只是想让非 error 级 notice 也能失焦兜底，走加 `notice` 点击目标
+  这条约 10 行的廉价路径，不要建 Rust 通知窗」。
+- ~~`shell.log` 加时间戳~~ → **已完成**（2026-11-15）：`chrono` 其实本来就在依赖图里
+  （`trash` 引入），提为直接依赖的编译成本可忽略（整次 `cargo check` 7.3s）。行格式
+  改为 `<本地时间戳含UTC偏移> <事件行>`，毫秒精度。无消费方解析该格式
+  （`maintenance.py` 只按 mtime 轮转、`lib.rs` 只是在编辑器里打开它），故前缀安全。
+- ~~`hasFocus` 是否纳入统一注意力判据：待实机核实 WKWebView 遮挡语义~~ →
+  **已完成**（2026-11-15）：实测后纳入，判据改为 `visible && hasFocus()` 合取。
+  探针与数据表见 `scripts/probe-wkwebview-attention.README.md`，结论见
+  `docs/notifications-design.md` §4。
 - 打包 UI e2e：CLAUDE.md 要求前端交互改动配 `tests/e2e/` 用例，本轮与 P0 都
   只加了 vitest 层（reducer + 闸门出口），浏览器级用例仍欠。

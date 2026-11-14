@@ -23,6 +23,12 @@ static SHELL_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Append one line to ~/.ginno/logs/shell.log (same convention as sidecar.log).
 /// Best-effort diagnostics for the notification / window-visibility flow.
+///
+/// 行格式：`<本地时间戳含UTC偏移> <line>`，例如
+/// `2026-11-15T00:12:33.456+08:00 notification shown kind=session …`。
+/// 毫秒精度是必要的——通知风暴期同一秒内会有几十条记录，秒级看不出突发形态。
+/// 没有消费方解析这个格式（maintenance.py 只按 mtime 轮转，lib.rs 只是在编辑器
+/// 里打开它），所以前缀是安全的。
 pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
     let _guard = SHELL_LOG_LOCK
         .lock()
@@ -43,7 +49,8 @@ pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
         .open(logs.join("shell.log"))
     {
         use std::io::Write;
-        let _ = writeln!(f, "{line}");
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z");
+        let _ = writeln!(f, "{ts} {line}");
     }
 }
 
