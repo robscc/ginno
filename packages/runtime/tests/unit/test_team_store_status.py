@@ -198,21 +198,45 @@ def test_status_working_when_turn_live(team, monkeypatch):
     assert status == "working"
 
 
-def test_status_unknown_not_idle_when_turn_unhealed(team, monkeypatch):
-    """重启后 meta 还写着 running 但进程里没有活 turn → unknown，绝不假装 idle。
+def test_status_unknown_not_idle_when_turn_unhealed(team):
+    """重启后编制还写着 working 但进程里没有活 turn → unknown，绝不假装 idle。
 
     这是 §3.3 的核心纪律（herdr：*"not proof of completion"*）。
+    **走真实数据源**（backlog P0-4）：此前判据读 _SESSIONS["stop_reason"]，
+    而该字段对 team-member 从无写入方 → 死代码；旧测试用 monkeypatch 造它，
+    掩盖了缺陷。现在用 roster 持久化的 status=working 作判据。
     """
-    monkeypatch.setitem(server_shared._SESSIONS, "sess-dev", {"stop_reason": "running"})
-    status, detail = team_status.member_status("default", "sess-dev", _member(team, "dev"))
+    m = _member(team, "dev")
+    team_store.patch_member(team["id"], m["instance_id"], {"status": "working"})
+    # 进程里没有任何活 turn（模拟重启后 _SESSIONS/_RUNNING_TURNS 皆空）
+    status, detail = team_status.member_status(
+        "default", "sess-dev", _member(team, "dev")
+    )
     assert status == "unknown"
-    assert "不可判定" in detail
+    assert "不可判定" in detail or "unknown" in detail.lower()
 
 
-def test_status_error_from_stop_reason(team, monkeypatch):
-    monkeypatch.setitem(server_shared._SESSIONS, "sess-dev", {"stop_reason": "error"})
+def test_status_error_from_real_meta_last_error(team):
+    """error 判据读 engine 真实写入 meta 的 last_error（不是虚构的 stop_reason）。"""
+    from ginno_runtime.session_meta import _session_meta_patch, _session_meta_upsert
+
+    # 真实路径：先有 session meta 条目，再由 engine 同款 patch 写 last_error
+    _session_meta_upsert("default", {"id": "sess-dev", "type": "team-member"})
+    _session_meta_patch("default", "sess-dev", {
+        "last_error": {"turn_id": "t1", "message": "boom", "at": 1.0},
+        "last_finished": 1.0,
+    })
     status, _ = team_status.member_status("default", "sess-dev", _member(team, "dev"))
     assert status == "error"
+
+
+def test_status_idle_when_no_error_and_not_working(team):
+    """对照：meta 无 last_error、roster 非 working → 不得误判 error/unknown。"""
+    from ginno_runtime.session_meta import _session_meta_upsert
+
+    _session_meta_upsert("default", {"id": "sess-dev", "type": "team-member"})
+    status, _ = team_status.member_status("default", "sess-dev", _member(team, "dev"))
+    assert status == "idle"
 
 
 def test_status_done_until_seen_then_idle(team, monkeypatch):

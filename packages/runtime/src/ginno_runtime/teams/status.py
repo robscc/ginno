@@ -94,15 +94,26 @@ def member_status(
     if _is_live_turn(session_id):
         return "working", _working_detail(session_id)
 
-    # 3) error / unknown：从 session meta 的终态标记读。
-    meta = _SESSIONS.get(session_id) or {}
-    stop_reason = str(meta.get("stop_reason") or "")
-    if stop_reason == "error":
-        return "error", "重试耗尽"
-    # 进程重启后 turn 未愈合：meta 还写着 running 但进程里没有任何活 turn
-    # → 状态不可判定。绝不 fallback 到 idle（§3.3，herdr 同款纪律）。
-    if stop_reason == "running":
-        return "unknown", "重启时 turn 未愈合 — 状态不可判定"
+    # 3) error / unknown：读**真实存在**的终态数据源（backlog P0-4）。
+    #    此前读 _SESSIONS[sid]["stop_reason"]，但全 runtime 只有 delegation
+    #    写该字段，chat/team-member 会话从无写入方 → 两个分支是死代码，
+    #    重启后正在干活的成员显示 idle/done，设计 §3.3 头号纪律失效。
+    #    现改用：① engine 真实写入 meta 的 last_error；② roster 持久化的
+    #    status=working 但进程里已无活 turn（= 被重启打断且未愈合）。
+    from ..session_meta import _find_meta
+
+    _found = _find_meta(session_id)
+    meta = _found[0] if _found else {}
+    if meta.get("last_error"):
+        return "error", t("Retries exhausted", "重试耗尽")
+    # 进程重启后 turn 未愈合：编制还写着 working，但没有任何活 turn。
+    # → 状态不可判定。绝不 fallback 到 idle（§3.3，herdr 同款纪律：
+    #   unknown = present but unclassifiable, not proof of completion）。
+    if str(member.get("status") or "") == "working":
+        return "unknown", t(
+            "Turn unhealed after restart — status unknown",
+            "重启时 turn 未愈合 — 状态不可判定",
+        )
 
     # 4) waiting：自己没 turn 了，但还有子代在跑（完成门，§5.6）。
     if _has_live_child(slug, session_id):
