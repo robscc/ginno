@@ -82,6 +82,27 @@ function _pruneNotifiedQuestionIds() {
   }
 }
 
+/** ask_user 的去重键。
+ *
+ *  正常路径是 tool_call id：ask_tools.py:359 把 `InjectedToolCallId` 放进中断
+ *  载荷（`"id": tool_call_id or ""`），ws.py:286 的重放路径也带着它——id 在
+ *  checkpoint / live 事件 / replay 三处稳定，正是前端合并幂等的基础。
+ *
+ *  id 为空是退化情形（工具被非 tool-call 路径调用等）。此时**不能**直接静默
+ *  （那会漏掉真挂起的问题），也**不能**退回旧实现的 `${sid}:${Date.now()}`
+ *  （每帧一把新钥匙 = 通知风暴根因）。改用「会话 + 问题文本」派生的稳定键：
+ *  同一问题重放时文本不变 → 仍然去重；不同问题 → 各自一条。
+ *
+ *  注意本函数只可能被 `case "user.question"` 调到（见 handle() 里的共享 case
+ *  体警告），delta/tool 帧已在结构上进不来，所以这里的兜底不会再被洪水灌满。 */
+function _askDedupeKey(sid: string, ev: { [k: string]: unknown }): string {
+  const rawId = typeof ev.id === "string" ? ev.id.trim() : "";
+  if (rawId) return rawId;
+  const subs = Array.isArray(ev.questions) ? (ev.questions as Array<{ question?: unknown }>) : [];
+  const q = String(ev.question ?? "").trim() || String(subs[0]?.question ?? "").trim();
+  return `q:${sid}:${q.slice(0, 120)}:${subs.length}`;
+}
+
 /** ask_user 挂起的 OS 通知（V2：最急的通知类，即时弹不合并——不看就永远卡着）。
  *
  *  **只允许 `case "user.question"` 调用**：见 handle() switch 里 tool.* 共享
@@ -91,18 +112,15 @@ function _pruneNotifiedQuestionIds() {
  *  （ws.py:244，给前端重建问题卡用，id 不变）——不按 id 去重的话每次重连/切会话
  *  都弹一遍「等你回答」（用户报：没有 ask_user 也弹）。
  *
- *  2026-11-14 加固（通知风暴根因）：
- *   - **没有 `ev.id` 就直接 return**。真挂起问题必带 tool_call id；id 缺失说明
- *     调用方把别的事件误路由进来了——正是本次事故的形态。旧兜底
- *     `${sid}:${Date.now()}` 等于给每个 delta 帧发一把新钥匙，去重形同虚设。
- *   - 记 id 在闸门判定**之前**（与原实现同语义）：通知关着时也不会在开启后补弹。 */
+ *  2026-11-14 加固（通知风暴根因）：去重键改走 `_askDedupeKey`——旧兜底
+ *  `${sid}:${Date.now()}` 等于给每个 delta 帧发一把新钥匙，去重形同虚设。
+ *  记 id 在闸门判定**之前**（与原实现同语义）：通知关着时也不会在开启后补弹。 */
 function maybeNotifyAskUser(
   ctx: EngineCtx,
   sid: string,
   ev: { event: string; [k: string]: unknown },
 ) {
-  const qid = typeof ev.id === "string" ? ev.id : "";
-  if (!qid) return;
+  const qid = _askDedupeKey(sid, ev);
   if (notifiedQuestionIds.has(qid)) return;
   notifiedQuestionIds.add(qid);
   _pruneNotifiedQuestionIds();
