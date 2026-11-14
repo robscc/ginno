@@ -187,6 +187,60 @@ class ChannelAdapter(abc.ABC):
         registry().report(self.channel_name, status, detail)
 
 
+async def _run_channel_team_turn(
+    team: dict, text: str, tap: ChannelTap, session_id: str,
+) -> list[str]:
+    """渠道消息投给团队成员，等安定后把产出经 tap 发回 IM（backlog P2-3）。
+
+    与桌面广场的区别：渠道是请求/响应模型，必须**同步等到成员产出**再回一条
+    消息；桌面是异步回帖到广场。目标成员：领队优先，无领队投首个成员。
+
+    纪律：blocked 原子拒绝时如实回「成员被卡住」，不静默吞、也不假装已处理。
+    """
+    import json as _json
+
+    from ..teams import deliver as _team_deliver
+    from ..teams import store as _team_store
+    from ..teams import wait as _team_wait
+
+    team_id = str(team.get("id") or "")
+    members = team.get("members") or []
+    if not members:
+        await tap.send_text(_json.dumps(
+            {"event": "message.end", "text": "团队还没有成员，请先在桌面端添加。"},
+            ensure_ascii=False))
+        return []
+    iid = str(team.get("leader_instance_id") or "") or next(
+        (str(m["instance_id"]) for m in members if m.get("role") == "leader"),
+        str(members[0].get("instance_id") or ""),
+    )
+    member = _team_store.get_member(team_id, iid)
+    if member is None:
+        await tap.send_text(_json.dumps(
+            {"event": "message.end", "text": "团队成员不可用。"}, ensure_ascii=False))
+        return []
+
+    receipt = await _team_deliver.deliver(team_id, iid, text)
+    if receipt.get("receipt") == "failed":
+        await tap.send_text(_json.dumps(
+            {"event": "message.end",
+             "text": str(receipt.get("error") or "投递被拒绝（成员可能被卡住）。")},
+            ensure_ascii=False))
+        return []
+
+    sid = str(member.get("session_id") or "")
+    # 渠道侧等待上限比桌面短：IM 用户等不了 30 分钟。超时如实告知已投递。
+    await _team_wait.wait_for_members(sid, team_id, ids=[iid], timeout_s=600)
+    slug = str(team.get("project_slug") or "default")
+    body = await _team_deliver._final_text(slug, sid, team_id=team_id)
+    name = str(member.get("display_name") or member.get("agent_id") or "")
+    if not body:
+        body = f"{name} 仍在处理中，稍后可在桌面端团队广场查看回帖。"
+    await tap.send_text(_json.dumps(
+        {"event": "message.end", "text": body}, ensure_ascii=False))
+    return []
+
+
 async def run_channel_turn(
     session: dict,
     text: str,
@@ -324,6 +378,23 @@ async def run_channel_turn(
         except Exception:
             shared._log.exception(
                 "channel_cmd_resolve_failed session=%s", session_id)
+        # ── AgentTeam 路由（backlog P2-3）──────────────────────────────
+        # 渠道会话若绑定的是团队主会话，消息应投给成员而不是在广场自跑
+        # headless turn（广场永不自跑 turn，与桌面 WS 同口径）。
+        # 放在命令短路之后：/clear /help 等命令在团队会话里照常可用。
+        # 回帖同步等成员安定后经 tap 发回 IM —— 渠道是请求/响应模型，
+        # 不能像桌面那样异步回帖到广场就结束。
+        try:
+            from ..teams import store as _team_store
+
+            _located = _team_store.team_of_session(session_id)
+            if _located is not None and _located[1] is None:
+                return await _run_channel_team_turn(
+                    _located[0], text, tap, session_id,
+                )
+        except Exception:  # noqa: BLE001 — 路由失败回落原 headless 路径
+            shared._log.exception("channel_team_route_failed session=%s", session_id)
+
         # Early-arm（仅真 turn）：preamble 期间到达的 channel `stop` 必须
         # 能看到活的 turn。
         shared._RUNNING_TURNS[session_id] = turn_id
