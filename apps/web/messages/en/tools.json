@@ -76,11 +76,12 @@
       "kindsLabel": "Notify on",
       "kindsHelp": "Each background event class can be muted independently (master switch still gates all).",
       "kinds": {
-        "reply": "Turn / scheduled-task completed",
-        "askUser": "Waiting for your answer (approvals, questions)",
-        "failure": "Turn failed",
+        "reply": "Turn completed (incl. watched sessions)",
+        "askUser": "Waiting for you (approvals, questions, last-words)",
+        "failure": "Something broke (turn failure, system error)",
         "workflow": "Workflow run finished",
-        "subagent": "Subagent result (reserved)",
+        "schedule": "Scheduled task finished",
+        "bgTask": "Background command finished",
         "team": "Agent team (member replies / blocked)"
       },
       "privacyLabel": "Notification body",

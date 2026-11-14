@@ -33,9 +33,27 @@ export interface NotifyPrefs {
   dnd: NotifyDnd;
 }
 
-/** Notification event classes. `reply` covers plain turn completion (V1
- *  behaviour); the rest are the V2 trigger-surface extensions. */
-export type NotifyKind = "reply" | "askUser" | "failure" | "workflow" | "subagent" | "team";
+/** Notification event classes — the gate axis.
+ *
+ *  2026-11-14 重整（docs/notifications-audit-2026-11-14.md P1-2）：
+ *   - **删掉 `subagent`**：它在 V2 里就是「预留」（i18n 原文如此），至今没有
+ *     任何生产者——`linked.done` 在服务端已过滤掉 subagent/schedule origin
+ *     （engine.py:1303 `if _origin in ("interactive", "deliver")`），子代理结果
+ *     走的是「注入父对话 + worker.* 应用内 notice」，从不发 OS 通知。留着一个
+ *     拨了没反应的开关比没有更糟。将来真要做子代理 OS 通知，应作为**新功能**
+ *     连同它的事件源一起加回来。
+ *   - **新增 `schedule` / `bgTask`**：定时任务完成（notifyScheduleRunFinished）
+ *     与后台任务终态（notifyTaskTransitions）此前只受总开关约束，没有自己的
+ *     分类开关，DnD 与隐私模式也管不到它们。
+ *   - `workflow` 从「死开关」接真到 notifyRunTransitions。 */
+export type NotifyKind =
+  | "reply"
+  | "askUser"
+  | "failure"
+  | "workflow"
+  | "schedule"
+  | "bgTask"
+  | "team";
 
 export type NotifyKinds = Record<NotifyKind, boolean>;
 
@@ -56,16 +74,45 @@ export const SOUND_NAMES = ["Glass", "Ping", "Pop", "Funk", "Hero", "Tink"] as c
  *  the completion sound — one glance/earful tells done from broken. */
 export const FAILURE_SOUND = "Basso";
 
-export const KINDS: readonly NotifyKind[] = ["reply", "askUser", "failure", "workflow", "subagent", "team"];
+export const KINDS: readonly NotifyKind[] = [
+  "reply",
+  "askUser",
+  "failure",
+  "workflow",
+  "schedule",
+  "bgTask",
+  "team",
+];
+
+/** kinds 语义版本。bump 时在 loadNotifyPrefs 里跑一次 migrateKinds。 */
+export const KINDS_SCHEMA = 2;
 
 export const DEFAULT_PREFS: NotifyPrefs = {
   enabled: true,
   sound: true,
   soundName: "Glass",
-  kinds: { reply: true, askUser: true, failure: true, workflow: false, subagent: false, team: true },
+  // 全部默认 ON：workflow 的开关在 v1 里是死的（无代码消费），通知照发——
+  // 接真之后若默认 OFF，等于把用户一直在收的通知静默掉。schedule/bgTask 同理
+  // （此前只受总开关约束，一直在发）。要静音是用户的显式选择，不是默认值。
+  kinds: { reply: true, askUser: true, failure: true, workflow: true, schedule: true, bgTask: true, team: true },
   privacy: "full",
   dnd: { enabled: false, from: "22:00", to: "08:00" },
 };
+
+/** v1 → v2 的 kinds 迁移：v1 持久化下来的 `workflow:false` / `subagent:false`
+ *  **不是用户的选择**，而是「死开关的默认值被 saveNotifyPrefs 整对象写盘」的
+ *  副产物。接真之后照抄会把用户一直在收的工作流通知静默掉，所以强制拉回 true
+ *  并盖上 schema 标记；此后再改就是真选择，不再被迁移覆盖。
+ *  `subagent` 已从 KINDS 移除，fromWire 只读已知键，下次存盘自然清掉。 */
+export function migrateKinds(raw: unknown, p: NotifyPrefs): NotifyPrefs {
+  const schema =
+    raw && typeof raw === "object"
+      ? Number((raw as Record<string, unknown>).kinds_schema ?? 1)
+      : 1;
+  if (Number.isFinite(schema) && schema >= KINDS_SCHEMA) return p;
+  const next = { ...p, kinds: { ...p.kinds, workflow: true } };
+  return next;
+}
 
 /** Pre-settings.json master switch (localStorage). One-shot migrated. */
 const LEGACY_KEY = "ginno-notify";
@@ -82,7 +129,17 @@ export function notifyPrefs(): NotifyPrefs {
  *  breaking the gate; pre-V2 files (first three keys only) migrate with all
  *  kinds on, full privacy, DnD off. Exported for unit tests. */
 export function fromWire(raw: unknown): NotifyPrefs {
-  const d = { ...DEFAULT_PREFS, kinds: { ...DEFAULT_PREFS.kinds } };
+  // ⚠️ dnd 必须**深**拷贝一层。`{...DEFAULT_PREFS}` 是浅拷贝，d.dnd 与
+  // DEFAULT_PREFS.dnd 是同一个对象引用，下面的 `d.dnd.enabled = …` 会就地改写
+  // 模块级默认值——用户设过一次勿扰窗（如 00:00-23:59）后，DEFAULT_PREFS 就
+  // 永久带上它，此后任何 settings.json 里缺 dnd 键 / dnd 畸形的回退都会落到
+  // 那个被污染的「默认」上，勿扰再也关不掉。kinds 原本就单独展开过，同理补齐。
+  // 2026-11-14 由 P1 闸门统一的测试暴露（审计文档 P1-1）。
+  const d: NotifyPrefs = {
+    ...DEFAULT_PREFS,
+    kinds: { ...DEFAULT_PREFS.kinds },
+    dnd: { ...DEFAULT_PREFS.dnd },
+  };
   if (raw && typeof raw === "object") {
     const o = raw as Record<string, unknown>;
     if (typeof o.enabled === "boolean") d.enabled = o.enabled;
@@ -116,6 +173,8 @@ function toWire(p: NotifyPrefs): Record<string, unknown> {
     sound: p.sound,
     sound_name: p.soundName,
     kinds: { ...p.kinds },
+    // 盖上 schema 标记：此后 kinds 里的值都是用户的真选择，migrateKinds 不再覆盖
+    kinds_schema: KINDS_SCHEMA,
     privacy: p.privacy,
     dnd: { ...p.dnd },
   };
@@ -133,6 +192,41 @@ export function inDndWindow(dnd: NotifyDnd, atMin: number): boolean {
   const t = toMin(dnd.to);
   if (Number.isNaN(f) || Number.isNaN(t)) return false;
   return f <= t ? atMin >= f && atMin < t : atMin >= f || atMin < t;
+}
+
+/** Minutes since local midnight — input for inDndWindow. */
+export function minutesOfDay(d = new Date()): number {
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Sound for a kind: failures always get Basso; others follow prefs.
+ *  `undefined` = silent (prefs.sound off). */
+export function soundFor(kind: NotifyKind): string | undefined {
+  const np = notifyPrefs();
+  if (!np.sound) return undefined;
+  return kind === "failure" ? FAILURE_SOUND : np.soundName;
+}
+
+/** Body text after the privacy gate: `titleOnly` strips the content. */
+export function applyPrivacy(body: string, np: NotifyPrefs = notifyPrefs()): string {
+  return np.privacy === "titleOnly" ? "" : body;
+}
+
+/** 偏好侧总闸：总开关 ∧ 分类型开关 ∧ 不在勿扰窗内。
+ *
+ *  **不含**「用户是否在看」——那只有调用点知道（要比对 activeSid / 路由），
+ *  见 notifyHub 的 isAppAttentive / isSessionAttentive。
+ *
+ *  `"test"`（设置页测试按钮）刻意绕过全部三层：它是用户的显式动作，必须在
+ *  任何偏好下都能给出可见反馈，否则「按了没反应」会被误读成通知系统坏了。
+ *  测试按钮的说明文案已经写明它绕过总开关。
+ *
+ *  由 desktop.ts 的 notifyNative（所有 OS 通知的唯一出口）调用；调用点自己的
+ *  shouldNotify 判定与此幂等重叠，属有意的双保险——漏判的站点仍被出口拦住。 */
+export function osGateOpen(kind: NotifyKind | "test", atMin = minutesOfDay()): boolean {
+  if (kind === "test") return true;
+  const np = notifyPrefs();
+  return np.enabled && np.kinds[kind] && !inDndWindow(np.dnd, atMin);
 }
 
 /**
@@ -153,7 +247,15 @@ export async function loadNotifyPrefs(): Promise<NotifyPrefs> {
       s.notifications = toWire(prefs);
       await api.putSettings(s);
     } else {
-      prefs = fromWire(existing);
+      const parsed = fromWire(existing);
+      // v1 持久化的 workflow:false 是死开关的默认值、不是用户选择——接真后
+      // 照抄会静默掉用户一直在收的通知，故迁移拉回 true（见 migrateKinds）。
+      prefs = migrateKinds(existing, parsed);
+      // 只有真的迁移了才回写，避免每次启动都写一遍 settings.json
+      if (prefs !== parsed) {
+        s.notifications = toWire(prefs);
+        await api.putSettings(s);
+      }
     }
     if (legacy !== null) localStorage.removeItem(LEGACY_KEY);
   } catch {

@@ -14,11 +14,74 @@
  */
 
 import {
-  FAILURE_SOUND,
   inDndWindow,
+  minutesOfDay,
   notifyPrefs,
+  osGateOpen,
+  soundFor,
   type NotifyKind,
 } from "./notifyPrefs";
+
+// soundFor / minutesOfDay / inDndWindow 现在住在 notifyPrefs（闸门与偏好同源）。
+// 这里再导出一次，保住既有 import 路径不动。
+export { inDndWindow, minutesOfDay, soundFor };
+
+/** Body text after the privacy gate: `titleOnly` strips the content.
+ *  @deprecated 隐私裁剪已下沉进 desktop.ts 的 notifyNative（唯一出口），调用点
+ *  不需要自己裁。保留此别名只为兼容既有 import，新代码不要再调。 */
+export function privacyBody(np: ReturnType<typeof notifyPrefs>, body: string): string {
+  return np.privacy === "titleOnly" ? "" : body;
+}
+
+/** 用户是否正盯着**这个应用**。
+ *
+ *  单一判据（P1-4）：修复前 7 个发通知的站点各写各的——6 处只看
+ *  `document.visibilityState`，只有 NoticeHost 的失焦兜底额外看了
+ *  `document.hasFocus()`。口径不一意味着同一个「用户在看吗」的问题在不同站点
+ *  有不同答案。P1 先统一成只看 visibilityState（保守方向），P2 经实测后把
+ *  hasFocus 补回来。
+ *
+ *  **为什么必须两个条件合取**（实测见 scripts/probe-wkwebview-attention.README.md，
+ *  macOS 15.6 / WKWebView，2026-11-15）：
+ *   - `visibilityState` **不追踪窗口焦点**：窗口可见但焦点在别的 App（或同 App
+ *     的另一个窗口）时它仍报 `visible`。只用它 → 用户 ⌘Tab 切走而 Ginno 窗口
+ *     还在屏上时通知被抑制，即「该弹不弹」。这是最常见的场景。
+ *   - `hasFocus()` **在焦点位于页面内 iframe 时仍为 true**（activeElement 已是
+ *     IFRAME），所以纳入它不会把「用户正在操作 MCP app 卡 / 代码面板 viewer」
+ *     误判成没在看——这是纳入的主要风险，实测排除。
+ *   - 单独用 `hasFocus()` 也不行：App 隐藏时它曾滞后报 true，而 visibilityState
+ *     已正确翻成 hidden。
+ *
+ *  `hasFocus` 不存在时（node/SSR、老环境）退回只看 visibilityState，即 P1 的
+ *  保守行为，不会因为拿不到信息就判成「没在看」而狂弹。 */
+export function isAppAttentive(): boolean {
+  if (typeof document === "undefined") return false;
+  if (document.visibilityState !== "visible") return false;
+  return typeof document.hasFocus === "function" ? document.hasFocus() : true;
+}
+
+/** 用户是否正盯着**这个会话**：应用可见 ∧ 在工作区路由 ∧ 它就是当前会话。
+ *
+ *  socket 回调闭包会过期，所以只读 ref / 即时值。 */
+export function isSessionAttentive(activeSid: string | null, sid: string): boolean {
+  if (!isAppAttentive()) return false;
+  if (typeof window === "undefined") return false;
+  return window.location.pathname === "/" && activeSid === sid;
+}
+
+/**
+ * The gate: master switch ∧ per-kind switch ∧ not watching ∧ outside the DnD
+ * window. 偏好那三层已抽到 notifyPrefs.osGateOpen，与 desktop.ts 的
+ * notifyNative 出口共用同一实现——调用点先判一次省掉无谓的正文构造，出口再判
+ * 一次兜住漏网的站点（幂等重叠，有意为之）。
+ *
+ * DnD suppresses entirely for now — provisional silent-to-Center banners need
+ * a Rust-side change (see docs/notifications-audit-2026-11-14.md §3 P2).
+ */
+export function shouldNotify(kind: NotifyKind, watching: boolean): boolean {
+  return !watching && osGateOpen(kind);
+}
+
 
 export interface MergeItem {
   title: string;
@@ -86,27 +149,6 @@ export class ReplyMergeWindow<T extends MergeItem = MergeItem> {
   }
 }
 
-/** Minutes since local midnight — input for inDndWindow. */
-function minutesOfDay(d = new Date()): number {
-  return d.getHours() * 60 + d.getMinutes();
-}
-
-/**
- * The V2 gate: master switch ∧ per-kind switch ∧ not watching ∧ outside the
- * DnD window (DnD suppresses entirely for now — provisional
- * silent-to-Center banners need a Rust-side change, tracked in
- * docs/os-notifications-v2-design.md).
- */
-export function shouldNotify(kind: NotifyKind, watching: boolean): boolean {
-  const np = notifyPrefs();
-  return (
-    np.enabled &&
-    np.kinds[kind] &&
-    !watching &&
-    !inDndWindow(np.dnd, minutesOfDay())
-  );
-}
-
 /** Per-kind OS 通知冷却门（2026-11-10：跨会话 reply 刷屏治理）。
  *
  * ReplyMergeWindow 只按「同一 session」合并；多 worker/多 watch 并行时
@@ -143,15 +185,3 @@ export class KindRateGate {
 
 /** reply 类全局冷却门：60s 内跨会话只弹一条，后续合并计数。 */
 export const replyRateGate = new KindRateGate(60_000);
-
-/** Body text after the privacy gate: `titleOnly` strips the content. */
-export function privacyBody(np: ReturnType<typeof notifyPrefs>, body: string): string {
-  return np.privacy === "titleOnly" ? "" : body;
-}
-
-/** Sound for a kind: failures always get Basso; others follow prefs. */
-export function soundFor(kind: NotifyKind): string | undefined {
-  const np = notifyPrefs();
-  if (!np.sound) return undefined;
-  return kind === "failure" ? FAILURE_SOUND : np.soundName;
-}

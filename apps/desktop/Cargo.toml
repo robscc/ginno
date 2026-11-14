@@ -38,6 +38,12 @@ ureq = { version = "2", default-features = false }
 trash = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# shell.log 行首时间戳（common.rs）。**不是新增编译成本**：chrono 0.4.45 本来
+# 就在依赖图里（trash 5.2.9 → chrono），这里只是把它提为直接依赖以便 use。
+# 2026-11-14 排查通知风暴时 shell.log 完全没有时间轴，只能用「文件行号位置」
+# 代替时间做趋势判断（审计文档 §1/附录）——失败率与通知密度的相关性是靠分桶
+# 行号硬凑出来的。
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { version = "1", features = ["full"] }
 # Mods broker, in-process (design §2 桌面形态: one crate, two hosts — dev/web
 # spawns the same crate's CLI, the desktop shell serves its Unix socket from

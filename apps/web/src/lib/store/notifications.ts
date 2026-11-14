@@ -1,7 +1,8 @@
 "use client";
 
 import { notifyNative } from "../desktop";
-import { notifyPrefs } from "../notifyPrefs";
+import { osGateOpen } from "../notifyPrefs";
+import { isAppAttentive } from "../notifyHub";
 import { uiText } from "../../i18n/uiText";
 import { schedText } from "../../i18n/schedText";
 import { tasksText } from "../../i18n/tasksText";
@@ -27,14 +28,17 @@ export function notifyRunTransitions(
   // sync cache avoids stale closures — see lib/notifyPrefs.ts). _prevRunStatus
   // keeps updating even while disabled so re-enabling doesn't fire a burst of
   // stale transitions.
-  const prefs = notifyPrefs();
-  const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
+  // 偏好闸门（总开关 / 分类开关 / 勿扰 / 隐私 / 提示音）已下沉进 notifyNative
+  // 这个唯一出口，此处不再重复判定——修复前这三个函数只看总开关，分类开关、
+  // 勿扰窗与「仅标题」隐私对它们全部无效（审计文档 P1-1 矩阵）。
+  // _prevRunStatus 无论闸门开关都要更新，否则重新开启时会一次性补弹一堆过期
+  // 状态跳变。这里只保留「用户是否在看」——那只有调用点知道。
+  const attentive = isAppAttentive();
   for (const r of runs) {
     const prev = _prevRunStatus[r.id];
     _prevRunStatus[r.id] = r.status;
     if (prev === undefined || prev === r.status) continue;
-    if (!prefs.enabled) continue;
-    if (!hidden) continue; // user is looking — the badges already cover it
+    if (attentive) continue; // user is looking — the badges already cover it
     let body: string;
     if (r.status === "done") {
       // 通知模板走 ui 域（模块级函数无 hook，uiText 同步读当前 locale）
@@ -54,12 +58,15 @@ export function notifyRunTransitions(
     // no window.Notification). Click → window focus + open the Workflow panel.
     void notifyNative({
       kind: "workflow-run",
+      notifyKind: "workflow",
       id: r.id,
       title,
       body,
-      sound: prefs.sound ? prefs.soundName : undefined,
     }).then((sent) => {
       if (sent) return;
+      // sent=false 现在也包含「被偏好闸门拦下」——浏览器兜底必须自己再判一次，
+      // 否则用户关掉了桌面提醒、dev 浏览器里反而照样弹 HTML5 通知。
+      if (!osGateOpen("workflow")) return;
       // Plain-browser dev fallback.
       if (typeof Notification === "undefined") return;
       if (Notification.permission === "default") {
@@ -89,8 +96,9 @@ export function notifyRunTransitions(
 
 // ---- 定时任务完成通知（schedule-unseen 的桌面提醒面）----
 // AppShell 的 /api/ws/schedule 通道收到 run_finished 时调用。与
-// notifyRunTransitions 同一闸门（Settings → Notifications 总开关 + 窗口隐藏），
-// 但事件驱动、无需状态 diff。两个刻意的排除：
+// notifyRunTransitions 同一套约束（notifyNative 出口的统一偏好闸门 + 仅在不
+// 盯着应用时触发），但事件驱动、无需状态 diff，且有自己独立的分类开关
+// （kinds.schedule）。两个刻意的排除：
 //   · workflow 目标不在这里通知——run 状态轮询的 notifyRunTransitions 已经
 //     覆盖（点击直达 workflow 面板），两路都发会连响两条；
 //   · skipped_overlap / missed 不发——前者是重叠让路无结果可看，后者在
@@ -104,9 +112,9 @@ export function notifyScheduleRunFinished(
   >,
   devOpen?: (runId: string) => void,
 ): void {
-  const prefs = notifyPrefs();
-  if (!prefs.enabled) return;
-  if (typeof document !== "undefined" && document.visibilityState === "visible") return;
+  // 偏好闸门在 notifyNative 出口统一施加（修复前这里只看总开关，分类开关 /
+  // 勿扰窗 / 「仅标题」隐私全都不生效）。此处只保留「用户是否在看」。
+  if (isAppAttentive()) return;
   if (run.status !== "ok" && run.status !== "error") return;
   if (run.target_type === "workflow") return;
   const ok = run.status === "ok";
@@ -122,12 +130,14 @@ export function notifyScheduleRunFinished(
   const body = raw.length > 200 ? `${raw.slice(0, 199)}…` : raw;
   void notifyNative({
     kind: "schedule-run",
+    notifyKind: "schedule",
     id: run.run_id,
     title,
     body,
-    sound: prefs.sound ? prefs.soundName : undefined,
   }).then((sent) => {
     if (sent) return;
+    // 见 notifyRunTransitions：sent=false 含「被偏好闸门拦下」，兜底须自判
+    if (!osGateOpen("schedule")) return;
     // Plain-browser dev fallback — WKWebView has no Notification API, so
     // inside the packaged app this branch is a silent no-op.
     if (typeof Notification === "undefined") return;
@@ -154,21 +164,22 @@ export function notifyScheduleRunFinished(
 }
 
 // ---- Notifications for background tasks (background-tasks-design.md §6.3) ----
-// 与 notifyRunTransitions 同一套约束：prefs 总闸 + 仅后台标签页触发（看得见
-// 时徽标已够）。驱动方是 SidebarFooter 的 5s 全局轮询（进程内单实例）。
+// 与 notifyRunTransitions 同一套约束：notifyNative 出口的统一偏好闸门 + 仅在
+// 不盯着应用时触发（看得见时徽标已够），分类开关是 kinds.bgTask。驱动方是
+// SidebarFooter 的 5s 全局轮询（进程内单实例）。
 const _prevTaskStatus: Record<string, string> = {};
 
 export function notifyTaskTransitions(
   tasks: Array<{ id: string; title?: string; status: string; exit_code?: number | null; dur?: string }>,
 ) {
-  const prefs = notifyPrefs();
-  const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
+  // 同 notifyRunTransitions：偏好闸门在 notifyNative 出口，_prevTaskStatus
+  // 无论闸门开关都要更新（否则重开时补弹一堆过期跳变）。
+  const attentive = isAppAttentive();
   for (const t of tasks) {
     const prev = _prevTaskStatus[t.id];
     _prevTaskStatus[t.id] = t.status;
     if (prev === undefined || prev === t.status) continue;
-    if (!prefs.enabled) continue;
-    if (!hidden) continue;
+    if (attentive) continue;
     if (t.status !== "finished" && t.status !== "stopped" && t.status !== "timeout") continue;
     const name = t.title || t.id;
     const body =
@@ -178,10 +189,10 @@ export function notifyTaskTransitions(
     // Desktop: the Tauri shell fires the macOS notification; click → 任务中心。
     void notifyNative({
       kind: "bg-task",
+      notifyKind: "bgTask",
       id: t.id,
       title: name,
       body,
-      sound: prefs.sound ? prefs.soundName : undefined,
     }).catch(() => {});
   }
 }

@@ -16,6 +16,16 @@ pub(crate) struct NotifyPayload {
     /// global is called on click — or `"test"` (Settings → Notifications test
     /// button), which only refocuses the window.
     pub(crate) kind: String,
+    /// 通知**分类**（reply / askUser / failure / workflow / schedule / bgTask /
+    /// test）——与上面的 `kind`（点击目标）正交：`kind:"session"` 的通知可以
+    /// 属于 reply、askUser 或 failure 任一分类。
+    ///
+    /// 只用于日志。此前 shell.log 只记点击目标，2026-11-14 排查通知风暴时
+    /// 无法从日志区分「3858 条 session 通知」里哪些是 reply、哪些是误发的
+    /// askUser，只能靠排除法推断（审计文档 P2 可观测性）。web 侧从
+    /// `notifyNative` 唯一出口带上；旧 web bundle 不发这个字段，故 Option。
+    #[serde(default)]
+    pub(crate) notify_kind: Option<String>,
     /// Session id (`kind == "session"`), run id (`kind == "workflow-run"`), or
     /// scheduled run id (`kind == "schedule-run"`).
     pub(crate) id: String,
@@ -26,6 +36,25 @@ pub(crate) struct NotifyPayload {
     /// `sound_name`) and passes it per-event, so the shell stays stateless.
     #[serde(default)]
     pub(crate) sound: Option<String>,
+}
+
+impl NotifyPayload {
+    /// 日志上下文：点击目标 + 通知分类 + 标题前缀。
+    ///
+    /// 加**分类**是因为 2026-11-14 排查通知风暴时，shell.log 里 3858 条
+    /// `kind=session` 无法区分是 reply 还是误发的 askUser，只能靠排除法推断
+    /// （审计文档 P2「可观测性不足」）。加**标题前缀**是为了在同分类内进一步
+    /// 定位：「⏸」= ask_user 挂起、「⚠️」= 失败、「📡」= 订阅会话完成。
+    /// 标题截 40 字符——它来自会话名，可能很长，行内还要留给 id 与错误文本。
+    pub(crate) fn log_ctx(&self) -> String {
+        let nk = self.notify_kind.as_deref().unwrap_or("?");
+        // chars() 而非字节切片：标题是中文/emoji，按字节切会截出非法 UTF-8
+        let short: String = self.title.chars().take(40).collect();
+        format!(
+            " kind={} notify_kind={nk} id={} title={short:?}",
+            self.kind, self.id
+        )
+    }
 }
 
 /// Sounds that ship with macOS (`/System/Library/Sounds/<name>.aiff`).
@@ -80,20 +109,57 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
             shell_log(&app, &format!("ignoring unknown sound name {name:?}"));
         }
     }
-    let handle = match n.show() {
-        Ok(h) => h,
-        Err(e) => {
-            // 2026-08-10: notifications silently died here — macOS auth was
-            // denied (request_auth_blocking → false) and show()'s error was
-            // swallowed by a bare `return`. Never drop the only trace.
-            shell_log(&app, &format!("notification show FAILED: {e}"));
-            return;
+    // 有界重试投递（2026-11-14，docs/notifications-audit-2026-11-14.md P0-2）。
+    //
+    // `show()` 在 UN 后端要过 mac-usernotifications 的 `block_on_current`：不在
+    // 主线程时，它要求 `CFRunLoop::main().is_waiting()` 为真才肯发送，否则直接
+    // 返回 `MainThreadNotRunning`。而 `is_waiting()` 只在主 run loop **睡在等待
+    // 相位**时为真——主线程正在执行回调（例如正在派发触发本通知的那个
+    // `ginno:notify` 事件）时它是 false。这是个**假阴性**：run loop 明明在跑、
+    // 响应迟早会送达，库却拒发。
+    //
+    // 实测：shell.log 里 2357 次 `show FAILED: Mainthread not running`，占投递
+    // 尝试的 40%；失败率随通知密度变化——低负载区 0-5%，风暴区 30-53%。是负载
+    // 相关的竞态，不是「线程用错了」。
+    //
+    // 所以这里做有界重试，而**不是**把 show() 搬到 `run_on_main_thread`：搬过去
+    // 会让紧随其后的 `wait_for_action`（等用户点击，可能几分钟）也跑在主线程上，
+    // 直接冻住 UI。重试只是等主线程派发完、回到等待相位。
+    //
+    // 重试不会重复投递：`block_on_current` 在 poll future **之前**就做该判定，
+    // 返回 Err 时通知根本没发出去。
+    const SHOW_ATTEMPTS: u32 = 5;
+    let mut attempt = 0u32;
+    let handle = loop {
+        attempt += 1;
+        match n.show() {
+            Ok(h) => break h,
+            Err(e) if attempt < SHOW_ATTEMPTS => {
+                shell_log(
+                    &app,
+                    &format!(
+                        "notification show retry {attempt}/{SHOW_ATTEMPTS}: {e}{}",
+                        payload.log_ctx()
+                    ),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => {
+                // 2026-08-10: notifications silently died here — macOS auth was
+                // denied (request_auth_blocking → false) and show()'s error was
+                // swallowed by a bare `return`. Never drop the only trace.
+                shell_log(
+                    &app,
+                    &format!(
+                        "notification show FAILED after {attempt} attempts: {e}{}",
+                        payload.log_ctx()
+                    ),
+                );
+                return;
+            }
         }
     };
-    shell_log(
-        &app,
-        &format!("notification shown kind={} id={}", payload.kind, payload.id),
-    );
+    shell_log(&app, &format!("notification shown{}", payload.log_ctx()));
     let in_flight = ACTIVE_WAITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if in_flight > MAX_ACTION_WAITERS {
         // 超限：不再排队等点击（避免轮询线程无界增长），立即归还名额。
@@ -101,8 +167,9 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
         shell_log(
             &app,
             &format!(
-                "notification fire-and-forget ({} waiters in flight) kind={} id={}",
-                in_flight, payload.kind, payload.id
+                "notification fire-and-forget ({} waiters in flight){}",
+                in_flight,
+                payload.log_ctx()
             ),
         );
         return;
@@ -113,8 +180,8 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
         shell_log(
             &app,
             &format!(
-                "wait_for_action resolved action={action} kind={} id={}",
-                payload.kind, payload.id
+                "wait_for_action resolved action={action}{}",
+                payload.log_ctx()
             ),
         );
         if action != "__closed" {
