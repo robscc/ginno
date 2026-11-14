@@ -162,6 +162,32 @@ fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它�
    **判绿一律用 `gh pr checks` 原生命令的三态**（pending / fail / green），
    不要手搓 grep 计数——`grep -oc` 数的是行数不是匹配数、大小写敏感，
    PR #39/#40 两次 watch 空转翻车均源于此。
+
+   **但 `gh pr checks` / `gh pr create` 走 GraphQL，本机该端点经常连不上**
+   （TLS handshake timeout / connection reset，2026-11-15 连续 5 次全败）。
+   退路是 REST，且**pending 与 fail 计数必须在 jq 里算，绝不要交给 grep**：
+   PR #143 用 `grep -c '|queued||\||in_progress||'` 判 pending，BSD grep 不认
+   `\|` 交替，整个模式退化成永不匹配的字面量 → pending 恒为 0 →
+   `runtime-tests` 还在 in_progress 就执行了合并（侥幸该 job 随后 success，
+   main 未受损，但这是第三次同一类翻车）。
+
+   ```bash
+   SHA=$(git rev-parse HEAD)
+   API="repos/robscc/ginno/commits/$SHA/check-runs"
+   # pending 数（在 jq 里算）
+   gh api "$API" --jq '[.check_runs[]|select(.status!="completed")]|length'
+   # fail 数：completed 且 conclusion 不在白名单（skipped/neutral 不算失败）
+   gh api "$API" --jq '[.check_runs[]|select(.status=="completed"
+        and .conclusion!="success" and .conclusion!="skipped"
+        and .conclusion!="neutral")]|length'
+   # 建 PR / 合并都走 REST，绕开 GraphQL
+   gh api repos/robscc/ginno/pulls -X POST -f title=… -F body=@body.md \
+        -f head=<branch> -f base=main --jq .html_url
+   gh api repos/robscc/ginno/pulls/<N>/merge -X PUT -f merge_method=rebase
+   ```
+
+   网络抖动是常态而非异常：每个 `gh` 调用都要包重试（3-6 次、递增退避），
+   单次失败**不等于** CI 红，也**不等于**可以跳过判绿直接合并。
 5. **合并策略 rebase-merge + 删分支**；构建生效统一走 `make app`（改 runtime
    后想不重启验证走 `make dev-swap`），不逐 PR 构建。
 
