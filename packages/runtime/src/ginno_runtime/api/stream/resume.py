@@ -149,6 +149,18 @@ def _spawn_resume_task(session_id: str, resume_value: dict, base_config: dict | 
                     )
                 except Exception:
                     _log.exception("subagent_settle_hook_failed session=%s", session_id)
+                # AgentTeam：用户代答后跑完的**真正结果**必须回主会话
+                # （backlog P0-7 后半）。此前 resume 路径无任何 team 钩子，
+                # 成员撞卡后代答跑出的产出永不回帖。turn_id 去重防双回帖。
+                try:
+                    from ...teams.lifecycle import spawn_settled as _team_settled
+
+                    _team_settled(
+                        session_id,
+                        str((_cfg.get("configurable") or {}).get("turn_id") or ""),
+                    )
+                except Exception:
+                    _log.exception("team_settle_hook_failed session=%s", session_id)
 
     task = asyncio.create_task(_resume_job())
     _TURN_TASKS[session_id] = task

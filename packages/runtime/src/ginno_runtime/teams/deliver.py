@@ -48,12 +48,10 @@ from . import store
 # 与 subagent 的 SUMMARY_MAX_CHARS 同量级，但更短——回帖是对话消息不是报告。
 REPLY_MAX_CHARS = 1200
 
-# 等成员 turn 结束的上限。超时不代表失败（纪律 2）→ 回执 stalled。
-DELIVER_WAIT_S = 1800.0
-
-# 投递后轮询 turn 是否结束的间隔。用轮询而非 await task：steer 路径下 turn
-# 任务不归我们所有（是用户那个 WS 起的），拿不到可靠的 task 句柄。
-_POLL_S = 0.4
+# 注：此前这里有 DELIVER_WAIT_S=1800 / _POLL_S=0.4 与 _await_turn_end()，
+# 供 steer 路径的轮询 waiter 用。回帖改由 teams.lifecycle 钩子在真实终态点
+# 触发后，轮询 waiter 整个删除（backlog P1-4：N 次 steer = N 条重复回帖 +
+# N 个 30 分钟轮询任务，超时后回帖还会永久丢失）。
 
 # 并发闸（§5.6）：team_id → 排队投递（FIFO）。满了不拒收——排队，turn
 # 结束自动 drain（原型语义「队列中还有 1 条待处理投递」）。进程内态：
@@ -117,16 +115,6 @@ def _is_live(session_id: str) -> bool:
         return True
     task = _TURN_TASKS.get(session_id)
     return task is not None and not task.done()
-
-
-async def _await_turn_end(session_id: str, timeout_s: float) -> bool:
-    """等该 session 的 turn 结束。True = 确实结束了；False = 超时。"""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if not _is_live(session_id):
-            return True
-        await asyncio.sleep(_POLL_S)
-    return not _is_live(session_id)
 
 
 async def _final_text(slug: str, session_id: str, team_id: str = "") -> str:
@@ -253,11 +241,18 @@ async def post_reply(
 
 
 async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
-    """跑成员的一个 turn，结束后回帖 + 置 done。
+    """跑成员的一个 turn。
 
     复用 subagent 调度器的 ``_run_managed_turn``（它已经把 managed turn 的
     全部脏活做对了：清 LLM run context 防串线、_MANAGED_TURNS 标记、turn lock、
-    stop 事件、settle 钩子）。team 只在其外面套「等结束 → 回帖」。
+    stop 事件、settle 钩子）。
+
+    **回帖 / 置 done / 状态回流 / 排队 drain 全部由 teams.lifecycle 钩子在
+    engine/resume 的真实终态点触发**（backlog P0-7 / P1-2 / P1-3 / P1-4）。
+    这里不再自己做——否则：
+      · parked（撞权限/ask_user 卡）时 ``_run_managed_turn`` 的返回只是挂起，
+        当成结束就会提前回帖半截话，而代答后的真正结果永不回帖；
+      · 与钩子双触发 → 重复回帖。
     """
     from ..subagent_scheduler import _run_managed_turn  # lazy: 避免 import 环
 
@@ -276,17 +271,11 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
         await _run_managed_turn(sid, text, None, stop_evt)
     except Exception:  # noqa: BLE001
         _log.exception("team_member_turn_failed team=%s instance=%s", team_id, instance_id)
-    # turn 结束后回帖（无论成败都回，失败也要让主会话知道）。
-    await post_reply(team_id, instance_id)
-    # 置 done（未读）——用户看过工作台才转 idle（§3.3 收件箱语义）。
-    # last_completed 是 done 的判据（status.py 步骤 5），必须在这里落。
-    store.patch_member(team_id, instance_id, {
-        "status": "done", "last_completed": time.time(),
-    })
-    team_status.refresh_team(team_id)
-    await _broadcast_status(team_id)
-    # 并发闸：腾出的额度放行下一条排队投递。
-    await _drain_queue(team_id)
+        # 托管 turn 自身抛异常（engine 终态点可能没走到）→ 兜底触发一次终态钩子，
+        # 保证主会话不会永远等不到回帖。turn_id 去重使其与钩子不冲突。
+        from .lifecycle import on_turn_settled
+
+        await on_turn_settled(sid, "")
 
 
 def _TURN_STOP_setdefault(session_id: str):
@@ -395,8 +384,12 @@ async def deliver(
             team_id, instance_id, steer_id, receipt,
         )
         if wait:
-            # 等这个 turn 结束后回帖（steer 的 turn 不归我们所有，只能等）。
-            spawn_bg(_reply_after_current_turn(team_id, instance_id, sid))
+            # 回帖由 teams.lifecycle 钩子在该 turn 的**真实终态点**触发
+            # （engine/resume），不再 spawn 轮询 waiter。
+            # 此前每条 steer 各 spawn 一个 waiter → N 次 steer = N 条重复回帖
+            # + N 个 0.4s×1800s 轮询任务，且 30 分钟超时后回帖永久丢失
+            # （backlog P1-4）。钩子按 turn_id 去重，一个 turn 只回一帖。
+            pass
         return {"ok": receipt == "delivered", "receipt": receipt,
                 "instance_id": instance_id, "session_id": sid,
                 "steer_id": steer_id, "channel": "steer"}
@@ -452,25 +445,6 @@ async def _await_turn_start(session_id: str, timeout_s: float = 5.0) -> bool:
             return True
         await asyncio.sleep(0.05)
     return _is_live(session_id)
-
-
-async def _reply_after_current_turn(team_id: str, instance_id: str, sid: str) -> None:
-    """steer 路径的回帖：等当前 turn 结束，然后把成员最后的产出回帖到主会话。"""
-    ended = await _await_turn_end(sid, DELIVER_WAIT_S)
-    if not ended:
-        _log.warning(
-            "team_reply_stalled_timeout team=%s instance=%s session=%s",
-            team_id, instance_id, sid,
-        )
-        return
-    await post_reply(team_id, instance_id)
-    store.patch_member(team_id, instance_id, {
-        "status": "done", "last_completed": time.time(),
-    })
-    team_status.refresh_team(team_id)
-    await _broadcast_status(team_id)
-    # 并发闸：steer 的 turn 结束同样腾额度。
-    await _drain_queue(team_id)
 
 
 async def resolve_agent_mention(

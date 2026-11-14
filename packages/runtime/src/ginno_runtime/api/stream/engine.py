@@ -1236,6 +1236,14 @@ async def _stream_graph(
             # terminal branch (not the finally leg: retry/interrupt parking
             # traverse it too) and not paused_at_interrupt / TurnStopped.
             note_turn_finished(slug, session_id)
+            # AgentTeam 成员 turn 终态钩子（backlog P0-7/P1-2/P1-3）：回帖 +
+            # 状态回流 + 放行排队的**唯一触发源**。非团队成员会话内部 no-op。
+            try:
+                from ...teams.lifecycle import spawn_settled as _team_settled
+
+                _team_settled(session_id, turn_id)
+            except Exception:  # noqa: BLE001 — 钩子绝不带崩 turn
+                _log.exception("team_settle_hook_spawn_failed session=%s", session_id)
             # Empty text (tool-only turn) → the UI falls back to a generic body.
             # Mods turn.complete (claude-code-mods-design.md §5.3/§15.7):
             # detached dispatch BEFORE message.end; observe-only in P0.
@@ -1587,6 +1595,15 @@ async def _stream_graph(
         if not saw_interrupt:
             _RUNNING_TURNS.pop(session_id, None)
             _RUNNING_TURNS_AT.pop(session_id, None)
+            # AgentTeam：error / 用户 stop 收尾也走这里（显式 completed 分支
+            # 之外的那条腿）。同样触发终态钩子——否则成员出错时主会话永远
+            # 等不到回帖。与 completed 分支的重复触发由 turn_id 去重兜住。
+            try:
+                from ...teams.lifecycle import spawn_settled as _team_settled
+
+                _team_settled(session_id, turn_id)
+            except Exception:  # noqa: BLE001
+                _log.exception("team_settle_hook_spawn_failed session=%s", session_id)
             # 遗言作废（lastwords-design P2）：turn 正常/出错收尾即删——绝不
             # 把已完成的 turn 留给下次重启误恢复（parked interrupt 不在此列，
             # 那是 turn 还活着等 resume，遗言保留是对的）。
@@ -1652,6 +1669,15 @@ async def _stream_graph(
             # re-runs the node that drains, so hand it back rather than dropping
             # the user's message on the floor.
             shared.steer_restash_inflight(session_id)
+            # AgentTeam：turn 停在 interrupt → 让 blocked 实时冒泡到成员面板 /
+            # 团队行 / Dock（backlog P1-2）。**不回帖**——此刻产出是半截话，
+            # 回它等于骗主会话（P0-7 前半）。一处覆盖三种 interrupt。
+            try:
+                from ...teams.lifecycle import spawn_parked as _team_parked
+
+                _team_parked(session_id)
+            except Exception:  # noqa: BLE001
+                _log.exception("team_park_hook_spawn_failed session=%s", session_id)
         if ws_closed:
             _log.info(
                 "turn_client_gone session=%s turn=%s (no live client socket at the "
