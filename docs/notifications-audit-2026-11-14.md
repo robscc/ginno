@@ -273,18 +273,58 @@ tool.args / tool.end` 逐个喂进 `handle()`，断言 `notifyNative` **零调�
 
 ## 5. 验证深度与待核实
 
-**已实证**（读代码 + git 考古 + 运行时日志统计）：P0-1 的 switch 结构与 delta 无 `id`
-字段、P0-2 的 2254 次 `Mainthread not running`、P0-3 的 hooks 早于 `/pin` 早退执行、
-P1-1/2/3 的闸门覆盖与零调用点、P2 的文档删除与测试缺口、以及 1583 条/单会话的风暴量级。
+**已实证**（读代码 + git 考古 + 运行时日志统计 + 真实运行时前后对比）：P0-1 的 switch
+结构与 delta 无 `id` 字段、P0-2 的 2357 次 `Mainthread not running`、P0-3 的 hooks 早于
+`/pin` 早退执行、P1-1/2/3 的闸门覆盖与零调用点、P2 的文档删除与测试缺口、以及
+1583 条/单会话的风暴量级。修复效果见 §6。
 
-**未做**：没有实机复现（未跑 `pnpm dev` 观察横幅），没有改动任何代码。
+**未做**：`shell.log` 的前后百分比对比需要重建并重启桌面应用（web bundle 与 Rust 壳
+都变了），而审计与施工都发生在运行中的 Ginno 会话内，重启会终止会话本身——故 §6 改为
+量测 shell.log 通知流量的**唯一上游**（web 侧 `emit("ginno:notify")`）。合并后按 §4 的
+步骤重建重启，即可用附录脚本补上 shell.log 侧的数字。
 
 **待核实**（两项，实机 5 分钟可定）：
 
 1. macOS 上「窗口可见但失焦」时 WKWebView 的 `visibilityState` 究竟是 `visible` 还是
    `hidden`——决定 P1-4 的严重度是「该弹不弹」还是仅口径不统一；
 2. `Mainthread not running` 是否**全部**由并发风暴诱发（线程数暴涨时 notify-rust 内部
-   状态失效），还是低频下也会稳定复现——决定 P0-2 修完主线程派发后是否还需限流兜底。
+   状态失效），还是低频下也会稳定复现——决定 P0-2 的有界重试在低负载下是否只是纯保险。
+
+## 6. 修复后真实运行时复测（前后同口径）
+
+**为什么不直接读 shell.log**：`shell.log` 由 Tauri 壳写，拿到修复后的数字必须重建并重启
+桌面应用。改为直接量**壳侧通知流量的唯一上游**——web 侧 `notifyNative()` →
+`emit("ginno:notify")`；`lib.rs:566` 每收到一个 emit 就记一行 `ginno:notify kind=… id=…`，
+两者一一对应，且不受壳侧投递失败（P0-2）干扰。
+
+**真实度**：真 sidecar（源码起，`GINNO_FAKE_LLM` 脚本化模型，非 mock 前端）+ 真
+Chromium（playwright）+ 真 WebSocket + 真 `handle()` reducer + 真 `notifyPrefs` 闸门。
+仅注入两处，且都不改动被测代码：
+
+1. **Tauri 桥打桩**——浏览器里没有壳，桩接 `__TAURI_INTERNALS__.invoke` 才能捕获
+   `plugin:event|emit` 里的 `ginno:notify` 载荷；
+2. **WS 帧放大**——fake LLM 一个 turn 只吐 1 个 chunk，而真实 provider 是几百个 delta
+   帧。按 runtime 侧 `delta_coalesce` 的**真实 33ms 合帧节奏**把 `token.delta` 复制 200
+   份排期派发。
+   > 保真度坑（实测踩过）：用 `setTimeout(…, 0)` 同步错峰会把大批回调挤进同一毫秒，
+   > 旧实现的 `${sid}:${Date.now()}` 去重键随之碰撞，201 帧只漏出 3 条通知——严重
+   > 低估修复前的量级。必须按 33ms 显式排期，让 `Date.now()` 真的往前走。
+
+**注意力状态**：`document.visibilityState` 覆写为 `hidden`，模拟「用户切到别的 App、
+窗口未最小化」——这正是生产里风暴的触发条件（`isWatching` 转 false，闸门打开）。
+
+**结果（`--amp 200`，两次运行同一脚本同一参数）**：
+
+| 场景 | 修复前 `fdedcd2` | 修复后 |
+|---|---|---|
+| turn1：201 个 `token.delta` 帧（33ms 节奏，用户未在看） | **201 条** `⏸ Ginno`「等你回答」 | **0 条** |
+| turn2：1 个真 `ask_user`（`user.question` 带 tool_call id） | 1 条 | **1 条**（body「等你回答——任务已挂起」） |
+
+修复前**严格 1:1**（一帧一条），与 §1 的单会话 1583 条、与单测里「50 帧 = 50 条」互相
+印证；修复后归零，且**合法 ask_user 通知未被误杀**（正向用例通过）。
+
+> 口径说明：turn1 的 reply 类完成通知走 `replyMerge` 的 30s 合并窗，15s 测量窗内不会
+> flush，故不计入上表——这是既有设计（P1-3 待改），非本次改动引入。
 
 ## 附：复现统计的脚本口径
 

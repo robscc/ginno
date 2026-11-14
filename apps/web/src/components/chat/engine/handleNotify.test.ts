@@ -127,10 +127,23 @@ describe("handle() 的 OS 通知边界（P0-1 回归）", () => {
     }
   });
 
-  it("没有 id 的 user.question 也不弹（缺 id = 不是真挂起问题）", () => {
+  // 无 id 是退化情形（ask_tools.py:359 的 tool_call_id 理论上总由 LangChain
+  // 注入）。旧兜底 `${sid}:${Date.now()}` 让每帧拿到新钥匙 → 风暴；直接静默又
+  // 会漏掉真挂起的问题。现改为「会话+问题文本」派生的稳定键：同一问题重放仍
+  // 去重，不同问题各弹一条。
+  it("无 id 的 user.question 连发 20 次同一问题 → 只弹一条（不洪水、也不静默）", () => {
     const ctx = makeCtx();
-    for (let i = 0; i < 20; i++) handle(ctx, "s1", { event: "user.question", question: "?" });
-    expect(notifyNative).not.toHaveBeenCalled();
+    for (let i = 0; i < 20; i++) {
+      handle(ctx, "s1", { event: "user.question", question: "选哪个方案？" });
+    }
+    expect(notifyNative).toHaveBeenCalledTimes(1);
+  });
+
+  it("无 id 但问题文本不同 → 各弹一条", () => {
+    const ctx = makeCtx();
+    handle(ctx, "s1", { event: "user.question", question: "问题甲" });
+    handle(ctx, "s1", { event: "user.question", question: "问题乙" });
+    expect(notifyNative).toHaveBeenCalledTimes(2);
   });
 
   // ── ② 真挂起问题：必须照弹（防修过头）──────────────────────────────────
