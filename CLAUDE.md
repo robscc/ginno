@@ -174,17 +174,22 @@ fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它�
    ```bash
    SHA=$(git rev-parse HEAD)
    API="repos/robscc/ginno/commits/$SHA/check-runs"
-   # pending 数（在 jq 里算）
+   # ① 先确认 check 已注册：**列表为空时 pending 也是 0**，不校验就会假绿
+   gh api "$API" --jq '.total_count'          # 本仓库应为 5，0 就是还没注册，继续等
+   # ② pending 数（在 jq 里算）
    gh api "$API" --jq '[.check_runs[]|select(.status!="completed")]|length'
-   # fail 数：completed 且 conclusion 不在白名单（skipped/neutral 不算失败）
+   # ③ fail 数：completed 且 conclusion 不在白名单（skipped/neutral 不算失败）
    gh api "$API" --jq '[.check_runs[]|select(.status=="completed"
         and .conclusion!="success" and .conclusion!="skipped"
         and .conclusion!="neutral")]|length'
-   # 建 PR / 合并都走 REST，绕开 GraphQL
+   # ④ 建 PR / 合并都走 REST，绕开 GraphQL
    gh api repos/robscc/ginno/pulls -X POST -f title=… -F body=@body.md \
         -f head=<branch> -f base=main --jq .html_url
    gh api repos/robscc/ginno/pulls/<N>/merge -X PUT -f merge_method=rebase
    ```
+
+   **判绿 = `total_count == 5` ∧ pending == 0 ∧ fail == 0**，三个条件缺一不可。
+   合并后仍要回查一次 check 全清单确认（#143 就是提前合并、事后才补验）。
 
    网络抖动是常态而非异常：每个 `gh` 调用都要包重试（3-6 次、递增退避），
    单次失败**不等于** CI 红，也**不等于**可以跳过判绿直接合并。
