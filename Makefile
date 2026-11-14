@@ -249,6 +249,17 @@ runtime: web
 # when up to date) — without it `next build` fails on missing modules.
 # 内容戳：src/messages/配置/lockfile 未变且 out/ 在 → 跳过。
 web: pnpm-deps
+	@# 构建前预检自愈（2026-11-14）：src/assets/fileicons 被神秘批量删除导致
+	@# next build 解析 `@/assets/fileicons/*.svg` import 失败、整包构建挂掉。
+	@# #90 的守卫只盯 apps/web/public 且在 build 之后，救不及（build 已失败）。
+	@# 构建不应修改 git 跟踪的资产文件——发现 D/改动即 git restore，确保 build
+	@# 前 fileicons 齐全；未跟踪文件（vendor 构建产物等）不动。
+	@if ! git -C $(ROOT) diff --quiet -- apps/web/src/assets apps/web/public 2>/dev/null; then \
+	  echo "⚠️⚠️  构建前发现 src/assets|public 跟踪资产被改动/删除——git restore 自愈"; \
+	  git -C $(ROOT) status --porcelain -- apps/web/src/assets apps/web/public | head -8; \
+	  git -C $(ROOT) checkout -- apps/web/src/assets apps/web/public 2>/dev/null || true; \
+	  echo "✅ 资产已对照 HEAD 恢复（构建继续）"; \
+	fi
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(ROOT)/apps/web/src $(ROOT)/apps/web/messages $(ROOT)/apps/web/public -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
 	       cat $(ROOT)/apps/web/package.json $(ROOT)/apps/web/next.config.* $(ROOT)/apps/web/tailwind.config.* $(ROOT)/pnpm-lock.yaml 2>/dev/null) | shasum | cut -d' ' -f1); \
