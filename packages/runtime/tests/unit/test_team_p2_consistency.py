@@ -128,3 +128,42 @@ async def test_invalid_until_fails_fast(team):
     )
     assert "error" in out.lower()
     assert "finished" in out
+
+
+# --------------------------------------------------------------------------- #
+# P2-26：编制写入边角
+# --------------------------------------------------------------------------- #
+
+def test_remove_last_session_actually_persists(team):
+    """空 ids 分支必须真写盘（此前注释谎称「已写盘」但没调 _write）。"""
+    m = team["members"][0]
+    iid = m["instance_id"]
+    team_store.patch_member(team["id"], iid, {"session_ids": ["sess-dev"]})
+    out = team_store.member_remove_session(team["id"], iid, "sess-dev")
+    assert out is None  # 一条不剩 → 调用方收尾 remove_member
+    # 关键：编制里那条 session 必须真的没了（重读磁盘，不是内存快照）
+    fresh = team_store.get_member(team["id"], iid)
+    assert fresh is not None
+    assert "sess-dev" not in (fresh.get("session_ids") or []), \
+        "空 ids 分支未写盘，编制仍留已删 session（P2-26）"
+    assert not fresh.get("session_id")
+
+
+def test_update_team_rejects_unknown_leader_instance(team):
+    """leader_instance_id 只接受编制里真实存在的实例（否则路由投给幽灵）。"""
+    good = team["members"][0]["instance_id"]
+    assert team_store.update_team(team["id"], {"leader_instance_id": good})
+    assert team_store.get_team(team["id"])["leader_instance_id"] == good
+    # 非法值被忽略，保留原值
+    team_store.update_team(team["id"], {"leader_instance_id": "ai_ghost"})
+    assert team_store.get_team(team["id"])["leader_instance_id"] == good
+    # 空串合法（清空，回落 role 扫描）
+    team_store.update_team(team["id"], {"leader_instance_id": ""})
+    assert not team_store.get_team(team["id"])["leader_instance_id"]
+
+
+def test_update_team_still_patches_normal_fields(team):
+    """校验不得误伤普通字段。"""
+    team_store.update_team(team["id"], {"name": "改名", "archived": True})
+    t = team_store.get_team(team["id"])
+    assert t["name"] == "改名" and t["archived"] is True

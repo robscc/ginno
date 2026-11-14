@@ -199,14 +199,33 @@ def create_team(
 
 
 def update_team(team_id: str, patch: dict) -> dict | None:
-    """浅合并顶层字段（``members`` 请用成员专用函数，别整表覆盖）。"""
+    """浅合并顶层字段（``members`` 请用成员专用函数，别整表覆盖）。
+
+    ``leader_instance_id`` 有校验（backlog P2-26）：只接受**编制里真实存在**的
+    实例 id，或空串（清空，回落到 role 扫描）。此前可写任意值 → route.py 按它
+    路由，把无 @ 消息投给不存在的幽灵成员。
+    """
     with _LOCK:
         data = _read(team_id)
         if data is None:
             return None
         for k, v in (patch or {}).items():
-            if v is not None and k not in ("id", "created"):
-                data[k] = v
+            if v is None or k in ("id", "created"):
+                continue
+            if k == "leader_instance_id":
+                lid = str(v or "")
+                if lid and not any(
+                    m.get("instance_id") == lid for m in (data.get("members") or [])
+                ):
+                    # 非法值直接忽略（不抛：调用方多为状态回流，不该因此失败）。
+                    from ..server_shared import _log
+
+                    _log.warning(
+                        "team_leader_patch_rejected team=%s unknown_instance=%s",
+                        team_id, lid,
+                    )
+                    continue
+            data[k] = v
         data["updated"] = time.time()
         try:
             _write(team_id, data)
@@ -374,7 +393,14 @@ def member_remove_session(team_id: str, instance_id: str, session_id: str) -> di
             m["last_active"] = time.time()
             data["updated"] = time.time()
             if not ids:
-                return None  # 已写盘（session_ids 空），调用方收尾 remove_member
+                # 必须真写盘（backlog P2-26）：此前这里直接 return None 而注释
+                # 谎称「已写盘」，内存改动被丢弃 → 编制里仍留着已删的 session。
+                # 调用方随后 remove_member 只是「通常」会收尾，不能依赖它。
+                try:
+                    _write(team_id, data)
+                except OSError:
+                    pass
+                return None  # 调用方收尾 remove_member
             try:
                 _write(team_id, data)
             except OSError:
