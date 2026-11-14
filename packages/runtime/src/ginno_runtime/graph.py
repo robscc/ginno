@@ -838,6 +838,7 @@ def build_all_tools(
     binds, advertises, or can reach the excluded tools at all.
     """
     from .tools.browser_tools import build_browser_tools
+    from .tools.code_mode_tools import build_code_mode_tools
     from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
     from .tools.mod_tools import build_mod_tools
@@ -875,6 +876,9 @@ def build_all_tools(
             session_id=session_id,
         )
         + build_skill_tools(project_slug, session_id, primary_path)
+        # Code Mode repl（code-mode-design.md，原型 opt-in env GINNO_CODE_MODE=1）：
+        # 默认 [] 不影响生产；启用后 agent 可一步编排多工具、return-only。
+        + build_code_mode_tools(workspace, context_dirs=context_dirs, primary_path=primary_path)
         # [] without a session_id (workflow engine / listing endpoints): no
         # socket to answer over, and a workflow has its own `human` node.
         + build_ask_tools(project_slug, session_id)
