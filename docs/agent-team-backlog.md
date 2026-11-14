@@ -1,5 +1,32 @@
 # AgentTeam 剩余可做项 Backlog（三路调研合并·终版）
 
+> ## ✅ 完成状态（2026-11-15 更新）
+>
+> **全部 56 项已交付**：P0 7/7 ｜ P1 21/21 ｜ P2 28/28。
+> 分支 `worktree-agent-team-next`，24 个提交，**未合并 main**。
+>
+> | 交付形态 | 项 |
+> |---|---|
+> | 代码修复 + 回归测试 | P0 全部、P1 全部、P2 除下列两项外全部 |
+> | 决策文档（backlog 本就定性为评估/暂缓） | P2-6（TEAM.md 维持与 KB 隔离）、P2-7（goals 暂缓，阻塞已解除）→ `docs/agent-team-p2-6-p2-7-decisions.md` |
+>
+> **验证深度（如实标注）**：runtime 全量套件 3146+ passed exit 0；
+> 前端 tsc --noEmit 零错误 / vitest 191 passed / next build exit 0（53/53 页）；
+> ruff 全过。**新增的 packaged e2e（`test_packaged_ui_team.py`）已写+可收集但未执行**
+> ——本地 dist 未构建且 Ginno 正在运行（按 CLAUDE.md 的 zlib 故障模式此时不能重建
+> bundle），由 CI 的 ui-e2e job 真跑。真机双窗口交互未验。
+>
+> **修复过程中额外挖出 2 个不在原清单的真 bug**：
+> ① checkpoint 并发写丢失（用户消息落盘放在投递之后，被成员回帖覆盖；
+> 连跑 4 次复现 1 次，轮询 10s 仍为 0 条 → 证明是真丢失不是延迟）；
+> ② `member_remove_session` 空 ids 分支注释谎称「已写盘」但实际没调 `_write`。
+>
+> **口径更正**：原文「本机无 node」是错的——node v25.8.2 + pnpm 9.15.1 实际可用。
+> 改用真实编译后 tsc 抓出 4 个静态自查看不出的错（narrowing 不进闭包、
+> 重复导入、非法枚举值 ×2）。下方原始条目保留调研时口径，不改写。
+
+---
+
 > 日期：2026-10-14
 > 基线：main `fdedcd2`（设计文档 P0/P1/P2/P3/P3+ 账面全部上线）
 > 工作树：`.claude/worktrees/agent-team-next`（分支 `worktree-agent-team-next`）
