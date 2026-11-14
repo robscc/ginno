@@ -574,27 +574,43 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             resolve_agent_mention,
                         )
 
-                        _team_receipt = await resolve_agent_mention(
-                            session_id, plan.agent_override, user_text
-                        )
-                        if _team_receipt is not None:
-                            # P0-1：用户消息必须落 checkpoint——否则重载后
-                            # history 里没有这条，前端对账标「未送达」给重试，
-                            # 一点就是重复投递（违反 §5.3.3 投递原子性）。
+                        # P1-9：@ 多人并行投递。此前只取首个 @agent，
+                        # 「@dev @writer 各自做 X」里 writer 被静默忽略。
+                        # route.py 的数组契约早已预留，无 @ 广播分支也已证明
+                        # 多目标循环可行。非团队会话仍走原 persona 路径。
+                        _targets = plan.agent_overrides or [plan.agent_override]
+                        # 先判定是否团队主会话：非团队会话走原 persona 路径，
+                        # 那条路径自己会持久化用户消息，这里绝不能抢先写（会重复）。
+                        from ...teams import store as _tstore
+
+                        _located = _tstore.team_of_session(session_id)
+                        _is_plaza = _located is not None and _located[1] is None
+                        if _is_plaza:
+                            # P0-1：**先落盘再投递**。此前放在投递之后，成员 turn
+                            # 可能已跑完并 post_reply 写同一 checkpoint → 并发写
+                            # 丢失用户消息（实测偶发），且历史顺序也错（回帖排在
+                            # 用户消息之前）。先写保证顺序正确并避开该竞态。
                             await record_plaza_message(
                                 session_id, user_text, turn_id,
-                                routed_to=str(_team_receipt.get("instance_id") or ""),
+                                routed_to=",".join(str(a) for a in _targets),
                             )
-                            await _push_session_event(
-                                session_id,
-                                "team.delivered",
-                                {
-                                    "agent_id": plan.agent_override,
-                                    "text": user_text,
-                                    **_team_receipt,
-                                },
-                                turn_id,
-                            )
+                        _receipts: list[tuple[str, dict]] = []
+                        for _aid in _targets:
+                            _r = await resolve_agent_mention(session_id, _aid, user_text)
+                            if _r is not None:
+                                _receipts.append((_aid, _r))
+                        if _receipts:
+                            for _aid, _r in _receipts:
+                                await _push_session_event(
+                                    session_id,
+                                    "team.delivered",
+                                    {
+                                        "agent_id": _aid,
+                                        "text": user_text,
+                                        **_r,
+                                    },
+                                    turn_id,
+                                )
                             # P0-1：必须收 message.end——投递分支不起主会话
                             # turn，没有它前端 busy 恒真、composer 永久锁死。
                             # 照上方 mods 命令分支的既有范式（同样 continue

@@ -329,17 +329,25 @@ def test_ws_agent_mention_in_team_main_routes_to_delivery(client, create_session
 
     # P0-1 后半：用户那条消息必须落 checkpoint——否则重载后 history 里没有它，
     # 前端对账标「未送达」给重试，一点就是重复投递（违反 §5.3.3 原子性）。
-    hist = client.get(f"/api/sessions/{main_sid}/history").json()
-    _texts = [
-        str(m.get("text") or "") + " ".join(
-            str(b.get("text") or "") for b in (m.get("blocks") or [])
-            if isinstance(b, dict) and b.get("kind") == "text"
-        )
-        for m in (hist.get("messages") or [])
-        if (m.get("role") or m.get("type")) in ("human", "user")
-    ]
+    # 轮询等待落盘（同上：checkpoint 有竞态，裸查一次会 flaky）。
+    def _plaza_texts() -> list[str]:
+        h = client.get(f"/api/sessions/{main_sid}/history").json()
+        return [
+            str(m.get("text") or "") + " ".join(
+                str(b.get("text") or "") for b in (m.get("blocks") or [])
+                if isinstance(b, dict) and b.get("kind") == "text"
+            )
+            for m in (h.get("messages") or [])
+            if (m.get("role") or m.get("type")) in ("human", "user")
+        ]
+
+    deadline = _time.time() + 10
+    _texts = _plaza_texts()
+    while not any("把 token 刷新改一下" in t for t in _texts) and _time.time() < deadline:
+        _time.sleep(0.2)
+        _texts = _plaza_texts()
     assert any("把 token 刷新改一下" in t for t in _texts), \
-        f"广场用户消息未落盘（P0-1）：{hist.get('messages')}"
+        f"广场用户消息未落盘（P0-1）：{_texts}"
 
     # dev 的 session 最终跑出回帖（等 bg turn）。
     deadline = _time.time() + 15
@@ -494,3 +502,77 @@ async def test_lead_tools_deliver_and_assign(
     assert "修复登录页" in brief
     assert "只改登录模块" in brief
     assert "相关测试通过" in brief
+
+
+def test_ws_multi_agent_mention_delivers_to_all(client, ws_conv, patch_build_model):
+    """P1-9：「@dev @writer 各自做 X」必须**两个成员都收到**。
+
+    缺陷原状：resolver 只取首个 @agent（agent_override），ws 单目标投递，
+    第二个被静默忽略——用户以为派了两个人，其实只有一个在干。
+    """
+    _bypass_on()
+    patch_build_model(_model("handled"))
+
+    team = _create_team(client)
+    main_sid = team["main_session_id"]
+    m_dev = _add_member(client, team["id"], "dev")
+    m_writer = _add_member(client, team["id"], "writer")
+
+    with ws_conv(main_sid) as conv:
+        conv.invoke(
+            "各自盘点一下自己负责的部分",
+            mentions=[
+                {"kind": "agent", "id": "dev"},
+                {"kind": "agent", "id": "writer"},
+            ],
+        )
+        events = conv.recv_until("message.end", "error")
+
+    names = [e.get("event") for e in events]
+    assert "message.end" in names, names
+    delivered = [e for e in events if e.get("event") == "team.delivered"]
+    got_agents = {e.get("agent_id") for e in delivered}
+    assert got_agents == {"dev", "writer"}, f"多目标投递丢人（P1-9）：{got_agents}"
+    # 每个目标各自一条回执，且都成功
+    for e in delivered:
+        assert e.get("receipt") in ("delivered", "stalled"), e
+
+    # 用户只发了一条消息 → checkpoint 里只落一条（不是每个目标一条）。
+    # 轮询等待而非裸查一次：checkpoint 落盘有竞态，CI 慢机器会放大
+    # （CLAUDE.md 测试基建红线，照 test_ask_user_flow._wait_question_blocks 范式）。
+    def _plaza_count() -> int:
+        h = client.get(f"/api/sessions/{main_sid}/history").json()
+        return len([
+            m for m in (h.get("messages") or [])
+            if (m.get("role") or m.get("type")) in ("human", "user")
+            and "各自盘点" in (
+                str(m.get("text") or "") + " ".join(
+                    str(b.get("text") or "") for b in (m.get("blocks") or [])
+                    if isinstance(b, dict)
+                )
+            )
+        ])
+
+    deadline = _time.time() + 10
+    n = _plaza_count()
+    while n == 0 and _time.time() < deadline:
+        _time.sleep(0.2)
+        n = _plaza_count()
+    assert n == 1, f"广播 N 个成员应只落一条用户消息，实得 {n}"
+    assert m_dev["instance_id"] and m_writer["instance_id"]
+
+
+def test_resolver_collects_all_agent_mentions():
+    """P1-9 单元层：TurnPlan.agent_overrides 收全部 @agent 且去重保序。"""
+    from ginno_runtime.commands.resolver import TurnPlan, resolve_mentions
+
+    resolved, first = resolve_mentions(
+        [{"kind": "agent", "id": "dev"}, {"kind": "agent", "id": "writer"},
+         {"kind": "agent", "id": "dev"}],
+        "@dev @writer 干活", "default",
+    )
+    ids = [r["id"] for r in resolved if r["kind"] == "agent"]
+    assert first == "dev"
+    plan = TurnPlan(text="x", agent_override=first)
+    plan.agent_overrides = list(dict.fromkeys(ids))
+    assert plan.agent_overrides == ["dev", "writer"], plan.agent_overrides

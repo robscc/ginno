@@ -61,6 +61,9 @@ class TurnPlan:
     # 正文时 WS 层短路投递（不开本会话 turn）。[{id,label}]
     deliveries: list[dict] = field(default_factory=list)
     agent_override: str | None = None  # first resolved @agent mention
+    # 全部已解析的 @agent（backlog P1-9）：团队广场支持「@dev @writer 各自做 X」
+    # 并行投递。agent_override 保留为首个，供非团队会话的 persona 覆盖语义不变。
+    agent_overrides: list[str] = field(default_factory=list)
     files_extra: list[dict] = field(default_factory=list)  # [{"artifact_id": id}]
     skill_name: str | None = None
     # Mod-registered slash command (design §5.3 command.run): ``(name, tail)``.
@@ -371,6 +374,10 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
 
     # 4) Assemble the plan.
     plan = TurnPlan(text=new_text, agent_override=agent_override, skill_name=skill_name)
+    # 全部 @agent 目标（P1-9）：去重保序，团队广场据此并行投递。
+    plan.agent_overrides = list(dict.fromkeys(
+        str(r["id"]) for r in resolved if r["kind"] == "agent" and r.get("id")
+    ))
     for r in resolved:
         kind = r["kind"]
         if kind == "agent":
