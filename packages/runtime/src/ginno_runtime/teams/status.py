@@ -70,11 +70,13 @@ def _is_live_turn(session_id: str) -> bool:
 
 
 def member_status(
-    slug: str, session_id: str, member: dict, client: str = "main"
+    slug: str, session_id: str, member: dict, client: str | None = "main"
 ) -> tuple[str, str]:
     """算一个成员实例的 ``(语义态, 展示文本)``。
 
     ``client`` 是 seen 的键（§3.3：主窗口与 pin 浮窗各自记，徽标可以不同）。
+    ``client=None`` = **规范客户端（主窗口）**，供落盘用（backlog P1-7：
+    按调用方客户端落盘会让 pin 端 seen 抹掉 main 端未读，Dock 徽标失真）。
     """
     if not session_id:
         return "unknown", "无 session"
@@ -124,7 +126,13 @@ def member_status(
     #    跑过 turn 的成员必须读作 idle，否则每个新成员一上来就顶着「完成待
     #    查看」的未读徽标，needs_action 恒真，上卷信号就废了。
     completed = float(member.get("last_completed") or 0)
-    seen_at = float((member.get("seen") or {}).get(client) or 0)
+    seen_map = member.get("seen") or {}
+    # 落盘视角（backlog P1-7）：client=None 表示**规范客户端 = 主窗口**。
+    # Dock 徽标属于桌面主窗口，必须按 main 的 seen 判定；此前按调用方传入的
+    # client 落盘，pin 端一查看就把 main 端的未读抹掉 → 未读信号丢失。
+    # 注意不能用「任一客户端未读」：seen map 里缺席的客户端无法枚举，
+    # 且那会让徽标永远亮着。按客户端区分的行由 member_row 读取时计算。
+    seen_at = float(seen_map.get(client or "main") or 0)
     if completed and seen_at < completed:
         return "done", _done_detail(member)
 
@@ -167,11 +175,16 @@ def mark_seen(team_id: str, instance_id: str, client: str = "main") -> dict | No
     return store.patch_member(team_id, instance_id, {"seen": {client: time.time()}})
 
 
-def refresh_team(team_id: str, client: str = "main") -> dict | None:
+def refresh_team(team_id: str, client: str | None = None) -> dict | None:
     """重算全部成员语义态并落盘，返回更新后的团队。
 
     落盘是为了让「重启后仍能显示 done 未读」成立（§5.8）——纯内存态一重启
     就没了，收件箱语义会丢。
+
+    **落盘一律用主窗口视角**（``client=None`` → main，backlog P1-7）：此前
+    按调用方传入的 client 落盘，pin 端一 seen 就把 main 端的未读抹掉，而
+    Dock 徽标读的是落盘态 → 未读信号丢失。按客户端区分的行由 ``member_row``
+    在**读取时**计算，不落盘。
     """
     team = store.get_team(team_id)
     if team is None:
@@ -179,7 +192,7 @@ def refresh_team(team_id: str, client: str = "main") -> dict | None:
     slug = str(team.get("project_slug") or "default")
     changed = False
     for m in team.get("members") or []:
-        status, detail = member_status(slug, m.get("session_id") or "", m, client)
+        status, detail = member_status(slug, m.get("session_id") or "", m, None)
         if m.get("status") != status or m.get("status_detail") != detail:
             store.patch_member(team_id, m["instance_id"], {
                 "status": status,

@@ -179,3 +179,44 @@ async def test_post_reply_ensures_main_session(team, monkeypatch):
     # 成员会话也没有产出 → 走「无文本产出」兜底文案，但仍应尝试写主会话
     await team_deliver.post_reply(team["id"], iid, text="成员产出")
     assert "main-sess" in ensured, "主会话未兜底加载 → 回帖静默丢失（P1-6）"
+
+
+# --------------------------------------------------------------------------- #
+# P1-7：seen / 徽标漂移（落盘必须客户端中立）
+# --------------------------------------------------------------------------- #
+
+def test_persisted_status_is_client_neutral(team):
+    """pin 端 seen 不得抹掉 main 端的未读（Dock 徽标读落盘态）。
+
+    缺陷原状：refresh_team(client) 按该客户端算 done/idle 并落盘 →
+    pin 一查看，落盘变 idle，main 端未读在 Dock 上消失。
+    """
+    from ginno_runtime.teams import status as team_status
+
+    m = team["members"][0]
+    iid = m["instance_id"]
+    team_store.patch_member(team["id"], iid, {"last_completed": 2000.0})
+    # 只有 pin 看过（seen=3000 > completed），main 从未看过
+    team_store.patch_member(team["id"], iid, {"seen": {"pin": 3000.0}})
+
+    team_status.refresh_team(team["id"], "pin")
+    persisted = team_store.get_member(team["id"], iid)
+    assert persisted["status"] == "done", "落盘被 pin 的 seen 抹成 idle（P1-7）"
+
+    # 按客户端读取时各自正确：pin 已读 idle，main 未读 done
+    assert team_status.member_status("default", m["session_id"], persisted, "pin")[0] == "idle"
+    assert team_status.member_status("default", m["session_id"], persisted, "main")[0] == "done"
+    # 中立判据（落盘用）= 任一未读即 done
+    assert team_status.member_status("default", m["session_id"], persisted, None)[0] == "done"
+
+
+def test_all_clients_seen_persists_idle(team):
+    """两端都看过 → 落盘 idle（中立判据不能永远报未读）。"""
+    from ginno_runtime.teams import status as team_status
+
+    m = team["members"][0]
+    team_store.patch_member(team["id"], m["instance_id"], {
+        "last_completed": 2000.0, "seen": {"pin": 3000.0, "main": 3000.0},
+    })
+    team_status.refresh_team(team["id"])
+    assert team_store.get_member(team["id"], m["instance_id"])["status"] == "idle"
