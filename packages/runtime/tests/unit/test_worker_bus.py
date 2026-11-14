@@ -580,3 +580,65 @@ async def test_digest_emits_worker_progress_not_resumed(
     hits = [e for e in pushed_events if e["sid"] == "SUB4"]
     assert len(hits) == 1 and hits[0]["event"] == "worker.progress"
     assert hits[0]["payload"]["target_title"] == "长任务"
+
+
+# --------------------------------------------------------------------------- #
+# P2-2：team-member 进入可派活白名单（agent→agent 协作的现成底座）
+# --------------------------------------------------------------------------- #
+
+def test_team_member_is_assignable_and_task_typed():
+    """团队成员实例可被派活/订阅，且有终态语义（watch terminal 合法）。
+
+    此前 ASSIGNABLE_TYPES 不含 team-member → agent→agent 协作要另建邮箱；
+    放开后派活/订阅/回执管道直接复用（backlog P2-2，成本 L→M）。
+    """
+    from ginno_runtime.worker_bus import registry
+
+    assert "team-member" in registry.ASSIGNABLE_TYPES
+    assert "team-member" in registry.TASK_TYPES
+    meta = {"id": "TM1", "type": "team-member", "title": "dev 实例"}
+    assert registry._assignable(meta) is True
+    # task-typed 不受 main 的「接活」开关影响
+    assert registry._assignable({**meta, "worker": False}) is True
+
+
+def test_team_member_resolves_and_lists():
+    """花名册与目标解析都认 team-member。"""
+    _put_meta(SLUG, {
+        "id": "TM2", "type": "team-member", "title": "writer 实例",
+        "created": time.time(), "updated": time.time(),
+    })
+    _, meta, err = worker_bus.resolve_target("TM2")
+    assert not err and meta is not None
+    rows = {r["session_id"]: r for r in worker_bus.list_worker_rows(SLUG)}
+    assert "TM2" in rows
+    assert rows["TM2"]["type"] == "team-member"
+
+
+def test_channel_still_refused():
+    """放开 team-member 不得顺带放开 channel（IM 实时对话面，派活语义不通）。"""
+    from ginno_runtime.worker_bus import registry
+
+    assert "channel" not in registry.ASSIGNABLE_TYPES
+    assert registry._assignable({"id": "C1", "type": "channel"}) is False
+
+
+def test_worker_bus_does_not_import_teams():
+    """独立性纪律：放开白名单只认类型字符串，源码不得 import teams/*。"""
+    import re
+    from pathlib import Path
+
+    import ginno_runtime.worker_bus as wb
+
+    root = Path(wb.__file__).parent
+    offenders = []
+    for f in root.glob("*.py"):
+        src = f.read_text(encoding="utf-8")
+        # 只看真实 import 语句，注释/文档里提到 teams 不算
+        for line in src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if re.match(r"^(from|import)\s+.*\bteams\b", stripped):
+                offenders.append(f"{f.name}: {stripped}")
+    assert not offenders, f"worker_bus 不应 import teams/*：{offenders}"

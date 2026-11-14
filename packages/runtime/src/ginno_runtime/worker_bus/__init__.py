@@ -1,6 +1,8 @@
 """Worker protocol bus（docs/worker-protocol-design.md）——跨 session 的
-派活与订阅协议，独立于 AgentTeam（不 import ``teams/*``、不依赖
-TEAM.md/成员实例）。
+派活与订阅协议，**实现上**独立于 AgentTeam（不 import ``teams/*``、不依赖
+TEAM.md/成员实例编制）。自 backlog P2-2 起 ``team-member`` 进入可派活白名单
+——只认 session 类型字符串，故独立性不变；团队成员由此获得 agent→agent
+协作能力，无需另建邮箱。权限纪律不变：派活走工具层 ask，投递≠批准。
 
 复用的全部是**引擎级**原语：
 

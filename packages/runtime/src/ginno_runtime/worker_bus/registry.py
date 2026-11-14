@@ -23,11 +23,19 @@ from ..session_meta import _find_meta, _session_meta_list
 # 场景后确认：用法就是「会话即员工」——wake/steer 注入 main 的机制本就存在
 # （子代理回传/渠道消息同通道），缺的只是闸门）。channel 仍拒收：那是用户
 # 在 IM 端的实时对话面，往里派活语义不通。
-ASSIGNABLE_TYPES = frozenset({"subagent", "delegation", "scheduled", "main"})
+#
+# **team-member 已放开**（backlog P2-2）：团队成员实例本就是「常驻同事」，
+# 让它可被派活/订阅即得到 agent→agent 协作，无需新建邮箱——派活/订阅/回执
+# 管道这里全有。注意本模块仍**不 import teams/***：只认类型字符串，
+# 不依赖 TEAM.md/成员实例编制，独立性不变。
+# 权限纪律不变：派活走工具层 ask 权限，「投递≠批准」（设计 §5.7）。
+ASSIGNABLE_TYPES = frozenset({"subagent", "delegation", "scheduled", "main", "team-member"})
 
 # 有终态语义的 task-typed 会话（watch want=terminal 的合法目标；main 无终态，
-# 只能 digest）。subagent/delegation/scheduled 有明确 settle 时刻。
-TASK_TYPES = frozenset({"subagent", "delegation", "scheduled"})
+# 只能 digest）。subagent/delegation/scheduled 有明确 settle 时刻；
+# team-member 的 settle 由 teams.lifecycle 钩子在 engine/resume 真实终态点写
+# （backlog P0-7/P1-2 已补齐），故同样有终态语义。
+TASK_TYPES = frozenset({"subagent", "delegation", "scheduled", "team-member"})
 
 
 def _mtype(meta: dict) -> str:

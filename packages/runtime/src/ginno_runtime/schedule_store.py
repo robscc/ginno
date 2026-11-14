@@ -34,7 +34,10 @@ _FILE_PREFIX = "runs-"
 # 间隔下限（§10 决议 2）：5 分钟，保存时与触发时双侧校验。
 MIN_INTERVAL_MIN = 5
 
-TARGET_TYPES = ("prompt", "workflow")
+# team 目标（backlog P2-1）：定时把消息投给团队成员（缺省领队），让
+# 「每天 9 点团队站会 / 每晚巡检 CI」成立。prompt 目标走影子会话 headless，
+# **绕过团队路由**，所以不能拿它冒充团队定时。
+TARGET_TYPES = ("prompt", "workflow", "team")
 SCHEDULE_KINDS = ("interval", "daily", "weekly", "once")
 RUN_STATUSES = ("running", "ok", "error", "missed", "skipped_overlap")
 
@@ -196,12 +199,17 @@ def validate_task(data: dict) -> list[str]:
         errs.append(t("Task name cannot be empty", "任务名称不能为空"))
     target = data.get("target")
     if not isinstance(target, dict) or target.get("type") not in TARGET_TYPES:
-        errs.append(t("target.type must be prompt or workflow", "target.type 必须是 prompt 或 workflow"))
+        errs.append(t("target.type must be prompt, workflow or team", "target.type 必须是 prompt、workflow 或 team"))
     else:
         if target["type"] == "prompt" and not str(target.get("prompt") or "").strip():
             errs.append(t("prompt target requires a prompt", "prompt 目标必须填写提示词"))
         if target["type"] == "workflow" and not str(target.get("workflow_id") or "").strip():
             errs.append(t("workflow target requires a workflow recipe", "workflow 目标必须选择配方"))
+        if target["type"] == "team":
+            if not str(target.get("team_id") or "").strip():
+                errs.append(t("team target requires a team", "team 目标必须选择团队"))
+            if not str(target.get("prompt") or "").strip():
+                errs.append(t("team target requires a message to deliver", "team 目标必须填写要投递的消息"))
     # 任务级模型覆盖（仅 prompt 目标生效）：null/缺省 = 跟随 agent/全局默认
     model = data.get("model")
     if model is not None and (

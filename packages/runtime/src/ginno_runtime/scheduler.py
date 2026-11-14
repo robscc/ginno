@@ -590,6 +590,8 @@ async def _execute_run(task: dict, row: dict) -> None:
             ttype = (task.get("target") or {}).get("type")
             if ttype == "workflow":
                 final = await _run_workflow_target(task, row)
+            elif ttype == "team":
+                final = await _run_team_target(task, row)
             else:
                 final = await _run_prompt_target(task, row)
         except asyncio.CancelledError:
@@ -713,6 +715,69 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         return {"ok": False, "error": err, "text": ""}
     inp, out = _usage_tokens(session_id=session_id, since=row["started_at"])
     last = await _last_assistant_text(session_id, slug)
+    return {"ok": True, "error": None, "text": last, "input_tokens": inp, "output_tokens": out}
+
+
+async def _run_team_target(task: dict, row: dict) -> dict:
+    """team 目标（backlog P2-1）：把消息投给团队成员并等它跑完。
+
+    与 prompt 目标的本质区别：prompt 走**影子会话 headless**，绕过团队路由；
+    team 目标走 ``teams.deliver``，因此状态回流 / 回帖 / 并发闸 / 排队全部
+    复用团队既有机制（依赖 P1-2 生命周期钩子已补齐）。
+
+    目标成员：``target.instance_id`` 指定；缺省投领队；无领队则投第一个成员。
+    等待用 ``teams.wait`` 原语（默认 timeout 由任务配置，缺省 30 分钟）。
+    """
+    from .teams import deliver as _team_deliver
+    from .teams import store as _team_store
+    from .teams import wait as _team_wait
+
+    target = task.get("target") or {}
+    team_id = str(target.get("team_id") or "")
+    text = str(target.get("prompt") or "").strip()
+    team = _team_store.get_team(team_id)
+    if team is None:
+        return {"ok": False, "error": t("Unknown team", "未知团队"), "text": ""}
+    members = team.get("members") or []
+    if not members:
+        return {"ok": False, "error": t("Team has no members", "团队没有成员"), "text": ""}
+
+    iid = str(target.get("instance_id") or "")
+    if not iid:
+        leader = str(team.get("leader_instance_id") or "")
+        iid = leader or next(
+            (str(m["instance_id"]) for m in members if m.get("role") == "leader"),
+            str(members[0].get("instance_id") or ""),
+        )
+    member = _team_store.get_member(team_id, iid)
+    if member is None:
+        return {"ok": False, "error": t("Unknown member instance", "未知成员实例"), "text": ""}
+
+    receipt = await _team_deliver.deliver(team_id, iid, text)
+    if not receipt.get("ok") and receipt.get("receipt") == "failed":
+        return {
+            "ok": False,
+            "error": str(receipt.get("error") or receipt.get("reason") or "delivery failed"),
+            "text": "",
+        }
+
+    # 等成员安定（blocked/unknown/error/done/idle 都算终态）。超时不算失败
+    # ——投递已发生（纪律 2：stalled ≠ 未发送），如实记为部分完成。
+    timeout_s = int(target.get("timeout_s") or 1800)
+    sid = str(member.get("session_id") or "")
+    waited = await _team_wait.wait_for_members(
+        sid, team_id, ids=[iid], timeout_s=timeout_s,
+    )
+    partial = '"partial": true' in waited or '"partial":true' in waited
+    slug = str(team.get("project_slug") or "default")
+    last = await _last_assistant_text(sid, slug)
+    inp, out = _usage_tokens(session_id=sid, since=row["started_at"])
+    if partial:
+        return {
+            "ok": True, "error": None,
+            "text": last or t("(member still running at timeout)", "（超时时成员仍在运行）"),
+            "input_tokens": inp, "output_tokens": out,
+        }
     return {"ok": True, "error": None, "text": last, "input_tokens": inp, "output_tokens": out}
 
 
