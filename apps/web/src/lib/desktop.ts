@@ -10,6 +10,13 @@
  */
 
 import { emit } from "@tauri-apps/api/event";
+import {
+  applyPrivacy,
+  notifyPrefs,
+  osGateOpen,
+  soundFor,
+  type NotifyKind,
+} from "./notifyPrefs";
 
 export function isDesktop(): boolean {
   if (typeof window === "undefined") return false;
@@ -26,15 +33,27 @@ export function isDesktop(): boolean {
 export interface NativeNotification {
   /** Click target kind: focus a chat session, open the Workflow panel, open a
    *  scheduled-run replay, open the background-tasks page, or "test" (Settings
-   *  → Notifications test button) which only refocuses. */
+   *  → Notifications test button) which only refocuses.
+   *
+   *  ⚠️ 这是**点击目标**，不是通知分类。两者正交：`kind:"session"` 的通知可以
+   *  属于 reply / askUser / failure 任一分类。历史上只有这一个 `kind` 字段，
+   *  导致 NoticeHost 的失焦兜底被迫借用 `kind:"test"`（点击只能 refocus）来
+   *  发一条 failure 类通知。分类走下面的 `notifyKind`。 */
   kind: "session" | "workflow-run" | "schedule-run" | "bg-task" | "test";
+  /** 通知分类（闸门轴）——**必填**，让 TS 逼每个调用点声明自己属于哪一类，
+   *  从而不可能漏过 enabled / kinds / DnD / privacy 判定。
+   *  `"test"` 是设置页测试按钮专用，刻意绕过偏好闸门（见 osGateOpen）。 */
+  notifyKind: NotifyKind | "test";
   /** Session id (kind=session), run id (kind=workflow-run), scheduled run id
    *  (kind=schedule-run), or task id (kind=bg-task). */
   id: string;
   title: string;
+  /** 正文。`privacy: "titleOnly"` 时由 notifyNative 统一抹空——调用点不需要
+   *  自己裁（此前只有 4/7 个站点裁了，其余把全文塞进横幅）。 */
   body: string;
-  /** macOS system sound name ("Glass", "Ping", …); omitted = silent. The
-   *  shell validates against its own allow-list. */
+  /** macOS system sound name ("Glass", "Ping", …); omitted = derive from
+   *  `notifyKind` + prefs (failure → Basso, 其余 → 用户选的提示音, sound 关 →
+   *  静音). The shell validates against its own allow-list. */
   sound?: string;
 }
 
@@ -67,20 +86,46 @@ export function isNotifyOwnerWindow(): boolean {
 }
 
 /**
- * Ask the Tauri shell to fire a native macOS notification.
+ * Fire a native macOS notification via the Tauri shell.
+ *
+ * **所有 OS 通知的唯一出口**，因此偏好闸门装在这里而不是散在各调用点。修复前
+ * 7 个发通知的站点各自拼闸门，覆盖极不均匀（审计文档 P1-1 的矩阵）：
+ * `handle.ts` 的 lastwords 与 `NoticeHost` 的失焦兜底**完全不过**总开关/分类/
+ * 勿扰/隐私，`store/notifications.ts` 的三个函数只过总开关——于是「关掉桌面
+ * 提醒」关不干净、「开了勿扰」照样弹、「仅标题」隐私对一半站点无效。
+ *
+ * 出口统一判定：桌面环境 → 通知所有者窗口 → osGateOpen(notifyKind)
+ * （总开关 ∧ 分类开关 ∧ 不在勿扰窗）→ 隐私裁正文 → 推导提示音 → emit。
+ * 调用点自己的 `shouldNotify` 与此幂等重叠，是有意的双保险。
  *
  * Returns true when the event was handed to the shell. Returns false when not
- * running in Tauri, when this window is not the notification owner (see
- * `isNotifyOwnerWindow`), or when the bridge is unavailable (e.g. the
- * splash-page location.replace path) — callers should fall back to the HTML5
- * Notification API, which covers plain-browser dev (it is a no-op inside
- * WKWebView anyway).
+ * running in Tauri, when this window is not the notification owner, when the
+ * prefs gate is closed, or when the bridge is unavailable (e.g. the splash-page
+ * location.replace path) — callers may fall back to the HTML5 Notification API,
+ * which covers plain-browser dev (it is a no-op inside WKWebView anyway).
+ *
+ * ⚠️ 返回 false 现在**同时**表示「被偏好闸门拦下」，不再只是「桥不可用」。
+ * 浏览器兜底分支因此会在通知被用户关掉时仍然弹 HTML5 通知——各调用点的兜底
+ * 需要自己再判一次 osGateOpen，见 store/notifications.ts。
  */
 export async function notifyNative(n: NativeNotification): Promise<boolean> {
   if (!isDesktop()) return false;
   if (!isNotifyOwnerWindow()) return false;
+  if (!osGateOpen(n.notifyKind)) return false;
+  const np = notifyPrefs();
+  const body = n.notifyKind === "test" ? n.body : applyPrivacy(n.body, np);
+  const sound =
+    n.sound ?? (n.notifyKind === "test" ? undefined : soundFor(n.notifyKind));
   try {
-    await emit("ginno:notify", n);
+    await emit("ginno:notify", {
+      kind: n.kind,
+      // 壳侧只用于日志（notify.rs shell_log），serde 忽略未知字段，旧壳兼容
+      notify_kind: n.notifyKind,
+      id: n.id,
+      title: n.title,
+      body,
+      sound,
+    });
     return true;
   } catch {
     return false;

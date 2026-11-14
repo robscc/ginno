@@ -4,7 +4,7 @@
 
 import { getWorkflowRun } from "@/lib/runtime";
 import { notifyNative } from "@/lib/desktop";
-import { notifyPrefs } from "@/lib/notifyPrefs";
+import { applyPrivacy, osGateOpen } from "@/lib/notifyPrefs";
 import { pushNotice, type NoticeLevel } from "@/lib/notice";
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
@@ -27,22 +27,20 @@ import { reconcileTurnFromHistory } from "./connect";
 import { flushSteerQueue, recallSteers, settleRecalled } from "./steer";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
-import { ReplyMergeWindow, privacyBody, replyRateGate, shouldNotify, soundFor, type MergeItem } from "@/lib/notifyHub";
+import { ReplyMergeWindow, isSessionAttentive, replyRateGate, shouldNotify, type MergeItem } from "@/lib/notifyHub";
 import { decideTurnAdoption, mismatchReportBudget } from "@/lib/streamTurnGuard";
 
-// ── OS 通知 V2（docs/os-notifications-v2-design.md，已拍板）──────────────────
-// reply 类完成通知经 30s 同会话合并窗口（5 步 workflow 只弹一条）；
-// askUser/failure/workflow 终态即时弹（等人/出事绝不合并）。所有通知过
-// shouldNotify 门（总开关 ∧ 分类型开关 ∧ watching ∧ DnD）。
+// ── OS 通知（docs/notifications-audit-2026-11-14.md）─────────────────────────
+// 偏好闸门（总开关 ∧ 分类型 ∧ 勿扰 ∧ 隐私 ∧ 提示音）统一装在 desktop.ts 的
+// notifyNative 出口里；本文件只负责两件事：判「用户是否正盯着」（isWatching）
+// 与「同类通知怎么节流」（reply 走 30s 合并窗 + 60s 全局冷却，askUser/failure
+// 即时弹不合并——等人/出事绝不节流）。
 
-/** watching 三条件（可见 ∧ 工作区路由 ∧ 正盯该会话）——socket 回调闭包会
- *  过期，只读 ref/即时值（与 message.end 的旧判定同一口径，抽公共）。 */
+/** watching 三条件（应用可见 ∧ 工作区路由 ∧ 正盯该会话）——socket 回调闭包会
+ *  过期，只读 ref/即时值。判据本体在 notifyHub.isSessionAttentive，与其余 6 个
+ *  发通知的站点共用同一口径（P1-4）。 */
 function isWatching(ctx: EngineCtx, sid: string): boolean {
-  return (
-    document.visibilityState === "visible" &&
-    window.location.pathname === "/" &&
-    ctx.activeSidRef.current === sid
-  );
+  return isSessionAttentive(ctx.activeSidRef.current, sid);
 }
 
 /** 已通知过的 ask_user 问题 id（tool_call id，全局唯一）——重连重放不二次弹。 */
@@ -126,14 +124,13 @@ function maybeNotifyAskUser(
   _pruneNotifiedQuestionIds();
   _saveNotifiedQuestionIds();
   if (!shouldNotify("askUser", isWatching(ctx, sid))) return;
-  const np = notifyPrefs();
   const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
   void notifyNative({
     kind: "session",
+    notifyKind: "askUser",
     id: sid,
     title: `⏸ ${sTitle}`,
-    body: privacyBody(np, ctx.i18nRef.current.tr("notify.askPending")),
-    sound: soundFor("askUser"),
+    body: ctx.i18nRef.current.tr("notify.askPending"),
   });
 }
 
@@ -141,19 +138,32 @@ function maybeNotifyAskUser(
  *  i18nRef 延迟求值——ctx 长存所以安全）。 */
 interface ReplyItem extends MergeItem {
   trN: (n: number) => string;
+  /** flush 时**重新**判定「用户是否已经在看」。push 到 flush 隔着 30s，期间
+   *  用户完全可能已经切进这个会话——那时再弹就是纯打扰（P1-3）。
+   *  闭包捕获 ctx，与 trN 同理。 */
+  attentive: () => boolean;
 }
 
-/** reply 合并窗口：flush 时一条/多条分别成文并发送（含 HTML5 兜底）。 */
+/** reply 类通知的**统一**节流出口（P1-3）。
+ *
+ *  修复前是两套互不相干的机制：`message.end` 走 30s 按会话合并窗、`linked.done`
+ *  走 60s 全局冷却——而多会话并发完成时真正需要的是全局上限，偏偏主路径
+ *  （message.end）没有。2026-11-10 为治刷屏加的 KindRateGate 只接到了
+ *  linked.done 一路。现在两路都 push 进这同一个窗口，flush 时统一过全局冷却。
+ *
+ *  flush 时才判注意力与冷却（而非 push 时）：30s 窗口内用户的注意力会变，
+ *  用过期判定决定现在要不要打扰是错的。 */
 const replyMerge = new ReplyMergeWindow<ReplyItem>({
   onFlush: (sid, items) => {
     if (items.length === 0) return;
-    const np = notifyPrefs();
+    // 用户已经切进这个会话了 → 不弹（他正在看）
+    if (items[0].attentive()) return;
+    // 60s 全局冷却：窗口内被吞掉的条数由下一次放行时带出（+N）
+    const gate = replyRateGate.hit("reply");
+    if (!gate.ok) return;
     const single = items.length === 1;
-    const title = items[0].title;
-    const rawBody = single
-      ? items[0].body
-      : items[0].trN(items.length);
-    const body = privacyBody(np, rawBody);
+    const title = gate.suppressed > 0 ? `${items[0].title} (+${gate.suppressed})` : items[0].title;
+    const body = single ? items[0].body : items[0].trN(items.length);
     const focusSession = () => {
       window.focus();
       // stable setter 语义见 desktop fallback —— 通过 CustomEvent 让
@@ -162,12 +172,16 @@ const replyMerge = new ReplyMergeWindow<ReplyItem>({
     };
     void notifyNative({
       kind: "session",
+      notifyKind: "reply",
       id: sid,
       title,
       body,
-      sound: soundFor("reply"),
     }).then((sent) => {
       if (sent) return;
+      // sent=false 现在也包含「被偏好闸门拦下」（notifyNative 是唯一出口）。
+      // 浏览器兜底必须自己再判一次，否则用户关掉了桌面提醒、dev 浏览器里
+      // 反而照样弹 HTML5 通知。
+      if (!osGateOpen("reply")) return;
       if (typeof Notification === "undefined") return;
       if (Notification.permission === "default") {
         try {
@@ -179,7 +193,7 @@ const replyMerge = new ReplyMergeWindow<ReplyItem>({
       }
       if (Notification.permission !== "granted") return;
       try {
-        const n = new Notification(title, { body });
+        const n = new Notification(title, { body: applyPrivacy(body) });
         n.onclick = () => {
           focusSession();
           n.close();
@@ -190,6 +204,15 @@ const replyMerge = new ReplyMergeWindow<ReplyItem>({
     });
   },
 });
+
+/** 丢弃某个会话待发的 reply 合并通知（用户已经切进去了，不必再弹）。
+ *
+ *  `ReplyMergeWindow.cancel` 的注释从 V2 起就写着 "e.g. user switched to the
+ *  session"，但直到本次修复**全仓库零调用点**——API 造好了没接线。由
+ *  useChatStreamEngine 在 activeSessionId 变更的 effect 里调用。 */
+export function cancelPendingReplyNotice(sid: string | null | undefined): void {
+  if (sid) replyMerge.cancel(sid);
+}
 
 
 // Delivery confirmed (the server started or finished the turn) → clear the
@@ -805,39 +828,36 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     }
     case "linked.done": {
       // 订阅的会话 turn 完成（2026-11-06 闭环）：📡 前缀 OS 通知 + 点击直达
-      // 目标会话。正盯着自己会话时不弹（chip 徽标可见）；origin=schedule/
-      // subagent 的完成已有专属通道，服务端已过滤、此处不再判。
-      {
-        const targetSid = typeof ev.session_id === "string" ? ev.session_id : "";
-        // 60s 跨会话冷却（2026-11-10 治理刷屏）：窗口内后续 turn 完成不弹，
-        // 下一条放行时带「+N」。worker 语义修正：worker_status=working/
-        // waiting 说明它只是完成了一段（还在干活/等下一段），文案不再
-        // 说「回复完成」。
-        const gate = replyRateGate.hit("reply");
-        if (targetSid && gate.ok && shouldNotify("reply", isWatching(ctx, sid))) {
-          const np = notifyPrefs();
-          const title =
-            ctx.g.sessions.find((x) => x.id === targetSid)?.title?.trim() || "…";
-          const raw = typeof ev.text === "string" ? ev.text.trim() : "";
-          const wst = typeof ev.worker_status === "string" ? ev.worker_status : "";
-          let body: string;
-          if (wst === "working") {
-            body = ctx.i18nRef.current.tr("notify.linkedTurnOngoing");
-          } else if (wst === "waiting") {
-            body = ctx.i18nRef.current.tr("notify.linkedTurnWaiting");
-          } else {
-            body = raw || ctx.i18nRef.current.tr("notify.replyCompleted");
-          }
-          const suffix = gate.suppressed > 0 ? ` (+${gate.suppressed})` : "";
-          void notifyNative({
-            kind: "session",
-            id: targetSid,
-            title: `📡 ${title}${suffix}`,
-            body: privacyBody(np, body),
-            sound: soundFor("reply"),
-          });
-        }
-      }
+      // 目标会话。origin=schedule/subagent 的完成已有专属通道，服务端已过滤
+      // （engine.py:1303 只放行 interactive/deliver），此处不再判。
+      //
+      // P1-3：改走与 message.end **同一个** replyMerge 窗口。修复前这一路单独
+      // 用 60s 全局冷却、message.end 单独用 30s 按会话合并，两套机制互不相干
+      // ——多会话并发完成时真正需要的全局上限偏偏不在主路径上。现在冷却统一
+      // 在 flush 时施加，两路共享同一个计数（+N）。
+      const targetSid = typeof ev.session_id === "string" ? ev.session_id : "";
+      if (!targetSid) break;
+      if (!shouldNotify("reply", isWatching(ctx, sid))) break;
+      const title = ctx.g.sessions.find((x) => x.id === targetSid)?.title?.trim() || "…";
+      const raw = typeof ev.text === "string" ? ev.text.trim() : "";
+      // worker 语义修正：worker_status=working/waiting 说明它只是完成了一段
+      // （还在干活/等下一段），文案不再说「回复完成」。
+      const wst = typeof ev.worker_status === "string" ? ev.worker_status : "";
+      const body =
+        wst === "working"
+          ? ctx.i18nRef.current.tr("notify.linkedTurnOngoing")
+          : wst === "waiting"
+            ? ctx.i18nRef.current.tr("notify.linkedTurnWaiting")
+            : raw || ctx.i18nRef.current.tr("notify.replyCompleted");
+      replyMerge.push(targetSid, {
+        title: `📡 ${title}`,
+        body,
+        trN: (n) => ctx.i18nRef.current.tr("notify.nCompleted", { n }),
+        // 保持既有语义：正盯着**自己**的会话时不弹（📡 chip 徽标已可见）。
+        // 判的是本会话 sid，不是 targetSid——flush 时复检，30s 内切走/切回
+        // 都以当下为准。
+        attentive: () => isWatching(ctx, sid),
+      });
       break;
     }
     case "steer.recalled": {
@@ -1064,14 +1084,17 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
             actionMeta: { kind: "session", id: lpSid },
           },
         );
-        // 同步发 OS 通知（待人确认的恢复属于高优先级，不走冷却门）。
-        const np = notifyPrefs();
+        // 同步发 OS 通知。待人确认的恢复属于高优先级：不走 reply 的合并窗与
+        // 60s 冷却门（那是给「完成」类刷屏用的），直接即时弹。
+        // P1-5：但仍必须过偏好闸门——修复前这一路连总开关都不看，用户关掉
+        // 「启用桌面提醒」它照样弹。归类 askUser（等人确认），闸门由
+        // notifyNative 出口统一施加。
         void notifyNative({
           kind: "session",
+          notifyKind: "askUser",
           id: lpSid,
           title: `⚡ ${tr("notice.lastwordsPendingTitle")}`,
-          body: privacyBody(np, tr("notice.lastwordsPending", { tools, elapsed: mm })),
-          sound: soundFor("reply"),
+          body: tr("notice.lastwordsPending", { tools, elapsed: mm }),
         });
       }
       break;
@@ -1604,6 +1627,8 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
             title,
             body,
             trN: (n) => ctx.i18nRef.current.tr("notify.nCompleted", { n }),
+            // flush 时（30s 后）复检：用户这期间切进来了就不弹（P1-3）
+            attentive: () => isWatching(ctx, sid),
           });
         }
       }
@@ -1684,19 +1709,19 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 在错误卡上，别让用户错过）；正盯着则上报已读压掉服务端的 last_finished。
       if (ctx.g.watchingSession(sid)) ctx.g.clearSessionUnread(sid);
       else ctx.g.markSessionUnread(sid);
-      // V2：失败即时通知（不合并）——⚠️ 前缀 + Basso 故障音，一眼分清出事/干完。
+      // 失败即时通知（不合并）——⚠️ 前缀，Basso 故障音由 notifyKind:"failure"
+      // 在 notifyNative 出口统一推导，一眼分清出事/干完。
       if (shouldNotify("failure", isWatching(ctx, sid))) {
-        const np = notifyPrefs();
         const sTitle = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
         const detail =
           ctx.i18nRef.current.evText(ev, String(ev.message || "")) ||
           ctx.i18nRef.current.tr("error.unknown");
         void notifyNative({
           kind: "session",
+          notifyKind: "failure",
           id: sid,
           title: `⚠️ ${sTitle}`,
-          body: privacyBody(np, detail),
-          sound: soundFor("failure"),
+          body: detail,
         });
       }
       const liveMsgId = ctx.liveBySessionRef.current[sid];

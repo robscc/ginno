@@ -11,9 +11,22 @@ pub(crate) fn ginno_home_path<M: tauri::Manager<tauri::Wry>>(app: &M) -> std::pa
         .unwrap_or_else(|_| std::path::PathBuf::from(".ginno"))
 }
 
+/// Serialize `shell.log` appends.
+///
+/// Without it, concurrent notification threads interleave partial writes: the
+/// 2026-11-14 audit found **529 garbled lines** in a 19879-line log — one
+/// record's `id=` glued directly onto the next record's prefix with no newline
+/// (`…05acnotification shown kind=session id=…`), which made the log
+/// unparseable exactly when it mattered most (during a storm). Poisoning is
+/// ignored: a panicked writer must not silence every later diagnostic.
+static SHELL_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Append one line to ~/.ginno/logs/shell.log (same convention as sidecar.log).
 /// Best-effort diagnostics for the notification / window-visibility flow.
 pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
+    let _guard = SHELL_LOG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = if let Ok(p) = std::env::var("GINNO_HOME") {
         std::path::PathBuf::from(p)
     } else {

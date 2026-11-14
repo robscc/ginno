@@ -13,6 +13,7 @@ import {
   type NoticeLevel,
 } from "@/lib/notice";
 import { notifyNative } from "@/lib/desktop";
+import { isAppAttentive } from "@/lib/notifyHub";
 
 /**
  * 全局通知中心宿主（notice-center-design.md §3/§4；右下角统一收编见
@@ -118,11 +119,21 @@ export function NoticeHost() {
  * 主窗隐藏/失焦期间到达的 toast 级通知转发 OS 原生通知（notifyNative，
  * 非桌面环境自动返回 false 跳过）。
  *
- * 降级范围（P1 决策）：notifyNative 的 kind 枚举（session/workflow-run/
- * schedule-run/bg-task/test）不含泛化 notice 文案，强行映射会带错误跳转；
- * 因此 P1 只对 **error 级**兜底（kind:"test"，点击仅 refocus 主窗）——
- * 出事类通知最不容错过且无合理跳转目标。其余级别 TODO(P2)：Rust 侧
- * 增加 "notice" kind 后放开（见设计文档 §2.3）。
+ * 降级范围（P1 决策）：notifyNative 的**点击目标** kind 枚举（session/
+ * workflow-run/schedule-run/bg-task/test）不含泛化 notice 文案，强行映射会带
+ * 错误跳转；因此只对 **error 级**兜底（点击目标 "test" = 仅 refocus 主窗）——
+ * 出事类通知最不容错过且无合理跳转目标。其余级别 TODO(P2)：Rust 侧增加
+ * "notice" 点击目标后放开（见设计文档 §2.3）。
+ *
+ * 2026-11-14（审计文档 P1-4 / P1-5）：
+ *  · 点击目标与**通知分类**是两个正交轴。此前只有点击目标一个 `kind` 字段，
+ *    这里被迫借用 `kind:"test"`，而 test 类刻意绕过偏好闸门（设置页测试按钮
+ *    必须在任何偏好下都有反馈）——结果用户关掉「启用桌面提醒」后，error 级
+ *    toast 照样弹系统通知。现在分类走 `notifyKind:"failure"`，正常受闸门约束。
+ *  · 注意力判据统一到 isAppAttentive。此前只有这一处额外看了
+ *    `document.hasFocus()`，其余 6 个站点只看 visibilityState——同一个「用户在
+ *    看吗」在不同站点有不同答案。hasFocus 是否该纳入全局判据，待实机核实
+ *    WKWebView 的遮挡语义后再单独收口（审计文档 §5 待核实 1）。
  */
 export function useNoticeNativeFallback() {
   const lastIdRef = useRef(0);
@@ -141,11 +152,14 @@ export function useNoticeNativeFallback() {
           return;
         }
         if (fresh.length === 0) return;
-        if (document.visibilityState === "visible" && document.hasFocus()) return;
+        if (isAppAttentive()) return;
         const err = fresh.find((n) => n.level === "error");
         if (!err) return; // TODO(P2): 非 error 级失焦兜底待 notifyNative 泛化
         void notifyNative({
+          // 点击只能 refocus（无合理跳转目标），但分类是 failure——受总开关 /
+          // kinds.failure / 勿扰 / 隐私约束，并按 failure 走 Basso 故障音。
           kind: "test",
+          notifyKind: "failure",
           id: "",
           title: "Ginno",
           body: err.text,
