@@ -67,6 +67,9 @@ export function mapHistory(
       turnId?: string;
       // AgentTeam 回帖标记（messages_ui 序列化，§5.2 要点 2）。
       teamReply?: import("@/lib/types").TeamReplyMeta | null;
+      // AgentTeam 广场投递标记（backlog P0-1/P1-1）：重载后据此知道已投递，
+      // 不标未送达、不给重试。
+      teamDelivery?: ChatMsg["teamDelivery"];
     }>;
     last_error?: {
     message?: string; turn_id?: string;
@@ -91,6 +94,7 @@ export function mapHistory(
       blocks: foldTaskEventBlocks(foldSubagentResultBlocks(m.blocks)),
       agentId: m.agentId,
       teamReply: m.teamReply ?? null,
+      teamDelivery: m.teamDelivery ?? null,
       turnId: own ?? (m.role === "assistant" ? carryTurn : undefined),
       // Rebuild the retry payload for history user bubbles too — without
       // it, a retry that fails again would produce an error card with no

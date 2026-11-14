@@ -618,7 +618,14 @@
       "chipDeliverTitle": "插入 @ 提及，把这条消息投递给该成员",
       "chipBlocked": "成员被卡住——先处理它待确认的提示",
       "notifyReply": "{name} 已在团队广场回帖",
-      "notifyBlocked": "{name} 被卡住，需要你代答"
+      "notifyBlocked": "{name} 被卡住，需要你代答",
+      "receiptDelivered": "已投递给 {name}{channel}",
+      "receiptQueued": "（排队中）",
+      "receiptSteer": "（注入其当前回合）",
+      "receiptStalled": "已发送给 {name}，但其回合尚未起跑——请勿重发",
+      "receiptBlocked": "{name} 被卡住，投递已原子拒绝（一个字都没发）。请先代答它的提示。",
+      "receiptFailed": "投递给 {name} 失败：{reason}",
+      "receiptOpenWorkspace": "进入工作台"
     },
     "worker": {
       "resultTitle": "员工回传：{from}",

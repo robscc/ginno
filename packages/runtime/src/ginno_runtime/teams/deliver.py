@@ -369,7 +369,16 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     })
     await _broadcast_status(team_id)
     try:
-        await _run_managed_turn(sid, text, None, stop_evt)
+        # 溯源信封（backlog P2-11）：steer 路径一直带 ginno_team_delivery，
+        # 新 turn 路径此前传 None → 成员收到的消息无从判断「这是团队投递、
+        # 来自哪个团队/实例」。两条路径必须同口径。
+        await _run_managed_turn(
+            sid, text,
+            {"ginno_team_delivery": {
+                "team_id": team_id, "instance_id": instance_id,
+            }},
+            stop_evt,
+        )
     except Exception:  # noqa: BLE001
         _log.exception("team_member_turn_failed team=%s instance=%s", team_id, instance_id)
         # 托管 turn 自身抛异常（engine 终态点可能没走到）→ 兜底触发一次终态钩子，

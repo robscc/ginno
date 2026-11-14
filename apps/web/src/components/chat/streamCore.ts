@@ -18,6 +18,20 @@ agentName?: string;
 // 气泡是某成员从自己的 session 回帖到主会话的产出——渲染成回帖卡（可折叠、
 // 点「展开全文」跳成员工作台），而不是普通气泡。仅 team 主会话会出现。
 teamReply?: TeamReplyMeta | null;
+// AgentTeam 投递回执（backlog P1-1）：挂在**用户那条消息**上，渲染成气泡下方
+// 的一行 sysline。三态语义严格区分（设计 §5.3.3）：
+//   delivered = 已送达；stalled = **也已发送**只是 turn 未起跑（禁一键重发，
+//   重发就是重复投递）；failed = 确定没发（blocked 原子拒绝 / 成员不存在）。
+teamDelivery?: {
+  receipt: "delivered" | "stalled" | "failed";
+  channel?: string;        // steer | turn | queue
+  reason?: string;         // agent_blocked / unknown_member / …
+  error?: string;
+  displayName?: string;
+  memberSessionId?: string;
+  teamId?: string;
+  instanceId?: string;
+} | null;
 turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
 // 气泡时间戳（unix 秒，客户端时钟）。turn 收口（message.end）时打——完成态
 // 的相对时间标签（"N分钟前"）以它为源；历史重放没有时间戳源则不渲染标签

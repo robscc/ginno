@@ -1005,7 +1005,21 @@ def _messages_to_ui(
                 ]
                 blocks = file_blocks + blocks
             if blocks:
-                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": blocks, "turnId": getattr(m, "id", None)})
+                _ub: dict = {"id": getattr(m, "id", None), "role": "user", "blocks": blocks, "turnId": getattr(m, "id", None)}
+                # AgentTeam 广场投递标记（backlog P0-1/P1-1）：重载后据此知道
+                # 「这条已投递给谁」，不标未送达、不给重试（重发=重复投递）。
+                _td = (getattr(m, "additional_kwargs", None) or {}).get("ginno_team_delivery")
+                if isinstance(_td, dict):
+                    _ub["teamDelivery"] = {
+                        "receipt": "delivered",
+                        "reason": "",
+                        "error": "",
+                        "displayName": "",
+                        "memberSessionId": "",
+                        "teamId": str(_td.get("team_id") or ""),
+                        "instanceId": str(_td.get("routed_to") or ""),
+                    }
+                ui.append(_ub)
         elif isinstance(m, AIMessage):
             if acc is None:
                 acc = []

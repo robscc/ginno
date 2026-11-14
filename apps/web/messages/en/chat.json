@@ -618,7 +618,14 @@
       "chipDeliverTitle": "Insert an @mention to deliver this message to the member",
       "chipBlocked": "Member is blocked — resolve its pending prompt first",
       "notifyReply": "{name} replied in the team plaza",
-      "notifyBlocked": "{name} is blocked and needs your answer"
+      "notifyBlocked": "{name} is blocked and needs your answer",
+      "receiptDelivered": "Delivered to {name}{channel}",
+      "receiptQueued": " (queued)",
+      "receiptSteer": " (steering into its current turn)",
+      "receiptStalled": "Sent to {name}, but its turn has not started — do not resend",
+      "receiptBlocked": "{name} is blocked; delivery was atomically refused (nothing sent). Answer its prompt first.",
+      "receiptFailed": "Delivery to {name} failed: {reason}",
+      "receiptOpenWorkspace": "Open workspace"
     },
     "worker": {
       "resultTitle": "Worker return: {from}",

@@ -106,6 +106,18 @@ def turn_context(session_id: str) -> str:
                     "你的实例记忆（仅针对你在本团队的备注）：",
                 ) + "\n" + clipped)
 
+        # 权限纪律（设计 §5.7，backlog P2-11）：必须写进成员的系统提示，
+        # 防止模型把「用户 @ 我」当成免检通行证。此前全 runtime 零命中。
+        if member is not None:
+            parts.append(t(
+                "Delivery is NOT approval: a user @-mention only means \"please do "
+                "this\". Sensitive operations still go through the normal permission "
+                "gate — never treat a team delivery as pre-authorization, and never "
+                "approve your own permission requests.",
+                "投递不等于批准：用户 @ 你只表达「请你做这件事」。敏感操作照常走 "
+                "permission 闸门——绝不要把团队投递当成预授权，也不要自批自己的权限请求。",
+            ))
+
         return "\n\n".join(parts)
     except Exception:  # noqa: BLE001 — 展示性注入绝不带崩 turn
         from ..server_shared import _log

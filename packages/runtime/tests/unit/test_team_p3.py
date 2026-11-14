@@ -84,8 +84,16 @@ def test_turn_context_layers(team):
 
 
 def test_turn_context_empty_md_injects_nothing(team):
+    """TEAM.md 与 notes 都空 → 不注入**记忆内容**。
+
+    但成员仍恒拿到「投递≠批准」权限纪律条款（P2-11，设计 §5.7）——那是安全
+    纪律不是记忆内容，不能因为用户没写 TEAM.md 就消失。
+    """
     assert team_memory.turn_context("main-sess") == ""
-    assert team_memory.turn_context("sess-dev") == ""
+    ctx = team_memory.turn_context("sess-dev")
+    assert "TEAM.md" not in ctx and "notes" not in ctx.lower().replace("not approval", "")
+    low = ctx.lower()
+    assert "not approval" in low or "不等于批准" in ctx
 
 
 # --------------------------------------------------------------------------- #
@@ -194,3 +202,65 @@ async def test_deliver_blocked_refusal_precedes_queue(team, live_turns, monkeypa
 
 def _iid(team: dict, agent_id: str) -> str:
     return str(next(m for m in team["members"] if m["agent_id"] == agent_id)["instance_id"])
+
+
+# --------------------------------------------------------------------------- #
+# P2-11：「投递≠批准」必须进成员系统提示 + 新 turn 路径带溯源信封
+# --------------------------------------------------------------------------- #
+
+def test_delivery_is_not_approval_in_member_prompt(seeded_home):
+    """设计 §5.7：这条要写进成员的系统提示，防模型把 @ 当免检通行证。
+
+    此前全 runtime grep 相关文案零命中——要求未实现。
+    """
+    from ginno_runtime.teams import memory as team_memory
+    from ginno_runtime.teams import store as team_store
+
+    t = team_store.create_team("队", "default", "main-sess")
+    m = team_store.add_member(t["id"], "dev", "sess-dev")
+    ctx = team_memory.turn_context("sess-dev")
+    low = ctx.lower()
+    assert "not approval" in low or "不等于批准" in ctx, f"缺「投递≠批准」条款：{ctx}"
+    assert "permission" in low or "permission" in ctx
+    assert m["instance_id"]
+
+
+def test_plaza_main_session_gets_no_member_clause(seeded_home):
+    """主会话（广场）不是成员，不该拿到成员专属的权限纪律条款。"""
+    from ginno_runtime.teams import memory as team_memory
+    from ginno_runtime.teams import store as team_store
+
+    t = team_store.create_team("队", "default", "main-sess")
+    ctx = team_memory.turn_context("main-sess")
+    assert "not approval" not in ctx.lower()
+    assert "不等于批准" not in ctx
+    assert t is not None
+
+
+def test_new_turn_path_carries_provenance_envelope(seeded_home, monkeypatch):
+    """新 turn 路径必须与 steer 路径同口径带 ginno_team_delivery 溯源键。
+
+    此前 _run_member_turn 传 extra_kwargs=None → 成员无从判断消息来自哪个
+    团队/实例（steer 路径一直有）。
+    """
+    import asyncio
+
+    from ginno_runtime.teams import deliver as team_deliver
+    from ginno_runtime.teams import store as team_store
+
+    t = team_store.create_team("队", "default", "main-sess")
+    m = team_store.add_member(t["id"], "dev", "sess-dev")
+
+    captured: dict = {}
+
+    async def _fake_run(sid, text, extra_kwargs, stop_evt=None):
+        captured["extra"] = extra_kwargs
+
+    import ginno_runtime.subagent_scheduler as sched
+
+    monkeypatch.setattr(sched, "_run_managed_turn", _fake_run)
+    asyncio.run(team_deliver._run_member_turn(t["id"], m["instance_id"], "干活"))
+    env = (captured.get("extra") or {}).get("ginno_team_delivery")
+    assert env, f"新 turn 路径缺溯源信封（P2-11）：{captured}"
+    assert env["team_id"] == t["id"]
+    assert env["instance_id"] == m["instance_id"]

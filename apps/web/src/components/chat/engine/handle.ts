@@ -1749,40 +1749,56 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     // mapHistory 读到的 AIMessage.id 相同，所以「实时追加」与「之后 reload」
     // 指向同一条，不会双渲染。
     case "team.delivered": {
-      // AgentTeam 投递回执（backlog P0-1）。此前全仓库零 handler：runtime 发完
-      // 就 continue，前端 busy 恒真 → composer 永久锁死、后续输入进 steer 死队列。
-      // runtime 侧已补 message.end（照 mods 命令分支范式），这里再做一层防御
-      // 并把回执语义落对：
-      //   delivered → 清 sending（已送达）
-      //   stalled   → **也已发送**，只是 turn 没在窗口内起来。绝不标 failed：
-      //               标 failed 会给重试按钮，一点就是重复投递（§5.3.3 原子性）
-      //   failed    → 真没发出去，标 failed 允许重试才是对的
-      const receipt = (ev.receipt as string) || "delivered";
+      // AgentTeam 投递回执（backlog P0-1 + P1-1）。此前全仓库零 handler：
+      // runtime 发完就 continue，前端 busy 恒真 → composer 永久锁死。
+      // runtime 侧已补 message.end，这里做防御性收口 + 回执可视化。
+      //
+      // 三态语义严格区分（§5.3.3 投递原子性）：
+      //   delivered → 清 sending
+      //   stalled   → **也已发送**，只是 turn 未在窗口内起跑。绝不标 failed：
+      //               标 failed 会给重试按钮，一点就是重复投递
+      //   failed    → 确定没发（blocked 原子拒绝一个字都没发 / 成员不存在），
+      //               标 failed 允许重试才是对的
+      const receipt = ((ev.receipt as string) || "delivered") as
+        "delivered" | "stalled" | "failed";
+      const meta = {
+        receipt,
+        channel: (ev.channel as string) || "",
+        reason: (ev.reason as string) || "",
+        error: (ev.error as string) || "",
+        displayName: (ev.display_name as string) || (ev.agent_id as string) || "",
+        memberSessionId: (ev.session_id as string) || "",
+        teamId: (ev.team_id as string) || "",
+        instanceId: (ev.instance_id as string) || "",
+      };
       const list = ctx.storeRef.current[sid] ?? [];
-      if (receipt === "failed") {
-        const reason = (ev.error as string) || (ev.reason as string) || "delivery failed";
-        ctx.storeRef.current[sid] = list.map((m) =>
-          m.status === "sending"
-            ? { ...m, status: "failed" as const, failReason: reason }
-            : m,
-        );
+      // 挂到最后一条用户消息上（回执属于「我发的那条」，不是新气泡）。
+      let lastUser = -1;
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].role === "user") { lastUser = i; break; }
+      }
+      if (lastUser >= 0) {
+        const next = [...list];
+        const prev = next[lastUser];
+        // 多目标投递：同一用户消息可能收到 N 条回执，合并成数组语义——
+        // 这里保留最严重的一条（failed > stalled > delivered），避免后到的
+        // delivered 覆盖掉先前的 blocked 拒绝。
+        const rank = { failed: 2, stalled: 1, delivered: 0 } as const;
+        const keep = !prev.teamDelivery
+          || rank[receipt] >= rank[prev.teamDelivery.receipt]
+          ? meta : prev.teamDelivery;
+        next[lastUser] = {
+          ...prev,
+          teamDelivery: keep,
+          ...(receipt === "failed"
+            ? { status: "failed" as const, failReason: meta.error || meta.reason || "delivery failed" }
+            : { status: undefined, failReason: undefined }),
+        };
+        ctx.storeRef.current[sid] = next;
+      } else if (receipt === "failed") {
+        markDelivered(ctx, sid);
       } else {
         markDelivered(ctx, sid);
-        if (receipt === "stalled") {
-          // 已发送但未确认起跑 → 如实告知，不给重试入口。
-          ctx.storeRef.current[sid] = [
-            ...(ctx.storeRef.current[sid] ?? []),
-            {
-              id: mid(),
-              role: "assistant" as const,
-              agentId: null,
-              blocks: [{
-                kind: "text",
-                text: ctx.i18nRef.current.tr("team.deliveryStalled"),
-              } as Block],
-            },
-          ];
-        }
       }
       // 防御性收口：即使 message.end 因故未到，也不让 composer 卡死。
       ctx.busyBySessionRef.current[sid] = false;

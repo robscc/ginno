@@ -17,7 +17,9 @@ import {
   type Block,
 } from "@/components/chat/blocks";
 import { SubagentPlanCard } from "../subagentPlanCard";
-import { TeamReplyCard } from "../TeamReplyCard";
+import { TeamReplyCard, requestOpenMemberWorkspace } from "../TeamReplyCard";
+import { stashOpenMemberIntent } from "@/components/team/openMemberIntent";
+import { useRouter } from "next/navigation";
 import {
   AssistantBubble,
   ErrorCard,
@@ -83,6 +85,7 @@ export function TranscriptList({
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
+  const router = useRouter();
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tr = tc as unknown as {
@@ -388,6 +391,67 @@ export function TranscriptList({
               <div className="selectable text-[10px] text-red/80">
                 {tc("sendFailed.label")}{m.failReason ? `: ${failText(m.failReason)}` : ""}
                 {m.id === lastRetryableId && tc("sendFailed.retryHint")}
+              </div>
+            )}
+            {/* AgentTeam 投递回执 sysline（backlog P1-1）。三态语义严格区分：
+                stalled **也已发送**，只给「进入工作台」不给重发（重发=重复投递）；
+                blocked 原子拒绝一个字都没发，引导去代答而不是重发。 */}
+            {m.teamDelivery && (
+              <div
+                className={`selectable flex items-center gap-1.5 text-[10px] ${
+                  m.teamDelivery.receipt === "failed"
+                    ? "text-red/80"
+                    : m.teamDelivery.receipt === "stalled"
+                      ? "text-yellow/90"
+                      : "text-faint"
+                }`}
+              >
+                <span>
+                  {m.teamDelivery.receipt === "delivered"
+                    ? tc("team.receiptDelivered", {
+                        name: m.teamDelivery.displayName || "",
+                        channel: m.teamDelivery.channel === "queue"
+                          ? tc("team.receiptQueued")
+                          : m.teamDelivery.channel === "steer"
+                            ? tc("team.receiptSteer")
+                            : "",
+                      })
+                    : m.teamDelivery.receipt === "stalled"
+                      ? tc("team.receiptStalled", { name: m.teamDelivery.displayName || "" })
+                      : m.teamDelivery.reason === "agent_blocked"
+                        ? tc("team.receiptBlocked", { name: m.teamDelivery.displayName || "" })
+                        : tc("team.receiptFailed", {
+                            name: m.teamDelivery.displayName || "",
+                            reason: m.teamDelivery.error || m.teamDelivery.reason || "",
+                          })}
+                </span>
+                {/* blocked / stalled 都给「进入工作台」——去处理卡点或看进度，
+                    而不是重发。failed 的其他原因走上面的通用重试入口。 */}
+                {(m.teamDelivery.receipt === "stalled"
+                  || m.teamDelivery.reason === "agent_blocked")
+                  && m.teamDelivery.memberSessionId && (
+                  <button
+                    onClick={() => {
+                      const d = m.teamDelivery!;
+                      // 与回帖卡同一范式（P2-25）：不在 /team 先存一次性意图
+                      // 再导航，否则纯 window 事件只有 /team 在监听会静默丢失。
+                      if (window.location.pathname !== "/team") {
+                        stashOpenMemberIntent({
+                          teamId: d.teamId,
+                          instanceId: d.instanceId || "",
+                          sessionId: d.memberSessionId || "",
+                        });
+                        router.push("/team");
+                      }
+                      requestOpenMemberWorkspace(
+                        d.memberSessionId || "", d.instanceId || "", d.teamId,
+                      );
+                    }}
+                    className="rounded border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:text-txt"
+                  >
+                    {tc("team.receiptOpenWorkspace")}
+                  </button>
+                )}
               </div>
             )}
           </div>
