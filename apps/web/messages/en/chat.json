@@ -625,7 +625,11 @@
       "receiptStalled": "Sent to {name}, but its turn has not started — do not resend",
       "receiptBlocked": "{name} is blocked; delivery was atomically refused (nothing sent). Answer its prompt first.",
       "receiptFailed": "Delivery to {name} failed: {reason}",
-      "receiptOpenWorkspace": "Open workspace"
+      "receiptOpenWorkspace": "Open workspace",
+      "memLayerAgent": "Agent memory",
+      "memLayerAgentTitle": "Layer 1 — this agent own memory (MEMORY.md), shared across all teams. Edit it in Settings → Agents.",
+      "memLayerNotes": "Instance notes",
+      "memLayerTeam": "TEAM.md"
     },
     "worker": {
       "resultTitle": "Worker return: {from}",

@@ -1012,9 +1012,34 @@ export function TeamShell() {
                         {row && <span className="font-mono">{row.instance_id}</span>}
                         {row?.model && <span>· {row.model}</span>}
                         <span>· {tc("team.workspaceShared")}</span>
-                        {row?.has_notes && (
-                          <span title={tc("team.notesChipTitle")}>📝 {tc("team.notesChip")}</span>
-                        )}
+                        {/* 三层记忆 chip（backlog P2-12，设计 §5.4）：此前只有
+                            notes 一层，用户看不出这个成员到底带着哪些记忆在跑。
+                            三层各自独立：agent 记忆（跨团队）/ 实例 notes（本团队
+                            专属）/ TEAM.md（全员共享）。 */}
+                        <span
+                          className="rounded-full border border-line px-1.5 py-0.5 text-[10px]"
+                          title={tc("team.memLayerAgentTitle")}
+                        >
+                          🧠 {tc("team.memLayerAgent")}
+                        </span>
+                        <button
+                          onClick={() => setNotesEditorFor(view.instanceId)}
+                          className={`rounded-full border px-1.5 py-0.5 text-[10px] transition-colors hover:border-violet/40 hover:text-violet ${
+                            row?.has_notes ? "border-violet/40 text-violet" : "border-line"
+                          }`}
+                          title={tc("team.notesChipTitle")}
+                        >
+                          📝 {tc("team.memLayerNotes")}
+                        </button>
+                        <button
+                          onClick={() => setMdEditorFor(team.id)}
+                          className={`rounded-full border px-1.5 py-0.5 text-[10px] transition-colors hover:border-violet/40 hover:text-violet ${
+                            team.has_team_md ? "border-violet/40 text-violet" : "border-line"
+                          }`}
+                          title={tc("team.teamMdChipTitle")}
+                        >
+                          👥 {tc("team.memLayerTeam")}
+                        </button>
                       </>
                     );
                   })()}

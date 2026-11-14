@@ -625,7 +625,11 @@
       "receiptStalled": "已发送给 {name}，但其回合尚未起跑——请勿重发",
       "receiptBlocked": "{name} 被卡住，投递已原子拒绝（一个字都没发）。请先代答它的提示。",
       "receiptFailed": "投递给 {name} 失败：{reason}",
-      "receiptOpenWorkspace": "进入工作台"
+      "receiptOpenWorkspace": "进入工作台",
+      "memLayerAgent": "Agent 记忆",
+      "memLayerAgentTitle": "第一层——该 agent 自己的记忆（MEMORY.md），跨团队共享。在 设置 → Agents 里编辑。",
+      "memLayerNotes": "实例备注",
+      "memLayerTeam": "TEAM.md"
     },
     "worker": {
       "resultTitle": "员工回传：{from}",
