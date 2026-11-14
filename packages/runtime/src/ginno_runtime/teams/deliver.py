@@ -179,6 +179,8 @@ async def post_reply(
     instance_id: str,
     text: str = "",
     truncated: bool = False,
+    *,
+    source_session_id: str = "",
 ) -> bool:
     """把成员的产出作为**回帖**写进主会话 checkpoint（§5.2 步骤 6）。
 
@@ -198,7 +200,12 @@ async def post_reply(
     slug = str(team.get("project_slug") or "default")
     agent_id = str(member.get("agent_id") or "")
 
-    body = text if text else await _final_text(slug, member.get("session_id") or "", team_id=team_id)
+    # 读**真正跑完那个 turn 的会话**（backlog P2-21）：此前一律读
+    # member.session_id（当前活跃会话），多会话成员在 turn 期间切换活跃会话后，
+    # 回帖会读到另一条会话的产出（张冠李戴）。调用方（lifecycle 钩子）知道
+    # 真实 session_id，传进来优先用；缺省回落活跃会话（兼容旧调用）。
+    _src_sid = source_session_id or str(member.get("session_id") or "")
+    body = text if text else await _final_text(slug, _src_sid, team_id=team_id)
     body, cut = _truncate(body)
     truncated = truncated or cut
     if not body:
@@ -233,7 +240,7 @@ async def post_reply(
             "ginno_team_reply": {
                 "team_id": team_id,
                 "instance_id": instance_id,
-                "member_session_id": member.get("session_id"),
+                "member_session_id": _src_sid,
                 "display_name": member.get("display_name") or agent_id,
                 "truncated": truncated,
             },
@@ -268,7 +275,7 @@ async def post_reply(
             "message_id": reply_id,
             "text": body,
             "truncated": truncated,
-            "member_session_id": member.get("session_id"),
+            "member_session_id": _src_sid,
         },
     )
     _log.info(

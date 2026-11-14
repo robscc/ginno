@@ -325,7 +325,9 @@ herdr 的一条硬纪律：*"state controls waits, notifications, and rollups. T
 
 herdr 原文：*"The sidebar rolls state upward. A blocked agent makes its pane, tab, and workspace look blocked. A working agent makes the workspace look active. A done agent stays visible until you view it."*
 
-→ Ginno 的三级上卷，**优先级 blocked > unknown > working > done > waiting > idle**：
+→ Ginno 的三级上卷，**优先级 blocked > unknown > error > working > waiting > done > idle**
+（实现口径 `teams/status.py:_PRIORITY`；error 排在 working 前——出错比在跑更需要用户看见，
+waiting 排在 done 前——子代仍在跑不算完成）：
 
 ```
 成员实例  ──上卷──►  团队行（侧栏）  ──上卷──►  全局徽标（导航项 / Dock）
@@ -351,7 +353,10 @@ herdr 把「等某个 agent 到某个状态」做成一等原语（`agent wait -
 list_members(wait=True, until=["blocked","done"], ids=None, timeout_s=0)
 ```
 
-- `until` 可重复，默认收敛到 `idle | done | blocked`（与 herdr 默认一致）；
+- `until` 可重复，默认收敛到 `idle | done | blocked | unknown | error`
+（实现口径 `teams/wait.py:SETTLED_STATUSES`——unknown/error 也是安定态，
+否则成员出错时 Lead 会永久死等）。`idle` 蕴含 `done`（用户 seen 后 done→idle，
+不能因用户查看结果就把 Lead 的等待卡死）；`until` 传非法状态名立刻报错；
 - `timeout_s=0` = 无限等（herdr 同款默认，但**必须在 UI 上可见**，否则用户以为卡死）；
 - 用户 stop 可打断等待（复用 `_TURN_STOP`）；
 - 到点返回各成员当前状态（partial 语义）。
@@ -401,7 +406,7 @@ v0.9.0 又补：*"A timeout or `agent_prompt_stalled` still does not prove that 
 - **成员数上限**：默认 6（硬限）。理由：面板可读性 + 并发 token 成本；超出提示「先归档不活跃成员」。
 - **同时 working 上限**：默认 3（`settings` 可调）。超出的投递进入该成员的**待处理队列**（成员面板显示「排队 2」），成员空闲后自动 drain——比直接拒绝更符合「同事」心智。
 - **深度**：team member 内部可 spawn subagent，仍受全局 depth≤2 约束（team 主会话不计入 depth）。
-- **成本可见**：成员面板每行显示该实例累计 token（`usage` 事件已有 per-session 计数）；总览页显示团队合计。多份独立 context 的成本高于单 agent，必须让用户看得见（Claude Code 文档同样明确警告 agent teams "use significantly more tokens"）。
+- **成本可见**（⚠️ **尚未实现**，见 backlog P2-5）：成员面板每行显示该实例累计 token（`usage` 事件已有 per-session 计数）；总览页显示团队合计。当前 `member_row` 无 usage 字段、`usage_source` 把 team-member 记为 `"chat"`，需先补归因再谈展示。多份独立 context 的成本高于单 agent，必须让用户看得见（Claude Code 文档同样明确警告 agent teams "use significantly more tokens"）。
 - **stop 级联**：停成员 → 其运行中 subagent 一并协作式停止（复用现有遍历）；解散团队 → 全部成员停止 + 归档（checkpoint 保留，可回放）。
 
 ### 5.7 权限
@@ -421,7 +426,7 @@ herdr 的整个产品立论是 *"Always running. Herdr isn't an app you keep ope
 | 缺口 | herdr 的做法 | Ginno 的对策 |
 |---|---|---|
 | **应用重启后状态丢失** | 恢复保存的 layout + 支持的 agent 可 resume 原 session | 团队编制落盘（§3.2）→ 重启后重建成员面板；成员 session 靠 checkpoint 天然可回放；**turn 中断的走 `_heal_interrupted_turn`，愈合不了就标 `unknown`**（§3.3），绝不假装 idle |
-| **「离开期间发生了什么」无从知晓** | `done` 保持可见直到你查看（seen 语义） | 团队级**未读汇总**：重连时给主会话推一条「你离开的 42 分钟里：dev 完成 2 项、research 卡在权限、writer 完成 1 项」——这是 `done` 语义的团队版，也是 OpenAgents「Inbox」的等价物 |
+| **「离开期间发生了什么」无从知晓** | `done` 保持可见直到你查看（seen 语义） | 团队级**未读汇总**：「你离开的 42 分钟里：dev 完成 2 项、research 卡在权限、writer 完成 1 项」（实现为**前端本地横幅**，按「上次查看本团队的时间」计算，非服务端重连推送）——这是 `done` 语义的团队版，也是 OpenAgents「Inbox」的等价物 |
 
 > **明确不做**：herdr 的 `machine add`（多机 SSH 网格）、`--remote` 远程 attach、direct terminal attach。Ginno 是本地桌面应用，多机是另一个产品。但**团队编制文件的格式要为它留余地**（成员条目里预留 `machine` 字段，本期恒为 `"local"`）。
 

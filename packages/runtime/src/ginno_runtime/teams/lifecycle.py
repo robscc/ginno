@@ -98,7 +98,9 @@ async def on_turn_settled(session_id: str, turn_id: str = "") -> None:
 
         from .deliver import _broadcast_status, _drain_queue, post_reply
 
-        await post_reply(team_id, instance_id)
+        # 传**真正跑完 turn 的那条会话**（backlog P2-21）：多会话成员在 turn
+        # 期间切换活跃会话后，回帖必须读原会话的产出，不能张冠李戴。
+        await post_reply(team_id, instance_id, source_session_id=session_id)
         store.patch_member(team_id, instance_id, {
             "status": "done",
             "last_completed": time.time(),

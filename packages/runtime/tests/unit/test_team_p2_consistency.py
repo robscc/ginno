@@ -167,3 +167,50 @@ def test_update_team_still_patches_normal_fields(team):
     team_store.update_team(team["id"], {"name": "改名", "archived": True})
     t = team_store.get_team(team["id"])
     assert t["name"] == "改名" and t["archived"] is True
+
+
+# --------------------------------------------------------------------------- #
+# P2-21：多会话成员回帖必须读「真正跑完 turn 的那条会话」
+# --------------------------------------------------------------------------- #
+
+async def test_post_reply_reads_source_session_not_active(team, monkeypatch):
+    """turn 期间切换活跃会话后，回帖仍须读原会话的产出。
+
+    缺陷原状：post_reply 一律读 member.session_id（当前活跃），多会话成员
+    切换后回帖张冠李戴。
+    """
+    from ginno_runtime.teams import deliver as team_deliver
+
+    m = team["members"][0]
+    iid = m["instance_id"]
+    # 活跃会话切到 sess-other，但 turn 实际跑在 sess-dev
+    team_store.patch_member(team["id"], iid, {
+        "session_id": "sess-other", "session_ids": ["sess-dev", "sess-other"],
+    })
+
+    read: list[str] = []
+
+    async def _fake_final(slug, sid, team_id=""):
+        read.append(sid)
+        return f"产出来自 {sid}"
+
+    monkeypatch.setattr(team_deliver, "_final_text", _fake_final)
+    # 主会话写盘会失败（无 graph），但取文本这一步的 sid 已被记录
+    await team_deliver.post_reply(team["id"], iid, source_session_id="sess-dev")
+    assert read == ["sess-dev"], f"回帖读错会话（P2-21）：{read}"
+
+
+async def test_post_reply_falls_back_to_active_without_source(team, monkeypatch):
+    """不传 source 时回落活跃会话（兼容旧调用方）。"""
+    from ginno_runtime.teams import deliver as team_deliver
+
+    m = team["members"][0]
+    read: list[str] = []
+
+    async def _fake_final(slug, sid, team_id=""):
+        read.append(sid)
+        return "x"
+
+    monkeypatch.setattr(team_deliver, "_final_text", _fake_final)
+    await team_deliver.post_reply(team["id"], m["instance_id"])
+    assert read == [m["session_id"]]
