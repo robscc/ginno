@@ -102,3 +102,106 @@ describe("mention P2：拼音首字母 + fuzzy + 菜单限量", () => {
     expect(out.filter((x) => x.group === "C")).toHaveLength(8); // 28-20
   });
 });
+
+// ---------------------------------------------------------------------------
+// AgentTeam @ 投递菜单 + 键盘禁选（backlog P1-12 / P1-21）
+// ---------------------------------------------------------------------------
+
+import { buildMenuItems, firstEnabledIndex, nextEnabledIndex } from "./commandMenu";
+import type { TeamMemberRow } from "@/lib/types";
+
+function member(over: Partial<TeamMemberRow> = {}): TeamMemberRow {
+  return {
+    instance_id: "ai_1",
+    agent_id: "dev",
+    display_name: "开发",
+    session_id: "s-dev",
+    role: "member",
+    machine: "local",
+    status: "idle",
+    status_detail: "",
+    last_active: 0,
+    ...over,
+  } as TeamMemberRow;
+}
+
+const mentionTrigger = {
+  kind: "mention" as const,
+  tokenStart: 0,
+  query: "",
+  mentionKind: null,
+};
+
+describe("团队 @ 菜单：blocked 禁选（P1-12）", () => {
+  it("blocked 成员标 disabled，其余可选", () => {
+    const items = buildMenuItems(mentionTrigger as never, {
+      skills: [],
+      agents: [],
+      artifacts: [],
+      teamMembers: [
+        member({ instance_id: "a", agent_id: "dev", status: "blocked" }),
+        member({ instance_id: "b", agent_id: "writer", display_name: "文书", status: "idle" }),
+      ],
+    });
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+    expect(byId["dev"].disabled).toBe(true);
+    expect(byId["writer"].disabled).toBeFalsy();
+  });
+
+  it("团队菜单只含成员与本团队产物，不含工作流/记忆", () => {
+    const items = buildMenuItems(mentionTrigger as never, {
+      skills: [],
+      agents: [],
+      artifacts: [],
+      teamMembers: [member()],
+    });
+    expect(items.every((i) => i.kind === "agent" || i.kind === "artifact")).toBe(true);
+  });
+
+  it("insert token 用 display_name 而非 agent_id（P1-13 的根因之一）", () => {
+    const items = buildMenuItems(mentionTrigger as never, {
+      skills: [],
+      agents: [],
+      artifacts: [],
+      teamMembers: [member({ agent_id: "dev", display_name: "开发" })],
+    });
+    expect(items[0].insert).toBe("@agent:开发 ");
+    expect(items[0].insert).not.toContain("dev");
+  });
+});
+
+describe("键盘导航跳过禁选项（P1-12）", () => {
+  const mk = (disabled: boolean): Pick<MenuItem, "disabled"> => ({ disabled });
+
+  it("首项 blocked 时初始高亮落到第二个", () => {
+    expect(firstEnabledIndex([mk(true), mk(false), mk(false)])).toBe(1);
+  });
+
+  it("全部禁选 → 回落 0（Enter 侧另有守卫）", () => {
+    expect(firstEnabledIndex([mk(true), mk(true)])).toBe(0);
+    expect(nextEnabledIndex([mk(true), mk(true)], 0, 1)).toBe(0);
+  });
+
+  it("向下跳过禁选项并环绕", () => {
+    const items = [mk(false), mk(true), mk(false)];
+    expect(nextEnabledIndex(items, 0, 1)).toBe(2);
+    expect(nextEnabledIndex(items, 2, 1)).toBe(0);
+  });
+
+  it("向上跳过禁选项并环绕", () => {
+    const items = [mk(false), mk(true), mk(false)];
+    expect(nextEnabledIndex(items, 2, -1)).toBe(0);
+    expect(nextEnabledIndex(items, 0, -1)).toBe(2);
+  });
+
+  it("空列表不抛", () => {
+    expect(nextEnabledIndex([], 0, 1)).toBe(0);
+    expect(firstEnabledIndex([])).toBe(0);
+  });
+
+  it("无禁选项时等价于普通环形步进", () => {
+    const items = [mk(false), mk(false), mk(false)];
+    expect(nextEnabledIndex(items, 0, 1)).toBe(1);
+    expect(nextEnabledIndex(items, 0, -1)).toBe(2);
+  });
+});

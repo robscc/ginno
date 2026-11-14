@@ -12,7 +12,7 @@ import { t } from "@/i18n/provider";
 import type { useGinno } from "@/lib/store";
 import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
-import { pruneMentions, mentionAtomicDeleteStart } from "@/components/chat/commandMenu";
+import { pruneMentions, mentionAtomicDeleteStart, nextEnabledIndex } from "@/components/chat/commandMenu";
 import type { MenuItem, ResolvedMention, Trigger } from "@/components/chat/commandMenu";
 import type { SessionMeta } from "@/lib/types";
 import {
@@ -171,8 +171,17 @@ export function Composer({
       {(() => {
         if (session?.type !== "team") return null;
         const team = g.teams.find((t) => t.main_session_id === session.id);
+        // P1-13：判据必须用**结构化 mentions**，不能字符串匹配 input。
+        // 此前写 input.includes(`@agent:${r.agent_id}`) 恒假（死代码）：
+        // ① 协议 token 用的是 display_name 而非 agent_id（commandMenu.push）；
+        // ② 输入框里是显示形态「🤖 名字」，token 只在发送时才还原。
+        const picked = new Set(
+          (mentionsRef.current[session.id] ?? [])
+            .filter((m) => m.kind === "agent")
+            .map((m) => m.id),
+        );
         const working = (team?.member_rows ?? []).filter(
-          (r) => r.status === "working" && input.includes(`@agent:${r.agent_id}`),
+          (r) => r.status === "working" && picked.has(r.agent_id),
         );
         if (!working.length) return null;
         return (
@@ -269,19 +278,28 @@ export function Composer({
           // While the autocomplete menu is open, navigate/confirm it
           // instead of sending. (IME guard first — same as send.)
           if (menu && !composing) {
+            // P1-12：键盘必须与鼠标同样尊重 disabled（@ 投递的 blocked 成员）。
+            // 此前 ↑↓/Enter/Tab 都不检查，且 active 初始 0 —— blocked 排首位时
+            // 一击即中，绕过禁选把消息投给卡住的成员。
+            const step = (dir: 1 | -1) => {
+              setMenu((m) =>
+                m ? { ...m, active: nextEnabledIndex(m.items, m.active, dir) } : m,
+              );
+            };
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
+              step(1);
               return;
             }
             if (e.key === "ArrowUp") {
               e.preventDefault();
-              setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
+              step(-1);
               return;
             }
             if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
               e.preventDefault();
-              pickItem(menu.items[menu.active]);
+              const it = menu.items[menu.active];
+              if (it && !it.disabled) pickItem(it);
               return;
             }
             if (e.key === "Escape") {

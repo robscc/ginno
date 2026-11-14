@@ -486,3 +486,31 @@ export function dedupeMentions(mentions: ResolvedMention[]): ResolvedMention[] {
   }
   return out;
 }
+
+/**
+ * 键盘导航：从 active 出发按 dir 找下一个**可选**项（backlog P1-12）。
+ *
+ * 此前 ↑↓ 直接 `(active±1) % len`，完全不检查 disabled —— @ 投递菜单里
+ * blocked 成员是禁选的（鼠标侧有守卫），键盘却能一路选中并 Enter 投出去。
+ * 全部禁选时返回原 active（Enter 侧另有守卫，不会误选）。
+ */
+export function nextEnabledIndex(
+  items: Pick<MenuItem, "disabled">[],
+  active: number,
+  dir: 1 | -1,
+): number {
+  const n = items.length;
+  if (!n) return 0;
+  let i = active;
+  for (let k = 0; k < n; k++) {
+    i = (i + dir + n) % n;
+    if (!items[i]?.disabled) return i;
+  }
+  return active;
+}
+
+/** 菜单打开时的初始高亮：首个可选项；全禁选则回落 0（backlog P1-12）。 */
+export function firstEnabledIndex(items: Pick<MenuItem, "disabled">[]): number {
+  const i = items.findIndex((it) => !it.disabled);
+  return i < 0 ? 0 : i;
+}

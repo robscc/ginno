@@ -21,6 +21,7 @@ import {
   mentionDisplayToken,
   buildMenuItems,
   detectTrigger,
+  firstEnabledIndex,
   type MenuItem,
   type ResolvedMention,
   type Trigger,
@@ -743,13 +744,19 @@ export function ChatStream({
       sessionId: session?.id ?? null,
       teamMembers,
     });
-    setMenu(items.length ? { items, active: 0, trigger } : null);
+    // P1-12：初始高亮落在首个**可选**项——blocked 成员排首位时，
+    // active:0 会让高亮停在禁选项上，Enter 一击即中。
+    const firstEnabled = firstEnabledIndex(items);
+    setMenu(items.length ? { items, active: firstEnabled, trigger } : null);
   }
 
   // Insert the picked item, record its resolved mention, and refocus the caret
   // right after the inserted token (ready to type the prompt).
   function pickItem(item: MenuItem) {
     if (!menu) return;
+    // P1-12：disabled（@ 投递的 blocked 成员）一律拒绝——鼠标侧已有守卫，
+    // 但本函数也被键盘与程序化路径调用，入口再挡一次才是真禁选。
+    if (item.disabled) return;
     const caret = textareaRef.current?.selectionStart ?? input.length;
     const r = applySelection(input, caret, menu.trigger, item);
     let text = r.text;
