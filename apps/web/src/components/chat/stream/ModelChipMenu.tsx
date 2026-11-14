@@ -6,7 +6,7 @@
 // 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
 
 import { useState } from "react";
-import { ArrowLeft, Brain, ChevronDown, Globe } from "lucide-react";
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
 import type { SessionMeta } from "@/lib/types";
@@ -186,6 +186,23 @@ export function ModelChipMenu({
                         >
                           <span className={on ? "" : "opacity-0"}>✓</span>
                           <span className="min-w-0 flex-1 truncate">{m}</span>
+                          {/* 当前选中行尾箭头（2026-11-14 用户需求）：点箭头
+                              只进思考强度二级、不触发模型重选——原来改强度
+                              要「点两次」（重选模型+选强度）。 */}
+                          {on && (
+                            <span
+                              role="button"
+                              tabIndex={-1}
+                              title={tc("model.thinkingTitle")}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLevel2({ pid, m });
+                              }}
+                              className="-m-1 shrink-0 rounded p-1 text-faint hover:bg-line2/60 hover:text-txt"
+                            >
+                              <ChevronRight className="h-3 w-3" />
+                            </span>
+                          )}
                         </button>
                       );
                     })
