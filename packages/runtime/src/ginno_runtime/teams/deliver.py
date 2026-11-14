@@ -58,20 +58,47 @@ REPLY_MAX_CHARS = 1200
 # 重启丢失可接受（steer stash 同款边界）。
 _QUEUES: dict[str, list[dict]] = {}
 
+# 并发闸预约位（backlog P1-5）：team_id → 已决定起 turn 但尚未登记
+# _RUNNING_TURNS 的 instance_id。闸检查在 spawn 之前、登记在 task 内部，
+# 中间这段窗口会让两个并发 deliver 同时通过闸 → 双开 turn / 闸击穿。
+# spawn 前同步占位，turn 真起来（或失败）后释放。
+_STARTING: dict[str, set[str]] = {}
+
+
+def _reserve(team_id: str, instance_id: str) -> None:
+    _STARTING.setdefault(team_id, set()).add(instance_id)
+
+
+def _release(team_id: str, instance_id: str) -> None:
+    s = _STARTING.get(team_id)
+    if s is not None:
+        s.discard(instance_id)
+        if not s:
+            _STARTING.pop(team_id, None)
+
 
 def _running_members(team: dict) -> int:
     """团队里此刻有活 turn 的成员数（按成员计，不按 turn 计——一个成员
-    同时只有一条活跃会话在跑，多会话成员也以「任一会话在跑」为 1）。"""
+    同时只有一条活跃会话在跑，多会话成员也以「任一会话在跑」为 1）。
+
+    含**已预约但尚未登记**的成员（backlog P1-5）：闸检查在 spawn 之前，而
+    ``_RUNNING_TURNS`` 要等 task 内部才写，两个并发 deliver 会同时通过闸。
+    ``_STARTING`` 在 spawn 前同步占位，把这个窗口堵掉。
+    """
+    team_id = str((team or {}).get("id") or "")
+    starting = _STARTING.get(team_id) or set()
     n = 0
     for m in (team or {}).get("members") or []:
+        iid = str(m.get("instance_id") or "")
         sids = {*(m.get("session_ids") or []), m.get("session_id") or ""}
-        if any(_is_live(s) for s in sids if s):
+        if iid in starting or any(_is_live(s) for s in sids if s):
             n += 1
     return n
 
 
 def clear_queue(team_id: str) -> None:
     _QUEUES.pop(team_id, None)
+    _STARTING.pop(team_id, None)
 
 
 async def _drain_queue(team_id: str) -> None:
@@ -180,6 +207,17 @@ async def post_reply(
 
     session = _SESSIONS.get(main_sid)
     if session is None or session.get("graph") is None:
+        # 兜底加载（backlog P1-6）：重启后用户没打开过团队主会话时，_SESSIONS
+        # 里没有它 → 此前直接 warning+return，成员跑完的回帖**静默丢失**。
+        # 成员会话侧本来就有 _ensure_session 兜底，主会话侧漏了。
+        try:
+            from ..api.sessions import _ensure_session  # lazy: cycle
+
+            session = _ensure_session(main_sid)
+        except Exception:  # noqa: BLE001
+            _log.exception("team_reply_ensure_failed team=%s main=%s", team_id, main_sid)
+            session = None
+    if session is None or session.get("graph") is None:
         _log.warning("team_reply_no_session team=%s main=%s", team_id, main_sid)
         return False
 
@@ -259,6 +297,8 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     team = store.get_team(team_id)
     member = store.get_member(team_id, instance_id)
     if team is None or member is None:
+        # 编制已变（解散/移除）→ 释放预约位，否则额度永久少一个。
+        _release(team_id, instance_id)
         return
     sid = str(member.get("session_id") or "")
     stop_evt = _TURN_STOP_setdefault(sid)
@@ -276,6 +316,10 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
         from .lifecycle import on_turn_settled
 
         await on_turn_settled(sid, "")
+    finally:
+        # 释放并发闸预约位（P1-5）。turn 已结束，_running_members 改由
+        # 活 turn 判据计数；此处不释放会让额度永久少一个。
+        _release(team_id, instance_id)
 
 
 def _TURN_STOP_setdefault(session_id: str):
@@ -425,6 +469,9 @@ async def deliver(
                 "error": t(f"Member session {sid} unavailable",
                            f"成员 session {sid} 不可用")}
 
+    # 同步占位后再 spawn：堵住「闸检查 → task 内登记 _RUNNING_TURNS」的窗口
+    # （backlog P1-5：两个并发 deliver 否则可同时通过闸）。
+    _reserve(team_id, instance_id)
     spawn_bg(_run_member_turn(team_id, instance_id, text))
     # 证据 = turn 确实起来了（给 spawn_bg 一点时间登记 _RUNNING_TURNS）。
     started = await _await_turn_start(sid)

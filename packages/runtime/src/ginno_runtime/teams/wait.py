@@ -83,8 +83,23 @@ async def wait_for_members(
 
     while True:
         rows = _rows()
+        # 团队已解散 ≠ 团队为空（backlog P1-10）：必须先判解散，否则会被
+        # 下面「空团队」那条兜底当成正常返回，Lead 以为等完了其实队没了。
+        if store.get_team(team_id) is None:
+            return t(
+                "[error] The team no longer exists; the wait was aborted.",
+                "[error] 团队已不存在，等待中止。",
+            )
         if not ids and not rows:
             return json.dumps({"partial": False, "members": []}, ensure_ascii=False)
+        # 等待**过程中**目标成员被移除：rows 恒空而 ids 非空，上面那条兜底
+        # 不触发 → 默认 timeout=0 时永久死循环，Lead 的 turn 挂死。
+        if ids and not rows:
+            return t(
+                "[error] The waited member(s) no longer exist (team disbanded or "
+                "member removed); the wait was aborted.",
+                "[error] 等待的成员已不存在（团队被解散或成员被移除），等待中止。",
+            )
         if rows and all(_settled(r["status"], until) for r in rows):
             return json.dumps(
                 {"partial": False, "members": rows}, ensure_ascii=False

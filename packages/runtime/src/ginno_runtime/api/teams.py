@@ -477,6 +477,18 @@ async def patch_member_endpoint(team_id: str, instance_id: str, data: dict) -> d
     member = team_store.patch_member(team_id, instance_id, allowed)
     if member is None:
         return {"ok": False, "error": "not found"}
+    # role 变更必须同步 leader_instance_id（backlog P1-8）：否则把领队改回
+    # member 后，route.py 仍优先按 leader_instance_id 把全部无 @ 消息投给
+    # 已降级的成员，且「已有领队」校验挡住新任命 → 双保险判据互相打架。
+    if "role" in allowed:
+        team_now = team_store.get_team(team_id) or {}
+        cur_leader = str(team_now.get("leader_instance_id") or "")
+        if allowed["role"] == "leader":
+            if cur_leader != instance_id:
+                team_store.update_team(team_id, {"leader_instance_id": instance_id})
+        elif cur_leader == instance_id:
+            # 降级：清空冗余指针，回落到 role 扫描（route.py 的双保险第二支）。
+            team_store.update_team(team_id, {"leader_instance_id": ""})
     await _broadcast(team_id)
     return {"ok": True, "member": member}
 
@@ -495,6 +507,12 @@ async def remove_member_endpoint(team_id: str, instance_id: str) -> dict:
             except Exception:  # noqa: BLE001
                 _log.exception("team_member_session_delete_failed session=%s", sid)
     ok = team_store.remove_member(team_id, instance_id)
+    # 移除的若是领队，清掉冗余指针（backlog P1-8）：否则 route.py 仍按它路由，
+    # 而该实例已不存在 → 无 @ 消息投给幽灵成员。
+    if ok:
+        team_now = team_store.get_team(team_id) or {}
+        if str(team_now.get("leader_instance_id") or "") == instance_id:
+            team_store.update_team(team_id, {"leader_instance_id": ""})
     _log.info("team_member_removed team=%s instance=%s ok=%s", team_id, instance_id, ok)
     await _broadcast(team_id)
     return {"ok": ok}
