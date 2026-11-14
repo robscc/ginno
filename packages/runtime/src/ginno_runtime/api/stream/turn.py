@@ -556,12 +556,12 @@ async def _run_stream(
 
         compacting_armed = False
 
-        async def _announce_compacting() -> None:
+        async def _announce_compacting(predicted_s=None) -> None:
             nonlocal compacting_armed
             compacting_armed = True  # 真的进入压缩才需要终态（见 finally）
             await _push_session_event(
                 session_id, "context.compacting",
-                {"stage": "summarizing", "pct": 8}, turn_id,
+                {"stage": "summarizing", "pct": 8, "predicted_s": predicted_s}, turn_id,
             )
 
         async def _announce_summary_done() -> None:

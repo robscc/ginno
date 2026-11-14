@@ -212,6 +212,7 @@
       "connecting": "正在连接模型……",
       "thinking": "模型思考中……",
       "compacting": "压缩中……历史对话正在被摘要整理",
+      "compactEta": "预计还需 {s}s",
       "stillThinking": "还在思考——可能需要一点时间……（{seconds}s）",
       "waitNextRound": "等待下一轮……（{seconds}s）",
       "connLostReconnecting": "连接中断，正在自动重连……",

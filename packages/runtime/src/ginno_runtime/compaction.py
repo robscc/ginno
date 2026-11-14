@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from typing import Any
 
@@ -320,10 +321,27 @@ async def maybe_compact_history(
         log.info("compaction aborted before summary session=%s", session_id)
         return None
     if on_summary_start is not None:
+        # 进度预估（2026-11-14）：按历史压缩时长 + 本次消息量预测秒数，随
+        # start 事件下发，前端据此走时间轴进度 + 显示 ETA（取代盲目缓动）。
+        from . import compaction_stats
+
+        predicted_s = compaction_stats.predict(len(old))
+        _t_summary = time.perf_counter()
         try:
-            await on_summary_start()
+            await on_summary_start(predicted_s)
+        except TypeError:
+            # 向后兼容旧无参钩子（测试/旧调用方）
+            try:
+                await on_summary_start()
+            except Exception:
+                log.warning("compaction_status_callback_failed session=%s", session_id)
         except Exception:
             log.warning("compaction_status_callback_failed session=%s", session_id)
+    else:
+        from . import compaction_stats
+
+        predicted_s = None
+        _t_summary = time.perf_counter()
     summary_task = asyncio.ensure_future(
         model.ainvoke(
             [
@@ -348,6 +366,13 @@ async def maybe_compact_history(
             return None
         stop_task.cancel()
     summary_resp = await summary_task
+    # 记录本次摘要耗时（进度预估的历史样本）。
+    try:
+        from . import compaction_stats
+
+        compaction_stats.record(time.perf_counter() - _t_summary, len(old))
+    except Exception:
+        log.warning("compaction_stats_record_failed session=%s", session_id)
     if on_summary_done is not None:
         # 摘要已返回、写回前（进度条 92% 档——最后一步是廉价的消息替换）。
         try:

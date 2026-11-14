@@ -1329,7 +1329,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 从「正在思考…」切到「压缩中…」。不落 store,不进历史。
       // 2026-11-12 payload 带 {stage,pct}（summarizing=8 / writing=92），
       // 中间段由渲染层时间缓动推进——Claude Code 同款进度条体验。
-      const pl = ev as { stage?: string; pct?: number };
+      const pl = ev as { stage?: string; pct?: number; predicted_s?: number | null };
       if (pl.stage === "done") {
         // 终态（2026-11-12 卡死修复）：compact 是后台任务，结束后若无
         // 后续事件，compacting 镜像永不清 → Composer 永久 readOnly。
@@ -1341,6 +1341,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       ctx.compactingBySessionRef.current[sid] = true;
       ctx.compactStageRef.current[sid] = {
         stage: typeof pl.stage === "string" ? pl.stage : "summarizing",
+        predicted_s:
+          typeof pl.predicted_s === "number" && pl.predicted_s > 0
+            ? pl.predicted_s
+            : undefined,
         pct: typeof pl.pct === "number" ? pl.pct : 8,
       };
       ctx.syncDisplay(sid);
