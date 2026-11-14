@@ -178,6 +178,10 @@ export function PinApp() {
         const d = e.data as { type?: string; sessionId?: string | null } | null;
         if (d?.type === "active") setFollowedId(typeof d.sessionId === "string" ? d.sessionId : null);
       };
+      // P2-24：向主窗口要一次当前活跃会话——主窗口可能已在 /team（TeamShell
+      // 自包含视图，store.activeSessionId 不变，localStorage seed 是旧的）。
+      // TeamShell 监听 hello 并应答；不在 /team 时无人应答，沿用 seed。
+      bc.postMessage({ type: "hello" });
     } catch {
       /* BroadcastChannel unavailable — follow mode falls back to the seed */
     }

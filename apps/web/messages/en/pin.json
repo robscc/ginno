@@ -54,7 +54,15 @@
       "addAttachment": "Add attachment",
       "injectTitle": "Inject into this turn (Enter)",
       "sendTitle": "Send",
-      "stopTitle": "Stop this turn"
+      "stopTitle": "Stop this turn",
+      "teamReplyBadge": "reply",
+      "teamMemberFallback": "Member",
+      "teamReplyTruncated": "truncated · full text in workspace",
+      "teamOpenMain": "Open main window",
+      "teamOpenMainTitle": "View the full team space in the main window",
+      "deliveryOk": "Delivered to {name}",
+      "deliveryStalled": "Sent to {name}, but its turn hasn't started yet — check the workbench before resending",
+      "deliveryFailed": "Delivery to {name} failed: {reason}"
     }
   }
 }

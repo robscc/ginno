@@ -17,6 +17,8 @@
 // · P2-16 elapsed 本地按 last_active 实时走字（快照 elapsed_s 只作兜底）。
 // · P2-18 会话增删 / 成员变更补 catch + 面板内可见错误条（不用 alert）。
 // · P2-19 教育性文案：上卷规则说明条 + 「@=投递不是换 persona」脚注。
+// · P2-5 成本可见：每行实例累计 token + 脚注团队合计（数据由 TeamShell 的
+//   useTeamUsage 低频拉取下发，本组件纯渲染，精确值进 tooltip）。
 // · P1-19 overlay 模式：窄窗口下由 TeamShell 以抽屉形式渲染（不挤对话列）。
 // · 顺手修：领队活状态行此前在「已剔除领队的 rows」里 find 领队 → 恒
 //   undefined，永远回退静态 persona；改从 allRows 找（生命周期菜单也挂在它上面）。
@@ -31,6 +33,7 @@ import {
   MoreHorizontal,
   PenLine,
   Plus,
+  RefreshCw,
   Trash2,
   UserX,
   X,
@@ -42,6 +45,7 @@ import { agentHex } from "@/lib/theme";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import type { Team, TeamMemberRow, TeamMemberStatus } from "@/lib/types";
 import { useEscClose } from "./useEscClose";
+import { fmtTokens, type TeamUsage } from "./useTeamUsage";
 
 /** chat 域翻译 + 动态 key 收敛转型（本文件共用；理由见 blocks.tsx useChatT）。
  *  状态徽标文案 key 是 `team.status.${s}` 动态拼的，强类型 tc 不接受 string，
@@ -109,6 +113,10 @@ export function MemberPanel({
   onAddMember,
   overlay = false,
   onClose,
+  usage = null,
+  usageLoading = false,
+  usageFailed = false,
+  onRefreshUsage,
 }: {
   team: Team;
   /** 当前打开工作台的成员（高亮该行）。 */
@@ -124,6 +132,11 @@ export function MemberPanel({
   overlay?: boolean;
   /** 抽屉模式的关闭按钮回调。 */
   onClose?: () => void;
+  /** P2-5：团队成本聚合（TeamShell 统一低频拉取后下发，面板不自取）。 */
+  usage?: TeamUsage | null;
+  usageLoading?: boolean;
+  usageFailed?: boolean;
+  onRefreshUsage?: () => void;
 }) {
   const g = useGinno();
   const { tc, tr } = useChatT();
@@ -155,6 +168,26 @@ export function MemberPanel({
   useEscClose(() => setConfirmRemove(null), confirmRemove !== null);
 
   const agentById = (id: string) => g.agents.find((a) => a.id === id) ?? null;
+
+  /** P2-5：每实例累计 token chip（人类可读，精确输入/输出/调用数进 tooltip）。
+   *  usage 未加载（null）时不渲染——不拿 0 冒充「还没拉到的数据」。 */
+  const usageChip = (instanceId: string) => {
+    if (!usage) return null;
+    const u = usage.members.find((m) => m.instance_id === instanceId);
+    return (
+      <span
+        className="shrink-0 text-[10px] tabular-nums text-faint"
+        title={tc("team.usageTip", {
+          days: usage.days,
+          input: fmtTokens(u?.input_tokens ?? 0),
+          output: fmtTokens(u?.output_tokens ?? 0),
+          calls: u?.calls ?? 0,
+        })}
+      >
+        {tc("team.usageTok", { n: fmtTokens(u?.total_tokens ?? 0) })}
+      </span>
+    );
+  };
 
   // ---- P1-14 成员生命周期动作（runtime 端点齐备，此前全仓库零调用）----
   const patchMember = async (
@@ -399,8 +432,12 @@ export function MemberPanel({
                         {tc("team.leadBadge")}
                       </span>
                     </div>
-                    <div className="mt-1 truncate pl-[26px] text-[10px] leading-relaxed text-faint" title={leadRow.status_detail}>
-                      {leadRow.status_detail || tc("team.leadInstanceNote")}
+                    <div className="mt-1 flex items-center gap-2 pl-[26px] text-[10px] leading-relaxed text-faint">
+                      <span className="min-w-0 flex-1 truncate" title={leadRow.status_detail}>
+                        {leadRow.status_detail || tc("team.leadInstanceNote")}
+                      </span>
+                      {/* P2-5：领队实例的累计 token（设计 §5.6 成本可见）。 */}
+                      {usageChip(leadRow.instance_id)}
                     </div>
                   </button>
                   {menuButton(leadRow)}
@@ -510,6 +547,8 @@ export function MemberPanel({
               {r.role === "leader" && (
                 <span className="text-[10px] text-faint">{tc("team.leaderBadge")}</span>
               )}
+              {/* P2-5：该实例累计 token（多会话全部计入，runtime 端点已聚合）。 */}
+              {usageChip(r.instance_id)}
               <button
                 onClick={() => setOpenIds((m) => ({ ...m, [r.instance_id]: !expanded }))}
                 className="ml-auto flex items-center gap-1 text-[10px] text-faint transition-colors hover:text-muted"
@@ -629,6 +668,42 @@ export function MemberPanel({
           {team.shared_workspace?.primary_folder || "—"}
         </div>
         <div className="mt-0.5">{tc("team.footIsolated")}</div>
+        {/* P2-5：团队合计成本 + 手动刷新（低频拉取的手动入口；60s 自动刷新
+            由 TeamShell 的 useTeamUsage 承担，不在状态热路径里）。 */}
+        {usage && (
+          <div className="mt-1.5 flex items-center gap-1.5 border-t border-line/60 pt-1.5">
+            <span
+              className="min-w-0 flex-1 truncate tabular-nums"
+              title={tc("team.usageTip", {
+                days: usage.days,
+                input: fmtTokens(usage.total.input_tokens),
+                output: fmtTokens(usage.total.output_tokens),
+                calls: usage.total.calls,
+              })}
+            >
+              <b className="font-medium text-muted">
+                {tc("team.usageTotalLabel", { days: usage.days })}
+              </b>{" "}
+              {tc("team.usageTotalValue", {
+                tokens: fmtTokens(usage.total.total_tokens),
+                calls: usage.total.calls,
+              })}
+            </span>
+            {onRefreshUsage && (
+              <button
+                onClick={onRefreshUsage}
+                disabled={usageLoading}
+                className="shrink-0 rounded p-0.5 transition-colors hover:text-muted disabled:opacity-60"
+                title={tc("team.usageRefresh")}
+              >
+                <RefreshCw className={`h-3 w-3 ${usageLoading ? "animate-spin" : ""}`} />
+              </button>
+            )}
+          </div>
+        )}
+        {usageFailed && (
+          <div className="mt-1 text-red/80">{tc("team.usageFailed")}</div>
+        )}
         <div className="mt-1.5 border-t border-line/60 pt-1.5">{tc("team.atDeliveryNote")}</div>
       </div>
 

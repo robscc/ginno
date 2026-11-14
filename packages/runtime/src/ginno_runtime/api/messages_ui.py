@@ -1017,7 +1017,11 @@ def _messages_to_ui(
                         "displayName": "",
                         "memberSessionId": "",
                         "teamId": str(_td.get("team_id") or ""),
-                        "instanceId": str(_td.get("routed_to") or ""),
+                        # 两种信封形状：广场投递用 routed_to（可逗号分隔多目标），
+                        # 成员投递用 instance_id。只读前者会让成员侧取空。
+                        "instanceId": str(
+                            _td.get("instance_id") or _td.get("routed_to") or ""
+                        ),
                     }
                 ui.append(_ub)
         elif isinstance(m, AIMessage):

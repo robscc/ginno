@@ -54,7 +54,15 @@
       "addAttachment": "添加附件",
       "injectTitle": "注入到本轮对话（Enter）",
       "sendTitle": "发送",
-      "stopTitle": "停止本轮对话"
+      "stopTitle": "停止本轮对话",
+      "teamReplyBadge": "回帖",
+      "teamMemberFallback": "成员",
+      "teamReplyTruncated": "已截断 · 全文在工作台",
+      "teamOpenMain": "打开主窗口",
+      "teamOpenMainTitle": "在主窗口查看完整团队空间",
+      "deliveryOk": "已投递给 {name}",
+      "deliveryStalled": "已发给 {name}，但 turn 尚未起跑——先看工作台，勿直接重发",
+      "deliveryFailed": "投递给 {name} 失败：{reason}"
     }
   }
 }

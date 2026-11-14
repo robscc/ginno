@@ -15,8 +15,8 @@
 //
 // 状态一律来自 runtime teams.status（§5.9 唯一权威来源），本页不自己判态。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArchiveRestore, Loader2, PanelRight, PenLine, Plus, Sparkles, Trash2, Users, WifiOff, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArchiveRestore, Loader2, PanelRight, PenLine, Plus, RefreshCw, Sparkles, Trash2, Users, WifiOff, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { useGinno } from "@/lib/store";
@@ -28,6 +28,8 @@ import { AddMemberModal } from "./AddMemberModal";
 import { NewTeamModal } from "./NewTeamModal";
 import { TeamFromPromptModal, type TeamCreateMeta } from "./TeamFromPromptModal";
 import { TeamMemoryModal } from "./TeamMemoryModal";
+import { DeliveryBriefCard } from "./DeliveryBriefCard";
+import { fmtTokens, useTeamUsage, type TeamUsage } from "./useTeamUsage";
 import { useEscClose } from "./useEscClose";
 import { consumeOpenMemberIntent } from "./openMemberIntent";
 
@@ -99,6 +101,75 @@ export function TeamShell() {
   const team = useMemo(
     () => teams.find((t) => t.id === teamId) ?? null,
     [teams, teamId],
+  );
+
+  // P2-5：团队成本聚合——低频拉取（团队切换时一次 + 60s 定时 + 手动刷新），
+  // 下发给 MemberPanel 与 TeamOverview 纯渲染；绝不塞进状态刷新热路径。
+  const {
+    usage,
+    loading: usageLoading,
+    failed: usageFailed,
+    refresh: refreshUsage,
+  } = useTeamUsage(team?.id);
+
+  // ---- P2-24：pin 浮窗 follow 联动 ----
+  // 核实结论：pin 的 follow 模式经 BroadcastChannel "ginno-active-session"
+  // 镜像主窗口 store 的 activeSessionId（useSessions.ts 广播 / PinApp.tsx
+  // 订阅）。但 /team 导航不改 store.activeSessionId，TeamShell 的视图状态
+  // 自包含 → pin 停留在最后一个普通聊天会话，团队活动完全不可见。
+  // 最小修复：把团队空间当前展示的会话（广场主会话 / 成员工作台会话）广播
+  // 到同一频道——团队会话是真实 session，runtime 把 turn 广播给该会话的
+  // 所有 socket，pin 的 PinStream 直接跟流（含权限代答）；team.reply /
+  // team.changed 由 PinStream 新增的 case 消费（状态徽标与主窗口同语义）。
+  // 离开 /team（unmount）时恢复广播 store 的 activeSessionId，follow 语义
+  // 交还主窗口导航。
+  const storeActiveRef = useRef<string | null>(g.activeSessionId);
+  useEffect(() => {
+    storeActiveRef.current = g.activeSessionId;
+  });
+  const pinFollowSid =
+    view.kind === "member" ? view.sessionId : team?.main_session_id ?? null;
+  useEffect(() => {
+    if (!pinFollowSid) return;
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("ginno-active-session");
+      // 晚到的 pin（主窗口已在 /team 时才打开浮窗）：PinApp 挂载发 hello，
+      // 这里应答当前会话——否则 pin 只能拿到 localStorage 里的旧 seed。
+      bc.onmessage = (e) => {
+        const d = e.data as { type?: string } | null;
+        if (d?.type === "hello") {
+          try {
+            bc?.postMessage({ type: "active", sessionId: pinFollowSid });
+          } catch {
+            /* noop */
+          }
+        }
+      };
+      bc.postMessage({ type: "active", sessionId: pinFollowSid });
+    } catch {
+      /* BroadcastChannel 不可用——pin 回退 localStorage seed */
+      bc = null;
+    }
+    return () => {
+      try {
+        bc?.close();
+      } catch {
+        /* noop */
+      }
+    };
+  }, [pinFollowSid]);
+  useEffect(
+    () => () => {
+      try {
+        const bc = new BroadcastChannel("ginno-active-session");
+        bc.postMessage({ type: "active", sessionId: storeActiveRef.current });
+        bc.close();
+      } catch {
+        /* noop */
+      }
+    },
+    [],
   );
 
   // 切换团队时从 localStorage 恢复该团队的引导卡「已读」状态（私密窗口
@@ -464,6 +535,11 @@ export function TeamShell() {
   const mainSession = sessionById(team?.main_session_id);
   const memberSession =
     view.kind === "member" ? sessionById(view.sessionId) : null;
+  // P2-13：brief 卡需要成员行（display_name / 状态跃迁触发补拉）。
+  const memberRow =
+    view.kind === "member"
+      ? (team?.member_rows ?? []).find((x) => x.instance_id === view.instanceId) ?? null
+      : null;
   // P2-1/P2-3：主会话引用完整性 + 共享工作区（都在 header/横幅里展示）。
   const mainMissing = mainSessionMissing(team);
   const wsPath = (team?.shared_workspace?.workspace ?? "").trim();
@@ -995,6 +1071,10 @@ export function TeamShell() {
                 filter={ovFilter}
                 onFilter={setOvFilter}
                 onOpen={openMemberSession}
+                usage={usage}
+                usageLoading={usageLoading}
+                usageFailed={usageFailed}
+                onRefreshUsage={() => void refreshUsage()}
               />
             ) : memberSession ? (
               <>
@@ -1051,6 +1131,15 @@ export function TeamShell() {
                     📝 {tc("team.notesEdit")}
                   </button>
                 </div>
+                {/* P2-13：投递 brief 结构化卡（目标 / 共享 workspace / 团队
+                    上下文 / 完成后）。ChatStream 在边界外，卡片落在工作台
+                    顶部而非气泡流内——最近一次入口投递的四要素一屏可见。 */}
+                <DeliveryBriefCard
+                  team={team}
+                  instanceId={view.instanceId}
+                  sessionId={view.sessionId}
+                  memberStatus={memberRow?.status}
+                />
                 <ChatStream session={memberSession} />
               </>
             ) : (
@@ -1073,6 +1162,10 @@ export function TeamShell() {
                   onOpenMemberSession={openMemberSession}
                   onMutate={afterMutate}
                   onAddMember={() => setAddOpen(true)}
+                  usage={usage}
+                  usageLoading={usageLoading}
+                  usageFailed={usageFailed}
+                  onRefreshUsage={() => void refreshUsage()}
                 />
               ) : (
                 <div className="absolute inset-0 z-30 flex justify-end">
@@ -1089,6 +1182,10 @@ export function TeamShell() {
                     onOpenMemberSession={openMemberSession}
                     onMutate={afterMutate}
                     onAddMember={() => setAddOpen(true)}
+                    usage={usage}
+                    usageLoading={usageLoading}
+                    usageFailed={usageFailed}
+                    onRefreshUsage={() => void refreshUsage()}
                     overlay
                     onClose={() => setPanel(false)}
                   />
@@ -1167,11 +1264,20 @@ function TeamOverview({
   filter,
   onFilter,
   onOpen,
+  usage = null,
+  usageLoading = false,
+  usageFailed = false,
+  onRefreshUsage,
 }: {
   team: Team;
   filter: "all" | "active" | "needs";
   onFilter: (f: "all" | "active" | "needs") => void;
   onOpen: (instanceId: string, sessionId: string) => void;
+  /** P2-5：团队成本聚合（TeamShell 低频拉取下发）。 */
+  usage?: TeamUsage | null;
+  usageLoading?: boolean;
+  usageFailed?: boolean;
+  onRefreshUsage?: () => void;
 }) {
   const tc = useTranslations("chat");
   const rows = team.member_rows ?? [];
@@ -1221,6 +1327,51 @@ function TeamOverview({
         </span>
       </div>
 
+      {/* P2-5：团队合计成本（设计 §5.6 硬要求——多 agent 并行成本是单
+          agent 数倍，必须让用户看得见）。口径 = 近 N 天全部成员会话。 */}
+      {(usage || usageFailed) && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 text-[11px] text-muted">
+          {usage ? (
+            <>
+              <span className="shrink-0 font-medium text-txt">
+                {tc("team.usageTotalLabel", { days: usage.days })}
+              </span>
+              <span
+                className="min-w-0 truncate tabular-nums"
+                title={tc("team.usageTip", {
+                  days: usage.days,
+                  input: fmtTokens(usage.total.input_tokens),
+                  output: fmtTokens(usage.total.output_tokens),
+                  calls: usage.total.calls,
+                })}
+              >
+                {usage.total.calls > 0
+                  ? tc("team.usageTotalValue", {
+                      tokens: fmtTokens(usage.total.total_tokens),
+                      calls: usage.total.calls,
+                    })
+                  : tc("team.usageNone")}
+              </span>
+            </>
+          ) : (
+            <span className="min-w-0 flex-1 text-red/80">{tc("team.usageFailed")}</span>
+          )}
+          {usageFailed && usage && (
+            <span className="shrink-0 text-red/80">{tc("team.usageFailed")}</span>
+          )}
+          {onRefreshUsage && (
+            <button
+              onClick={onRefreshUsage}
+              disabled={usageLoading}
+              className="ml-auto shrink-0 rounded p-0.5 text-faint transition-colors hover:text-muted disabled:opacity-60"
+              title={tc("team.usageRefresh")}
+            >
+              <RefreshCw className={`h-3 w-3 ${usageLoading ? "animate-spin" : ""}`} />
+            </button>
+          )}
+        </div>
+      )}
+
       <div
         className="mt-3 grid gap-3"
         style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}
@@ -1228,6 +1379,8 @@ function TeamOverview({
         {shown.map((r) => {
           const sids = r.session_ids?.length ? r.session_ids : [r.session_id].filter(Boolean);
           const chip = STATUS_CHIP[r.status] ?? STATUS_CHIP.idle;
+          // P2-5：该实例累计 token（与成员面板同口径，tooltip 带明细）。
+          const u = usage?.members.find((m) => m.instance_id === r.instance_id);
           return (
             <button
               key={r.instance_id}
@@ -1265,6 +1418,19 @@ function TeamOverview({
                 <span className="truncate font-mono">{r.agent_id}</span>
                 {r.model && <span className="truncate">· {r.model}</span>}
                 <span>· {tc("team.ovSessions", { n: sids.length })}</span>
+                {usage && (
+                  <span
+                    className="shrink-0 tabular-nums"
+                    title={tc("team.usageTip", {
+                      days: usage.days,
+                      input: fmtTokens(u?.input_tokens ?? 0),
+                      output: fmtTokens(u?.output_tokens ?? 0),
+                      calls: u?.calls ?? 0,
+                    })}
+                  >
+                    · {tc("team.usageTok", { n: fmtTokens(u?.total_tokens ?? 0) })}
+                  </span>
+                )}
                 <span className="ml-auto shrink-0 text-violet">{tc("team.ovOpen")}</span>
               </div>
             </button>

@@ -5,7 +5,9 @@
  * (docs/floating-window-design.md §2.4 / §4 Phase 3).
  *
  * A deliberately lightweight sibling of ChatStream: ONE session per mount
- * (the parent keys the component by session id) and the 13-event WS subset.
+ * (the parent keys the component by session id) and the 13-event WS subset
+ * plus the AgentTeam trio (team.changed / team.reply / team.delivered,
+ * backlog P2-24 — follow mode mirrors the team plaza / member workbench).
  * The wire protocol is 100% unchanged — the runtime already broadcasts every
  * turn to ALL sockets of a session, so the pin window and the main window can
  * watch (and answer permission prompts for) the same turn; `_PENDING_RESUME`
@@ -36,8 +38,11 @@ import {
   userTextFromBlocks,
   type HistoryState,
 } from "@/components/chat/inputHistory";
-import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
+import { AlertCircle, ArrowUp, ExternalLink, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { isDesktop } from "@/lib/desktop";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
+import type { TeamReplyMeta } from "@/lib/types";
 import { mergeHistoryWithLive } from "@/lib/historyMerge";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
 import { useSteerQueue, type SteerItem } from "@/lib/steerQueue";
@@ -82,6 +87,9 @@ interface PinMsg {
   error?: boolean;
   /** Error cards: the originating user text, for retry. */
   retryText?: string;
+  /** P2-24：团队成员回帖（team.reply 实时帧 / history 的 teamReply 标记）。
+   *  渲染为带归属徽标的回帖卡，而不是普通 assistant 气泡。 */
+  teamReply?: TeamReplyMeta | null;
 }
 
 interface PermissionPrompt {
@@ -189,7 +197,15 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
 
 function mapHistory(
   res: {
-    messages?: Array<{ id?: string; role: "user" | "assistant"; blocks: Block[]; turnId?: string }>;
+    messages?: Array<{
+      id?: string;
+      role: "user" | "assistant";
+      blocks: Block[];
+      turnId?: string;
+      // P2-24：历史里的成员回帖（messages_ui 序列化 teamReply）——重载 /
+      // 重连 reconcile 后回帖卡不丢，与实时 team.reply 帧同渲染。
+      teamReply?: TeamReplyMeta | null;
+    }>;
     last_error?: {
       message?: string; turn_id?: string;
       i18n_key?: string; params?: Record<string, string | number>;
@@ -204,6 +220,7 @@ function mapHistory(
     role: m.role === "user" ? "user" : "assistant",
     blocks: m.blocks ?? [],
     turnId: m.turnId,
+    teamReply: m.teamReply ?? null,
   }));
   // Persisted turn failure: re-surface it so the retry affordance survives
   // a window reopen (same contract as ChatStream's mapHistory).
@@ -246,6 +263,9 @@ export function PinStream({
   const [compacting, setCompacting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
+  // P2-24：follow 团队广场时的团队上卷态。广场主会话自己不跑 turn（消息都
+  // 路由给成员），成员活动经 team.changed 的 rollup 聚合到这里驱动徽标。
+  const [teamRollup, setTeamRollup] = useState<{ working: number; blocked: number } | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [input, setInput] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -317,7 +337,13 @@ export function PinStream({
     return () => window.removeEventListener(PIN_FOCUS_INPUT, onFocusInput);
   }, []);
 
-  const status: PinStreamStatus = permission ? "permission" : busy || liveId ? "busy" : "idle";
+  // P2-24：徽标语义与主窗口团队上卷一致——blocked（等我代答）→ permission
+  // （黄），working → busy（脉冲）。team.changed 只广播在团队主会话 socket，
+  // 成员会话仍由 turn 事件驱动，两路互不覆盖。
+  const teamBlocked = (teamRollup?.blocked ?? 0) > 0;
+  const teamWorking = (teamRollup?.working ?? 0) > 0;
+  const status: PinStreamStatus =
+    permission || teamBlocked ? "permission" : busy || liveId || teamWorking ? "busy" : "idle";
   useEffect(() => {
     onStatus?.(status);
   }, [status, onStatus]);
@@ -551,6 +577,69 @@ export function PinStream({
         // The turn died with entries still unacknowledged → the oldest becomes
         // the next turn, same rule as a normal end (design §3.3).
         flushSteerQueue();
+        break;
+      }
+      // ─── P2-24：AgentTeam 联动（backlog：pin 浮窗此前 team 事件零处理）───
+      // team.changed / team.reply 只广播在团队主会话（广场）socket；follow
+      // 成员会话时收不到，成员状态仍由上面的 turn 事件驱动。
+      case "team.changed": {
+        const team = ev.team as
+          | { main_session_id?: string; rollup?: { working?: number; blocked?: number } }
+          | undefined;
+        // 归属守卫：只有本 socket 正是该团队的主会话才采纳 rollup。
+        if (team && team.main_session_id === sessionId) {
+          setTeamRollup({
+            working: Number(team.rollup?.working ?? 0),
+            blocked: Number(team.rollup?.blocked ?? 0),
+          });
+        }
+        break;
+      }
+      case "team.reply": {
+        // 成员回帖：与 handle.ts 同契约——服务端 message_id 作消息 id，
+        // 实时追加与 history reload 指向同一条，不会双渲染。
+        const msgId = (ev.message_id as string) || mid();
+        const text = (ev.text as string) || "";
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msgId)) return prev;
+          return [
+            ...prev,
+            {
+              id: msgId,
+              role: "assistant" as const,
+              blocks: [{ kind: "text", text } as Block],
+              teamReply: {
+                team_id: (ev.team_id as string) || "",
+                instance_id: (ev.instance_id as string) || "",
+                member_session_id: (ev.member_session_id as string) || "",
+                display_name: (ev.display_name as string) || "",
+                truncated: Boolean(ev.truncated),
+              },
+            },
+          ];
+        });
+        break;
+      }
+      case "team.delivered": {
+        // 广场 @ 投递回执（pin 里也能发 @ 投递）。runtime 已补 message.end
+        // （P0-1），这里防御性收口 live 气泡 + 三态回执可视化：failed 是
+        // 原子拒绝（一个字都没发），必须可见，否则 pin 用户以为发出去了。
+        const receipt = (ev.receipt as string) || "delivered";
+        closeLive(false);
+        setPermission(null);
+        const name = (ev.display_name as string) || (ev.agent_id as string) || "";
+        if (receipt === "failed") {
+          addSystemRow(
+            t("deliveryFailed", {
+              name,
+              reason: (ev.error as string) || (ev.reason as string) || "",
+            }),
+          );
+        } else if (receipt === "stalled") {
+          addSystemRow(t("deliveryStalled", { name }));
+        } else {
+          addSystemRow(t("deliveryOk", { name }));
+        }
         break;
       }
       default:
@@ -932,6 +1021,19 @@ export function PinStream({
     }
   }
 
+  /** P2-24：回帖卡的「打开主窗口」——绝不把 pin webview 导航去 /team
+   *  （主窗口 TeamReplyCard 的 router.push 会把整个团队空间塞进 360×520
+   *  浮窗）。只召唤主窗口：follow 镜像团队会话时用户通常已在 /team 页。 */
+  function openMainForTeam() {
+    if (isDesktop()) {
+      invoke("pin_open_main", { sessionId: null }).catch(() => {
+        /* older shell without pin commands — no-op */
+      });
+    } else {
+      window.location.href = "/";
+    }
+  }
+
   function respond(decision: "allow" | "deny") {
     // Anything still queued belongs to this turn: re-send it as `steer` BEFORE
     // the resume, so the resumed segment absorbs it (same rule as ChatStream's
@@ -1059,6 +1161,38 @@ export function PinStream({
                     {t("retry")}
                   </button>
                 )}
+              </div>
+            );
+          }
+          // P2-24：团队成员回帖卡（实时 team.reply / history teamReply 同渲染）。
+          // 不复用主窗口 TeamReplyCard：它的「进入工作台」会 router.push("/team")，
+          // 在 pin webview 里是错误落点；这里用紧凑归属徽标 + 召唤主窗口按钮。
+          if (m.teamReply) {
+            return (
+              <div key={m.id} className="max-w-[94%] rounded-2xl rounded-bl-md border border-line bg-card px-3 py-2 text-[13px] leading-relaxed text-txt">
+                <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] font-medium text-violet">
+                    👥 {m.teamReply.display_name || t("teamMemberFallback")}
+                  </span>
+                  <span className="rounded-full border border-line px-1.5 py-px text-[9px] text-faint">
+                    {t("teamReplyBadge")}
+                  </span>
+                  {m.teamReply.truncated && (
+                    <span className="text-[9px] text-faint">{t("teamReplyTruncated")}</span>
+                  )}
+                </div>
+                <div className="pin-compact">
+                  <InnerBlocks blocks={m.blocks} streaming={false} />
+                </div>
+                <button
+                  type="button"
+                  onClick={openMainForTeam}
+                  className="mt-1.5 flex items-center gap-1 rounded-lg border border-line2 px-2 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+                  title={t("teamOpenMainTitle")}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  {t("teamOpenMain")}
+                </button>
               </div>
             );
           }
