@@ -1,6 +1,18 @@
 # Code Mode（工具调用代码化）Ginno 切入方案
 
-> 状态：设计稿（未实施）。对标：Claude Code 2.1.323 实验特性 Code Mode
+> 状态：**ARCHIVED（2026-11-14 定案不施工）**。
+> 归档理由：真实 Ginno + magpie qwen3.8-flash 对比（PR #133）显示 ROI 不足——
+> 强模型本身批量并行发工具调用，传统模式也仅 1 次往返，Code Mode 的「往返
+> 压缩」收益≈0；return-only 上下文收益仅 1~18%（随中间输出体积），而 P0 成本
+> （权限复用/ask-resume/沙箱/checkpoint）偏高。详见实测报告
+> `docs/design/code-mode-real-bench-report.md`（fake 基准的 81%/67% 被真实数据
+> 打回 1~18%/0%）。原型 + 最小 repl 接入（env `GINNO_CODE_MODE=1` 门控、默认关、
+> 零生产影响）已合入 main 留作参考，不再推进完整 P0。
+> 更确定的上下文优化方向见 `docs/design/tool-schema-injection-eval.md`。
+>
+> ——以下为原设计稿（保留存档）——
+>
+> 对标：Claude Code 2.1.323 实验特性 Code Mode
 > （`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`，官方文档 code.claude.com/docs/en/code-mode）。
 > 关联：`docs/runtime-hot-swap-design.md`、mods 兼容层（broker）、workflow `python` 节点。
 
