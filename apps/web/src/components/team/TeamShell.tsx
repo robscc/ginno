@@ -16,7 +16,7 @@
 // 状态一律来自 runtime teams.status（§5.9 唯一权威来源），本页不自己判态。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArchiveRestore, Loader2, PenLine, Plus, Sparkles, Trash2, Users } from "lucide-react";
+import { ArrowLeft, ArchiveRestore, Loader2, PanelRight, PenLine, Plus, Sparkles, Trash2, Users, WifiOff, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { useGinno } from "@/lib/store";
@@ -28,6 +28,8 @@ import { AddMemberModal } from "./AddMemberModal";
 import { NewTeamModal } from "./NewTeamModal";
 import { TeamFromPromptModal, type TeamCreateMeta } from "./TeamFromPromptModal";
 import { TeamMemoryModal } from "./TeamMemoryModal";
+import { useEscClose } from "./useEscClose";
+import { consumeOpenMemberIntent } from "./openMemberIntent";
 
 function fmtAway(s: number): string {
   if (!s || s < 0) return "—";
@@ -44,6 +46,12 @@ const mainSessionMissing = (t: Team | null | undefined): boolean =>
 
 /** P2-4 新建团队引导卡的「已读」标记（按团队 id 持久化）。 */
 const GUIDE_DISMISS_KEY = (teamId: string) => `ginno-team-guide-dismissed:${teamId}`;
+/** P2-15 未读汇总条：收起状态按团队持久化；「上次查看时间」是 away 时长
+ *  的口径（成员 last_active 在成员跑着时恒≈1min，会误导）。 */
+const DIGEST_COLLAPSE_KEY = (teamId: string) => `ginno-team-digest-collapsed:${teamId}`;
+const LAST_VIEW_KEY = (teamId: string) => `ginno-team-last-view:${teamId}`;
+/** P1-19 成员面板开合的手动覆盖（"1"/"0"；无记录 = 随窗口宽度自动）。 */
+const PANEL_OPEN_KEY = "ginno-team-panel-open";
 
 type View =
   | { kind: "main" }
@@ -76,7 +84,15 @@ export function TeamShell() {
   const [idCopied, setIdCopied] = useState(false);
   // 总览过滤（设计稿视图 2：全部 / 仅活跃 / 需要我）+ 未读横幅收起
   const [ovFilter, setOvFilter] = useState<"all" | "active" | "needs">("all");
-  const [digestOpen, setDigestOpen] = useState(true);
+  // P2-15：收起按团队持久化；awaySince = 上次查看本团队的时间（秒）。
+  const [digestCollapsed, setDigestCollapsed] = useState<Record<string, boolean>>({});
+  const [awaySince, setAwaySince] = useState<number | null>(null);
+  // P2-18：用户可见的错误提示（rename/patch/解散/刷新失败）+ 离线横幅。
+  const [notice, setNotice] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
+  // P1-19：窄窗口（<1280px）成员面板抽屉化；手动开合持久化覆盖自动判定。
+  const [wide, setWide] = useState(true);
+  const [panelOverride, setPanelOverride] = useState<boolean | null>(null);
   // P2-4：新建团队引导卡按团队 id 记录「已读」（localStorage，跨启动保留）
   const [guideDismissed, setGuideDismissed] = useState<Record<string, boolean>>({});
 
@@ -109,6 +125,85 @@ export function TeamShell() {
     }
   }, []);
 
+  // P2-17：Esc 关行内菜单（模态各自的 Esc 在各模态组件里，栈顶优先）。
+  useEscClose(() => setMenuId(null), menuId !== null);
+
+  // ---- P2-15：未读汇总条的「离开时长」与收起持久化 ----
+  // away 口径 = 上次查看本团队的时间（进入时读旧值、记录本次；离开/切团队/
+  // 页面隐藏时刷新时间戳）。首次查看无旧值 → awaySince=null，标题换无时长版。
+  useEffect(() => {
+    if (!teamId) return;
+    let collapsed = false;
+    let lastView = 0;
+    try {
+      collapsed = localStorage.getItem(DIGEST_COLLAPSE_KEY(teamId)) === "1";
+      lastView = Number(localStorage.getItem(LAST_VIEW_KEY(teamId)) || 0);
+    } catch {
+      /* 存储不可用 */
+    }
+    setDigestCollapsed((prev) =>
+      prev[teamId] === collapsed ? prev : { ...prev, [teamId]: collapsed },
+    );
+    setAwaySince(lastView > 0 ? lastView : null);
+    const stamp = () => {
+      try {
+        localStorage.setItem(LAST_VIEW_KEY(teamId), String(Math.floor(Date.now() / 1000)));
+      } catch {
+        /* noop */
+      }
+    };
+    stamp(); // 本次查看开始
+    const onHide = () => {
+      if (document.visibilityState === "hidden") stamp();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("beforeunload", stamp);
+    return () => {
+      stamp(); // 本次查看结束（切团队 / 离开页面）
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("beforeunload", stamp);
+    };
+  }, [teamId]);
+
+  const setDigestOpenFor = useCallback((id: string, open: boolean) => {
+    setDigestCollapsed((prev) => ({ ...prev, [id]: !open }));
+    try {
+      localStorage.setItem(DIGEST_COLLAPSE_KEY(id), open ? "0" : "1");
+    } catch {
+      /* 存储不可用——本次会话内仍然生效 */
+    }
+  }, []);
+
+  // ---- P1-19：窗口宽度判定 + 成员面板开合 ----
+  // minWidth 900 − 侧栏 288 − 团队左栏 − 面板 300 会把对话列挤到 ~100px；
+  // <1280px 时面板默认收起、打开走抽屉（overlay），对话列永远可用。
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1280px)");
+    const apply = () => setWide(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(PANEL_OPEN_KEY);
+      if (v === "1" || v === "0") setPanelOverride(v === "1");
+    } catch {
+      /* 存储不可用——跟随宽度自动判定 */
+    }
+  }, []);
+
+  const panelOpen = panelOverride ?? wide;
+  const setPanel = useCallback((open: boolean) => {
+    setPanelOverride(open);
+    try {
+      localStorage.setItem(PANEL_OPEN_KEY, open ? "1" : "0");
+    } catch {
+      /* noop */
+    }
+  }, []);
+
   const copyTeamId = async (id: string) => {
     try {
       await navigator.clipboard.writeText(id);
@@ -131,18 +226,22 @@ export function TeamShell() {
       const r = await api.listTeams();
       const list = r.teams ?? [];
       setTeams(list);
+      setOffline(false);
       // 默认选第一个未归档团队（或保持当前选择）。
       setTeamId((cur) =>
         cur && list.some((t) => t.id === cur) ? cur : list.find((t) => !t.archived)?.id ?? list[0]?.id ?? null,
       );
       return list;
     } catch {
-      /* sidecar 未起——保留上次数据 */
+      // P2-18：sidecar 未起——保留上次数据，但不再静默：离线横幅 +
+      // 错误提示告诉用户「这是缓存」，可手动重试。
+      setOffline(true);
+      setNotice(tc("team.refreshFailed"));
       return [];
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [tc]);
 
   useEffect(() => {
     void refresh();
@@ -171,10 +270,19 @@ export function TeamShell() {
   // ---- 团队管理动作 ----
   const patchTeamLocal = useCallback(
     async (id: string, patch: Record<string, unknown>) => {
-      await api.patchTeam(id, patch);
-      await refresh();
+      // P2-18：rename/archive 失败不再裸奔——ok:false 与异常都可见。
+      try {
+        const r = await api.patchTeam(id, patch);
+        if (!r.ok) {
+          setNotice(r.error || tc("team.patchFailed"));
+          return;
+        }
+        await refresh();
+      } catch {
+        setNotice(tc("team.patchFailed"));
+      }
     },
-    [refresh],
+    [refresh, tc],
   );
 
   const submitRename = useCallback(async () => {
@@ -190,13 +298,19 @@ export function TeamShell() {
       setMenuId(null);
       try {
         const r = await api.deleteTeam(id, force);
-        if (!r.ok && r.live?.length && !force) {
-          // 防呆回执：点名正在运行的成员——先处理再删，不静默吞。
-          alert(tc("team.disbandBlocked", { names: r.live.join(t(", ", "、")) }));
+        if (!r.ok) {
+          // P1-16：防呆回执改用内联错误条——alert() 在 Tauri webview 不可靠
+          // （ConfirmModal docstring 的仓库纪律）。点名正在运行的成员。
+          setNotice(
+            r.live?.length && !force
+              ? tc("team.disbandBlocked", { names: r.live.join(t(", ", "、")) })
+              : r.error || tc("team.disbandFailed"),
+          );
           return;
         }
       } catch {
-        /* sidecar down */
+        setNotice(tc("team.disbandFailed"));
+        return;
       }
       if (teamId === id) setTeamId(null);
       await afterMutate();
@@ -206,46 +320,99 @@ export function TeamShell() {
 
   // ---- 订阅主会话 WS 的 team.changed（状态回流，§5.3）----
   // 只订阅当前团队主会话；事件里带完整 team payload，直接替换本地那份。
+  // P1-11：断线自动重连（指数退避 1s→30s 封顶，照 useChatStreamEngine 的
+  // onclose→setTimeout 重连范式）；重连成功后全量重拉团队数据——断线期间
+  // 错过的 team.changed 无法补帧，只有重拉能对账。sidecar 重启不再永久 stale。
   const mainSid = team?.main_session_id;
   useEffect(() => {
     if (!mainSid) return;
+    // 守卫后固化成 string：TS 不把外层 narrowing 带进下面嵌套的 connect()
+    // 闭包，直接用 mainSid 会报 string|undefined（真实 tsc 抓到）。
+    const sid: string = mainSid;
     let ws: WebSocket | null = null;
-    try {
-      ws = api.openSessionSocket(mainSid);
-    } catch {
-      return; // 预渲染环境
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+    let attempt = 0;
+    let dropped = false; // 是否断过线（重连成功才需要全量重拉）
+
+    function scheduleReconnect() {
+      if (disposed) return;
+      const delay = Math.min(30_000, 1000 * 2 ** attempt);
+      attempt += 1;
+      timer = setTimeout(connect, delay);
     }
-    ws.onmessage = (ev) => {
+
+    function connect() {
+      if (disposed) return;
       try {
-        const msg = JSON.parse(ev.data) as {
-          event?: string;
-          team_id?: string;
-          team?: Team;
-        };
-        if (msg.event === "team.changed" && msg.team && msg.team_id) {
-          setTeams((prev) =>
-            prev.map((t) => (t.id === msg.team_id ? (msg.team as Team) : t)),
-          );
-        }
+        ws = api.openSessionSocket(sid);
       } catch {
-        /* 非 JSON 帧 */
+        scheduleReconnect(); // 预渲染等无 WebSocket 环境
+        return;
       }
-    };
+      ws.onopen = () => {
+        attempt = 0;
+        setOffline(false);
+        if (dropped) void refresh();
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as {
+            event?: string;
+            team_id?: string;
+            team?: Team;
+          };
+          if (msg.event === "team.changed" && msg.team && msg.team_id) {
+            setTeams((prev) =>
+              prev.map((t) => (t.id === msg.team_id ? (msg.team as Team) : t)),
+            );
+          }
+        } catch {
+          /* 非 JSON 帧 */
+        }
+      };
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {
+          /* noop */
+        }
+      };
+      ws.onclose = () => {
+        if (disposed) return;
+        dropped = true;
+        setOffline(true);
+        scheduleReconnect();
+      };
+    }
+
+    connect();
     return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
       try {
         ws?.close();
       } catch {
         /* noop */
       }
     };
-  }, [mainSid]);
+  }, [mainSid, refresh]);
 
   // ---- 成员工作台跳转（TeamReplyCard 的「进入工作台」也走这个事件）----
   const openMemberSession = useCallback(
-    (instanceId: string, sessionId: string) => {
+    (instanceId: string, sessionId: string, teamIdOverride?: string) => {
+      // P2-25：跨团队跳转（回帖卡带 team_id）先选中团队再进工作台。
+      const tid = teamIdOverride ?? teamId;
+      if (teamIdOverride && teamIdOverride !== teamId) setTeamId(teamIdOverride);
       setView({ kind: "member", instanceId, sessionId });
-      // 打开即标记 seen：done → idle（§3.3 收件箱语义）。
-      if (teamId) void api.markTeamMemberSeen(teamId, instanceId).then(() => refresh());
+      // 打开即标记 seen：done → idle（§3.3 收件箱语义）。P2-18：seen 失败
+      // 不阻塞跳转（下次刷新会对账），不再裸 .then。
+      if (tid) {
+        void api
+          .markTeamMemberSeen(tid, instanceId)
+          .then(() => refresh())
+          .catch(() => {});
+      }
     },
     [teamId, refresh],
   );
@@ -257,14 +424,35 @@ export function TeamShell() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { sessionId?: string; instanceId?: string };
+      const detail = (e as CustomEvent).detail as {
+        sessionId?: string;
+        instanceId?: string;
+        teamId?: string;
+      };
       if (detail?.sessionId && detail?.instanceId) {
-        openMemberSession(detail.instanceId, detail.sessionId);
+        openMemberSession(detail.instanceId, detail.sessionId, detail.teamId);
       }
     };
     window.addEventListener("ginno:open-team-member", handler);
     return () => window.removeEventListener("ginno:open-team-member", handler);
   }, [openMemberSession]);
+
+  // P2-25：在 /team 之外点「进入工作台」——TeamReplyCard 先存一次性意图
+  // 再导航过来；挂载时消费（sessionStorage，读后即清，不会误重放）。
+  useEffect(() => {
+    const intent = consumeOpenMemberIntent();
+    if (!intent) return;
+    if (intent.teamId) setTeamId(intent.teamId);
+    setView({ kind: "member", instanceId: intent.instanceId, sessionId: intent.sessionId });
+    if (intent.teamId) {
+      void api
+        .markTeamMemberSeen(intent.teamId, intent.instanceId)
+        .then(() => refresh())
+        .catch(() => {});
+    }
+    // 只在挂载时消费一次；refresh 变化不得导致意图重放。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- 当前视图要渲染的 session ----
   const sessionById = useCallback(
@@ -296,7 +484,10 @@ export function TeamShell() {
             onBlur={() => void submitRename()}
             onKeyDown={(e) => {
               if (e.key === "Enter") void submitRename();
-              if (e.key === "Escape") setRenamingId(null);
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setRenamingId(null);
+              }
             }}
             className="w-full rounded border border-violet/50 bg-card px-1.5 py-1 text-xs text-txt outline-none"
           />
@@ -306,14 +497,28 @@ export function TeamShell() {
     return (
       <div
         key={t.id}
+        role="button"
+        tabIndex={0}
+        aria-current={sel ? "true" : undefined}
         title={`${t.name} · ${t.id}`}
-        className={`group relative flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+        className={`group relative flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-violet/60 ${
           sel ? "bg-violet/15 text-txt" : "text-muted hover:bg-card"
         } ${t.archived ? "opacity-55" : ""}`}
         onClick={() => {
           setTeamId(t.id);
           setView({ kind: "main" });
           setMenuId(null);
+        }}
+        onKeyDown={(e) => {
+          // P2-17：键盘选中团队行。只响应行自身聚焦时的按键——行内按钮
+          // （⋯ 菜单等）的 Enter/Space 冒泡上来不得误触发选团队。
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setTeamId(t.id);
+            setView({ kind: "main" });
+            setMenuId(null);
+          }
         }}
       >
         {alert ? (
@@ -329,13 +534,13 @@ export function TeamShell() {
         <span className="shrink-0 text-[10px] tabular-nums text-faint">
           {t.member_rows?.length ?? t.members?.length ?? 0}
         </span>
-        {/* 行内菜单（hover 显示） */}
+        {/* 行内菜单（hover / 键盘 focus 都可见——P2-17） */}
         <button
           onClick={(e) => {
             e.stopPropagation();
             setMenuId(menuId === t.id ? null : t.id);
           }}
-          className={`shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-txt group-hover:opacity-100 ${menuId === t.id ? "opacity-100" : ""}`}
+          className={`shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-txt focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 ${menuId === t.id ? "opacity-100" : ""}`}
           title={tc("team.manage")}
         >
           <PenLine className="h-3 w-3" />
@@ -455,8 +660,9 @@ export function TeamShell() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      {/* 左栏：团队列表（本空间的导航与会话管理入口） */}
-      <aside className="flex w-52 shrink-0 flex-col border-r border-line bg-panel">
+      {/* 左栏：团队列表（本空间的导航与会话管理入口）。P1-19：窄窗口
+          收窄到 176px，给对话列多让 32px。 */}
+      <aside className="flex w-44 shrink-0 flex-col border-r border-line bg-panel xl:w-52">
         <div className="flex items-center gap-2 px-3 py-2.5">
           <Users className="h-3.5 w-3.5 shrink-0 text-violet" />
           <span className="flex-1 text-xs font-medium text-muted">
@@ -578,8 +784,54 @@ export function TeamShell() {
                   : tc("team.rollupDone", { n: team.rollup.done_unread })}
               </span>
             )}
+            {/* P1-19：成员面板开合（窄窗口下是抽屉开关；宽窗口可收起让
+                对话列更宽）。手动选择持久化，覆盖宽度自动判定。 */}
+            <button
+              onClick={() => setPanel(!panelOpen)}
+              aria-pressed={panelOpen}
+              className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                panelOpen
+                  ? "border-violet/50 bg-violet/10 text-violet"
+                  : "border-line text-muted hover:border-violet/50 hover:text-violet"
+              }`}
+              title={tc("team.togglePanel")}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+              <span className="tabular-nums">
+                {team.member_rows?.length ?? team.members?.length ?? 0}
+              </span>
+            </button>
           </div>
         </div>
+
+        {/* P2-18：操作失败的内联错误条（替代 alert，可手动关闭）。 */}
+        {notice && (
+          <div className="mx-4 mt-2 flex items-start gap-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
+            <span className="min-w-0 flex-1 leading-relaxed">{notice}</span>
+            <button
+              onClick={() => setNotice(null)}
+              className="shrink-0 transition-opacity hover:opacity-70"
+              title={tc("team.guideDismiss")}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* P2-18/P1-11：离线横幅——WS 断开或拉取失败时明示「正在重连」，
+            数据是缓存；自动重连之外给一个手动重试。 */}
+        {offline && (
+          <div className="mx-4 mt-2 flex items-center gap-2 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-1.5 text-[11px] text-yellow-500">
+            <WifiOff className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">{tc("team.offlineBanner")}</span>
+            <button
+              onClick={() => void refresh()}
+              className="shrink-0 rounded border border-yellow-500/40 px-2 py-0.5 transition-colors hover:bg-yellow-500/10"
+            >
+              {tc("team.retry")}
+            </button>
+          </div>
+        )}
 
         {/* P2-1：主会话被删 → 团队协作不可用。横幅常驻在顶栏下方，三个视图
             都能看到；不静默打开一个空会话。 */}
@@ -624,35 +876,53 @@ export function TeamShell() {
           </div>
         )}
 
-        {/* 主体：左对话（主会话 or 成员工作台）+ 右成员面板 */}
-        <div className="flex min-h-0 flex-1">
+        {/* 主体：左对话（主会话 or 成员工作台）+ 右成员面板。
+            P1-19：relative 容器——窄窗口下面板以绝对定位抽屉覆盖，
+            不再作为 flex 兄弟挤占对话列宽度。 */}
+        <div className="relative flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             {view.kind === "main" ? (
               <>
                 {/* 未读汇总横幅（设计稿视图 1 顶部）：done 未读 + blocked
-                    需要你，一屏收拢「谁在等我」；收起记忆到本组件。 */}
+                    需要你，一屏收拢「谁在等我」。P2-15：away 时长用「上次
+                    查看本团队的时间」（成员 last_active 在跑时恒≈1min，误导）；
+                    收起按团队持久化，收起后留一行可重新展开的细条。 */}
                 {(() => {
                   const rows = team.member_rows ?? [];
                   const notables = rows.filter(
                     (r) => r.status === "done" || r.status === "blocked",
                   );
-                  if (!digestOpen || notables.length === 0) return null;
-                  const last = Math.max(
-                    0,
-                    ...rows.map((r) => r.last_active || 0),
-                  );
-                  const awayMin = last
-                    ? Math.max(1, Math.round((Date.now() / 1000 - last) / 60))
-                    : 0;
+                  if (notables.length === 0) return null;
+                  if (digestCollapsed[team.id]) {
+                    return (
+                      <div className="mx-4 mt-2 flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 text-xs">
+                        <span>⏱</span>
+                        <span className="min-w-0 flex-1 truncate text-muted">
+                          {tc("team.digestCollapsedLine", { n: notables.length })}
+                        </span>
+                        <button
+                          onClick={() => setDigestOpenFor(team.id, true)}
+                          className="shrink-0 text-[11px] text-violet hover:underline"
+                        >
+                          {tc("team.digestExpand")}
+                        </button>
+                      </div>
+                    );
+                  }
+                  const awayMin = awaySince
+                    ? Math.max(1, Math.round((Date.now() / 1000 - awaySince) / 60))
+                    : null;
                   return (
                     <div className="mx-4 mt-2 rounded-lg border border-line bg-card px-3 py-2 text-xs">
                       <div className="flex items-center gap-2">
                         <span>⏱</span>
                         <span className="flex-1 font-medium text-txt">
-                          {tc("team.digestTitle", { min: awayMin })}
+                          {awayMin === null
+                            ? tc("team.digestTitleNoAway")
+                            : tc("team.digestTitle", { min: awayMin })}
                         </span>
                         <button
-                          onClick={() => setDigestOpen(false)}
+                          onClick={() => setDigestOpenFor(team.id, false)}
                           className="text-[11px] text-faint hover:text-muted"
                         >
                           {tc("team.digestCollapse")}
@@ -676,7 +946,13 @@ export function TeamShell() {
                               }
                             >
                               {r.status === "blocked"
-                                ? tc("team.digestBlocked", { time: fmtAway(r.elapsed_s) })
+                                ? tc("team.digestBlocked", {
+                                    time: fmtAway(
+                                      r.last_active > 0
+                                        ? Math.max(0, Date.now() / 1000 - r.last_active)
+                                        : r.elapsed_s,
+                                    ),
+                                  })
                                 : tc("team.digestUnread")}
                             </span>
                             <span className="min-w-0 flex-1 truncate text-faint" title={r.status_detail}>
@@ -759,19 +1035,43 @@ export function TeamShell() {
             )}
           </div>
 
-          {team.member_rows ? (
-            <MemberPanel
-              team={team}
-              activeInstanceId={view.kind === "member" ? view.instanceId : null}
-              activeSessionId={view.kind === "member" ? view.sessionId : null}
-              onOpenMember={openMember}
-              onOpenMemberSession={openMemberSession}
-              onMutate={afterMutate}
-              onAddMember={() => setAddOpen(true)}
-            />
-          ) : (
-            <MemberPanelSkeleton />
-          )}
+          {/* P1-19：宽窗口 = 常驻右栏；窄窗口 = 抽屉（遮罩 + 右滑面板，
+              点遮罩/关闭按钮收起）。面板收起时对话列独占全宽。 */}
+          {panelOpen &&
+            (team.member_rows ? (
+              wide ? (
+                <MemberPanel
+                  team={team}
+                  activeInstanceId={view.kind === "member" ? view.instanceId : null}
+                  activeSessionId={view.kind === "member" ? view.sessionId : null}
+                  onOpenMember={openMember}
+                  onOpenMemberSession={openMemberSession}
+                  onMutate={afterMutate}
+                  onAddMember={() => setAddOpen(true)}
+                />
+              ) : (
+                <div className="absolute inset-0 z-30 flex justify-end">
+                  <button
+                    className="min-w-0 flex-1 bg-black/40"
+                    onClick={() => setPanel(false)}
+                    aria-label={tc("team.closePanel")}
+                  />
+                  <MemberPanel
+                    team={team}
+                    activeInstanceId={view.kind === "member" ? view.instanceId : null}
+                    activeSessionId={view.kind === "member" ? view.sessionId : null}
+                    onOpenMember={openMember}
+                    onOpenMemberSession={openMemberSession}
+                    onMutate={afterMutate}
+                    onAddMember={() => setAddOpen(true)}
+                    overlay
+                    onClose={() => setPanel(false)}
+                  />
+                </div>
+              )
+            ) : (
+              wide && <MemberPanelSkeleton />
+            ))}
         </div>
       </div>
 
@@ -850,6 +1150,12 @@ function TeamOverview({
 }) {
   const tc = useTranslations("chat");
   const rows = team.member_rows ?? [];
+  // P2-16：总览卡的 elapsed 同样本地走字（快照值一到前端就冻结）。
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
   const active = rows.filter((r) => r.status === "working" || r.status === "blocked" || r.status === "waiting" || r.status === "unknown");
   const needs = rows.filter((r) => r.status === "blocked" || r.status === "done");
   const shown = filter === "all" ? rows : filter === "active" ? active : needs;
@@ -911,7 +1217,11 @@ function TeamOverview({
                   {tc(`team.status.${r.status}`)}
                 </span>
                 <span className="shrink-0 text-[10px] tabular-nums text-faint">
-                  {fmtAway(r.elapsed_s)}
+                  {fmtAway(
+                    r.last_active > 0
+                      ? Math.max(0, Date.now() / 1000 - r.last_active)
+                      : r.elapsed_s,
+                  )}
                 </span>
               </div>
               {/* 最近活动摘要（权威 status_detail，不前端二次判态）
@@ -940,6 +1250,12 @@ function TeamOverview({
             {tc("team.ovEmpty")}
           </div>
         )}
+      </div>
+
+      {/* P2-19：教育性脚注——@ 的投递语义（原型 @ 菜单脚注的同款文案，
+          @ 菜单本体 ComposerMenu 在本批次边界外，先落在总览/成员面板）。 */}
+      <div className="mt-3 text-[10px] leading-relaxed text-faint">
+        {tc("team.atDeliveryNote")}
       </div>
     </div>
   );

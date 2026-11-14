@@ -12,6 +12,7 @@ import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import type { Team } from "@/lib/types";
 import { NewAgentModal } from "./NewAgentModal";
+import { useEscClose } from "./useEscClose";
 
 export function NewTeamModal({
   onClose,
@@ -22,6 +23,7 @@ export function NewTeamModal({
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
+  useEscClose(onClose); // P2-17：Esc 关闭
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState<string>(g.agents[0]?.id ?? "dev");
   const [busy, setBusy] = useState(false);

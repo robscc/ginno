@@ -14,7 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
-import { listTasks, TASK_TERMINAL, type TaskRecord } from "@/lib/runtime";
+import { BASE, listTasks, TASK_TERMINAL, type TaskRecord } from "@/lib/runtime";
 import { notifyTaskTransitions } from "@/lib/store/notifications";
 
 export interface SidebarFooterProps {
@@ -71,13 +71,66 @@ export function SidebarFooter({
       clearInterval(id);
     };
   }, []);
+  // AgentTeam 全局徽标（backlog P1-17，设计 §5.3.1 三级上卷的导航层）：
+  // GET /api/teams/badge 直读持久化态（零刷新，廉价），与 Dock 的 badge.rs
+  // 同口径——只有 blocked / done 未读冒泡，working 止于团队行。轮询节奏
+  // 照上方后台任务的 5s 先例；失败保持旧值（sidecar 未起不闪徽标）。
+  const [teamBadge, setTeamBadge] = useState<{
+    needs: number;
+    blocked: number;
+    done_unread: number;
+  } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${BASE}/teams/badge`);
+        const d = (await r.json()) as {
+          ok?: boolean;
+          needs?: number;
+          blocked?: number;
+          done_unread?: number;
+        };
+        if (alive && d.ok) {
+          setTeamBadge({
+            needs: d.needs ?? 0,
+            blocked: d.blocked ?? 0,
+            done_unread: d.done_unread ?? 0,
+          });
+        }
+      } catch {
+        /* sidecar 未起——徽标保持 */
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
   return (
     <div className="border-t border-line px-2.5 py-3">
       <Link href="/team" className={`nav-item ${onTeam ? "nav-item-active" : ""}`}>
         <Users className="h-4 w-4 shrink-0" />
         <span className="truncate">{t("nav.team")}</span>
+        {/* needs_action 徽标（backlog P1-17）：blocked+done 未读合计，与
+            团队行徽标同视觉语言——有 blocked 用黄（等你回答），纯 done 未读
+            用紫（好消息不飘红，UnseenBadge 同款纪律）。0 不渲染。 */}
+        {teamBadge && teamBadge.needs > 0 && (
+          <span
+            className={`ml-auto shrink-0 rounded-full border px-1.5 text-[10px] leading-4 tabular-nums ${
+              teamBadge.blocked > 0
+                ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500"
+                : "border-violet/40 bg-violet/10 text-violet"
+            }`}
+            title={t("navDots.teamNeeds", { n: teamBadge.needs })}
+          >
+            {teamBadge.needs > 99 ? "99+" : teamBadge.needs}
+          </span>
+        )}
         {/* Beta 标（2026-11-05）：AgentTeam 功能未达稳定，入口明示。 */}
-        <span className="ml-auto shrink-0 rounded border border-amber-500/50 bg-amber-500/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-amber-600 dark:text-amber-400">
+        <span className={`${teamBadge && teamBadge.needs > 0 ? "" : "ml-auto"} shrink-0 rounded border border-amber-500/50 bg-amber-500/10 px-1 py-px text-[9px] font-medium uppercase leading-none tracking-wide text-amber-600 dark:text-amber-400`}>
           Beta
         </span>
       </Link>

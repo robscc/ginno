@@ -16,6 +16,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { AGENT_HEX, agentHex } from "@/lib/theme";
 import type { AgentConfig } from "@/lib/types";
+import { useEscClose } from "./useEscClose";
 
 export function NewAgentModal({
   onClose,
@@ -26,6 +27,7 @@ export function NewAgentModal({
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
+  useEscClose(onClose); // P2-17：Esc 关闭（叠在其它模态上时栈顶优先）
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");

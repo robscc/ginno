@@ -12,6 +12,7 @@ import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import type { Team } from "@/lib/types";
 import { NewAgentModal } from "./NewAgentModal";
+import { useEscClose } from "./useEscClose";
 
 export function AddMemberModal({
   team,
@@ -24,6 +25,7 @@ export function AddMemberModal({
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
+  useEscClose(onClose); // P2-17：Esc 关闭（嵌套 NewAgentModal 时栈顶优先）
   const [agentId, setAgentId] = useState<string>(g.agents[0]?.id ?? "dev");
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState<"leader" | "member">("member");

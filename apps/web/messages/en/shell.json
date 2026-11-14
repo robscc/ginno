@@ -28,7 +28,8 @@
       "connectorError": "Connector error",
       "connectorWarn": "Some connectors are not connected",
       "scheduleError": "You have unseen scheduled-task results",
-      "scheduleOff": "Scheduled tasks globally disabled"
+      "scheduleOff": "Scheduled tasks globally disabled",
+      "teamNeeds": "{n} team item(s) need you (waiting on you / done unread)"
     },
     "view": {
       "time": "Time",

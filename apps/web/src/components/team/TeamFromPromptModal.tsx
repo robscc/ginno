@@ -16,6 +16,7 @@ import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { Team } from "@/lib/types";
+import { useEscClose } from "./useEscClose";
 
 export const MAX_PROMPT_MEMBERS = 6;
 
@@ -81,6 +82,7 @@ export function TeamFromPromptModal({
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
+  useEscClose(onClose); // P2-17：Esc 关闭（与背景点击同语义）
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
