@@ -576,3 +576,34 @@ def test_resolver_collects_all_agent_mentions():
     plan = TurnPlan(text="x", agent_override=first)
     plan.agent_overrides = list(dict.fromkeys(ids))
     assert plan.agent_overrides == ["dev", "writer"], plan.agent_overrides
+
+
+def test_team_usage_endpoint_aggregates_per_instance(client, patch_build_model):
+    """P2-5：团队成本聚合端点——每实例 + 团队合计，多会话成员全部会话都算。"""
+    patch_build_model(_model("ok"))
+    team = _create_team(client)
+    m = _add_member(client, team["id"], "dev")
+    r = client.get(f"/api/teams/{team['id']}/usage").json()
+    assert r["ok"], r
+    assert r["days"] == 30
+    ids = {x["instance_id"] for x in r["members"]}
+    assert m["instance_id"] in ids
+    assert set(r["total"]) >= {"input_tokens", "output_tokens", "total_tokens", "calls"}
+    # 合计 = 各实例之和
+    assert r["total"]["total_tokens"] == sum(x["total_tokens"] for x in r["members"])
+    # days 参数被 clamp
+    assert client.get(f"/api/teams/{team['id']}/usage?days=999").json()["days"] == 90
+    assert client.get(f"/api/teams/{team['id']}/usage?days=0").json()["days"] == 1
+    # 未知团队干净失败
+    assert client.get("/api/teams/nope/usage").json()["ok"] is False
+
+
+def test_team_member_usage_source_is_team():
+    """P2-5 归因：team-member 的 usage_source 必须是 "team"（此前记为 chat）。"""
+    import inspect
+
+    from ginno_runtime.subagent_scheduler import runner
+
+    src = inspect.getsource(runner._run_managed_turn)
+    assert '"team"' in src, "runner 未对 team-member 做 usage 归因"
+    assert 'team-member' in src

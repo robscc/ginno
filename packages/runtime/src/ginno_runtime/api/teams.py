@@ -241,6 +241,71 @@ async def teams_badge() -> dict:
 # 团队 CRUD
 # --------------------------------------------------------------------------- #
 
+@router.get("/api/teams/{team_id}/usage")
+async def team_usage(team_id: str, days: int = 30):
+    """团队成本聚合（backlog P2-5，设计 §5.6 硬要求「成本可见」）。
+
+    **独立端点而非塞进 member_row**：member_row 是状态刷新热路径，每次都读
+    usage 日志文件会拖慢整个团队面板。这里按需/低频拉取。
+
+    归因前提：runner 已把 team-member 的 usage_source 标为 "team"（此前记为
+    "chat"，团队成本无从统计）。返回每实例 + 团队合计。
+    """
+    team = team_store.get_team(team_id)
+    if team is None:
+        return {"ok": False, "error": "not found"}
+    from .. import usage_store
+
+    # 注意不能用 `days or 30`：那会把显式的 0 吞成 30。0/负数 clamp 到 1。
+    try:
+        days = max(1, min(int(days), 90))
+    except (TypeError, ValueError):
+        days = 30
+    import time as _time
+
+    frm = _time.strftime("%Y-%m-%d", _time.localtime(_time.time() - 86400 * (days - 1)))
+    rows = []
+    total_in = total_out = total_calls = 0
+    for m in team.get("members") or []:
+        # 多会话成员：全部会话都算进该实例（换会话 = 换上下文，成本仍归它）
+        sids = list(dict.fromkeys(
+            [str(m.get("session_id") or "")] + [str(s) for s in (m.get("session_ids") or [])]
+        ))
+        i_in = i_out = i_calls = 0
+        for sid in sids:
+            if not sid:
+                continue
+            tot = usage_store.session_totals(sid, from_date=frm)
+            if not tot:
+                continue
+            i_in += int(tot.get("input_tokens") or 0)
+            i_out += int(tot.get("output_tokens") or 0)
+            i_calls += int(tot.get("calls") or 0)
+        rows.append({
+            "instance_id": m.get("instance_id"),
+            "display_name": m.get("display_name") or m.get("agent_id"),
+            "agent_id": m.get("agent_id"),
+            "input_tokens": i_in,
+            "output_tokens": i_out,
+            "total_tokens": i_in + i_out,
+            "calls": i_calls,
+        })
+        total_in += i_in
+        total_out += i_out
+        total_calls += i_calls
+    return {
+        "ok": True,
+        "days": days,
+        "members": rows,
+        "total": {
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "total_tokens": total_in + total_out,
+            "calls": total_calls,
+        },
+    }
+
+
 @router.get("/api/teams")
 async def list_teams_endpoint(project_slug: str | None = None, client: str = "main") -> dict:
     teams = []

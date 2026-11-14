@@ -464,6 +464,30 @@ export async function getTeam(teamId: string, client = "main") {
   );
 }
 
+/** 团队成本聚合（backlog P2-5）。独立端点、低频拉取——不塞进状态刷新热路径。 */
+export async function getTeamUsage(teamId: string, days = 30) {
+  return json<{
+    ok: boolean;
+    days?: number;
+    members?: Array<{
+      instance_id: string;
+      display_name: string;
+      agent_id: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }>;
+    total?: {
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    };
+    error?: string;
+  }>(`${BASE}/teams/${encodeURIComponent(teamId)}/usage?days=${days}`);
+}
+
 export async function createTeam(req: {
   name: string;
   project_slug?: string;

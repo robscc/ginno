@@ -49,7 +49,16 @@ async def _run_managed_turn(
     slug = session["project_slug"]
     # Distinguishable from user chat in the usage log.
     _found = _NS._find_meta(session_id)
-    usage_source = "subagent" if _NS._is_subagent(_found[0] if _found else session) else "chat"
+    # 三分归因（backlog P2-5）：team-member 此前被记为 "chat"，团队成本
+    # 无从统计（设计 §5.6 硬要求「成本可见」）。只认 meta 类型字符串，
+    # 不 import teams/*（与 worker_bus 同一独立性纪律）。
+    _m = _found[0] if _found else session
+    if _NS._is_subagent(_m):
+        usage_source = "subagent"
+    elif str(_m.get("type") or "") == "team-member":
+        usage_source = "team"
+    else:
+        usage_source = "chat"
     config = {
         "configurable": {
             "thread_id": session_id,
@@ -118,7 +127,16 @@ async def _run_managed_turn_locked(
     # absorb a result): only a subagent session's usage is tagged "subagent"
     # (same rule as _run_managed_turn).
     _found = _NS._find_meta(session_id)
-    usage_source = "subagent" if _NS._is_subagent(_found[0] if _found else session) else "chat"
+    # 三分归因（backlog P2-5）：team-member 此前被记为 "chat"，团队成本
+    # 无从统计（设计 §5.6 硬要求「成本可见」）。只认 meta 类型字符串，
+    # 不 import teams/*（与 worker_bus 同一独立性纪律）。
+    _m = _found[0] if _found else session
+    if _NS._is_subagent(_m):
+        usage_source = "subagent"
+    elif str(_m.get("type") or "") == "team-member":
+        usage_source = "team"
+    else:
+        usage_source = "chat"
     config = {
         "configurable": {
             "thread_id": session_id,

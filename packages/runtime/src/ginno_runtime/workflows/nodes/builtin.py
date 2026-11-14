@@ -65,6 +65,66 @@ def _skill_extra_for(skill_names: list[str]) -> list[str]:
     return extra
 
 
+async def _run_team_member_turn(
+    node: dict, tm: dict, goal: str, run_ctx, node_id: str,
+) -> tuple[str, dict, str | None]:
+    """把节点 goal 投给团队成员并等回帖（backlog P2-4）。
+
+    与进程内循环的区别：成员在**自己的 session** 里跑，带自己的三层记忆、
+    自己的权限闸门、自己的状态回流；workflow 只负责编排顺序与收敛。
+    等待用 teams.wait 原语（blocked/unknown/error/done/idle 都算安定）。
+    """
+    from ...teams import deliver as _team_deliver
+    from ...teams import store as _team_store
+    from ...teams import wait as _team_wait
+
+    team_id = str(tm.get("team_id") or "")
+    team = _team_store.get_team(team_id)
+    if team is None:
+        raise ValueError(f"team_member: unknown team {team_id}")
+    members = team.get("members") or []
+    if not members:
+        raise ValueError(f"team_member: team {team_id} has no members")
+    iid = str(tm.get("instance_id") or "")
+    if not iid:
+        iid = str(team.get("leader_instance_id") or "") or next(
+            (str(m["instance_id"]) for m in members if m.get("role") == "leader"),
+            str(members[0].get("instance_id") or ""),
+        )
+    member = _team_store.get_member(team_id, iid)
+    if member is None:
+        raise ValueError(f"team_member: unknown instance {iid}")
+
+    receipt = await _team_deliver.deliver(team_id, iid, goal)
+    if receipt.get("receipt") == "failed":
+        # blocked 原子拒绝等：节点失败，交给 DSL 的 on_error / branch 处理。
+        raise ValueError(
+            f"team_member delivery refused: "
+            f"{receipt.get('error') or receipt.get('reason') or 'failed'}"
+        )
+
+    sid = str(member.get("session_id") or "")
+    timeout_s = int(tm.get("timeout_s") or node.get("timeout_s") or 1800)
+    await _team_wait.wait_for_members(sid, team_id, ids=[iid], timeout_s=timeout_s)
+
+    # 取成员产出作为节点结果（与 post_reply 同一取法）
+    slug = str(team.get("project_slug") or "default")
+    text = await _team_deliver._final_text(slug, sid, team_id=team_id)
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    try:
+        from ... import usage_store
+
+        tot = usage_store.session_totals(sid)
+        if tot:
+            usage = {
+                "input_tokens": int(tot.get("input_tokens") or 0),
+                "output_tokens": int(tot.get("output_tokens") or 0),
+            }
+    except Exception:  # noqa: BLE001 — 用量统计失败不影响节点结果
+        pass
+    return text or "", usage, None
+
+
 async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dict, str | None]:
     """One autonomous goal→tools loop (extracted for the parallel gather
     adapter, stability plan P3; AgentNode.execute keeps its own sequential
@@ -76,8 +136,18 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
     tools = cctx["tools"]
     node_id = node["id"]
     max_iters = int(node.get("max_tool_iters") or 8)
-    agent, agent_warning = ah.resolve_agent(node.get("agent"))
     goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
+
+    # ── 团队成员执行模式（backlog P2-4）────────────────────────────────
+    # 节点带 team_member 时，不跑进程内 goal→tools 循环，而是把 goal 投给
+    # 常驻成员实例并等它跑完，取成员产出作为节点结果。这样团队的流水线/
+    # 并行/分支/闸门全部复用 workflow DSL 既有原语（引擎零改动）。
+    # 放在最前面：parallel gather 与 sequential 两条路径都经此函数。
+    _tm = node.get("team_member")
+    if isinstance(_tm, dict) and str(_tm.get("team_id") or "").strip():
+        return await _run_team_member_turn(node, _tm, goal, run_ctx, node_id)
+
+    agent, agent_warning = ah.resolve_agent(node.get("agent"))
 
     mcp_prefix = ""
     prov_id = str(render_ctx.get("provider") or "")
@@ -410,6 +480,18 @@ class AgentNode(BaseNode):
             # <skill> wrappers) — lets a step carry platform know-how (e.g. the
             # dws skill for todo-provider sync). Entries may be {{templates}}.
             "skills": {"type": "array", "items": {"type": "string"}},
+            # 团队成员执行模式（backlog P2-4）：带此字段时节点不跑进程内
+            # goal→tools 循环，而是把 goal 投给常驻成员实例并等回帖。
+            # instance_id 缺省投领队；timeout_s 缺省 1800。
+            "team_member": {
+                "type": "object",
+                "properties": {
+                    "team_id": {"type": "string"},
+                    "instance_id": {"type": "string"},
+                    "timeout_s": {"type": "integer"},
+                },
+                "required": ["team_id"],
+            },
         },
     }
     inputs_schema = {"type": "object"}
