@@ -213,12 +213,46 @@ describe("fromWire 不得污染 DEFAULT_PREFS", () => {
 describe("注意力判据（isAppAttentive / isSessionAttentive）", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  const stubDoc = (visibilityState: string) =>
-    vi.stubGlobal("document", { visibilityState });
+  // hasFocus 省略 = 故意不提供该方法，覆盖「环境没有 hasFocus」的退路
+  const stubDoc = (visibilityState: string, hasFocus?: boolean) =>
+    vi.stubGlobal("document", {
+      visibilityState,
+      ...(hasFocus === undefined ? {} : { hasFocus: () => hasFocus }),
+    });
   const stubWin = (pathname: string) =>
     vi.stubGlobal("window", { location: { pathname } });
 
-  it("isAppAttentive：仅 visible 算在看", () => {
+  it("isAppAttentive：visible ∧ hasFocus 才算在看", () => {
+    stubDoc("visible", true);
+    expect(isAppAttentive()).toBe(true);
+    stubDoc("hidden", true);
+    expect(isAppAttentive()).toBe(false);
+    stubDoc("visible", false);
+    expect(isAppAttentive()).toBe(false);
+    stubDoc("hidden", false);
+    expect(isAppAttentive()).toBe(false);
+  });
+
+  // 下面三条把 WKWebView 实测结论钉成测试（scripts/probe-wkwebview-attention.README.md）。
+  // 探针数据是判据设计的唯一依据，将来有人「简化」掉任一条件都必须先撞红这里。
+  it("实测步骤05：切到别的 App 而窗口仍在屏上 → 判为不在看（visibilityState 单独看会漏）", () => {
+    // WKWebView 此时报 visibilityState="visible"、hasFocus()=false
+    stubDoc("visible", false);
+    expect(isAppAttentive()).toBe(false);
+  });
+
+  it("实测步骤02：焦点在页面内 iframe → 仍判为在看（纳入 hasFocus 的主要风险，已排除）", () => {
+    // activeElement 已是 IFRAME，但顶层 document.hasFocus() 仍为 true
+    stubDoc("visible", true);
+    expect(isAppAttentive()).toBe(true);
+  });
+
+  it("实测步骤10：App 隐藏时 hasFocus 会滞后报 true → 必须合取 visibilityState", () => {
+    stubDoc("hidden", true);
+    expect(isAppAttentive()).toBe(false);
+  });
+
+  it("环境没有 hasFocus（node/SSR）→ 退回只看 visibilityState，不因此判成没在看", () => {
     stubDoc("visible");
     expect(isAppAttentive()).toBe(true);
     stubDoc("hidden");
@@ -231,7 +265,7 @@ describe("注意力判据（isAppAttentive / isSessionAttentive）", () => {
   });
 
   it("isSessionAttentive：三条件缺一不可", () => {
-    stubDoc("visible");
+    stubDoc("visible", true);
     stubWin("/");
     expect(isSessionAttentive("s1", "s1")).toBe(true);
     expect(isSessionAttentive("s1", "s2")).toBe(false); // 盯的是别的会话
@@ -239,8 +273,10 @@ describe("注意力判据（isAppAttentive / isSessionAttentive）", () => {
     stubWin("/settings");
     expect(isSessionAttentive("s1", "s1")).toBe(false); // 不在工作区路由
     stubWin("/");
-    stubDoc("hidden");
+    stubDoc("hidden", true);
     expect(isSessionAttentive("s1", "s1")).toBe(false); // 应用不可见
+    stubDoc("visible", false);
+    expect(isSessionAttentive("s1", "s1")).toBe(false); // 可见但焦点在别处
   });
 
   it("shouldNotify = 不在看 ∧ 偏好闸门（默认偏好全开、勿扰关）", () => {
