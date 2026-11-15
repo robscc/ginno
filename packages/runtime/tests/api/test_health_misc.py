@@ -10,9 +10,13 @@ pytestmark = pytest.mark.api
 
 
 def test_health(client):
+    from ginno_runtime._version import __version__
+
     r = client.get("/api/health").json()
     assert r["ok"] is True
-    assert r["version"] == "0.1.0"
+    # 断言单一真源而非字面量：历史上这里硬编码 "0.1.0"，
+    # 发版 bump 到 0.3.3 后本测试反而成了漂移的帮凶（2026-11-15）。
+    assert r["version"] == __version__
 
 
 def test_settings_get_seeded(client):
