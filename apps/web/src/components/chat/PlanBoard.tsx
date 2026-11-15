@@ -12,16 +12,17 @@
 
 import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronDown, ChevronRight, ClipboardList, Loader2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ClipboardList, List, Loader2, Network, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { cancelSessionPlan, confirmSessionPlan } from "@/lib/runtime";
 import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
 import { SUBAGENT_STATUS_META } from "@/components/chat/blocks/types";
 import { DuckStatusIcon } from "@/components/chat/blocks/duckStatus";
+import { PlanDag } from "@/components/chat/PlanDag";
 
 /** 条目五态的展示元数据：running 及终态复用子代理词汇（设计 §2「前端零
- * 新词汇」），pending/blocked 是清单特有态、本地补齐。 */
-const ITEM_META: Record<PlanItemStatus, { glyph: string; color: string }> = {
+ * 新词汇」），pending/blocked 是清单特有态、本地补齐。导出供 PlanDag 复用。 */
+export const ITEM_META: Record<PlanItemStatus, { glyph: string; color: string }> = {
   pending: { glyph: "•", color: "#a1a1aa" },
   blocked: { glyph: "⊘", color: "#a1a1aa" },
   running: { glyph: SUBAGENT_STATUS_META.running.glyph, color: SUBAGENT_STATUS_META.running.color },
@@ -64,6 +65,9 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
   const t = useTranslations("chat");
   // 折叠覆盖以 plan_id 记忆；未记录过的清单按状态取默认（open 展开 / 终态折叠）。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // 视图覆盖（per-plan）：未手动切过按依赖自适应——有 depends_on 边默认
+  // DAG（结构即信息），无依赖默认紧凑清单。
+  const [viewOverride, setViewOverride] = useState<Record<string, "list" | "dag">>({});
   const [busy, setBusy] = useState<Record<string, "confirm" | "cancel" | undefined>>({});
   // 只 dismiss 终态清单；active/pending_confirm 是在途工作，最多折叠（取消走按钮）。
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
@@ -119,9 +123,12 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
         // pending 清单，永远到不了 completed）。执行中/纯 pending 不给关。
         const anyRunning = plan.items.some((i) => i.status === "running");
         const dismissable = terminal || (failed > 0 && !anyRunning);
+        const hasDeps = plan.items.some((i) => (i.depends_on?.length ?? 0) > 0);
+        const view = viewOverride[plan.plan_id] ?? (hasDeps ? "dag" : "list");
         return (
           <div
             key={plan.plan_id}
+            data-plan-id={plan.plan_id}
             className={`rounded-lg border px-3 py-2 text-xs ${
               plan.status === "pending_confirm"
                 ? "border-amber/40 bg-amber/[0.05]"
@@ -148,6 +155,28 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
                   {plan.title}
                 </span>
               </button>
+              <div className="flex shrink-0 items-center rounded-md border border-line2 bg-card2/40 p-px">
+                <button
+                  onClick={() => setViewOverride((v) => ({ ...v, [plan.plan_id]: "list" }))}
+                  title={t("planBoard.viewList")}
+                  aria-pressed={view === "list"}
+                  className={`rounded p-0.5 transition-colors ${
+                    view === "list" ? "bg-violet/15 text-violet" : "text-faint hover:text-muted"
+                  }`}
+                >
+                  <List className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={() => setViewOverride((v) => ({ ...v, [plan.plan_id]: "dag" }))}
+                  title={t("planBoard.viewDag")}
+                  aria-pressed={view === "dag"}
+                  className={`rounded p-0.5 transition-colors ${
+                    view === "dag" ? "bg-violet/15 text-violet" : "text-faint hover:text-muted"
+                  }`}
+                >
+                  <Network className="h-3 w-3" />
+                </button>
+              </div>
               <span className="shrink-0 whitespace-nowrap tabular-nums text-faint">
                 {t("planBoard.progress", { done, total: plan.items.length })}
                 {failed > 0 && t("planBoard.failedCount", { count: failed })}
@@ -166,19 +195,24 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
               )}
             </div>
 
-            {!fold && (
-              <div className="mt-2 flex flex-col gap-1.5">
-                {plan.items.map((it) => {
-                  // blocked 是派生态（设计 §2）：pending 但依赖未全 done —— 快照
-                  // 不落盘，前端按同一条规则推导。
-                  const byId = new Map(plan.items.map((x) => [x.item_id, x.status]));
-                  const blocked =
-                    it.status === "pending" &&
-                    (it.depends_on ?? []).some((d) => byId.get(d) !== "done");
-                  return <PlanItemRow key={it.item_id} item={blocked ? { ...it, status: "blocked" } : it} />;
-                })}
-              </div>
-            )}
+            {!fold &&
+              (view === "dag" ? (
+                <div className="mt-2">
+                  <PlanDag plan={plan} />
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {plan.items.map((it) => {
+                    // blocked 是派生态（设计 §2）：pending 但依赖未全 done —— 快照
+                    // 不落盘，前端按同一条规则推导。
+                    const byId = new Map(plan.items.map((x) => [x.item_id, x.status]));
+                    const blocked =
+                      it.status === "pending" &&
+                      (it.depends_on ?? []).some((d) => byId.get(d) !== "done");
+                    return <PlanItemRow key={it.item_id} item={blocked ? { ...it, status: "blocked" } : it} />;
+                  })}
+                </div>
+              ))}
 
             {plan.status === "pending_confirm" ? (
               <div className="mt-2 flex items-center gap-2 border-t border-line/60 pt-1.5">
