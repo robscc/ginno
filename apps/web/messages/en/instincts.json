@@ -1,11 +1,34 @@
 {
   "instincts": {
     "title": "Instincts",
-    "subtitle": "Behavioral rules distilled from denials & retries, injected by confidence",
+    "subtitle": "Behavioral rules distilled from denials, corrections & retries, injected by confidence",
     "create": "New",
     "refresh": "Refresh",
+    "analyze": "Analyze now",
+    "analyzing": "Analyzing…",
+    "analyzeDone": "Analysis done: {c} created · {r} reinforced",
+    "analyzeNone": "Analysis done: {n} observations processed, no new rules",
+    "analyzeFail": "Analysis failed",
+    "skip": {
+      "few-observations": "Not enough observations ({n} pending)",
+      "gap": "Within cooldown window, try later",
+      "disabled": "Instincts disabled (Settings → Agents → Instincts)",
+      "no-observations": "No observations yet",
+      "model-error": "Judge model unavailable: {e}"
+    },
+    "obsv": {
+      "title": "Analyzer status",
+      "last": "Last analysis",
+      "never": "Never run",
+      "position": "offset {offset}/{total} · {fresh} pending",
+      "model": "Judge model",
+      "followMain": "follows main model",
+      "noModel": "no model available",
+      "threshold": "thresholds: corrections ≥{c} · others ≥{n}",
+      "error": "Last error"
+    },
     "loadFail": "Load failed (sidecar down?)",
-    "empty": "Nothing yet — 3 denials of the same pattern auto-generate a pending rule",
+    "empty": "Nothing yet — 3 denials of the same pattern or 3 user corrections auto-generate a pending rule",
     "edit": "Edit",
     "delete": "Delete (soft; find under pruned filter)",
     "filter": {
@@ -34,7 +57,11 @@
     },
     "obs": {
       "title": "Observations (read-only, sanitized)",
-      "empty": "No observations yet"
+      "empty": "No observations yet",
+      "reason": {
+        "correction-word": "correction word",
+        "after-deny": "redirect after deny"
+      }
     },
     "editor": {
       "createTitle": "New instinct",

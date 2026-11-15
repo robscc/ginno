@@ -9,6 +9,7 @@ import { SkillsSettings } from "./SkillsSettings";
 import { McpSettings } from "./McpSettings";
 import { AgentsSettings } from "./AgentsSettings";
 import { MemorySettings } from "./MemorySettings";
+import { InstinctsSettings } from "./InstinctsSettings";
 import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
@@ -43,6 +44,8 @@ function TabPanel({ tab }: { tab: string }) {
       return <WorkflowsSettings />;
     case "memory":
       return <MemorySettings />;
+    case "instincts":
+      return <InstinctsSettings />;
     case "skills":
       return <SkillsSettings />;
     case "knowledge":

@@ -1,8 +1,10 @@
 """Instincts Observer 分析器（docs/instincts-design.md §6，P1 子集）。
 
-位点管理（observer-state.json）+ 节流（新观察 ≥ min_observations 且距上次
-≥ analyze_gap_min）+ 分派：确定性 tool_denied 走模板（不调 LLM，复用
-maybe_analyze）；user_correction 走 observer 小模型起草 trigger/behavior。
+位点管理（observer-state.json）+ 分型节流（纠偏 ≥ correction_min_observations
+默认 3；其余 ≥ min_observations 默认 20；距上次 ≥ analyze_gap_min；
+force=True 全跳过）+ 分派：确定性 tool_denied 走模板（不调 LLM，复用
+maybe_analyze）；user_correction 走 observer 模型起草 trigger/behavior
+（provider 空 = 跟随主模型；构建失败 → model-error 不前进位点）。
 - 匹配既有条目（trigger 互含）→ 强化，不新建；
 - usage 记账 source="instincts"（照 memory 蒸馏 source="memory" 先例）；
 - 失败保留位点可重试（防停摆：成功才前进）。
@@ -20,6 +22,7 @@ from .. import usage as usage_mod
 from ..lang import t
 from ..models import build_model
 from .capture import _confidence_for, _id_for_sig, _tool_denied_signature, _ts, observe
+from .prefilter import is_system_injected
 from .store import get_instinct, list_instincts, observations_path, save_instinct
 from .types import Instinct, load_instincts_config
 
@@ -69,14 +72,29 @@ _OBSERVER_PROMPT = (
 )
 
 
-async def _judge_correction(
-    before: str, after: str, cfg, session_id: str
-) -> dict[str, Any] | None:
-    """observer 小模型判定；返回规则草稿或 None（不可泛化/失败）。"""
+def _resolve_observer_provider(cfg) -> str:
+    """provider 空 = 跟随主模型（默认 provider，设计 §10.1 语义）。"""
     prov = (cfg.observer_model or "").strip()
     if not prov:
-        return None
-    model = build_model(prov, (cfg.observer_model_id or "").strip() or None)
+        from .. import providers as prov_mod
+
+        prov = prov_mod.get_default_provider()
+    return prov
+
+
+def _build_observer_model(cfg):
+    """构建 observer 模型。无可用 provider / 构建失败 → 抛异常，由
+    run_observer 转成 model-error 跳过（不前进位点，配置修好后可重试）。"""
+    prov = _resolve_observer_provider(cfg)
+    if not prov:
+        raise ValueError("no default provider configured")
+    return build_model(prov, (cfg.observer_model_id or "").strip() or None)
+
+
+async def _judge_correction(
+    model, before: str, after: str, session_id: str, provider: str = ""
+) -> dict[str, Any] | None:
+    """observer 小模型判定；返回规则草稿或 None（不可泛化/失败）。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     resp = await model.ainvoke(
@@ -85,7 +103,7 @@ async def _judge_correction(
             HumanMessage(content=f"## Before\n{before[:600]}\n\n## After\n{after[:600]}"),
         ]
     )
-    usage_mod.record_message(resp, source="instincts", provider=prov,
+    usage_mod.record_message(resp, source="instincts", provider=provider,
                              session_id=session_id)
     raw = getattr(resp, "content", "") or ""
     # 提取第一个 JSON 对象（模型可能裹 markdown 代码块）。
@@ -123,8 +141,14 @@ def _matches_existing(trigger: str) -> Instinct | None:
     return None
 
 
-async def run_observer(session_id: str = "") -> dict[str, Any]:
-    """位点驱动的一次分析（detached 线程调用；失败保留位点）。"""
+async def run_observer(session_id: str = "", force: bool = False) -> dict[str, Any]:
+    """位点驱动的一次分析（detached 线程调用；失败保留位点）。
+
+    force=True（管理页「立即分析」）跳过数量门槛与时间间隔。
+    门槛分型（2026-11-15 P0）：纠偏观察低频高价值，≥
+    correction_min_observations（默认 3）即触发；其余观察仍走
+    min_observations（默认 20）。
+    """
     cfg = load_instincts_config()
     if not cfg.enabled:
         return {"ok": False, "skipped": "disabled"}
@@ -135,17 +159,30 @@ async def run_observer(session_id: str = "") -> dict[str, Any]:
     st = _load_state()
     offset = min(st["offset"], len(lines))
     fresh = lines[offset:]
-    if len(fresh) < cfg.min_observations:
-        return {"ok": False, "skipped": "few-observations", "fresh": len(fresh)}
-    if time.time() - st["last_analyze_ts"] < cfg.analyze_gap_min * 60:
-        return {"ok": False, "skipped": "gap"}
-
     events = []
     for ln in fresh:
         try:
             events.append(json.loads(ln))
         except Exception:
             continue
+    n_corr = sum(1 for e in events if e.get("type") == "user_correction")
+    n_other = len(events) - n_corr
+    if not force:
+        if n_corr < cfg.correction_min_observations and n_other < cfg.min_observations:
+            return {"ok": False, "skipped": "few-observations", "fresh": len(fresh)}
+        if time.time() - st["last_analyze_ts"] < cfg.analyze_gap_min * 60:
+            return {"ok": False, "skipped": "gap"}
+
+    # 纠偏判定模型：批前构建一次，失败 → model-error 且不前进位点
+    # （配置修好后重试；避免整批纠偏被静默跳过——管理页状态行可见）。
+    model = None
+    provider = ""
+    if n_corr > 0:
+        try:
+            provider = _resolve_observer_provider(cfg)
+            model = _build_observer_model(cfg)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "skipped": "model-error", "error": str(exc)[:200]}
 
     created = reinforced = 0
     last_error = ""
@@ -181,9 +218,13 @@ async def run_observer(session_id: str = "") -> dict[str, Any]:
                     ))
                     created += 1
             elif ev.get("type") == "user_correction":
+                after = str(ev.get("after") or "")
+                # 存量噪声同口径过滤（子代理 brief/结果回注/角色 prompt）
+                if is_system_injected(after):
+                    continue
                 draft = await _judge_correction(
-                    str(ev.get("before") or ""), str(ev.get("after") or ""),
-                    cfg, session_id,
+                    model, str(ev.get("before") or ""), after,
+                    session_id, provider,
                 )
                 if draft is None:
                     continue
@@ -254,7 +295,7 @@ def capture_correction_signal(user_text: str, session_id: str = "") -> bool:
         return False
 
 
-def maybe_run_observer(session_id: str = "") -> None:
+def maybe_run_observer(session_id: str = "", force: bool = False) -> None:
     """同步入口（kick 线程调用）：异步 run_observer 的兜底包装。"""
     import asyncio
 
@@ -262,7 +303,7 @@ def maybe_run_observer(session_id: str = "") -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
-    coro = run_observer(session_id)
+    coro = run_observer(session_id, force=force)
     if loop is not None:
         loop.create_task(coro)
     else:

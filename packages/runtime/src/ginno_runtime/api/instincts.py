@@ -1,8 +1,9 @@
 """Instincts REST API（P0，docs/instincts-design.md §10.2 子集）。
 
-列表 / 详情 / 创建 / 编辑 / 删除（软删默认）+ 观察 feed（只读）。
+列表 / 详情 / 创建 / 编辑 / 删除（软删默认）+ 观察 feed（只读）
++ observer 状态 / 立即分析（2026-11-15 P0 可见化）。
 P2 evolve：聚类预览 + 沉淀 SKILL.md（instincts/evolve.py）。
-promote/prune-scan/export 仍留位。
+promote/prune-scan 仍留位。
 """
 
 from __future__ import annotations
@@ -54,6 +55,56 @@ def api_list_instincts(
 @router.get("/observations")
 def api_observations(limit: int = 50) -> list[dict[str, Any]]:
     return recent_observations(limit=max(1, min(limit, 500)))
+
+
+# 注意：/observer-state 与 /analyze 必须声明在 /{instinct_id} 之前，
+# 否则被路径参数路由吞掉（FastAPI 按声明顺序匹配）。
+
+
+@router.get("/observer-state")
+def api_observer_state() -> dict[str, Any]:
+    """observer 状态（管理页状态行）：位点/待分析数/上次分析/错误 +
+    模型解析结果与门槛——「总结了什么、为什么没总结」可见化。"""
+    from ..instincts.observer import _load_state, _resolve_observer_provider
+    from ..instincts.store import observations_path
+    from ..instincts.types import load_instincts_config
+
+    cfg = load_instincts_config()
+    st = _load_state()
+    total = 0
+    p = observations_path()
+    if p.exists():
+        try:
+            total = len(p.read_text(encoding="utf-8").splitlines())
+        except Exception:
+            total = 0
+    try:
+        resolved = _resolve_observer_provider(cfg)
+    except Exception:
+        resolved = ""
+    return {
+        "enabled": cfg.enabled,
+        "offset": st["offset"],
+        "total": total,
+        "fresh": max(0, total - min(st["offset"], total)),
+        "last_analyze_ts": st["last_analyze_ts"],
+        "last_error": st["last_error"],
+        "observer_model": cfg.observer_model,
+        "resolved_provider": resolved,
+        "min_observations": cfg.min_observations,
+        "correction_min_observations": cfg.correction_min_observations,
+        "analyze_gap_min": cfg.analyze_gap_min,
+    }
+
+
+@router.post("/analyze")
+async def api_analyze() -> dict[str, Any]:
+    """立即分析（管理页按钮）：模板路径 + observer 强制跑（跳过节流）。"""
+    from ..instincts import maybe_analyze
+    from ..instincts.observer import run_observer
+
+    maybe_analyze()
+    return await run_observer(force=True)
 
 
 @router.post("")

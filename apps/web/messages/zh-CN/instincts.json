@@ -1,11 +1,34 @@
 {
   "instincts": {
     "title": "本能",
-    "subtitle": "行为规则沉淀：权限被拒/重试自救自动生成，按置信度注入新会话",
+    "subtitle": "行为规则沉淀：权限被拒/用户纠偏/重试自救自动生成，按置信度注入新会话",
     "create": "新建",
     "refresh": "刷新",
+    "analyze": "立即分析",
+    "analyzing": "分析中…",
+    "analyzeDone": "分析完成：新建 {c} 条 · 强化 {r} 条",
+    "analyzeNone": "分析完成：处理 {n} 条观察，无新规则",
+    "analyzeFail": "分析失败",
+    "skip": {
+      "few-observations": "观察不足（待分析 {n} 条）",
+      "gap": "冷却窗口内，稍后再试",
+      "disabled": "本能已关闭（设置 → 智能体 → 本能）",
+      "no-observations": "暂无观察事件",
+      "model-error": "判定模型不可用：{e}"
+    },
+    "obsv": {
+      "title": "分析器状态",
+      "last": "上次分析",
+      "never": "从未运行",
+      "position": "位点 {offset}/{total} · 待分析 {fresh}",
+      "model": "判定模型",
+      "followMain": "跟随主模型",
+      "noModel": "无可用模型",
+      "threshold": "触发门槛：纠偏 ≥{c} · 其它 ≥{n}",
+      "error": "上次错误"
+    },
     "loadFail": "加载失败（sidecar 未起？）",
-    "empty": "暂无条目——同一项目拒绝 3 次同类操作后会自动生成待确认规则",
+    "empty": "暂无条目——同类操作被拒 3 次、或累计 3 次用户纠偏后，自动生成待确认规则",
     "edit": "编辑",
     "delete": "删除（软删，可在 pruned 过滤器找回）",
     "filter": {
@@ -34,7 +57,11 @@
     },
     "obs": {
       "title": "观察事件流（只读，已脱敏）",
-      "empty": "暂无观察"
+      "empty": "暂无观察",
+      "reason": {
+        "correction-word": "纠偏词",
+        "after-deny": "拒绝后改向"
+      }
     },
     "editor": {
       "createTitle": "新建本能",

@@ -61,6 +61,40 @@ export async function listObservations(limit = 50): Promise<Record<string, unkno
   return json(`${BASE}/instincts/observations?limit=${limit}`);
 }
 
+/** observer 状态（管理页状态行）：位点/待分析/上次分析/错误/模型解析。 */
+export interface ObserverState {
+  enabled: boolean;
+  offset: number;
+  total: number;
+  fresh: number;
+  last_analyze_ts: number;
+  last_error: string;
+  observer_model: string;
+  resolved_provider: string;
+  min_observations: number;
+  correction_min_observations: number;
+  analyze_gap_min: number;
+}
+
+export async function getObserverState(): Promise<ObserverState> {
+  return json(`${BASE}/instincts/observer-state`);
+}
+
+export interface AnalyzeResult {
+  ok?: boolean;
+  skipped?: string;
+  fresh?: number;
+  created?: number;
+  reinforced?: number;
+  processed?: number;
+  error?: string;
+}
+
+/** 立即分析（force 跳过节流）：模板路径 + observer 纠偏判定。 */
+export async function analyzeInstincts(): Promise<AnalyzeResult> {
+  return json(`${BASE}/instincts/analyze`, { method: "POST", headers: H });
+}
+
 export async function createInstinct(body: InstinctBody): Promise<Instinct> {
   return json(`${BASE}/instincts`, { method: "POST", headers: H, body: JSON.stringify(body) });
 }

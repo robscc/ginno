@@ -143,6 +143,7 @@ _DEFAULT_SETTINGS = {
         "observer_model": "",
         "observer_model_id": "",
         "min_observations": 20,
+        "correction_min_observations": 3,
         "analyze_gap_min": 5,
     },
     "knowledge": {
