@@ -9,6 +9,111 @@ versions.
 
 （暂无）
 
+## [0.3.3] - 2026-11-15
+
+58 commits since 0.3.2（13 feat / 28 fix / 6 docs / 2 refactor）。主题：
+AgentTeam 多智能体团队全量交付、上下文管理与 Session Tool Policy、
+通知系统根治性重构、模型选择器二级化。
+
+> 版本号按 patch 走，但实际含四个主题的新能力——记账按主题分节便于回溯。
+
+### AgentTeam（多智能体团队）— 本次最大块，backlog 56 项全部交付
+
+**能力**
+- **渠道消息投递团队**：钉钉/企微来消息 → 投递给团队成员 → 成员回帖回到 IM
+  原线程（P2-3）
+- **schedule 驱动团队** + `worker_bus` 放开 team-member（P2-1/P2-2）：定时任务
+  可直接点火一个团队
+- **workflow 节点调用团队成员** + 团队成本可见（P2-4/P2-5 runtime 侧）
+- **成本面板 / 投递 brief 卡 / pin 浮窗联动**（P2-5/P2-13/P2-24 前端侧）
+- **投递回执可视化**（P1-1）+ **投递 ≠ 批准**语义分离（P2-11）
+- 成员工作台顶栏补三层记忆 chip（P2-12）
+- 成员回帖 / blocked 状态接入统一通知体系（P1-18）
+- @ 多人并行投递（P1-9）
+
+**修复（P0 全 7 项 + P1/P2 共 28 项）**
+- P0-1 广场发送后 composer 永久锁死；重载误判未送达导致重复投递
+- P0-2/P0-3/P0-5 Lead 工具不可达、steer 静默丢弃、坏 roster 数据丢失
+- P0-4 unknown/error 语义态是死代码 → 改读真实数据源
+- P0-6 模板/一句话建队三处断裂 + 领队覆盖时丢成员
+- P0-7 + P1-2/P1-3/P1-4 补 turn 生命周期钩子一次修好
+- P1-5/P1-6/P1-8/P1-10 并发闸击穿、回帖丢失、领队指针漂移、wait 死等
+- P1-7 seen/徽标漂移——落盘改用主窗口视角
+- P1-9 顺带修一个实测发现的 **checkpoint 并发写丢失**
+- P1-11/14/15/16/17/19 + P2-14~19/25 前端 13 项缺陷
+- P1-12/P1-13 @ 菜单键盘绕过 blocked 禁选、steerHint 死代码
+- P1-20 广场 AgentChips 语义错位 → 改为投递给成员
+- P2-8/P2-9/P2-10/P2-20/P2-22 徽标口径、并发可配、展示文本、wait 语义
+- P2-21 多会话回帖读错 session；P2-23 记忆注入补 turn 级断言；
+  P2-26 编制写入边角；P2-28 文档与实现对齐
+- 团队 packaged e2e 用例（P1-21）
+
+**决策留痕**：TEAM.md 维持与 KB 隔离、goals 暂缓但阻塞已解除（P2-6/P2-7）
+
+### 上下文管理 / Session Tool Policy
+
+- **Session Tool Policy（runtime P0）**：会话级 MCP / Skill 按需禁用
+- **账本式面板 + 工具级开关 + tiktoken 计量**（P0）
+- **输入框「上下文管理」面板**（Tool Policy P1）
+- 二轮改版：去预设档直接勾选 + 列表显示优化
+- `McpToggle` 提升为公共 `ui/Toggle`，设置页与面板共用
+- 修复：勾选即自动保存（uncheck 重开回 check 的根因）；重开丢勾选（裸 fetch
+  跨源拿不到 policy）；breakdown 不可用时降级为估算行而非永久骨架屏；面板视觉
+  错乱与状态语义；开关「点不动/只能点一次」；两次快速点击回弹；iOS 开关 knob
+  跑出 track 压住名称；工具级开关紫色胖条与名称错位
+- 修复：`_ensure_session` 的 tool_policy 赋值挪进 session dict 构建（CI 红）
+
+### 通知系统重构（根治「乱通知」）
+
+- **P0-1 通知风暴根治**：`token.delta` 经 switch fall-through 进了
+  `user.question` 的共享 case 体，而 delta 帧没有 `id` → 去重键退化成
+  `${sid}:${Date.now()}` 每帧唯一 → **每个 token 弹一条「等你回答」**。实测
+  单会话 1583 条、`shell.log` 里 77% 是通知流量。拆独立 case + 抽
+  `maybeNotifyAskUser()` + 内容派生去重键
+- **P0-2 投递失败 40%**：`show()` 经 `block_on_current` 要求
+  `CFRunLoop::is_waiting()` 为真，而主线程正在派发触发它的同一个事件时该值为
+  false（**假阴性**）→ 2271 次 `MainThreadNotRunning` 静默丢弃。改有界重试
+  （5 次 × 25ms），**不**搬主线程（紧随的 `wait_for_action` 会冻住 UI）
+- **P0-3 隐藏悬浮窗是第二通知源**：`/pin` 常驻 hidden → 「用户没在看」恒成立
+  → 正盯着主窗也弹、且与主窗重复。闸门下沉进 `notifyNative` 唯一出口
+- **P1 闸门收口**：`notifyKind` 设为必填 + 出口统一施加总开关/分类/勿扰/隐私/
+  提示音；删除死开关 `subagent`（无生产者）、`workflow` 接真并配
+  `kinds_schema=2` 一次性迁移；新增 `schedule`/`bgTask` 分类；reply 两级节流
+  合一 + flush 时复检注意力 + 切进会话即 cancel
+- **顺带修一个生产 bug**：`fromWire` 浅拷贝导致 `d.dnd.enabled = …` 写穿
+  `DEFAULT_PREFS`——勿扰窗设过一次就永久污染模块级默认值，关不掉且重启不愈
+- **P2**：补回权威 spec `docs/notifications-design.md`（V2 那份被实现它的提交
+  删除，注释长期指向不存在的文件）；`notice-unification` 的 Rust 通知窗标
+  **ARCHIVED**（会造出第三条渲染路径 + 重新引入多窗口重复）；`shell.log` 加
+  毫秒时间戳与 `notify_kind`、带锁 append（消除 529 行粘连）
+- **`hasFocus` 实测定案**：自打 WKWebView 探针逐步制造 11 种窗口状态，证实
+  `visibilityState` **不追踪焦点**（切到别的 App 而窗口仍在屏上时仍报
+  `visible` → 该弹不弹），而焦点位于页面内 iframe 时顶层 `hasFocus()` 仍为
+  `true`（纳入安全，不会误判 MCP app 卡 / 代码面板 viewer 的使用）→ 判据改为
+  合取 `visible && hasFocus()`
+- 实测验证：修复后同等负载（4 个后台会话 / 16,938 output tokens / 5分45秒）
+  壳侧只收到 **1 条**合法 reply 通知，`show FAILED` 与 `fire-and-forget` 归零
+
+### 模型选择器与思考强度
+
+- **二级化**：一级选模型、二级选思考强度
+- 手风琴内联难度——选模型一次点击、难度不跳页
+- 选中行加思考强度直达箭头
+- 修复：思考档位一次点击即生效（根除并发 PATCH 覆盖竞态）
+
+### 其它
+
+- **压缩进度按历史时长预估 + ETA**（取代盲目缓动）
+- 构建：web 目标构建前预检自愈 `src/assets` | `public` 跟踪资产
+- CLAUDE.md：补 GraphQL 不可用时的 REST 判绿写法 + `total_count` 第三条件
+  （手搓 grep 判绿已翻车三次，最近一次是提前合并了还在 in_progress 的 PR）
+
+### 评估后决定不做（留痕）
+
+- **Code Mode**：原型 + 真实 Ginno 对比（magpie qwen3.8-flash）+ 最小 repl
+  接入，实测后设计标注 **ARCHIVED**——真实数据定案不施工
+- **工具 schema 按需注入**：实测 9.8k/轮，结论不做通用动态注入
+
 ## [0.3.2] - 2026-11-12
 
 Patch 发布（0.3.1 同日追发）。
