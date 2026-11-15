@@ -99,7 +99,11 @@ export function useWorkflows({
   const reloadWorkflowRuns = useCallback(async () => {
     try {
       const runs = await api.listWorkflowRuns();
-      setWorkflowRuns(runs);
+      // 空闲治理（2026-11-15）：30s 兜底轮询数据不变时保引用 bailout——
+      // 旧版每次 set 新数组 → context 全消费者重渲染（value 无 useMemo）。
+      setWorkflowRuns((prev) =>
+        JSON.stringify(prev) === JSON.stringify(runs) ? prev : runs,
+      );
       // Browser notifications (workflow-ux-redesign P3): when the tab is in
       // the background, announce terminal transitions the user would otherwise
       // miss. Permission is requested lazily the first time any run goes

@@ -16,6 +16,7 @@ import {
   DuckStatusIcon,
   SubagentKindBadges,
   subagentSessionBucket,
+  subagentSessionLive,
   useStatusLabel,
 } from "@/components/chat/blocks";
 
@@ -482,7 +483,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                       <ChevronDown
                         className={`h-3 w-3 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}
                       />
-                      <DuckStatusIcon status={bk} className="shrink-0" />
+                      <DuckStatusIcon status={bk} live={group.some(subagentSessionLive)} className="shrink-0" />
                       <span>{subStatusLabel(bk)}</span>
                       <span>· {group.length}</span>
                     </button>

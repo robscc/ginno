@@ -70,7 +70,7 @@ export function RightDock() {
       >
         <span className="block h-8 w-[3px] rounded-full bg-line2 transition-colors group-hover:bg-violet" />
         {unreadArtifacts > 0 && (
-          <span className="absolute -left-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-violet" />
+          <span className="absolute -left-0.5 -top-0.5 h-2 w-2 animate-pulse-finite rounded-full bg-violet" />
         )}
       </button>
 
@@ -134,12 +134,14 @@ export function RightDock() {
               className="relative rounded-lg p-2 text-muted transition-colors hover:bg-card2 hover:text-txt"
             >
               <Ic className="h-[18px] w-[18px]" />
-              {n > 0 && (
+              {/* 空闲治理（2026-11-15）：隐藏 pill（opacity-0 常驻 DOM）不再
+                  渲染徽标——无限 pulse 曾在折叠态逐帧驱动渲染。hover 才挂。 */}
+              {hover && n > 0 && (
                 <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-violet px-1 text-[10px] font-semibold leading-none text-white">
                   {n > 99 ? "99+" : n}
                 </span>
               )}
-              {wfBadges.map((b, i) => (
+              {hover && wfBadges.map((b, i) => (
                 <span
                   key={i}
                   className={`absolute -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none ${b.cls}`}
@@ -148,13 +150,13 @@ export function RightDock() {
                   {b.count > 99 ? "99+" : b.count}
                 </span>
               ))}
-              {synthActive && (
-                <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse rounded-full bg-blue" />
+              {hover && synthActive && (
+                <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse-finite rounded-full bg-blue" />
               )}
-              {memoryDraft && (
-                <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse rounded-full bg-violet" />
+              {hover && memoryDraft && (
+                <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse-finite rounded-full bg-violet" />
               )}
-              {noticeUnreadBadge && (
+              {hover && noticeUnreadBadge && (
                 <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red px-1 text-[10px] font-semibold leading-none text-white">
                   {noticeUnread > 99 ? "99+" : noticeUnread}
                 </span>

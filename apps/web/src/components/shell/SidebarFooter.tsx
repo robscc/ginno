@@ -92,11 +92,19 @@ export function SidebarFooter({
           done_unread?: number;
         };
         if (alive && d.ok) {
-          setTeamBadge({
-            needs: d.needs ?? 0,
-            blocked: d.blocked ?? 0,
-            done_unread: d.done_unread ?? 0,
-          });
+          // 空闲治理（2026-11-15）：5s 轮询数值不变保引用 bailout，避免
+          // 每 5s 新对象触发重渲染。
+          const needs = d.needs ?? 0;
+          const blocked = d.blocked ?? 0;
+          const done_unread = d.done_unread ?? 0;
+          setTeamBadge((prev) =>
+            prev &&
+            prev.needs === needs &&
+            prev.blocked === blocked &&
+            prev.done_unread === done_unread
+              ? prev
+              : { needs, blocked, done_unread },
+          );
         }
       } catch {
         /* sidecar 未起——徽标保持 */

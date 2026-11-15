@@ -153,6 +153,19 @@ export function subagentSessionBucket(s: {
   return subagentStatusBucket(s.subagent?.status);
 }
 
+/** 是否真在运行（2026-11-15 空闲动画治理）：waiting 停车态不算 live——
+ *  鸭图标对这些态静态化，只有真 running 才挂无限动画。delegation 运行期
+ *  stop_reason 是字面量 "running"（见 subagentSessionBucket 注释），缺失
+ *  视为遗留数据→静态，避免僵尸委托永久转动画。 */
+export function subagentSessionLive(s: {
+  type?: string | null;
+  subagent?: { status?: string } | null;
+  stop_reason?: string | null;
+}): boolean {
+  if (s.type === "delegation") return s.stop_reason === "running";
+  return s.subagent?.status === "running";
+}
+
 /** 桶的固定渲染序：运行中（活）→ 失败（要人看）→ 成功（归档）。 */
 export const SUBAGENT_BUCKET_ORDER: SubagentBucket[] = ["running", "failed", "done"];
 

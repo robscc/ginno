@@ -538,9 +538,35 @@ html.pin-window body {
   0%, 100% { transform: rotate(178deg) translateY(0); }
   50% { transform: rotate(182deg) translateY(-1.6px); }
 }
+/* 空闲态治理（2026-11-15 性能审计）：终态/停车态鸭静态化配套——翻肚姿态
+   静态 transform、水波静态淡环。无限动画只留给真 running 桶。 */
+.gd-flip-static {
+  transform: rotate(180deg);
+  transform-origin: 12px 12px;
+}
+.gd-ring-static {
+  opacity: .3;
+}
+
+/* 有限 pulse：提示性徽标闪 3 次后静态常驻，替代 infinite animate-pulse——
+   空闲态无限动画会逐帧驱动 WebKit style+layout+composite（sample 实锤）。 */
+@keyframes ginno-pulse-finite {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+.animate-pulse-finite {
+  animation: ginno-pulse-finite 1.6s ease-in-out 3;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* 全停但渐变保留：不动的彩虹仍是彩虹，颜色始终能分档 */
   .ginno-duck * {
+    animation: none !important;
+  }
+  /* 补全 Tailwind 工具类（审计缺口：旧闸只覆盖自定义类） */
+  .animate-pulse,
+  .animate-spin,
+  .animate-pulse-finite {
     animation: none !important;
   }
 }

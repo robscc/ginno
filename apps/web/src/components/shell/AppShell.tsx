@@ -507,7 +507,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       try {
         const cfg = await api.listSchedule();
         if (!alive) return;
-        setScheduleUnseen(cfg.unseen ?? { total: 0, error: 0, missed: 0 });
+        // 空闲治理（2026-11-15）：60s 轮询数值不变保引用 bailout。
+        const u = cfg.unseen ?? { total: 0, error: 0, missed: 0 };
+        setScheduleUnseen((prev) =>
+          prev.total === u.total && prev.error === u.error && prev.missed === u.missed
+            ? prev
+            : u,
+        );
         if (!cfg?.enabled) {
           setScheduleDot("off");
           return;

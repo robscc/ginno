@@ -54,6 +54,23 @@ return (
   </button>
 );
 }
+/** 共享相对时间 ticker（2026-11-15 空闲治理）：旧版每个已完成气泡各挂一个
+ *  60s interval（N 气泡 N 计时器）。模块级单 timer + 订阅集，最后一个订阅
+ *  离开时停表。重渲染仍按订阅者分发（relTime 分钟粒度需要），但计时器 O(1)。 */
+const relSubs = new Set<() => void>();
+let relTimer: ReturnType<typeof setInterval> | null = null;
+function subscribeRelTick(cb: () => void): () => void {
+  relSubs.add(cb);
+  if (!relTimer) relTimer = setInterval(() => relSubs.forEach((f) => f()), 60_000);
+  return () => {
+    relSubs.delete(cb);
+    if (relSubs.size === 0 && relTimer) {
+      clearInterval(relTimer);
+      relTimer = null;
+    }
+  };
+}
+
 /** workflow_propose_edit diff confirmation card (workflow-ux-redesign P0
  *  polish): busy buttons + collapsed-by-default diff with hunk count. The
  *  session graph is paused at the tool's interrupt until the user decides. */
@@ -87,7 +104,7 @@ return (
       <SubagentKindBadges sub={sub} />
       {active && (
         <span
-          className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${sub.status === "running" ? "animate-pulse" : ""}`}
           style={{ background: meta.color }}
         />
       )}
@@ -423,8 +440,7 @@ const statusText = useMemo(() => {
 const [, setRelTick] = useState(0);
 useEffect(() => {
   if (streaming || !ts) return;
-  const timer = setInterval(() => setRelTick((n) => n + 1), 60_000);
-  return () => clearInterval(timer);
+  return subscribeRelTick(() => setRelTick((n) => n + 1));
 }, [streaming, ts]);
 // 流式 → 状态文案；完成 → 相对时间（收口时刻起算）；无 ts（历史重放）→
 // 不渲染。旧的硬编码「刚刚」会说一小时的谎，宁可空着。

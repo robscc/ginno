@@ -245,6 +245,7 @@ function PlanItemRow({ item }: { item: PlanItem }) {
         ) : (
           <DuckStatusIcon
             size={14}
+            live={item.status === "running"}
             status={
               item.status === "done"
                 ? "done"

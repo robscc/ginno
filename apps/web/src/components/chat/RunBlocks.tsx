@@ -87,9 +87,10 @@ export function fmtElapsed(seconds: number): string {
 }
 
 // Paused-at-human-step glyph (workflow-ux-redesign P1): a waiting step is not
-// "spinning work" — it's waiting for YOU. Pulsing yellow speech bubble.
+// "spinning work" — it's waiting for YOU. Yellow speech bubble; finite pulse
+// (2026-11-15 空闲治理：等人态可能常驻数小时，infinite 会逐帧驱动渲染)。
 function HumanWaitGlyph() {
-  return <MessageSquare className="h-3.5 w-3.5 animate-pulse text-yellow" />;
+  return <MessageSquare className="h-3.5 w-3.5 animate-pulse-finite text-yellow" />;
 }
 
 const TERMINAL = new Set(["done", "failed", "cancelled", "interrupted"]);

@@ -20,6 +20,7 @@ import { useGinno } from "@/lib/store";
 import {
   SUBAGENT_BUCKET_ORDER,
   subagentSessionBucket,
+  subagentSessionLive,
   subagentStatusMeta,
   useStatusLabel,
 } from "@/components/chat/blocks/types";
@@ -118,7 +119,7 @@ export function SubagentBoard({ sessionId }: { sessionId: string }) {
                   <ChevronRight
                     className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
                   />
-                  <DuckStatusIcon status={bucket} />
+                  <DuckStatusIcon status={bucket} live={entries.some(subagentSessionLive)} />
                   <span>{statusLabel(bucket)}</span>
                   <span>· {entries.length}</span>
                 </button>

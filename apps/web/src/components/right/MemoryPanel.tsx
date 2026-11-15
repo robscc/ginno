@@ -121,7 +121,7 @@ export function MemoryPanel() {
           onClick={() => setDraftOpen(true)}
           className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-violet/40 bg-violet/10 px-3 py-2 text-left text-xs text-txt hover:bg-violet/20"
         >
-          <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-violet" />
+          <span className="inline-block h-2 w-2 shrink-0 animate-pulse-finite rounded-full bg-violet" />
           {t("draftBanner", { n: draft.pool_entries ?? 0 })}
           <span className="ml-auto text-violet">{t("review")}</span>
         </button>

@@ -48,6 +48,7 @@ export {
   SUBAGENT_BUCKET_ORDER,
   SUBAGENT_STATUS_META,
   subagentSessionBucket,
+  subagentSessionLive,
   subagentStatusBucket,
   subagentStatusMeta,
   useStatusLabel,
