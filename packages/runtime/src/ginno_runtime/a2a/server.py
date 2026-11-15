@@ -28,12 +28,17 @@ token 一律**立即**回统一 401 + WWW-Authenticate: Bearer——任何失败
 （缺 token / 错 token / 路径不存在）响应体逐字节相同，不泄露存在性差异；
 拒绝在 AUTH_REJECT_DEADLINE_S（3s）预算内完成，实际是即时响应，不挂连接。
 
-P0 骨架：message/send 返回 submitted 状态的 Task 占位并写审计；真正跑
-agent（会话映射照 channels/base.py ensure_channel_session 范式）属 P1。
+N2b（入站执行层）：message/send 不再返回 submitted 占位——它把任务派给共享执行层
+``a2a/inbound_exec.py``（桌面端入站与 ginno node 共用），真跑 agent（会话映射照
+channels/base.py ensure_channel_session 范式，type="a2a"/独立 slug/不挂用户目录），
+执行侧强制 trust/caps/exec_root（guard），权限 fail-closed 转人工。任务先回 working，
+客户端 tasks/get 轮询至终态（SSE 流式属其他 P1，不在本期）。执行层**懒加载**——
+本模块 import 不拖入 graph（node 无 GUI 依赖断言）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
@@ -49,6 +54,7 @@ from ginno_runtime import jsonx as json
 
 from .auth import TokenStore, token_hash
 from .errors import (
+    INTERNAL_ERROR,
     INVALID_PARAMS,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
@@ -57,7 +63,7 @@ from .errors import (
     TaskNotCancelableError,
     TaskNotFoundError,
 )
-from .models import AgentSkill, Message, Task, TaskState, TaskStatus
+from .models import AgentSkill, Message, Part, Task, TaskState, TaskStatus
 
 __all__ = [
     "A2ADeps",
@@ -198,7 +204,13 @@ class TaskRegistry:
 
 @dataclass
 class A2ADeps:
-    """build_a2a_app 的全部依赖——注入而非全局，测试可整体替换。"""
+    """build_a2a_app 的全部依赖——注入而非全局，测试可整体替换。
+
+    ``executor``：入站执行器（a2a/inbound_exec.InboundExecutor）。缺省 None →
+    message/send 首次派活时从 settings 枢纽块懒构建（executor_from_settings）并缓存。
+    测试可注入真执行器（自环 e2e）或桩（仅测 server 状态机 plumbing）。
+    ``background``：在跑的执行协程集合（停服/收尾清理用）。
+    """
 
     tokens: TokenStore
     audit: AuditLog
@@ -208,6 +220,8 @@ class A2ADeps:
     agent_name: str = "Ginno"
     agent_version: str = "0.0.0"
     skills: Sequence[AgentSkill] = ()
+    executor: Any = None
+    background: set = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------- #
@@ -366,6 +380,74 @@ def _public_card(deps: A2ADeps) -> dict:
     }
 
 
+def _resolve_executor(deps: A2ADeps) -> Any:
+    """取入站执行器；返回 None 表示入站门控关闭（保留 P0 submitted 占位）。
+
+    判定（设计 §12.A / 验收 #14 入站默认关闭）：
+    - 显式注入 ``deps.executor`` → 直接用（测试/桌面端）。
+    - 否则读 settings 枢纽块 ``inbound_enabled``：开启 → 懒构建真执行器并缓存
+      （node resolve_config 会写 inbound_enabled=True）；关闭 → None（P0 占位）。
+
+    **懒加载**：import inbound_exec 只发生在首次派活时——本模块 import 不拖入
+    graph（node 无 GUI 依赖断言，test_a2a_node::test_no_gui_import_chain）。
+    exec_root 非法 → fail-loud 抛 ExecRootError（调用方转 RPC error，不静默降级）。
+    """
+    if deps.executor is not None:
+        return deps.executor
+    from .inbound_exec import _load_hub, executor_from_settings
+
+    if not _load_hub().get("inbound_enabled"):
+        return None
+    deps.executor = executor_from_settings()
+    return deps.executor
+
+
+async def _run_inbound_task(
+    task: Task, message: Message, deps: A2ADeps, executor: Any, token: str
+) -> None:
+    """后台跑一条入站任务至终态，原地更新 Task（tasks/get 读同一对象）。
+
+    执行层返回 ExecResult（state/text/artifacts/denials/session_id）→ 映射到 Task。
+    权限挂起 → input-required（#7 转人工，远端无自批路径）；guard 拒绝记入
+    metadata.guard_denials（实证可查）；产物以 Artifact 回路径+元信息（§2.5）。
+    """
+    try:
+        result = await executor.run(
+            instruction=message.text(),
+            context_id=task.context_id,
+            peer_name=str(message.metadata.get("peer_name") or "") or "peer",
+            task_id=task.id,
+        )
+        task.artifacts = list(result.artifacts)
+        if result.session_id:
+            task.metadata["session_id"] = result.session_id
+        if result.denials:
+            task.metadata["guard_denials"] = result.denials
+        body = result.text or result.error or ""
+        task.status = TaskStatus(
+            state=result.state,
+            message=Message(
+                role="agent",
+                parts=[Part(text=body)] if body else [],
+                task_id=task.id,
+                context_id=task.context_id,
+            ),
+            timestamp=_utcnow(),
+        )
+        deps.audit.record(
+            method="message/send", token=token, outcome=result.state.value, task_id=task.id
+        )
+    except Exception as exc:  # noqa: BLE001 — 执行异常转 failed，绝不悬空 working
+        task.status = TaskStatus(
+            state=TaskState.FAILED,
+            message=Message(role="agent", parts=[Part(text=f"{type(exc).__name__}: {exc}")]),
+            timestamp=_utcnow(),
+        )
+        deps.audit.record(
+            method="message/send", token=token, outcome="failed", task_id=task.id
+        )
+
+
 def _message_send(req_id: Any, params: dict, deps: A2ADeps, token: str) -> JSONResponse:
     raw_msg = params.get("message")
     if not isinstance(raw_msg, dict):
@@ -386,11 +468,33 @@ def _message_send(req_id: Any, params: dict, deps: A2ADeps, token: str) -> JSONR
             status_code=429,
             headers={"Retry-After": "5"},
         )
-    # P0 骨架：submitted 占位。contextId 客户端给了就接受（server 可接受时
-    # 规范允许），没给则 server 生成；真正映射 Ginno session 属 P1。
+    # 执行器先解析（exec_root 非法 fail-loud → RPC error，不留悬空 task）。
+    try:
+        executor = _resolve_executor(deps)
+    except A2AError as exc:
+        deps.audit.record(method="message/send", token=token, outcome=exc.name)
+        return _rpc_error(req_id, exc)
+    except Exception as exc:  # noqa: BLE001 — ExecRootError 等配置非法
+        deps.audit.record(method="message/send", token=token, outcome="exec_config_error")
+        return _rpc_error(
+            req_id, A2AError(f"inbound exec config error: {exc}", code=INTERNAL_ERROR)
+        )
+    # contextId 客户端给了就接受（规范允许），没给则 server 生成；映射 Ginno
+    # session 由执行层照渠道范式落实（type="a2a"/独立 slug/不挂用户目录）。
     task = deps.tasks.create(message, context_id=message.context_id)
+    if executor is None:
+        # 入站门控关闭（inbound_enabled=false，P0 默认）：保留 submitted 占位。
+        deps.audit.record(
+            method="message/send", token=token, outcome="submitted", task_id=task.id
+        )
+        return _rpc_result(req_id, _task_dict(task))
+    # 真执行：后台协程跑 turn 链，先回 working（客户端 tasks/get 轮询至终态）。
+    task.status = TaskStatus(state=TaskState.WORKING, timestamp=_utcnow())
+    bg = asyncio.create_task(_run_inbound_task(task, message, deps, executor, token))
+    deps.background.add(bg)
+    bg.add_done_callback(deps.background.discard)
     deps.audit.record(
-        method="message/send", token=token, outcome="submitted", task_id=task.id
+        method="message/send", token=token, outcome="working", task_id=task.id
     )
     return _rpc_result(req_id, _task_dict(task))
 
