@@ -652,6 +652,13 @@ def main(argv: list[str] | None = None) -> None:
         from .checkpoint_segment import cli_main as _ckpt_cli
 
         raise SystemExit(_ckpt_cli(argv[1:]))
+    # `ginno node`：无 GUI 机器的 headless A2A 节点（N1，
+    # docs/design/ginno-node-headless-design.md）——进程内起 A2A listener，
+    # 与默认的 exec 单发 turn 入口分流。
+    if argv and argv[0] == "node":
+        from .a2a.node import cli_main as _node_cli
+
+        raise SystemExit(_node_cli(argv[1:]))
     instruction = ""
     if "--" in argv:
         idx = argv.index("--")

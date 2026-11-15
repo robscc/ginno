@@ -64,10 +64,21 @@ BYOM 原稿写 `~/.ginno-node/token` + `~/.ginno-node/config.json`（独立格�
 **定案**：
 - node 用 **`GINNO_HOME` 隔离**，默认 `~/.ginno-node`（避免与桌面端 `~/.ginno` 互踩）
 - 落盘一律走现有 `paths.py` + `settings` 机制，**不新造凭据文件格式**
-- token **只存 SHA-256 hash**（复用 `a2a/auth.py` 的 `TokenStore`，主设计 #41）
-- 能力地址的明文 token **只在签发时打印一次**到 stdout（供用户复制到桌面端），
-  之后不可回读——与 `api/config.py` SEC-01 掩码纪律一致
+- **两个存储分离（照 inbound.py 既有设计，不要"修正"它）**：
+  - `tokens.json`（TokenStore，**验证用**）→ **只存 SHA-256 hash**（主设计 #41）
+  - `a2a/inbound-token`（**地址回显用**）→ 明文，**0600 权限**，mkstemp + rename
+  - 既有 docstring 已说明理由：「**tokens.json 泄露仍不能重放地址**」
+- **明文地址必须可回显**——主设计**定案 #2 明确「地址显示：明文显示 + 复制 + 重置」**，
+  §11.3 亦写「明文只在对端」。故「明文不可回读」是**错的**要求。
+- node 的 CLI 行为：**首次签发打印完整地址一次**；重启后回显**掩码地址 + 稳定指纹**
+  （headless 场景避免每次启动都把凭据刷进日志/终端记录）。
+  用户需重新复制时读 `a2a/inbound-token`（0600）——这与桌面端 UI 的 [复制] 按钮同源。
 - 私钥/证书走 `a2a/identity.py`（已实现 0600 权限、mkstemp、rename 前 chmod）
+
+> **更正记录（2026-11-15）**：本节初稿写「明文 token 只在签发时打印一次，
+> **之后不可回读**」，与主设计定案 #2（明文显示 + 复制）冲突，且比主设计更严。
+> N1 施工时发现该张力并如实上报，复核后确认**是本文写错、不是实现偷工**，
+> 据此更正。既有 `inbound.py:_load_or_issue_token` 的双存储分离是正确设计，保留。
 
 ### 2.3 任务执行：复用 `ginno exec` 的 turn 链，会话映射照渠道范式
 
