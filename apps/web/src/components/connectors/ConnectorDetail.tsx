@@ -16,6 +16,7 @@ import type {
   ModCompat,
 } from "@/lib/runtime";
 import { A2aInboundCard } from "./A2aInboundCard";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { ConfigEditor } from "./ConfigEditor";
 import { InstallWizard } from "./InstallWizard";
 import { connectorIcon, connectorKind, sourceOf, statusMeta } from "./meta";
@@ -162,15 +163,27 @@ export function ConnectorDetail({
   }, [tabsKey, initialTab]);
 
   // 未保存保护：关闭/切 tab 都要确认（ConfigEditor 通过 onDirtyChange 上报）。
-  const canLeave = useCallback(() => {
-    if (!dirtyRef.current) return true;
-    return window.confirm(tr("config.unsavedConfirm"));
-  }, [tr]);
+  //
+  // ⚠️ 绝不能用 window.confirm：Tauri 的 WKWebView 屏蔽原生 JS 对话框，
+  // confirm() **恒返回 false**（见 AgentsSettings.del / ConfirmModal 的注释）。
+  // 旧实现在此同步调 window.confirm → canLeave() 恒 false → 一旦 ConfigEditor
+  // 报 dirty，关闭与切 tab 全被静默拒绝，用户被永久困在连接器详情页
+  // （2026-11-16 实测：进 A2A 连接器后切不到任何其他页面）。
+  // 改为挂起动作 + 应用内 ConfirmModal，Tauri 与浏览器行为一致。
+  const [pendingLeave, setPendingLeave] = useState<null | (() => void)>(null);
+
+  /** dirty 时挂起动作并弹应用内确认；干净则直接执行。 */
+  const guardLeave = useCallback((action: () => void) => {
+    if (!dirtyRef.current) {
+      action();
+      return;
+    }
+    setPendingLeave(() => action);
+  }, []);
 
   const requestClose = useCallback(() => {
-    if (!canLeave()) return;
-    onClose();
-  }, [canLeave, onClose]);
+    guardLeave(onClose);
+  }, [guardLeave, onClose]);
 
   // 稳定回调：ConfigEditor 的 dirty 上报 effect 不能因父级重渲染反复触发。
   const handleDirtyChange = useCallback((d: boolean) => {
@@ -179,15 +192,21 @@ export function ConnectorDetail({
 
   const switchTab = (id: string) => {
     if (id === tab) return;
-    if (!canLeave()) return;
-    dirtyRef.current = false;
-    setTab(id);
+    guardLeave(() => {
+      dirtyRef.current = false;
+      setTab(id);
+    });
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
+      // 未保存确认模态开着时 ESC 只取消它，不连带关抽屉。
+      if (pendingLeave) {
+        setPendingLeave(null);
+        return;
+      }
       // 向导/商店开着时 ESC 只关上层，不动带未保存更改的详情抽屉。
       if (wizardOpen) {
         setWizardOpen(false);
@@ -198,7 +217,7 @@ export function ConnectorDetail({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose, wizardOpen, storeOpen]);
+  }, [requestClose, wizardOpen, storeOpen, pendingLeave]);
 
   const runAction = async (actionId: string) => {
     setBusy(actionId);
@@ -491,6 +510,24 @@ export function ConnectorDetail({
         // 阻止冒泡：向导内点击不应触发抽屉的 scrim 关闭。
         <div onClick={(e) => e.stopPropagation()}>
           <InstallWizard connectorId={current.id} onClose={() => setWizardOpen(false)} />
+        </div>
+      )}
+
+      {pendingLeave && (
+        // 未保存更改确认：应用内模态（原生 confirm 在 WKWebView 恒 cancel）。
+        <div onClick={(e) => e.stopPropagation()}>
+          <ConfirmModal
+            title={tr("config.unsavedTitle")}
+            message={tr("config.unsavedConfirm")}
+            confirmLabel={tr("config.discardAndLeave")}
+            onConfirm={() => {
+              const action = pendingLeave;
+              setPendingLeave(null);
+              dirtyRef.current = false;
+              action();
+            }}
+            onCancel={() => setPendingLeave(null)}
+          />
         </div>
       )}
     </div>,
