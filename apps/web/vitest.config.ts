@@ -33,6 +33,17 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "cobertura"],
       include: ["src/lib/**"],
+      // 回归门禁（2026-11-15 第一批补测落地后按实测值设定）。
+      // 实测基线：lines/statements 46.32% · branches 93.55% · functions 49.57%。
+      // 阈值刻意留 2–5pp 边际：目的是**防回归**，不是冲指标——
+      // 贴着当前值设会因 CI 环境差异/新增未测文件而假红。
+      // 抬阈值的前提是先补测，且必须与 include 口径同批调整。
+      thresholds: {
+        lines: 44,
+        statements: 44,
+        branches: 88,
+        functions: 45,
+      },
     },
   },
   resolve: {
