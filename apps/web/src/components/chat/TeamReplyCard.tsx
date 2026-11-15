@@ -59,7 +59,9 @@ export function TeamReplyCard({
   const g = useGinno();
   const tc = useTranslations("chat");
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  // 默认展开（2026-11-15 产品决定）：回帖不再截断，直接显示全文。
+  // 保留折叠开关供用户主动收起长回帖，但初值是「全文可见」。
+  const [open, setOpen] = useState(true);
   // 回帖的 agent 用 agent_id 反查配色/图标（与主对话归属徽标同源）。
   const agent = g.agents.find((a) => a.id === agentId) ?? null;
   // 回帖卡的颜色取成员对应 agent 的色；查不到用中性蓝。
@@ -132,7 +134,7 @@ export function TeamReplyCard({
           </button>
         </div>
 
-        {/* 正文：折叠时只显示首段摘要，展开显示全部 blocks */}
+        {/* 正文：默认全文展示（不截断）；用户主动收起时才 clamp。 */}
         <div className={`border-t border-line px-4 py-3 ${open ? "" : "line-clamp-2"}`}>
           {hasInner ? (
             <InnerBlocks blocks={blocks} streaming={false} />

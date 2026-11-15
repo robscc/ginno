@@ -214,3 +214,25 @@ async def test_post_reply_falls_back_to_active_without_source(team, monkeypatch)
     monkeypatch.setattr(team_deliver, "_final_text", _fake_final)
     await team_deliver.post_reply(team["id"], m["instance_id"])
     assert read == [m["session_id"]]
+
+
+# --------------------------------------------------------------------------- #
+# 回帖不截断（2026-11-15 产品决定）
+# --------------------------------------------------------------------------- #
+
+def test_long_reply_is_not_truncated():
+    """回帖全文保留——此前 REPLY_MAX_CHARS=1200 会截断，评审类产出看不到结论。"""
+    from ginno_runtime.teams import deliver as team_deliver
+
+    long_text = "评审结论。" * 2000   # 远超旧上限 1200
+    out, cut = team_deliver._truncate(long_text)
+    assert cut is False, "回帖不应再被标记截断"
+    assert out == long_text.strip(), "回帖正文被截断了"
+    assert "…" not in out[-5:], "不应追加省略号"
+
+
+def test_short_reply_unchanged():
+    from ginno_runtime.teams import deliver as team_deliver
+
+    out, cut = team_deliver._truncate("  短回帖  ")
+    assert out == "短回帖" and cut is False
