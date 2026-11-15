@@ -318,24 +318,57 @@ switch (ev.event) {
       next[qi] = foldQuestionResult(next[qi] as QuestionBlock, content);
       return next;
     }
-    // Hide tool blocks that returned "no results" to reduce noise
-    if (isEmptyToolResult(content)) {
-      return blocks.filter((b) => {
-        if (b.kind !== "tool") return true;
-        const matches = id ? b.id === id : name ? b.name === name : b.pending;
-        return !matches;
-      });
-    }
-    let found = false;
-    return blocks.map((b) => {
-      if (b.kind !== "tool") return b;
-      const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
-      if (matches) {
-        found = true;
-        return { ...b, content, pending: false };
+    // 定位这次 tool.end 该落到哪个工具块上。
+    //
+    // 2026-11-15 修复「结果错位 + 执行中气泡卡死」。旧实现是
+    //   blocks.map(…) + !found && (id ? b.id===id : name ? b.name===name : b.pending)
+    // 两个致命点：name 兜底**不要求 pending**（已完成的同名块也参与匹配），
+    // 且 map 从头扫、`!found` 取第一个 → 命中的是**最早**那个同名块，而不是
+    // 真正在跑的那个。服务端 BLOCK_PREFIX 分支曾漏发 id（engine.py 已同步修），
+    // 于是被拦工具的 denial 文案覆盖到前面已完成的气泡上，真正被拦的那个永远
+    // 停在「执行命令中…」。同名工具一个 turn 内多次调用（bash 重试最常见）即触发。
+    //
+    // 现在：有 id 走精确匹配（**不限 pending**，保证重连重放幂等）；无 id 才退到
+    // 名字，且**只认 pending、从后往前取最近一个**——即使服务端再漏 id，也只会
+    // 落到正在跑的那个块上，不会污染历史气泡。
+    let ti = -1;
+    if (id) {
+      ti = blocks.findIndex((b) => b.kind === "tool" && b.id === id);
+    } else {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind !== "tool" || !b.pending) continue;
+        if (!name || b.name === name) {
+          ti = i;
+          break;
+        }
       }
-      return b;
-    });
+    }
+    // Hide tool blocks that returned "no results" to reduce noise.
+    // 只删**这一个**目标块：旧实现在 name-only 时走 filter 全删，会把一个 turn 里
+    // 所有同名工具块一次删光（实测 2 → 0）。
+    if (isEmptyToolResult(content)) {
+      if (ti < 0) return blocks;
+      return blocks.filter((_, i) => i !== ti);
+    }
+    if (ti >= 0) {
+      const next = blocks.slice();
+      next[ti] = {
+        ...(next[ti] as Extract<Block, { kind: "tool" }>),
+        content,
+        pending: false,
+      };
+      return next;
+    }
+    // 没有任何可配对的块（tool.start 丢帧/未被 adopt，或拦截发生在建块之前）：
+    // 追加一个已完成的工具块，而不是静默丢弃结果——与下面 user.question 分支的
+    // `[...blocks, card]` 兜底对齐。旧实现 map 原样返回，结果直接消失。
+    // 特殊工具（render/workflow/artifact）不受影响：服务端 tool.start 与 tool.end
+    // 对它们的跳过是对称的，根本不会发到这里。
+    return [
+      ...blocks,
+      { kind: "tool", id, name: name ?? "tool", content, pending: false },
+    ];
   }
   case "user.question": {
     // ask_user parked the turn: the card REPLACES the pending ask_user tool

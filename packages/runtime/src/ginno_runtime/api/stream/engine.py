@@ -1095,6 +1095,18 @@ async def _stream_graph(
                                 name, _, reason = rest.partition("]")
                                 await safe_send(
                                     emit("tool.end", {
+                                        # 2026-11-15：必须带 tool_call_id。
+                                        # _blocked_tool_msg 早已把它放进 ToolMessage
+                                        # （graph.py:110），此前这里只从 content 字符串
+                                        # 抠出 name 就把 id 丢了 → 前端退化到「按工具名
+                                        # 匹配」，而那个匹配不要求 pending、又从数组头
+                                        # 取第一个：denial 文案会覆盖到**前面某个已完成
+                                        # 的同名工具气泡**上，真正被拦的那个永远停在
+                                        # 「执行命令中…」。同名工具在一个 turn 内多次
+                                        # 调用（bash 重试最常见）即触发。
+                                        # 紧邻的 elif 分支本来就读了 tool_call_id，
+                                        # 同一循环两条分支一条带 id 一条不带是纯遗漏。
+                                        "id": getattr(m, "tool_call_id", None),
                                         "name": name.strip(),
                                         "content": reason.strip() or c,
                                     })
