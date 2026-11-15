@@ -54,13 +54,26 @@ def test_permission_deny_blocks_tool(create_session, ws_conv):
 
     with ws_conv(sid) as conv:
         conv.invoke("please write a file")
-        conv.recv_until("permission.request")
+        first = conv.recv_until("permission.request")
         conv.respond_permission("deny")
         rest = conv.recv_until("message.end", "error")
 
     # denied tool resolves as a blocked tool.end and the file is never written
     tool_ends = events_of(rest, "tool.end")
-    assert any("denied" in (e.get("content", "")).lower() for e in tool_ends)
+    denied = [e for e in tool_ends if "denied" in (e.get("content", "")).lower()]
+    assert denied
+    # 2026-11-15 回归：被拦工具的 tool.end **必须带配对的 tool_call_id**。
+    # 此前 engine.py 的 BLOCK_PREFIX 分支只从 content 字符串抠出 name 就 emit，
+    # 把 _blocked_tool_msg 早已放进 ToolMessage 的 id 丢了 → 前端退化到「按工具名
+    # 匹配」，而那个匹配不要求 pending、又从数组头取第一个：denial 文案覆盖到
+    # **前面某个已完成的同名工具气泡**上，真正被拦的那个永远停在「执行命令中…」。
+    # 同名工具一个 turn 内多次调用（bash 重试最常见）即触发。
+    starts = [e for e in events_of(first, "tool.start") if e.get("name") == "write_file"]
+    assert starts, "write_file 应当先有 tool.start"
+    assert denied[0].get("id") == starts[0].get("id"), (
+        "被拦工具的 tool.end 必须带上配对的 tool_call_id："
+        f"tool.start={starts[0].get('id')!r} tool.end={denied[0].get('id')!r}"
+    )
     assert not (paths.session_files_dir("default", sid) / "out.txt").exists()
     assert "message.end" in event_names(rest)
 

@@ -707,9 +707,17 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             goto="agent",
                             update={
                                 "messages": [
-                                    AIMessage(
-                                        content=f"{BLOCK_PREFIX}{name}] user denied",
-                                        additional_kwargs={"agent_id": aid} if aid else {},
+                                    # 2026-11-15：必须走 _blocked_tool_msg，不能裸
+                                    # AIMessage。裸 AIMessage 没有 tool_call_id，
+                                    # engine.py 的 BLOCK_PREFIX 分支就无从配对，前端
+                                    # 退化到「按工具名匹配」→ denial 覆盖到前面已完成
+                                    # 的同名气泡、真正被拦的永远停在「执行命令中…」。
+                                    # 另外三条拦截路径（tools_allow / hooks / mod）
+                                    # 早就用了这个 helper，这两处是遗漏。
+                                    _blocked_tool_msg(
+                                        tc, name,
+                                        f"{BLOCK_PREFIX}{name}] user denied",
+                                        aid,
                                     )
                                 ]
                             },
@@ -719,9 +727,11 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                         goto="agent",
                         update={
                             "messages": [
-                                AIMessage(
-                                    content=f"{BLOCK_PREFIX}{name}] policy denied",
-                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                # 同上：policy denied 也必须带 tool_call_id
+                                _blocked_tool_msg(
+                                    tc, name,
+                                    f"{BLOCK_PREFIX}{name}] policy denied",
+                                    aid,
                                 )
                             ]
                         },
