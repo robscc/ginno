@@ -426,3 +426,83 @@ async def test_terminate_group_idempotent_on_dead_process(tmp_path):
     )
     await proc.wait()
     await inbound_exec._terminate_group(proc)  # 已退 → 静默幂等，不抛
+
+
+# ── 权限放行面按 trust 派生（2026-11-16 修 headless 死锁）──────────────────
+#
+# 原实现不论 trust 一律只放行 3 个读工具，写/shell 一律 ask。node 无 UI 且
+# A2A input-required 远程批准闭环未实现 → trust=normal 的节点连
+# `pwd && ls -la` 都挂起等一个永远不来的人工批准（远端 VPS 实测卡死）。
+# 现按 trust 派生；guard 仍在每次工具调用前强制 trust×caps×exec_root。
+
+
+def _read_perms() -> dict:
+    import json as _json
+
+    from ginno_runtime import paths
+
+    return _json.loads(paths.settings_path().read_text())
+
+
+def test_readonly_only_allows_read_tools():
+    """readonly 仍 fail-closed：写/shell 不得进 allow。"""
+    from ginno_runtime.a2a.inbound_exec import ExecPolicy, _write_inbound_settings
+
+    _write_inbound_settings(ExecPolicy(trust="readonly"))
+    cfg = _read_perms()
+    allow = set(cfg["permissions"]["allow"])
+    assert {"read_file", "glob_files", "grep_files"} <= allow
+    assert not ({"write_file", "bash", "edit_file", "repl"} & allow)
+    assert cfg["bypass_permissions"] is False
+
+
+def test_normal_allows_write_and_shell():
+    """trust=normal 必须能在 exec_root 内真干活（否则 headless 死锁）。"""
+    from ginno_runtime.a2a.inbound_exec import ExecPolicy, _write_inbound_settings
+
+    _write_inbound_settings(ExecPolicy(trust="normal", caps=["L0", "L1", "L2", "L3"]))
+    cfg = _read_perms()
+    allow = set(cfg["permissions"]["allow"])
+    assert {"read_file", "write_file", "edit_file", "bash"} <= allow
+    # 绝不 bypass——guard 才是权威闸
+    assert cfg["bypass_permissions"] is False
+
+
+def test_full_allows_write_but_guard_still_rejects_config():
+    """full 放行写/shell，但 guard 对配置写恒拒（#33 不受权限层影响）。"""
+    from ginno_runtime.a2a import guard as g
+    from ginno_runtime.a2a.inbound_exec import ExecPolicy, _write_inbound_settings
+
+    _write_inbound_settings(ExecPolicy(trust="full", caps=["L0", "L1", "L2", "L3"]))
+    allow = set(_read_perms()["permissions"]["allow"])
+    assert "write_file" in allow and "bash" in allow
+    d = g.check_tool("full", ["L0", "L1", "L2", "L3"], "update_config")
+    assert d.allowed is False
+
+
+def test_existing_deny_and_ask_are_respected():
+    """操作员显式收紧优先：已在 deny/ask 的工具不得被自动加进 allow。"""
+    import json as _json
+
+    from ginno_runtime import paths
+    from ginno_runtime.a2a.inbound_exec import ExecPolicy, _write_inbound_settings
+
+    sp = paths.settings_path()
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(_json.dumps({"permissions": {"deny": ["bash"], "ask": ["write_file"]}}))
+    _write_inbound_settings(ExecPolicy(trust="normal", caps=["L0", "L1", "L2", "L3"]))
+    allow = set(_read_perms()["permissions"]["allow"])
+    assert "bash" not in allow, "已在 deny 的 bash 不得被自动放行"
+    assert "write_file" not in allow, "已在 ask 的 write_file 不得被自动放行"
+
+
+def test_guard_still_blocks_readonly_write_even_if_permission_allows():
+    """纵深防御：即便权限层误放行，guard 仍拒 readonly 写。"""
+    from ginno_runtime.a2a import guard as g
+
+    d = g.check_tool(
+        "readonly", ["L0", "L1", "L2", "L3"], "write_file",
+        exec_root="/tmp/ws", target_path="/tmp/ws/x.txt",
+    )
+    assert d.allowed is False
+    assert d.code == "readonly_write_forbidden"
