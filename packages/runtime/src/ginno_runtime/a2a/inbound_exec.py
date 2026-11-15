@@ -83,6 +83,10 @@ _WORKER_BOOT = "from ginno_runtime.a2a.inbound_exec import _worker_main; _worker
 _MAX_ARTIFACTS = 50
 #: 产物元信息里读取的「摘要」字节上限（仅用于判定文本/二进制，不回传内容）。
 _SNIFF_BYTES = 256
+# 文本产物内容回传上限（2026-11-16）：单文件 64KiB、全部产物合计 256KiB。
+# 防大产物撑爆 JSON-RPC 响应与调用方上下文；超出截断并显式标记。
+_ARTIFACT_TEXT_LIMIT = 64 * 1024
+_ARTIFACT_TOTAL_LIMIT = 256 * 1024
 
 
 def _utcnow() -> str:
@@ -439,24 +443,74 @@ def _snapshot(root: str) -> dict[str, tuple[int, int]]:
     return out
 
 
+def _read_artifact_text(p: Path, budget: int) -> tuple[str, bool, int]:
+    """读文本产物内容，返回 (内容, 是否截断, 实际字节数)。
+
+    budget 是本次调用可用的剩余字节配额；读满即截断并标记。
+    解码用 errors="replace" 兜底：_sniff_kind 只验开头，文件中后段仍可能有
+    非法字节，不能因此整份产物丢失。
+    """
+    if budget <= 0:
+        return "", True, 0
+    try:
+        with p.open("rb") as fh:
+            raw = fh.read(budget + 1)  # 多读 1 字节用于判断是否还有剩余
+    except OSError:
+        return "", False, 0
+    truncated = len(raw) > budget
+    raw = raw[:budget]
+    return raw.decode("utf-8", errors="replace"), truncated, len(raw)
+
+
 def _collect_artifacts(root: str, before: dict, after: dict) -> list[Artifact]:
-    """新增/变更文件 → Artifact（路径+元信息；**不读内容回传**）。"""
+    """新增/变更文件 → Artifact（路径 + 元信息 + **文本内容**）。
+
+    2026-11-16 起回传文本内容：原实现只给路径+摘要，调用方拿到报告却读不到，
+    必须再 SSH 进对端 cat——「能干活」与「能看到成果」被割裂。
+
+    边界（防大产物撑爆响应/上下文）：
+      · 仅 kind=="text" 回传内容；二进制仍只给路径（避免 base64 膨胀与乱码）
+      · 单文件上限 _ARTIFACT_TEXT_LIMIT，超出截断并显式标记
+      · 全部产物共享 _ARTIFACT_TOTAL_LIMIT 总配额，用完后续只给路径
+      · 内容走 Artifact.parts（设计 §254 的「显式落地通道」），不拼进结果字符串
+    """
     arts: list[Artifact] = []
     changed = sorted(
         rel for rel, meta in after.items() if before.get(rel) != meta
     )
+    budget = _ARTIFACT_TOTAL_LIMIT
     for rel in changed[:_MAX_ARTIFACTS]:
         size, mtime_ns = after[rel]
         abs_path = str(Path(root) / rel)
-        kind = _sniff_kind(Path(root) / rel)
+        p = Path(root) / rel
+        kind = _sniff_kind(p)
         mtime_iso = datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc).isoformat(timespec="seconds")
         summary = f"{rel} ({kind}, {size} bytes, modified {mtime_iso})"
+        parts = [Part(text=f"path: {abs_path}\n{summary}")]
+        content_included = False
+        content_truncated = False
+        content_bytes = 0
+        if kind == "text" and budget > 0:
+            text, truncated, nbytes = _read_artifact_text(
+                p, min(_ARTIFACT_TEXT_LIMIT, budget)
+            )
+            if nbytes:
+                parts.append(Part(text=text))
+                content_included = True
+                content_truncated = truncated
+                content_bytes = nbytes
+                budget -= nbytes
         arts.append(
             Artifact(
                 artifact_id=uuid.uuid4().hex,
                 name=rel,
-                description="Inbound artifact: path + metadata only (file content not transferred; L2 fetch out of scope).",
-                parts=[Part(text=f"path: {abs_path}\n{summary}")],
+                description=(
+                    "Inbound artifact: path + metadata"
+                    + (" + text content" if content_included else " (content not transferred)")
+                    + ("; truncated" if content_truncated else "")
+                    + "."
+                ),
+                parts=parts,
                 metadata={
                     "path": abs_path,
                     "relpath": rel,
@@ -464,6 +518,9 @@ def _collect_artifacts(root: str, before: dict, after: dict) -> list[Artifact]:
                     "modified": mtime_iso,
                     "kind": kind,
                     "exec_root": str(root),
+                    "content_included": content_included,
+                    "content_truncated": content_truncated,
+                    "content_bytes": content_bytes,
                 },
             )
         )
