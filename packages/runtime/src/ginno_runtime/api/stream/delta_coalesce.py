@@ -86,6 +86,12 @@ class DeltaCoalescer:
         # 判断——flush 后缓冲清空但流已开，后续片仍应进窗口合帧。
         first = kind not in self._buf
         if first:
+            # 跨 kind 保序（2026-11-15 事故）：新 kind 首片立即发之前，先把
+            # **其他 kind** 的缓冲 flush 干净。否则 token.delta 尾片还在 33ms
+            # 窗口里时 thinking.delta 首片插队直发 → 前端先收到 thinking 再
+            # 收到文本尾片 → thinking 渲染到正文前面（模型实际顺序相反）。
+            # 同 kind 不受影响：首片时该 kind 缓冲必为空。
+            await self.flush()
             # 首片立即发：打字机首字零延迟。发送期间让出事件循环，
             # 保证「首片帧」先于后续缓冲帧落地（顺序语义）。
             await self._send(self._emit(kind, {"content": text}))
