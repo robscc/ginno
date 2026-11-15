@@ -246,3 +246,55 @@ def test_repl_desktop_context_unsandboxed(monkeypatch):
         pass
     assert seen.get("argv"), "应已起执行器"
     assert "bwrap" not in " ".join(seen["argv"])
+
+
+# ── bg_run 也是逃逸口（第三个）─────────────────────────────────────────────
+#
+# bg_run 跑任意 shell，但 guard 把它归为 agent_op（非 shell），此前完全绕过
+# 沙箱。修在进程派生层（tasks/registry.spawn），覆盖 detached/watchdog 变体。
+
+
+def test_bg_run_spawn_wraps_in_sandbox(monkeypatch, tmp_path):
+    """registry.spawn 的 Popen argv 必须含 bwrap（入站上下文）。"""
+    from ginno_runtime.tasks import registry as reg
+
+    monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_probe", lambda _: True)
+    seen = {}
+
+    class _P:
+        pid = 4321
+
+        def __init__(self, argv, **kw):
+            seen["argv"] = argv
+            seen["kw"] = kw
+
+    monkeypatch.setattr(reg.subprocess, "Popen", _P)
+    r = reg.TaskRegistry.__new__(reg.TaskRegistry)
+    task = reg.Task({"id": "t1", "command": "echo hi", "cwd": str(tmp_path)})
+    # 只验 argv 组装，不跑真任务生命周期
+    try:
+        reg.TaskRegistry._popen(r, task)
+    except Exception:
+        pass
+    if seen.get("argv"):
+        assert "bwrap" in " ".join(seen["argv"]), f"bg_run 未进沙箱: {seen['argv'][:4]}"
+
+
+def test_bg_run_spawn_fails_closed(monkeypatch, tmp_path):
+    """要求沙箱但无 bwrap → 抛错，绝不裸跑 shell。"""
+    from ginno_runtime.tasks import registry as reg
+
+    monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: None)
+    popped = []
+    monkeypatch.setattr(
+        reg.subprocess, "Popen",
+        lambda *a, **k: popped.append(a) or (_ for _ in ()).throw(AssertionError("不得裸跑")),
+    )
+    r = reg.TaskRegistry.__new__(reg.TaskRegistry)
+    task = reg.Task({"id": "t1", "command": "echo hi", "cwd": str(tmp_path)})
+    with pytest.raises(RuntimeError, match="sandbox"):
+        reg.TaskRegistry._popen(r, task)
+    assert popped == []

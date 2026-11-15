@@ -334,7 +334,18 @@ class TaskRegistry:
             kwargs["start_new_session"] = True
             cmd_text = _WATCHDOG_PREFIX + cmd_text
             kwargs["env"] = {**os.environ, **_sidecar_pid_env()}
-        task.proc = subprocess.Popen([shell, "-lc", cmd_text], **kwargs)
+        # 入站 A2A 沙箱：bg_run 与 bash 一样跑任意 shell，但 guard 把它归为
+        # agent_op（非 shell），此前完全绕过沙箱 → 第三个逃逸口。
+        # 在进程派生层统一包 bwrap，覆盖 bg_run 及其 detached/watchdog 变体。
+        # 非入站上下文原样返回，桌面端零影响；要求沙箱但不可用 → fail-closed。
+        from ..tools.sandbox import SandboxUnavailable, wrap_argv
+
+        _argv = [shell, "-lc", cmd_text]
+        try:
+            _argv = wrap_argv(_argv, kwargs.get("cwd"))
+        except SandboxUnavailable as _sbx:
+            raise RuntimeError(f"sandbox required but unavailable: {_sbx}") from _sbx
+        task.proc = subprocess.Popen(_argv, **kwargs)
 
     # ------------------------------------------------------------------ #
     # reader thread

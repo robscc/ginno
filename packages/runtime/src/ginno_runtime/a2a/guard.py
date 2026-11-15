@@ -70,6 +70,7 @@ CODE_READONLY_WRITE_FORBIDDEN = "readonly_write_forbidden"
 CODE_READONLY_SHELL_FORBIDDEN = "readonly_shell_forbidden"
 CODE_EXEC_ROOT_VIOLATION = "exec_root_violation"          # #32：越界
 CODE_UNCLASSIFIED_TOOL = "unclassified_tool"              # fail-closed：未识别工具
+CODE_UNSANDBOXABLE_SPAWN = "unsandboxable_spawn"          # 入站拒：派生进程无法沙箱化
 
 # shell 元字符：readonly 命令含任一则拒（纵深防御，拦常见链式/重定向注入）。
 # 注意：这 *不是* 完备的注入防御，READONLY_WARNING 已如实声明。
@@ -114,6 +115,17 @@ _AGENT_OP_TOOLS = frozenset({
     "workflow_propose_edit", "bg_run", "bg_stop", "bg_remove", "delegate_agent",
     "create_subagent_plan", "amend_plan", "cancel_plan", "use_skill", "ask_user",
     "render_widget", "attach_ref", "artifact_register", "a2a_delegate", "a2a_task",
+})
+
+# 入站**一律拒绝**的进程派生工具（2026-11-16 安全排查）。
+# 它们虽属 agent_op（L3），但会派生**沙箱外**的进程执行任意代码：
+#   · delegate_agent → 外部 coding agent（Claude Code/Codex 等），需自身
+#     凭据与配置（在 exec_root 外），沙箱化会破坏它，且非节点核心用途；
+#   · a2a_delegate / a2a_task → 再向第三方派活，等于把本机当跳板绕过边界。
+# bash/repl/bg_run 不在此列——它们已在进程派生层包进 bwrap（tools/sandbox.py）。
+# fail-closed：宁可少能力，不可留逃逸口。
+_UNSANDBOXABLE_SPAWN_TOOLS = frozenset({
+    "delegate_agent", "a2a_delegate", "a2a_task",
 })
 
 # 工具类别 → 所需 caps 级别。
@@ -321,6 +333,14 @@ def check_tool(
 
     category, required_cap = classify_tool(tool_name)
 
+    # 0) 无法沙箱化的进程派生：入站一律拒（任何 trust）。先于 caps 判定，
+    #    避免 full+L3 把它们放行成沙箱外的任意代码执行口。
+    if tool_name in _UNSANDBOXABLE_SPAWN_TOOLS:
+        return GuardDecision.deny(
+            CODE_UNSANDBOXABLE_SPAWN,
+            f"tool {tool_name!r} spawns processes outside the inbound sandbox; "
+            "forbidden for A2A inbound at every trust level")
+
     # 1) 配置写：任何 trust 都拒（#33：full ≠ 可改配置）。最先判，绝不因 full 放行。
     if category == "config_write":
         return GuardDecision.deny(
@@ -383,6 +403,7 @@ __all__ = [
     "CODE_CAPABILITY_NOT_GRANTED",
     "CODE_CONFIG_WRITE_FORBIDDEN",
     "CODE_READONLY_WRITE_FORBIDDEN",
+    "CODE_UNSANDBOXABLE_SPAWN",
     "CODE_READONLY_SHELL_FORBIDDEN",
     "CODE_EXEC_ROOT_VIOLATION",
     "CODE_UNCLASSIFIED_TOOL",

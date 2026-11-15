@@ -415,3 +415,38 @@ def test_decision_is_frozen_and_bool():
     assert bool(d) is True
     with pytest.raises(Exception):
         d.allowed = False  # frozen dataclass 不可变
+
+
+# ── 无法沙箱化的进程派生工具：入站一律拒（2026-11-16 安全排查）──────────────
+#
+# 第三/四个逃逸口：delegate_agent 起外部 coding agent、a2a_delegate/a2a_task
+# 再向第三方派活，都在沙箱外执行任意代码。它们属 agent_op(L3)，full+L3 会放行。
+# bash/repl/bg_run 不在此列——已在进程派生层包进 bwrap。
+
+
+@pytest.mark.parametrize("tool", ["delegate_agent", "a2a_delegate", "a2a_task"])
+@pytest.mark.parametrize("trust", ["readonly", "normal", "full"])
+def test_unsandboxable_spawn_denied_at_every_trust(tool, trust):
+    from ginno_runtime.a2a import guard as g
+
+    d = g.check_tool(trust, ["L0", "L1", "L2", "L3"], tool, exec_root="/srv/ws")
+    assert d.allowed is False
+    assert d.code == g.CODE_UNSANDBOXABLE_SPAWN
+
+
+@pytest.mark.parametrize("tool", ["bash", "repl", "bg_run", "workflow_run", "render_widget"])
+def test_sandboxed_or_safe_agent_ops_still_allowed(tool):
+    """已沙箱化或无进程派生的工具不受影响（不能因加固把能力全砍了）。"""
+    from ginno_runtime.a2a import guard as g
+
+    d = g.check_tool("normal", ["L0", "L1", "L2", "L3"], tool, exec_root="/srv/ws")
+    assert d.allowed is True, f"{tool} 不应被新拒绝误伤: {d.code}"
+
+
+def test_unsandboxable_deny_precedes_caps_check():
+    """拒绝先于 caps 判定——即使没给 L3 也应是 spawn 拒绝码而非越级码。"""
+    from ginno_runtime.a2a import guard as g
+
+    d = g.check_tool("normal", ["L0"], "delegate_agent", exec_root="/srv/ws")
+    assert d.allowed is False
+    assert d.code == g.CODE_UNSANDBOXABLE_SPAWN
