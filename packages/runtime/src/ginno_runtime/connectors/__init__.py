@@ -1,5 +1,6 @@
 """Connector module (connector-module-design.md)."""
 
+from .a2a import A2AHubConnector, A2APeerConnector, sync_peer_connectors
 from .builtin import ensure_builtin_connectors
 from .registry import (
     STATUS_CONNECTED,
@@ -19,6 +20,9 @@ __all__ = [
     "ConnectorRegistry",
     "registry",
     "ensure_builtin_connectors",
+    "A2AHubConnector",
+    "A2APeerConnector",
+    "sync_peer_connectors",
     "STATUS_CONNECTED",
     "STATUS_DISCONNECTED",
     "STATUS_NOT_INSTALLED",

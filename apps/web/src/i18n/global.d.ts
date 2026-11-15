@@ -31,6 +31,7 @@ type GoalMessages = typeof import("../../messages/en/goal.json");
 type TasksMessages = typeof import("../../messages/en/tasks.json");
 type DevswapMessages = typeof import("../../messages/en/devswap.json");
 type InstinctsMessages = typeof import("../../messages/en/instincts.json");
+type A2aMessages = typeof import("../../messages/en/a2a.json");
 
 type AppMessages =
   CoreMessages &
@@ -54,7 +55,8 @@ type AppMessages =
   GoalMessages &
   TasksMessages &
   DevswapMessages &
-  InstinctsMessages;
+  InstinctsMessages &
+  A2aMessages;
 
 declare module "next-intl" {
   interface AppConfig {
