@@ -363,7 +363,10 @@ def _public_card(deps: A2ADeps) -> dict:
         "name": deps.agent_name,
         "version": deps.agent_version,
         "protocolVersion": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
+        # streaming=True：已实现 A2A 标准 message/stream + tasks/resubscribe
+        # （P1-3）。Card 是客户端发现能力的唯一依据，不广告等于白实现。
+        # pushNotifications 仍 False（未实现，绝不虚报）。
+        "capabilities": {"streaming": True, "pushNotifications": False},
         "securitySchemes": {
             "bearer": {
                 "type": "http",

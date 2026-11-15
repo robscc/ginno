@@ -446,3 +446,16 @@ async def test_sse_resubscribe_terminal_task_closes_promptly(client, token, deps
     )
     assert resp.status_code == 200
     assert "completed" in resp.text
+
+
+async def test_card_advertises_streaming_but_not_push(client, token):
+    """Card 必须广告已实现的 streaming；未实现的 pushNotifications 绝不虚报。
+
+    Card 是 A2A 客户端发现能力的唯一依据——实现了 SSE 却不广告等于白实现
+    （2026-11-16 真 VPS 取 Card 发现 streaming=False）。
+    """
+    resp = await client.get(f"/a2a/{token}/.well-known/agent-card.json")
+    assert resp.status_code == 200
+    caps = resp.json().get("capabilities") or {}
+    assert caps.get("streaming") is True, "已实现 message/stream 必须广告"
+    assert caps.get("pushNotifications") is False, "未实现不得虚报"
