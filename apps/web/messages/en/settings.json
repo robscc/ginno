@@ -59,7 +59,8 @@
         "tasks": "Scheduled tasks",
         "runtime": "Runtime",
         "contracts": "API contracts",
-        "shell": "Shell environment"
+        "shell": "Shell environment",
+        "web": "Web search"
       },
       "taskStats": {
         "total": "Total {n}",
@@ -99,12 +100,20 @@
         },
         "contract": {
           "missing_routes": "Missing critical API routes"
+        },
+        "web": {
+          "fragile_search_engine": "Fragile default search engine (DuckDuckGo scraper is easily bot-blocked)"
         }
       },
       "shellTitle": "Shell environment",
       "fixEquals": "Fix (append to ~/.zshenv)",
       "fixEqualsConfirm": "Append \"unsetopt EQUALS\" to ~/.zshenv to stop =xx errors in non-interactive zsh. Proceed?",
-      "fixing": "Fixing…"
+      "fixing": "Fixing…",
+      "fixWebSearch": "Fix (install SearXNG)",
+      "fixWebSearchConfirm": "Opens a new session that automatically installs and configures a local SearXNG search engine to replace the fragile DuckDuckGo scraper. Requires Docker on this machine. Proceed?",
+      "fixWebSearchSessionTitle": "Install SearXNG",
+      "fixWebSearchNoSession": "Could not create a session: enable a model in Settings → Model API first",
+      "fixWebSearchFailed": "Failed to start the install"
     },
     "autostart": {
       "label": "Launch at login",

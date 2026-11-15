@@ -470,7 +470,7 @@ def test_delete_ignores_run_history_refs(client, patch_build_model):
 def test_diagnostics_reports_sections(client):
     data = client.get("/api/diagnostics").json()
     assert data["ok"] is True
-    assert set(data["sections"]) == {"data", "tasks", "runtime", "contracts", "shell"}
+    assert set(data["sections"]) == {"data", "tasks", "runtime", "contracts", "shell", "web"}
     assert data["sections"]["contracts"]["missing_routes"] == []
 
 

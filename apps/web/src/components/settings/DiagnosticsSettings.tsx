@@ -5,6 +5,7 @@
  *  报告按需生成（`GET /api/diagnostics`），页面不轮询、不写任何状态。 */
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
   AlertTriangle,
@@ -12,6 +13,7 @@ import {
   Clock,
   Cpu,
   Database,
+  Globe,
   Loader2,
   Plug,
   RefreshCw,
@@ -21,6 +23,7 @@ import {
 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { DiagnosticsIssue, DiagnosticsReport } from "@/lib/runtime";
+import { useGinno } from "@/lib/store";
 
 // 后端 issue id → 本地化文案 key。未知 id（后端新增检查项）原样显示，
 // 避免前端必须与后端同步发版。
@@ -33,6 +36,7 @@ const ISSUE_LABEL = {
   "tasks.failure_rate": "issues.tasks.failure_rate",
   "runtime.stale_bundle": "issues.runtime.stale_bundle",
   "contract.missing_routes": "issues.contract.missing_routes",
+  "web.fragile_search_engine": "issues.web.fragile_search_engine",
 } as const;
 type IssueLabelKey = (typeof ISSUE_LABEL)[keyof typeof ISSUE_LABEL];
 
@@ -100,6 +104,53 @@ function ShellEqualsFixButton({ onFixed }: { onFixed: () => void }) {
   );
 }
 
+/** web_search 一键修复（2026-11-15）：与 shell-equals 的「直接写文件」不同，
+ *  SearXNG 安装涉及 Docker/网络/代理逐步判断，交给一个代理会话按系统 prompt
+ *  自主完成。流程：newSession 建会话并激活 → POST fix 端点触发安装 turn →
+ *  router.push("/") 跳回聊天视图观看。失败显示后端 error，不谎报成功。 */
+function WebSearchSearxngFixButton() {
+  const t = useTranslations("settings.diagnostics");
+  const g = useGinno();
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          if (!window.confirm(t("fixWebSearchConfirm"))) return;
+          setBusy(true); setErr(null);
+          try {
+            const s = await g.newSession(g.agents[0]?.id ?? null, {
+              title: t("fixWebSearchSessionTitle"),
+            });
+            if (!s) {
+              setErr(t("fixWebSearchNoSession"));
+              return;
+            }
+            const r = await api.fixWebSearchSearxng(s.id);
+            if (!r.ok) {
+              setErr(r.error || t("fixWebSearchFailed"));
+              return;
+            }
+            router.push("/");
+          } catch (e) {
+            setErr(String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="rounded-md border border-line bg-card2 px-2 py-1 text-[11px] text-txt hover:bg-card2/70 disabled:opacity-50"
+      >
+        {busy ? t("fixing") : t("fixWebSearch")}
+      </button>
+      {err && <span className="text-[11px] text-red">{err}</span>}
+    </div>
+  );
+}
+
 function StatChip({ children }: { children: React.ReactNode }) {
   return (
     <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{children}</span>
@@ -143,6 +194,7 @@ function IssueList({
             <div className="selectable mt-1 break-words text-[11px] leading-snug text-faint">{i.detail}</div>
           )}
           {i.fix === "shell-equals" && <ShellEqualsFixButton onFixed={refresh} />}
+          {i.fix === "web-search-searxng" && <WebSearchSearxngFixButton />}
           <div className="selectable mt-0.5 font-mono text-[10px] text-faint/70">{i.id}</div>
         </div>
       ))}
@@ -299,6 +351,10 @@ export function DiagnosticsSettings() {
             <SectionCard icon={Terminal} title={t("sections.shell")}>
               <IssueList issues={report.sections.shell.issues} label={label} empty={t("emptySection")} refresh={run} />
             </SectionCard>
+            </SectionCard>
+
+            <SectionCard icon={Globe} title={t("sections.web")}>
+              <IssueList issues={report.sections.web.issues} label={label} empty={t("emptySection")} refresh={run} />
             </SectionCard>
 
             <SectionCard icon={Plug} title={t("sections.contracts")}>

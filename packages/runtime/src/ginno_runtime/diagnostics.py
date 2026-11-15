@@ -212,6 +212,38 @@ def check_shell_equals() -> list[dict]:
 _check_shell_equals = check_shell_equals
 
 
+def check_web_search() -> list[dict]:
+    """Web 搜索引擎脆弱性检测（2026-11-15）：默认引擎仍是 DuckDuckGo HTML
+    抓取（无 key）时给出 medium 提醒。该端点频繁反爬（HTTP 202 验证码页）/
+    连接重置，在代理出口 IP 下尤甚，导致 web_search 间歇性全灭。提供一键
+    安装本地 SearXNG 聚合引擎的修复入口。
+
+    配置级检测、不做网络探针——诊断保持快速只读（与 shell-equals 的轻量
+    探针不同，搜索探针动辄 5–15s，会拖慢按需体检）。"""
+    from .web.config import load_web_config
+
+    try:
+        cfg = load_web_config()
+    except Exception:  # noqa: BLE001 — 检测失败不阻塞诊断
+        return []
+    if not cfg.enabled or cfg.default_engine != "duckduckgo":
+        return []
+    return [
+        {
+            "id": "web.fragile_search_engine",
+            "severity": "medium",
+            "title": "Web search relies on the fragile DuckDuckGo scraper",
+            "detail": (
+                "默认搜索引擎为 DuckDuckGo HTML 抓取（无 key）。该端点频繁触发"
+                "反爬验证码（HTTP 202）或连接重置，尤其在代理/机房出口 IP 下，"
+                "导致 web_search 间歇性失败。建议一键安装本地 SearXNG 聚合引擎"
+                "（免费、自托管、Ginno 原生支持）替代。"
+            ),
+            "fix": "web-search-searxng",
+        }
+    ]
+
+
 def _check_runtime() -> dict:
     from . import runtime_watch
 
@@ -276,6 +308,7 @@ def run_diagnostics() -> dict:
         "tasks": _check_tasks(),
         "runtime": _check_runtime(),
         "shell": {"issues": _check_shell_equals()},
+        "web": {"issues": check_web_search()},
         "contracts": _check_contracts(),
     }
     issues = [i for s in sections.values() for i in (s.get("issues") or [])]
