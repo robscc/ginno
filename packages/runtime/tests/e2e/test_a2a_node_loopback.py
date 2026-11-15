@@ -38,6 +38,10 @@ async def node_factory(tmp_path, monkeypatch):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("GINNO_HOME", str(home))
     monkeypatch.setenv("GINNO_FAKE_LLM", "1")
+    # 本套用例验的是 **A2A 协议与入站执行链**，不是 OS 沙箱。入站 shell 默认
+    # 要求 bwrap（fail-closed），而开发机/CI 未必装 bubblewrap，故显式关掉。
+    # 沙箱本身的行为由 tests/unit/test_sandbox.py 专门覆盖（含 fail-closed）。
+    monkeypatch.setenv("GINNO_A2A_SANDBOX_DISABLE", "1")
     inbound._HANDLES.clear()
     started: list = []
 

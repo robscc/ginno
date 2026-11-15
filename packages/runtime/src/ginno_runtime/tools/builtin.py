@@ -1302,9 +1302,19 @@ def build_builtin_tools(
             # 返回 None = 沿用继承语义，行为零变化。
             from .env_inject import build_child_env
 
+            # 入站 A2A 沙箱（tools/sandbox.py）：guard 的 exec_root 边界对
+            # shell 不生效（命令串只在 readonly 下查白名单），故远端派活的
+            # bash 必须走 OS 级隔离。**只影响入站上下文**，桌面用户自己的
+            # bash 原样执行。要求沙箱但不可用 → fail-closed 拒绝，绝不静默降级。
+            from .sandbox import SandboxUnavailable, sandbox_cwd, wrap_argv
+
+            try:
+                _argv = wrap_argv([user_shell, "-lc", effective_command], cwd)
+            except SandboxUnavailable as _sbx:
+                return f"[error] sandbox required but unavailable: {_sbx}"
             proc = subprocess.Popen(
-                [user_shell, "-lc", effective_command],
-                cwd=cwd,
+                _argv,
+                cwd=sandbox_cwd(cwd),
                 env=build_child_env(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
