@@ -44,9 +44,11 @@ from ..server_shared import (
 from . import status as team_status
 from . import store
 
-# 回帖摘要上限：超过就截断（全文永远在成员 session，点「展开全文」跳过去）。
-# 与 subagent 的 SUMMARY_MAX_CHARS 同量级，但更短——回帖是对话消息不是报告。
-REPLY_MAX_CHARS = 1200
+# 回帖**不截断**（2026-11-15 产品决定）：此前有 REPLY_MAX_CHARS=1200，
+# 理由是「回帖是对话消息不是报告，全文永远在成员 session」。实测用户反馈
+# 截断反而碍事——评审/分析类产出动辄数千字，截断后主会话里看不到结论，
+# 还得跳工作台。改为全文回帖，前端也默认展开。
+# 代价：长回帖会增大主会话 checkpoint；成员 session 仍是完整真源。
 
 # 注：此前这里有 DELIVER_WAIT_S=1800 / _POLL_S=0.4 与 _await_turn_end()，
 # 供 steer 路径的轮询 waiter 用。回帖改由 teams.lifecycle 钩子在真实终态点
@@ -168,10 +170,12 @@ async def _final_text(slug: str, session_id: str, team_id: str = "") -> str:
 
 
 def _truncate(text: str) -> tuple[str, bool]:
-    text = (text or "").strip()
-    if len(text) <= REPLY_MAX_CHARS:
-        return text, False
-    return text[:REPLY_MAX_CHARS].rstrip() + "…", True
+    """**已停用**（2026-11-15）：回帖改为全文，不截断。
+
+    保留函数签名仅为兼容可能的外部调用；恒返回原文 + False。
+    产品决定见文件头 REPLY_MAX_CHARS 处的注释。
+    """
+    return (text or "").strip(), False
 
 
 async def post_reply(
