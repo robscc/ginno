@@ -99,3 +99,64 @@ def test_run_cache_cap():
     assert "r0" not in RUN_CACHE
     assert f"r{RUN_CACHE_CAP + 9}" in RUN_CACHE
     RUN_CACHE.clear()
+
+# ── 线程池右 sizing（2026-11-15 补：原 4 个用例漏了这一项，bug 因此溜过）──
+#
+# 原写法 anyio.current_default_thread_limiter() 在 anyio 4.x 顶层不存在，
+# 每次启动抛 AttributeError 被 except 吞掉，且同一 try 块里的
+# set_default_executor 也一起没执行——两项优化全部落空。
+# 下面三个用例分别钉住：API 路径、两项真落地、两项互相独立。
+
+
+def test_anyio_thread_limiter_api_path():
+    """回归钉：limiter 在 anyio.to_thread 下，不在顶层。
+
+    不要"顺手改成" anyio.current_default_thread_limiter()——那是 4.x 的
+    错误路径，会让整个右 sizing 静默失效（2026-11-15 实录）。
+    """
+    import anyio
+    import anyio.to_thread
+
+    assert hasattr(anyio.to_thread, "current_default_thread_limiter")
+    assert not hasattr(anyio, "current_default_thread_limiter")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_applies_both_thread_pool_settings(isolated_home):
+    """跑真 lifespan，断言两项优化都真落地（不是只看不报错）。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    import anyio.to_thread
+
+    from ginno_runtime.server import app, lifespan
+
+    async with lifespan(app):
+        # ① anyio limiter 40 → 12
+        assert anyio.to_thread.current_default_thread_limiter().total_tokens == 12
+        # ② asyncio 默认 executor 换成 ginno-io 8 线程
+        ex = asyncio.get_running_loop()._default_executor
+        assert isinstance(ex, ThreadPoolExecutor)
+        assert ex._max_workers == 8
+        assert ex._thread_name_prefix == "ginno-io"
+
+
+@pytest.mark.asyncio
+async def test_thread_pool_settings_fail_independently(isolated_home, monkeypatch):
+    """一项失败不得连带另一项（原共用 try 块的结构性缺陷）。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    import anyio.to_thread
+
+    from ginno_runtime import server as srv
+
+    def _boom():
+        raise RuntimeError("limiter unavailable")
+
+    monkeypatch.setattr(anyio.to_thread, "current_default_thread_limiter", _boom)
+    async with srv.lifespan(srv.app):
+        # limiter 炸了，但 executor 仍必须被设上
+        ex = asyncio.get_running_loop()._default_executor
+        assert isinstance(ex, ThreadPoolExecutor)
+        assert ex._max_workers == 8

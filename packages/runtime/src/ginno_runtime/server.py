@@ -186,16 +186,28 @@ async def lifespan(app: FastAPI):
     # （sync 端点 + 静态 FileResponse 走 run_in_threadpool，空闲不自退）+
     # asyncio 默认 executor min(32, cpu+4)=12 → 实测 43 线程。收敛到 12+8，
     # 栈虚拟内存减半、调度/诊断噪声下降；sync 端点并发上限显式化。
+    #
+    # ⚠️ 2026-11-15 修复：原写法 `anyio.current_default_thread_limiter()` 在
+    # anyio 4.x 下**顶层不存在该属性**（实测 4.14.2：顶层 False、
+    # anyio.to_thread 下 True），每次启动都抛 AttributeError 被下面的
+    # except 吞掉，只留一行 "right-sizing failed (continuing)"。
+    # 后果不止 limiter 没改：**同一个 try 块里后一行的 set_default_executor
+    # 也一起没执行**，两项优化全部落空，且不挡启动所以一直没被发现。
+    # 故①改用正确路径 anyio.to_thread；②两项拆成独立 try，一项失败不连带另一项。
     try:
-        import anyio
+        import anyio.to_thread
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 12
+    except Exception:  # noqa: BLE001 — sizing 失败不挡启动
+        _log.exception("anyio thread limiter right-sizing failed (continuing)")
+    try:
         from concurrent.futures import ThreadPoolExecutor
 
-        anyio.current_default_thread_limiter().total_tokens = 12
         asyncio.get_running_loop().set_default_executor(
             ThreadPoolExecutor(max_workers=8, thread_name_prefix="ginno-io")
         )
-    except Exception:  # noqa: BLE001 — _sizing 失败不挡启动
-        _log.exception("thread pool right-sizing failed (continuing)")
+    except Exception:  # noqa: BLE001 — sizing 失败不挡启动
+        _log.exception("asyncio default executor right-sizing failed (continuing)")
     # UX-03：标题生成是后台任务，进程重启会丢掉失败的 job——启动时把
     # 「待生成且超过 24h」的会话重新入队（assistant 文本从 checkpoint 回填）。
     # 放在 set_main_loop 之后：生成任务经 spawn_bg 调度。
