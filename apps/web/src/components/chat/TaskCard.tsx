@@ -90,17 +90,22 @@ export function TaskCard({ taskId }: { taskId: string }) {
     }
   }, [taskId]);
 
-  // 单 interval：1s 计时；running 时每 2s 拉状态+尾部。终态后停拉但计时条
-  // 已由 dur 固化，interval 留着只为了展开区/按钮的即时性代价最小。
+  // 单 interval：1s 计时；running 时每 2s 拉状态+尾部。终态后停表
+  // （2026-11-15 空闲治理：旧版终态仍 1s tick，历史卡每张每秒重渲染；
+  // elapsed 已由 dur 固化，展开区/按钮无需秒级即时性）。
   useEffect(() => {
     alive.current = true;
     void refresh();
     let laps = 0;
     const id = setInterval(() => {
+      const t = taskRef.current;
+      if (t && TASK_TERMINAL.has(t.status)) {
+        clearInterval(id);
+        return;
+      }
       laps += 1;
       setTick(laps);
-      const t = taskRef.current;
-      if (t && !TASK_TERMINAL.has(t.status) && laps % 2 === 0) void refresh();
+      if (t && laps % 2 === 0) void refresh();
     }, 1000);
     return () => {
       alive.current = false;

@@ -72,7 +72,7 @@ export function WorkflowPanel() {
         <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{runs.length}</span>
         {active && (
           <span className="ml-auto flex items-center gap-1.5 text-[11px] text-blue">
-            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue" /> {t("running")}
+            <span className="inline-block h-2 w-2 animate-pulse-finite rounded-full bg-blue" /> {t("running")}
           </span>
         )}
         {!active && terminalCount > 0 && (

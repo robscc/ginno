@@ -56,14 +56,21 @@ export function DuckStatusIcon({
   status,
   size = 16,
   className,
+  live,
 }: {
   status: SubagentBucket;
   size?: number;
   className?: string;
+  /** running 桶是否真在运行（waiting 停车=false）。缺省仅 running 为 true。
+   *  2026-11-15 空闲动画治理：done/failed 终态与停车态一律静态（保留渐变
+   *  分档），无限动画只留给真 running——终态鸭曾在侧栏收起节头永久逐帧
+   *  渲染（sample 实锤 StyleOriginatedAnimation::tick）。 */
+  live?: boolean;
 }) {
   // useId 带 «»:» 等字符，url(#…) 引用会炸——滤成纯字母数字。
   const gid = `duck-grad-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const grad = GRADIENTS[status];
+  const animate = status === "running" && (live ?? true);
   return (
     <svg
       viewBox="0 0 24 24"
@@ -80,7 +87,7 @@ export function DuckStatusIcon({
           ))}
         </linearGradient>
       </defs>
-      {status === "running" ? (
+      {status === "running" && animate ? (
         <>
           {/* 卖力扑腾：水波溅得比稳态快（1.2s 交替） */}
           <ellipse className="gd-ripple gd-r1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="#8fd4f2" strokeWidth="1.2" />
@@ -89,12 +96,17 @@ export function DuckStatusIcon({
             <DuckBody fill={`url(#${gid})`} pathClass="gd-hue" />
           </g>
         </>
-      ) : status === "done" ? (
+      ) : status === "running" ? (
+        /* 停车态（waiting）：静态彩虹鸭，渐变分档保留 */
         <>
-          <g className="gd-sway">
-            <DuckBody fill={`url(#${gid})`} />
-          </g>
-          <g className="gd-badge">
+          <ellipse className="gd-ring-static" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="#8fd4f2" strokeWidth="1.2" />
+          <DuckBody fill={`url(#${gid})`} />
+        </>
+      ) : status === "done" ? (
+        /* 终态静态：领奖薄荷鸭不再呼吸/轻晃（收起节头也常驻，曾逐帧渲染） */
+        <>
+          <DuckBody fill={`url(#${gid})`} />
+          <g>
             <circle cx="18" cy="5.5" r="3.2" fill="#3fd68f" opacity=".22" />
             <circle cx="18" cy="5.5" r="3.2" fill="none" stroke="#3fd68f" strokeWidth="1.3" />
             <path
@@ -108,10 +120,11 @@ export function DuckStatusIcon({
           </g>
         </>
       ) : (
+        /* 终态静态：翻肚姿态用静态 transform 保留（gd-float 的 base pose 是
+           rotate(178deg)，去掉动画后需显式翻转） */
         <>
-          <ellipse className="gd-ripple gd-fr1" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="#8fd4f2" strokeWidth="1.2" />
-          <ellipse className="gd-ripple gd-fr2" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="#8fd4f2" strokeWidth="1.2" />
-          <g className="gd-float">
+          <ellipse className="gd-ring-static" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="#8fd4f2" strokeWidth="1.2" />
+          <g className="gd-flip-static">
             <DuckBody fill={`url(#${gid})`} />
           </g>
         </>
