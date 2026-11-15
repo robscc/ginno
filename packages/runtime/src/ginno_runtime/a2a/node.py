@@ -373,9 +373,14 @@ def _print_banner(cfg: NodeConfig, handle: InboundHandle, *, first_issue: bool) 
         print("能力地址（首次签发；明文 token 仅显示这一次，请复制到主 Ginno 的 A2A 连接器）：", flush=True)
         print(addr, flush=True)
     else:
-        fp = address.parse_address(addr).fingerprint
         print("能力地址已签发过，明文 token 不再回显（服务端只存 SHA-256 hash）。", flush=True)
-        print(f"地址（token 掩码）：{cfg.scheme}://{handle.bind_ip}:{port}/a2a/****#fp={fp}", flush=True)
+        # 掩码显示与真实地址同口径：明文 http 不带 #fp（2026-11-16）。
+        # 原实现手拼 "#fp={fp}"，即使 addr 已无指纹也照样显示一个空 #fp=。
+        masked = f"{cfg.scheme}://{handle.bind_ip}:{port}/a2a/****"
+        fp = address.parse_address(addr).fingerprint
+        if fp:
+            masked += f"#fp={fp}"
+        print(f"地址（token 掩码）：{masked}", flush=True)
     print("停止：SIGTERM / SIGINT（Ctrl-C）", flush=True)
 
 

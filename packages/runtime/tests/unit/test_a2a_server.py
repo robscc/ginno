@@ -18,7 +18,7 @@ import pytest
 
 from ginno_runtime import jsonx as json
 from ginno_runtime.a2a import auth, server
-from ginno_runtime.a2a.models import AgentSkill, TaskState
+from ginno_runtime.a2a.models import AgentSkill, TaskState, TaskStatus
 
 pytestmark = pytest.mark.unit
 
@@ -409,3 +409,40 @@ def test_sse_frame_format():
     assert frame.startswith("event: status\n")
     assert '"id": "t1"' in frame or '"id":"t1"' in frame
     assert frame.endswith("\n\n")
+
+
+async def test_sse_terminal_frame_not_duplicated(client, token, deps):
+    """终态 status 帧只发一次（曾在状态变化与终态两分支各发一次）。"""
+    resp = await client.post(
+        f"/a2a/{token}/message/stream",
+        json=rpc("message/stream", {"message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}}),
+    )
+    assert resp.status_code == 200
+    states = []
+    for ln in resp.text.splitlines():
+        if not ln.startswith("data: "):
+            continue
+        try:
+            d = json.loads(ln[len("data: "):])
+        except ValueError:
+            continue
+        st = (d.get("status") or {}).get("state")
+        if st:
+            states.append(st)
+    for a, b in zip(states, states[1:]):
+        assert not (a == b and a in ("completed", "failed", "canceled", "rejected")), (
+            f"终态帧重复: {states}"
+        )
+
+
+async def test_sse_resubscribe_terminal_task_closes_promptly(client, token, deps):
+    """resubscribe 已终态任务：首帧后即收流，不死循环。"""
+    created = await _send(client, token, "hi")
+    tid = created["id"]
+    task = deps.tasks.get(tid)
+    task.status = TaskStatus(state=TaskState.COMPLETED, timestamp=server._utcnow())
+    resp = await client.post(
+        f"/a2a/{token}/tasks/resubscribe", json=rpc("tasks/resubscribe", {"id": tid})
+    )
+    assert resp.status_code == 200
+    assert "completed" in resp.text

@@ -713,15 +713,16 @@ async def _sse_task_stream(task: Task, deps: A2ADeps, token: str):
             pass
         # 2) 状态变化 / 终态
         cur = deps.tasks.get(task.id) or task
+        _TERMINAL = (
+            TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED,
+            TaskState.REJECTED, TaskState.INPUT_REQUIRED, TaskState.AUTH_REQUIRED,
+        )
         if cur.status.state != last_state:
             last_state = cur.status.state
             last_activity = time.time()
+            # 终态帧只在这里发一次（含 artifacts），不再重复补发
             yield _sse_frame("status", _task_dict(cur))
-        if last_state in (
-            TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED,
-            TaskState.REJECTED, TaskState.INPUT_REQUIRED, TaskState.AUTH_REQUIRED,
-        ):
-            yield _sse_frame("status", _task_dict(cur))
+        if last_state in _TERMINAL:
             return
         now = time.time()
         if now - t0 > _SSE_MAX_S or now - last_activity > _SSE_IDLE_S:
