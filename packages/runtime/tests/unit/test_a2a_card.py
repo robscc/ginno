@@ -275,3 +275,20 @@ async def test_verify_endpoint_fingerprint_connection_error(monkeypatch):
 def test_card_payload_roundtrip_through_json():
     # 确认测试夹具本身是合法 JSON（MockTransport 依赖可序列化）
     assert json.loads(json.dumps(_CARD_PAYLOAD)) == _CARD_PAYLOAD
+
+
+# ── 指纹校验只适用 https（2026-11-16）──────────────────────────────────────
+
+
+def test_verify_fingerprint_rejects_http_with_clear_message():
+    """http 端点做指纹校验须 fail-loud 且报错可读，不再 SSL record layer failure。"""
+    import pytest
+
+    from ginno_runtime.a2a.card import verify_endpoint_fingerprint
+
+    with pytest.raises(ValueError, match="仅适用于 https"):
+        import asyncio
+
+        asyncio.run(
+            verify_endpoint_fingerprint("http://127.0.0.1:8790/a2a/X", "JB6T2NHRZXYMNJCAUEJJA6DVVD")
+        )

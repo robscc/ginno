@@ -295,10 +295,14 @@ async def test_first_issue_prints_plaintext_once_hash_only(tmp_path, capsys):
     parsed = address.parse_address(addr_lines[0].strip())
     assert parsed.is_capability
     assert len(parsed.token) == 26
-    assert re.fullmatch(r"[A-Z2-7]{26}", parsed.fingerprint)  # 128bit 截断 base32
+    # 明文 http **不广告 TLS 指纹**（2026-11-16）：#fp 是证书指纹，明文无证书
+    # 可钉，附上会让 client 去做 TLS 校验并必然 SSL record layer failure。
+    assert parsed.fingerprint in ("", None)
+    assert "#fp=" not in addr_lines[0]
     handle = node.ensure_node_listener(cfg)
     assert parsed.token == handle.token
-    assert parsed.fingerprint == handle.get_identity().fingerprint
+    # 身份本身仍有合法指纹（证书已生成），只是明文地址不携带它
+    assert re.fullmatch(r"[A-Z2-7]{26}", handle.get_identity().fingerprint)
     # TokenStore 只存 SHA-256 hash：明文不出现在 tokens.json 与 list() 任何字段
     store_path = paths.a2a_dir() / "tokens.json"
     raw = store_path.read_text()

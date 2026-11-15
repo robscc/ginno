@@ -181,3 +181,39 @@ def test_build_malformed_fingerprint_raises():
         build_address("https://h", TOKEN, "0" * 26)
     with pytest.raises(ValueError):
         build_address("https://h", TOKEN, "B" * 25)
+
+
+# ── 明文 http 不得附 TLS 指纹（2026-11-16 修 SSL record layer failure）──────
+
+
+def test_build_address_http_drops_fingerprint():
+    """http 明文无证书可钉，#fp 必须被丢弃（否则 client 必失败）。"""
+    from ginno_runtime.a2a.address import build_address, parse_address
+
+    tok = "Q3EQXAI3LK7GGT5KFSEYJWAXQB"
+    fp = "JB6T2NHRZXYMNJCAUEJJA6DVVD"
+    addr = build_address("http://127.0.0.1:8790", tok, fp)
+    assert "#fp=" not in addr
+    assert addr == f"http://127.0.0.1:8790/a2a/{tok}"
+    assert parse_address(addr).fingerprint in ("", None)
+
+
+def test_build_address_https_keeps_fingerprint():
+    """https 仍须带指纹——安全语义绝不放宽。"""
+    from ginno_runtime.a2a.address import build_address, parse_address
+
+    tok = "Q3EQXAI3LK7GGT5KFSEYJWAXQB"
+    fp = "JB6T2NHRZXYMNJCAUEJJA6DVVD"
+    addr = build_address("https://192.168.1.5:8790", tok, fp)
+    assert f"#fp={fp}" in addr
+    assert parse_address(addr).fingerprint == fp
+
+
+def test_build_address_http_one_time_flag_still_works():
+    """丢 fp 不影响 ot=1 一次性标志。"""
+    from ginno_runtime.a2a.address import build_address
+
+    tok = "Q3EQXAI3LK7GGT5KFSEYJWAXQB"
+    addr = build_address("http://h:1", tok, "JB6T2NHRZXYMNJCAUEJJA6DVVD", one_time=True)
+    assert addr.endswith("#ot=1")
+    assert "fp=" not in addr

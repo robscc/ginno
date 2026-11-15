@@ -124,6 +124,15 @@ async def verify_endpoint_fingerprint(
     parts = urlsplit(endpoint)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"指纹校验需要合法 http/https endpoint，收到 {endpoint!r}")
+    if parts.scheme != "https":
+        # 指纹是 TLS 证书指纹，明文 http 无证书可校验。旧实现对 http 也去
+        # 握手，必然 SSL record layer failure 且报错难懂（2026-11-16）。
+        # 调用方（client._rpc / fetch_card）已按 scheme 分流；这里 fail-loud
+        # 兜底，避免未来新调用方重蹈覆辙。
+        raise ValueError(
+            f"指纹校验仅适用于 https endpoint（TLS 证书指纹），收到 {endpoint!r}；"
+            "明文 http 的传输安全由环回/SSH 隧道提供，不做指纹钉住"
+        )
     host = parts.hostname
     port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
@@ -154,7 +163,8 @@ async def fetch_card(
     """
     url = well_known_url(endpoint)
     guard_endpoint(url, allow_private=allow_private)
-    if verify_fp:
+    if verify_fp and urlsplit(url).scheme == "https":
+        # 明文 http 无证书可钉，跳过（同 client._rpc 的理由）；https 绝不放宽。
         await verify_endpoint_fingerprint(url, verify_fp, timeout_s=timeout_s)
     headers = {"Accept": "application/json", "User-Agent": ginno_user_agent()}
     if auth:
