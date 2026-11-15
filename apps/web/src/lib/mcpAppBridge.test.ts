@@ -80,8 +80,27 @@ describe("McpAppBridge 来源校验与白名单", () => {
             params: { protocolVersion: "2025-11-21", appCapabilities: {}, appInfo: { name: "demo", version: "0" } } });
     await h.flush();
     expect(responses(h.posted)).toEqual([
-      { jsonrpc: "2.0", id: 7, result: { protocolVersion: "2025-11-21", hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: "dark" } } },
+      { jsonrpc: "2.0", id: 7, result: { protocolVersion: "2025-11-21", hostInfo: { name: "ginno", title: "Ginno", version: process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0" }, hostCapabilities: { serverTools: {} }, hostContext: { theme: "dark" } } },
     ]);
+  });
+
+  it("hostInfo.version 来自构建期注入的 NEXT_PUBLIC_APP_VERSION（不再硬编码）", async () => {
+    // 回归钉：历史上这里硬编码 "0.1.0"，而实际版本已 0.3.3。
+    // 现由 next.config.mjs 从 package.json 注入；本用例证明注入值真被透传，
+    // 而不是只把断言改成镜像实现。
+    const prev = process.env.NEXT_PUBLIC_APP_VERSION;
+    process.env.NEXT_PUBLIC_APP_VERSION = "9.8.7-test";
+    try {
+      const h = makeBridge();
+      h.msg({ jsonrpc: "2.0", id: 11, method: "ui/initialize",
+              params: { protocolVersion: "2025-11-21", appCapabilities: {}, appInfo: { name: "demo", version: "0" } } });
+      await h.flush();
+      const r = responses(h.posted)[0] as { result: { hostInfo: { version: string } } };
+      expect(r.result.hostInfo.version).toBe("9.8.7-test");
+    } finally {
+      if (prev === undefined) delete process.env.NEXT_PUBLIC_APP_VERSION;
+      else process.env.NEXT_PUBLIC_APP_VERSION = prev;
+    }
   });
 
   it("ui/notifications/initialized 通知 → 容忍不回应；未知带 id 的 request → 回 -32601 防 app await 挂起", async () => {

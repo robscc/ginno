@@ -28,6 +28,7 @@ from . import agents as agents_reg
 from . import lang, paths, usage_store
 from . import server_shared as shared
 from . import workflows as wf_store
+from ._version import __version__
 from .hooks.dispatcher import HookDispatcher
 from .mcp.registry import MCPRegistry
 from .todos import store as todo_store
@@ -477,7 +478,7 @@ async def _connect_mcp_background() -> None:
         _log.exception("background MCP connect_all failed")
 
 
-app = FastAPI(title="Ginno Runtime", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Ginno Runtime", version=__version__, lifespan=lifespan)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -687,7 +688,7 @@ async def health() -> dict:
 
     return {
         "ok": True,
-        "version": "0.1.0",
+        "version": __version__,
         "build": build_info(),
         **runtime_watch.status(),
         **diagnostics.startup_summary(),

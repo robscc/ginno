@@ -64,6 +64,7 @@ from .errors import (
     TaskNotFoundError,
 )
 from .models import AgentSkill, Message, Part, Task, TaskState, TaskStatus
+from .._version import __version__
 
 __all__ = [
     "A2ADeps",
@@ -218,7 +219,7 @@ class A2ADeps:
     tasks: TaskRegistry = field(default_factory=TaskRegistry)
     max_concurrent: int = DEFAULT_MAX_CONCURRENT
     agent_name: str = "Ginno"
-    agent_version: str = "0.0.0"
+    agent_version: str = __version__
     skills: Sequence[AgentSkill] = ()
     executor: Any = None
     background: set = field(default_factory=set)
@@ -568,7 +569,7 @@ def build_a2a_app(deps: A2ADeps) -> FastAPI:
     """
     app = FastAPI(
         title="Ginno A2A Inbound",
-        version="0.1.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

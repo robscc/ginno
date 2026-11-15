@@ -194,7 +194,12 @@ export class McpAppBridge {
       id,
       result: {
         protocolVersion: reqVersion,
-        hostInfo: { name: "ginno", title: "Ginno", version: "0.1.0" },
+        hostInfo: {
+          name: "ginno",
+          title: "Ginno",
+          // 构建期从 package.json 注入（next.config.mjs），不再硬编码
+          version: process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0",
+        },
         hostCapabilities: { serverTools: {} },
         // hostContext 必填（App 类 zod 严格校验，2026-11-07 联调实测）；子字段
         // 全 optional——给主题即可，toolInfo 等按需后续补。
