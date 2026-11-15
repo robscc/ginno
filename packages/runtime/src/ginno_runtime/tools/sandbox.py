@@ -69,11 +69,17 @@ def _probe(bwrap: str) -> bool:
         return False
 
 
-def wrap_argv(argv: list[str], cwd: str | None) -> list[str]:
+def wrap_argv(
+    argv: list[str], cwd: str | None, extra_ro: list[str] | None = None
+) -> list[str]:
     """把 shell argv 包进 bwrap。非入站上下文原样返回。
 
     要求沙箱但不可用 → 抛 SandboxUnavailable（fail-closed，绝不静默降级）。
-    沙箱内工作目录固定 /work，绑定到 exec_root；调用方需把 cwd 也改成 /work。
+    沙箱内工作目录固定 /work，绑定到 exec_root；宿主 cwd 保持不变。
+
+    ``extra_ro``：额外只读绑入的路径（如解释器与执行器脚本所在目录）。
+    repl 的执行器是 ``sys.executable <executor.py>``，两者未必落在
+    _RO_BINDS 覆盖的目录里，不显式绑入沙箱内就找不到 → 必须传。
     """
     root = sandbox_root()
     if not root:
@@ -96,6 +102,14 @@ def wrap_argv(argv: list[str], cwd: str | None) -> list[str]:
     for d in _RO_BINDS:
         if os.path.isdir(d):
             out += ["--ro-bind", d, d]
+    # 额外只读路径（解释器/执行器）：去重且跳过已被 _RO_BINDS 覆盖的
+    for d in extra_ro or []:
+        d = str(d)
+        if not d or not os.path.exists(d):
+            continue
+        if any(d == b or d.startswith(b.rstrip("/") + "/") for b in _RO_BINDS):
+            continue
+        out += ["--ro-bind", d, d]
     out += [
         "--proc", "/proc",
         "--dev", "/dev",
