@@ -47,8 +47,30 @@ def run_repl(
     简化为 deny（设计 §7 P0：内层 ask 转外层一次确认，完整 interrupt 留 P1）。
     """
     t0 = time.perf_counter()
+    # 入站 A2A 沙箱：repl 与 bash 同为逃逸口——guard 对 repl 也只设
+    # target_path=exec_root（边界恒过），而执行器是**独立子进程跑任意 Python**，
+    # 不沙箱就能 open('/etc/...') 读写全盘。解释器与执行器脚本未必在
+    # _RO_BINDS 覆盖目录内，必须显式只读绑入，否则沙箱内找不到。
+    from ..tools.sandbox import SandboxUnavailable, wrap_argv
+
+    try:
+        _argv = wrap_argv(
+            [sys.executable, _EXECUTOR],
+            None,
+            extra_ro=[
+                str(Path(sys.executable).resolve().parent.parent),
+                str(Path(_EXECUTOR).resolve().parent),
+            ],
+        )
+    except SandboxUnavailable as _sbx:
+        return ReplResult(
+            value=None,
+            error=f"sandbox required but unavailable: {_sbx}",
+            inner_calls=0,
+            wall_s=time.perf_counter() - t0,
+        )
     proc = subprocess.Popen(
-        [sys.executable, _EXECUTOR],
+        _argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

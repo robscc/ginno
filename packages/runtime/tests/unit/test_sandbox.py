@@ -126,7 +126,10 @@ def test_real_bwrap_hides_outside_files(tmp_path):
              "echo ok > /work/probe.txt && echo WROTE"],
             str(root),
         )
-        r = subprocess.run(argv, cwd="/work", capture_output=True, text=True, timeout=60)
+        r = subprocess.run(
+            argv, cwd=sandbox.sandbox_cwd(str(root)),
+            capture_output=True, text=True, timeout=60,
+        )
         out = r.stdout + r.stderr
         assert "WROTE" in out, f"工作区应可写: {out}"
         assert (root / "probe.txt").read_text().strip() == "ok"
@@ -155,3 +158,91 @@ def test_host_cwd_never_becomes_sandbox_only_path(monkeypatch, tmp_path):
     monkeypatch.setattr(sandbox, "_probe", lambda _: True)
     out = sandbox.wrap_argv(["/bin/sh", "-lc", "x"], str(tmp_path))
     assert out[out.index("--chdir") + 1] == "/work"
+
+
+# ── repl 也是逃逸口（2026-11-16 第二轮安全排查）─────────────────────────────
+#
+# guard 对 repl 与 bash 同口径（target_path=exec_root → 边界恒过），而
+# code_mode.host.run_repl 起**独立子进程跑任意 Python**，不沙箱就能
+# open('/etc/...') 读写全盘。故 repl 必须与 bash 一样进沙箱。
+
+
+def test_extra_ro_binds_interpreter_and_executor(monkeypatch, tmp_path):
+    """解释器/执行器目录须显式只读绑入，否则沙箱内找不到。"""
+    monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_probe", lambda _: True)
+    fake_py = tmp_path / "venv" / "bin"
+    fake_py.mkdir(parents=True)
+    (fake_py / "python3").write_text("")
+    out = sandbox.wrap_argv(
+        [str(fake_py / "python3"), "/x/executor.py"], None,
+        extra_ro=[str(tmp_path / "venv"), "/x"],
+    )
+    joined = " ".join(out)
+    assert str(tmp_path / "venv") in joined
+    assert "/x" in joined
+    # 仍是只读绑定，不是可写
+    i = out.index("--ro-bind")
+    assert out[i + 1] in (str(tmp_path / "venv"), "/x") or "--ro-bind" in out
+
+
+def test_extra_ro_skips_already_covered(monkeypatch, tmp_path):
+    """已被 _RO_BINDS 覆盖的路径不重复绑（避免 bwrap 重复挂载报错）。"""
+    monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_probe", lambda _: True)
+    out = sandbox.wrap_argv(["/bin/sh", "-lc", "x"], None, extra_ro=["/usr/lib", "/usr"])
+    # /usr 与 /usr/lib 都在 _RO_BINDS 里，extra 不得重复绑。
+    # 注意 --ro-bind SRC DST 会让同一路径出现两次，故按「绑定对」计数。
+    pairs = [
+        (out[i + 1], out[i + 2])
+        for i, tok in enumerate(out)
+        if tok == "--ro-bind" and i + 2 < len(out)
+    ]
+    assert pairs.count(("/usr", "/usr")) == 1, f"/usr 被重复绑定: {pairs}"
+    assert ("/usr/lib", "/usr/lib") not in pairs, f"/usr/lib 不该额外绑: {pairs}"
+
+
+def test_repl_fails_closed_without_bwrap(monkeypatch, tmp_path):
+    """run_repl 在要求沙箱但无 bwrap 时必须返回错误，绝不裸跑执行器。"""
+    from ginno_runtime.code_mode import host
+
+    monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: None)
+    popped = []
+    monkeypatch.setattr(
+        host.subprocess, "Popen",
+        lambda *a, **k: popped.append(a) or (_ for _ in ()).throw(AssertionError("不得裸跑")),
+    )
+    res = host.run_repl("print(1)", {})
+    assert res.error and "sandbox" in res.error
+    assert popped == [], "fail-closed 时绝不得起执行器子进程"
+
+
+def test_repl_desktop_context_unsandboxed(monkeypatch):
+    """非入站上下文：run_repl 的 argv 不含 bwrap（桌面零影响）。"""
+    from ginno_runtime.code_mode import host
+
+    seen = {}
+
+    class _P:
+        stdin = None
+        stdout = None
+
+        def __init__(self, argv, **kw):
+            seen["argv"] = argv
+
+        def kill(self):
+            pass
+
+        def wait(self, **kw):
+            return 0
+
+    monkeypatch.setattr(host.subprocess, "Popen", _P)
+    try:
+        host.run_repl("print(1)", {}, timeout_s=0.01)
+    except Exception:
+        pass
+    assert seen.get("argv"), "应已起执行器"
+    assert "bwrap" not in " ".join(seen["argv"])
