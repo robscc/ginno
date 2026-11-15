@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ginno_runtime import jsonx as json
 
@@ -88,7 +88,7 @@ _TOKEN_PATH = re.compile(r"^/a2a/([^/]+)(?:/.*)?$")
 #: 统一 401 响应体——缺 token / 错 token / 任意路径，逐字节一致。
 _UNAUTHORIZED_BODY = b'{"error":"unauthorized"}'
 
-_RPC_METHODS = ("message/send", "tasks/get", "tasks/cancel")
+_RPC_METHODS = ("message/send", "message/stream", "tasks/get", "tasks/cancel", "tasks/resubscribe")
 
 
 def _utcnow() -> str:
@@ -640,7 +640,9 @@ async def _dispatch_rpc(
             req_id, A2AError(f"Method not found: {method}", code=METHOD_NOT_FOUND)
         )
     try:
-        if method == "message/send":
+        if method in ("message/send", "message/stream"):
+            # stream 与 send 共用派活逻辑；差别只在响应形态（SSE vs JSON），
+            # 由 /message/stream 路由把 JSON 结果转成进度流。
             return await _message_send(req_id, params, deps, token)
         if method == "tasks/get":
             return _tasks_get(req_id, params, deps, token)
@@ -655,6 +657,78 @@ async def _dispatch_rpc(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# SSE 进度流（P1-3，2026-11-16）
+# --------------------------------------------------------------------------- #
+_SSE_POLL_S = 0.5
+_SSE_MAX_S = 3600.0
+# 空闲超时：无新事件且状态未变即收流（防恒 submitted 死循环占连接）
+_SSE_IDLE_S = 120.0
+
+
+def _sse_frame(event: str, data: dict) -> str:
+    """组一帧 SSE（A2A 用 JSON-RPC 响应体作为 data）。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _sse_task_stream(task: Task, deps: A2ADeps, token: str):
+    """tail 任务进度文件 + 状态，逐帧推送至终态。
+
+    事件序列：status(working) → progress(tool…)… → status(终态, 含 artifacts)。
+    进度文件由 worker 追加（inbound_exec.emit_progress），这里只读不写。
+    客户端断开时生成器被取消，finally 不做任何清理（任务照跑，可 resubscribe）。
+
+    **空闲超时**：_SSE_IDLE_S 内无新事件且状态未变即收流——入站门控关闭时
+    任务恒 submitted 永不进终态，没有这条会死循环占住连接。
+    """
+    from .. import paths as _paths
+
+    prog = _paths.a2a_dir() / f"inbound-progress-{task.id}.jsonl"
+    offset = 0
+    t0 = time.time()
+    last_activity = t0
+    yield _sse_frame("status", _task_dict(task))
+    last_state = task.status.state
+    # submitted 是「门控关闭/未执行」的占位态，不会自己前进 → 首帧后即收流
+    if last_state == TaskState.SUBMITTED:
+        return
+    while True:
+        # 1) 新增进度事件
+        try:
+            if prog.exists():
+                with prog.open("r", encoding="utf-8") as fh:
+                    fh.seek(offset)
+                    chunk = fh.read()
+                    offset = fh.tell()
+                for line in chunk.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    last_activity = time.time()
+                    yield _sse_frame("progress", {"taskId": task.id, **rec})
+        except OSError:
+            pass
+        # 2) 状态变化 / 终态
+        cur = deps.tasks.get(task.id) or task
+        if cur.status.state != last_state:
+            last_state = cur.status.state
+            last_activity = time.time()
+            yield _sse_frame("status", _task_dict(cur))
+        if last_state in (
+            TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED,
+            TaskState.REJECTED, TaskState.INPUT_REQUIRED, TaskState.AUTH_REQUIRED,
+        ):
+            yield _sse_frame("status", _task_dict(cur))
+            return
+        now = time.time()
+        if now - t0 > _SSE_MAX_S or now - last_activity > _SSE_IDLE_S:
+            return
+        await asyncio.sleep(_SSE_POLL_S)
+
+
 def build_a2a_app(deps: A2ADeps) -> FastAPI:
     """组独立入站 app。**绝不 mount 进主 server**；由 inbound.py 单独起服。
 
@@ -662,6 +736,8 @@ def build_a2a_app(deps: A2ADeps) -> FastAPI:
     providers/hooks…）根本不注册，探测得 404（§11.2）。docs/openapi 一并
     关掉，不留额外注册面。无 CORS 中间件：浏览器跨域调用默认被拦。
     """
+    from .._version import __version__
+
     app = FastAPI(
         title="Ginno A2A Inbound",
         version=__version__,
@@ -690,6 +766,46 @@ def build_a2a_app(deps: A2ADeps) -> FastAPI:
     @app.post("/a2a/{token}/tasks/cancel")
     async def rpc_tasks_cancel(token: str, request: Request) -> JSONResponse:
         return await _dispatch_rpc(request, deps, only="tasks/cancel")
+
+    @app.post("/a2a/{token}/message/stream")
+    async def rpc_message_stream(token: str, request: Request):
+        """A2A 标准 message/stream：派活并以 SSE 推进度（P1-3）。"""
+        resp = await _dispatch_rpc(request, deps, only="message/stream")
+        # 非 200（鉴权/参数/并发限制）原样返回 JSON，不进 SSE
+        if resp.status_code != 200:
+            return resp
+        try:
+            body = json.loads(resp.body)
+            task = Task.from_dict((body or {}).get("result") or {})
+        except (ValueError, TypeError):
+            return resp
+        if not task.id:
+            return resp
+        return StreamingResponse(
+            _sse_task_stream(task, deps, token),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/a2a/{token}/tasks/resubscribe")
+    async def rpc_tasks_resubscribe(token: str, request: Request):
+        """A2A 标准 tasks/resubscribe：重新订阅既有任务的进度流。"""
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return _rpc_error(None, A2AError("Parse error", code=PARSE_ERROR))
+        params = (body or {}).get("params") or {}
+        task = deps.tasks.get(str(params.get("id") or ""))
+        if task is None:
+            raise TaskNotFoundError()
+        deps.audit.record(
+            method="tasks/resubscribe", token=token, outcome="ok", task_id=task.id
+        )
+        return StreamingResponse(
+            _sse_task_stream(task, deps, token),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # 后加的包在外层：安全头覆盖一切响应（含 401/429），鉴权在路由之前。
     app.add_middleware(_AuthGate, deps=deps)

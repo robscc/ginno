@@ -196,6 +196,33 @@ def _guard_kwargs(tool_name: str, args: dict, exec_root: str) -> dict:
     return kw
 
 
+# --------------------------------------------------------------------------- #
+# SSE 进度事件（P1-3，2026-11-16）
+# --------------------------------------------------------------------------- #
+# worker 把进度追加到 JSONL，server 的 SSE 端点 tail 它 → 调用方实时看到
+# 「在跑哪个工具」，而不是只有一个 WORKING 干等。设计 §241 把 SSE 进度映射到
+# worker digest 范式，这里用同构的「追加事件流 + 消费端 tail」落实。
+_PROGRESS_PATH: str = ""
+
+
+def set_progress_path(path: str) -> None:
+    """worker 启动时设定进度文件路径（空串=关闭进度上报）。"""
+    global _PROGRESS_PATH
+    _PROGRESS_PATH = path or ""
+
+
+def emit_progress(kind: str, **fields: Any) -> None:
+    """追加一条进度事件。绝不抛——进度是旁路，不能影响主执行链。"""
+    if not _PROGRESS_PATH:
+        return
+    try:
+        rec = {"ts": time.time(), "kind": kind, **fields}
+        with open(_PROGRESS_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 — 进度失败绝不影响任务
+        pass
+
+
 class GuardHookDispatcher:
     """把 ``guard.check_tool`` 接进 graph permission 节点的 PreToolUse hook 链。
 
@@ -224,6 +251,7 @@ class GuardHookDispatcher:
             args = ctx.get("args") or {}
             if not isinstance(args, dict):
                 args = {}
+            emit_progress("tool", tool=name)
             decision = guard.check_tool(
                 self.policy.trust,
                 self.policy.caps,
@@ -726,7 +754,7 @@ async def _run_job(job: dict) -> dict:
     else:
         state = TaskState.COMPLETED
 
-    return {
+    result = {
         "state": state.value,
         "text": text,
         "error": error,
@@ -736,6 +764,8 @@ async def _run_job(job: dict) -> dict:
         "denials": list(guard_dispatcher.denials),
         "parked": parked,
     }
+    emit_progress("state", state=result["state"], final=True)
+    return result
 
 
 def _worker_main() -> None:
@@ -749,6 +779,8 @@ def _worker_main() -> None:
         print(f"a2a worker: bad job spec: {exc}", file=sys.stderr)
         sys.exit(2)
     result_path = job.get("result_path")
+    set_progress_path(str(job.get("progress_path") or ""))
+    emit_progress("state", state="working")
     try:
         result = asyncio.run(_run_job(job))
     except BaseException as exc:  # noqa: BLE001 — 含 KeyboardInterrupt/SystemExit
@@ -863,6 +895,10 @@ class InboundExecutor:
         }
         if resume_value is not None:
             job["resume_value"] = resume_value
+        # SSE 进度事件文件（P1-3）：与 result 同目录同 task_id 口径
+        job["progress_path"] = str(
+            data_dir / f"inbound-progress-{task_id or uuid.uuid4().hex}.jsonl"
+        )
         env = dict(os.environ)
         env["GINNO_HOME"] = str(paths.home())
         # worker 日志落 home（排障用），不污染 server stdout。
