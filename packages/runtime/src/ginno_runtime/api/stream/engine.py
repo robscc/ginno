@@ -309,6 +309,7 @@ async def _stream_graph(
                             "standalone message will exist",
                             session_id, _e.get("steer_id"),
                         )
+                await _coal.flush()  # 保序：steer 注入带不插队到缓冲文本前
                 await safe_send(
                     emit(
                         "steer.absorbed",
@@ -396,6 +397,7 @@ async def _stream_graph(
                 if key in _attach_sent:
                     continue
                 _attach_sent.add(key)
+                await _coal.flush()  # 保序：ref 芯片落在正文解析出它的位置
                 await safe_send(
                     emit("ref.emit", {"kind": kind, "name": name, "ref_id": ref_id})
                 )
@@ -544,7 +546,9 @@ async def _stream_graph(
                         if btype == "thinking":
                             txt = b.get("thinking") or b.get("text") or ""
                             if txt:
-                                await safe_send(emit("thinking.delta", {"content": txt}))
+                                # 走合帧器而非裸发（2026-11-15）：裸发会插队到
+                                # 缓冲中的 token.delta 前面，thinking 渲染错位。
+                                await _coal.feed("thinking.delta", txt)
                         elif btype == "text":
                             txt = b.get("text") or ""
                             # Z.ai/GLM gateway narration ("**🌐 Z.ai Built-in
@@ -590,6 +594,9 @@ async def _stream_graph(
                             tid = b.get("id") if isinstance(b, dict) else None
                             if tid and tid not in _glm_started:
                                 _glm_started.add(tid)
+                                # 保序：缓冲里的文本尾片必须先于 tool.start 落地
+                                # （messages 模式发射点，updates 分支同款约束）。
+                                await _coal.flush()
                                 await safe_send(
                                     emit(
                                         "tool.start",
@@ -643,6 +650,12 @@ async def _stream_graph(
                             ):
                                 special_ids[tc_id] = tc_name
                                 continue  # surfaced as widget/ref/workflow block, not a tool bubble
+                            # 保序（2026-11-15 事故根因）：tool_call chunk 到达时
+                            # 正文尾片可能还在 33ms 合帧缓冲里。裸发 tool.start 会
+                            # 插队 → 前端先建工具块、后收文本尾片 → 正文被工具行
+                            # 拦腰切断（尾片甚至以句号开头）。updates 分支早有此
+                            # flush，messages 模式这条路径漏了。
+                            await _coal.flush()
                             await safe_send(
                                 emit("tool.start", {"name": tc_name, "id": tc_id})
                             )
@@ -675,6 +688,7 @@ async def _stream_graph(
                                     preview = _tool_args_preview(nm, parsed)
                                     if preview:
                                         _emitted_tool_args.add(tc_id)
+                                        await _coal.flush()  # 保序：同 tool.start
                                         await safe_send(
                                             emit("tool.args", {"id": tc_id, "preview": preview})
                                         )
@@ -701,6 +715,7 @@ async def _stream_graph(
                     }
                     if _me_reset:
                         _me_params["reset_at"] = _me_reset
+                    await _coal.flush()  # 保序：notice 不插队到缓冲文本前
                     await safe_send(
                         emit(
                             "notice",
