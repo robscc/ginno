@@ -315,7 +315,13 @@ async def test_first_issue_prints_plaintext_once_hash_only(tmp_path, capsys):
     assert stat.S_IMODE(key.stat().st_mode) == 0o600
 
 
-async def test_second_run_masks_token_and_keeps_fingerprint(tmp_path, capsys):
+async def test_second_run_masks_token_and_plain_http_has_no_fp(tmp_path, capsys):
+    """二次运行掩码 token；明文 http 掩码地址不得带 #fp（与真实地址同口径）。
+
+    原名 ..._keeps_fingerprint 断言掩码里有 fp——那是 TLS 场景的语义。
+    明文 http 无证书可钉，build_address 已丢 fp，掩码显示也须一致
+    （2026-11-16；指纹稳定性由 TLS 用例覆盖）。
+    """
     cfg = _cfg(tmp_path, ["--listen", "127.0.0.1:0"])
     ev = asyncio.Event()
     ev.set()
@@ -323,6 +329,7 @@ async def test_second_run_masks_token_and_keeps_fingerprint(tmp_path, capsys):
     first = capsys.readouterr().out
     addr = next(ln for ln in first.splitlines() if "/a2a/" in ln and "****" not in ln)
     parsed = address.parse_address(addr.strip())
+    assert parsed.fingerprint in ("", None), "明文地址本就不该带指纹"
     inbound._HANDLES.clear()  # 模拟进程重启
     cfg2 = _cfg(tmp_path, ["--listen", "127.0.0.1:0"])
     await node.run_node(cfg2, stop_event=ev)
@@ -330,7 +337,8 @@ async def test_second_run_masks_token_and_keeps_fingerprint(tmp_path, capsys):
     assert parsed.token not in second  # 明文不可回读（不再打印）
     assert "****" in second
     assert "不再回显" in second
-    assert f"fp={parsed.fingerprint}" in second  # 指纹稳定，pin 不漂移
+    assert "#fp=" not in second, "明文掩码地址不得显示空 #fp="
+    assert "****#fp=" not in second
 
 
 # -- TLS：成对校验 + https 广告 + 真实 HTTPS 起停 ------------------------------
