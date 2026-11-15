@@ -172,12 +172,22 @@ jobs:
   # 真正跑过浏览器级用例。本 job 在 macos 上构建 runtime bundle（make runtime
   # 含 web build + PyInstaller）后跑全套 packaged UI e2e。
   ui-e2e:
-    # ⚠️ 2026-11-12 暂改手动触发：PR 触发实测 macOS runner 连续 cancelled
-    # （job 未启动无日志——当日 macOS 分钟池耗尽，rust job ×15 轮叠加）。
-    # 额度恢复后把 workflow_dispatch 改回 pull_request/push 即恢复自动闸门；
-    # 大发版/关键前端 PR 前手动跑一次（Actions 页 → ui-e2e → Run workflow）。
+    # ⚠️ 2026-11-12 暂改手动触发：当时 PR 触发实测 macOS runner 连续 cancelled
+    # （job 未启动无日志），当时归因为「macOS 分钟池耗尽，rust job ×15 轮叠加」。
+    # **2026-11-15 更正**：至少 2026-11-15 那次 cancelled 不是额度问题——
+    # 真因是 macos-14 runner 已退役（见下方 runs-on 注释），同 run 的 rust job
+    # 在 macos-15 上正常 success。2026-11-12 当时是否叠加额度因素无法回溯，
+    # 标为待核实。恢复自动触发前应先手动 dispatch 观察一轮。
+    # 大发版/关键前端 PR 前手动跑一次（Actions 页 → CI → Run workflow）。
     if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
+    # macos-14 已于 2026-11-02 从 GitHub Actions 退役（arm64 无延期，官方
+    # runner-images README：「All macOS 14 images retired ... This extension
+    # does not apply to Arm64 images」）。c2e5e18 把 rust job 迁到 macos-15
+    # 时漏了本 job，导致 2026-11-15 首次真 dispatch（run 43699273371）里
+    # ui-e2e **1 秒 cancelled、steps 为空、runner_name 为空**，注解
+    # 「The configuration 'macos-14-arm64-us-default' is not supported」。
+    # 同 run 的 rust job 在 macos-15 上 51 秒 success，证明不是额度问题。
+    runs-on: macos-15
     defaults:
       run:
         working-directory: packages/runtime
