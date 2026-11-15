@@ -39,6 +39,7 @@ from ginno_runtime import paths
 from . import address, identity
 from .auth import TokenStore
 from .server import A2ADeps, AuditLog, TokenBucketLimiter, build_a2a_app
+from .._version import __version__
 
 __all__ = [
     "InboundConfig",
@@ -67,7 +68,7 @@ class InboundConfig:
     scheme: str = "https"  # 能力地址 advertised scheme（P0 起服仍是明文）
     data_dir: Path | None = None  # 缺省 paths.a2a_dir()（调用时解析，测试可隔离）
     agent_name: str = "Ginno"
-    agent_version: str = "0.0.0"
+    agent_version: str = __version__
     rate_per_min: int = 30
     max_concurrent: int = 2
 

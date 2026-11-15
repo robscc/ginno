@@ -73,9 +73,16 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 
 流程见 `CONTRIBUTING.md` 的 Release runbook。要点：
 
-1. bump 三处版本（`apps/desktop/tauri.conf.json` / `apps/web/package.json` /
-   `packages/runtime/pyproject.toml`）后**必须 `uv lock`**——Makefile 的 runtime
-   构建走 `uv run --locked`，lock 里记录的 workspace 版本不同步会直接挂。
+1. bump **四处**版本（`apps/desktop/tauri.conf.json` / `apps/web/package.json` /
+   `packages/runtime/pyproject.toml` / **`packages/runtime/src/ginno_runtime/_version.py`**）
+   后**必须 `uv lock`**——Makefile 的 runtime 构建走 `uv run --locked`，lock 里记录的
+   workspace 版本不同步会直接挂。
+   ⚠️ 第四处是 2026-11-15 补的：`_version.py` 曾长期停在 0.1.0 而其余三处已 0.3.3，
+   导致 `ginno --version`、`/api/health`、**A2A Agent Card**、以及
+   **`ginno_user_agent()`（网关按 UA 识别 Ginno 流量）** 全部自报 0.1.0。
+   现 runtime 内所有版本展示统一 import `_version.__version__`，前端由
+   `next.config.mjs` 从 package.json 构建期注入；
+   `tests/unit/test_version_single_source.py` 在 CI 钉住一致性，漏 bump 会红。
 2. CHANGELOG.md：Unreleased → 新版本；commit `release: vX.Y.Z`；`git tag` + push。
 3. `.github/workflows/release.yml` 自动：macOS runner `make app`（ad-hoc 签名）→
    `make smoke` 闸门 → dmg 附到 GitHub Release。首跑约 12 分钟。

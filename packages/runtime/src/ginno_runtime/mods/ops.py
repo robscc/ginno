@@ -44,7 +44,9 @@ def _runtime_version() -> str:
 
         return version("ginno-runtime")
     except Exception:  # noqa: BLE001 — frozen builds may lack dist-info
-        return "0.1.0"
+        from .._version import __version__
+
+        return __version__
 
 
 def _session_facts(session_id: str) -> dict:
