@@ -1855,6 +1855,16 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         teamId: (ev.team_id as string) || "",
         instanceId: (ev.instance_id as string) || "",
       };
+      // 空占位收口用的 liveId：必须在下面置 null **之前**捕获。
+      const endedLiveId = ctx.liveBySessionRef.current[sid] ?? null;
+      // turnId 兜底判据（不能只靠 liveId）：广场投递是异步的，上一条的
+      // message.end 可能**晚于**下一条的发送到达——它会把 liveBySessionRef
+      // 清成 null，而那时引用已经指向新一条的占位了。此时只按 liveId 过滤
+      // 会拿到 null → 新占位漏删 → 又一个「(空回复)」（2026-11-15 e2e 实测
+      // 偶发：第一条 @ 投递 + 第二条紧跟，第二条的空气泡时有时无）。
+      // 客户端 turnId 经 invoke.turn_id 原样传给服务端并回显（ws.py:350），
+      // 所以 ev.turn_id 与气泡 turnId 是同一把钥匙，跨事件顺序稳定。
+      const endTurn = (ev.turn_id as string) || null;
       const list = ctx.storeRef.current[sid] ?? [];
       // 挂到最后一条用户消息上（回执属于「我发的那条」，不是新气泡）。
       let lastUser = -1;
@@ -1888,6 +1898,28 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       ctx.busyBySessionRef.current[sid] = false;
       ctx.serverRunningRef.current[sid] = false;
       ctx.liveBySessionRef.current[sid] = null;
+      // 丢弃空占位气泡（与 turn.stopped / error 同一范式，那两处的注释写的
+      // 就是同一个「(空回复)」症状——唯独投递分支漏了这道收口）。
+      //
+      // 广场投递**不起主会话 turn**（ws.py 的 AgentTeam 路由分支只发
+      // team.delivered + message.end），所以 ChatStream.attemptSend 乐观插入的
+      // `blocks: []` 占位永远等不到流事件。此前只清 liveBySessionRef，空壳仍
+      // 留在 store 里 → message.end 的 stampTurnTs 按 turnId 兜底命中它并盖上
+      // ts → 渲染成「(空回复)」+「刚刚」，永久留在转录里（2026-11-15 用户截图：
+      // 每发一条必现一个）。成员真正的产出稍后走 team.reply 回帖卡，与它无关。
+      //
+      // 只删 blocks 为空的那一个：空团队分支的 notice 提示、以及任何已流出的
+      // 正文都在这个气泡里，删过头会把合法内容一起抹掉。
+      if (endedLiveId || endTurn) {
+        ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).filter(
+          (m) =>
+            !(
+              m.role === "assistant" &&
+              m.blocks.length === 0 &&
+              (m.id === endedLiveId || (!!endTurn && m.turnId === endTurn))
+            ),
+        );
+      }
       ctx.syncDisplay(sid);
       break;
     }

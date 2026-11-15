@@ -142,7 +142,11 @@ def test_packaged_ui_team_plaza_delivery_keeps_composer_usable(tmp_path):
                 row.click()
                 page.wait_for_timeout(1200)
 
-            ta = page.locator("textarea").first
+            # 页面同时挂着广场与成员工作台两个 composer，其中一个 display:none。
+            # 裸 `.first` 会选中隐藏那个 → click 永久超时（2026-11-15 实测：
+            # textarea[0] visible=False / [1] visible=True，本用例因此静默红）。
+            # 一律按可见性过滤，别依赖 DOM 顺序。
+            ta = page.locator("textarea:visible").first
             ta.click()
             ta.fill("@")
             page.wait_for_timeout(800)
@@ -171,6 +175,31 @@ def test_packaged_ui_team_plaza_delivery_keeps_composer_usable(tmp_path):
                 page.wait_for_timeout(400)
             assert sent, "plaza message must be persisted to checkpoint (P0-1)"
 
+            # ── 2026-11-15 回归：投递后不许留下「(空回复)」空气泡 ──
+            # 广场投递不起主会话 turn，ChatStream 乐观插入的 blocks:[] 占位
+            # 永远等不到流事件。此前 team.delivered 只清 liveBySessionRef、
+            # 不删 store 里的空壳 → message.end 的 stampTurnTs 按 turnId 兜底
+            # 命中它并盖上 ts → 渲染成「(空回复)」+「刚刚」，每发一条必现一个。
+            # 判据取 DOM 而非 store：这是用户真正看到的东西（vitest 已在
+            # reducer 层覆盖，这里守渲染层——CLAUDE.md 红线的分工）。
+            def _empty_reply_bubbles() -> int:
+                return page.evaluate(
+                    "() => Array.from(document.querySelectorAll('span'))"
+                    ".filter(s => /^(（空回复）|\\(empty reply\\))$/.test((s.textContent||'').trim()))"
+                    ".length"
+                )
+
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                if _empty_reply_bubbles() == 0:
+                    break
+                page.wait_for_timeout(300)
+            assert _empty_reply_bubbles() == 0, (
+                "plaza delivery left an empty assistant bubble rendering "
+                "「(空回复)」 — the optimistic placeholder must be dropped "
+                "when team.delivered arrives (2026-11-15 user screenshot)"
+            )
+
             # 第二条必须还能发出去（锁死时这条进不了历史）
             ta.click()
             ta.fill("second message after delivery")
@@ -186,6 +215,13 @@ def test_packaged_ui_team_plaza_delivery_keeps_composer_usable(tmp_path):
             assert second, (
                 "composer locked after team delivery (P0-1): the second message "
                 "never reached the checkpoint"
+            )
+
+            # 第二条之后同样零空气泡——用户症状是「每发一条必现一个」，
+            # 只查第一条会漏掉「按 turnId 累积」的那一半。
+            page.wait_for_timeout(1200)
+            assert _empty_reply_bubbles() == 0, (
+                "empty reply bubbles accumulated across plaza deliveries"
             )
 
             # 重载后两条都还在（落盘对账，不给「未送达」重试）
