@@ -124,6 +124,9 @@ class Message:
     context_id: str = ""
     task_id: str = ""
     metadata: dict = field(default_factory=dict)
+    # A2A 标准 referenceTaskIds：追问/续跑时指向被引用的任务。
+    # input-required 任务的远程批准闭环靠它定位要 resume 的那条 task。
+    reference_task_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: Any) -> "Message":
@@ -138,6 +141,13 @@ class Message:
             context_id=str(raw.get("contextId") or raw.get("context_id") or ""),
             task_id=str(raw.get("taskId") or raw.get("task_id") or ""),
             metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+            reference_task_ids=[
+                str(x)
+                for x in (raw.get("referenceTaskIds") or raw.get("reference_task_ids") or [])
+                if str(x)
+            ]
+            if isinstance(raw.get("referenceTaskIds") or raw.get("reference_task_ids"), list)
+            else [],
         )
 
     def to_dict(self) -> dict:
@@ -148,6 +158,8 @@ class Message:
             out["contextId"] = self.context_id
         if self.task_id:
             out["taskId"] = self.task_id
+        if self.reference_task_ids:
+            out["referenceTaskIds"] = list(self.reference_task_ids)
         if self.metadata:
             out["metadata"] = self.metadata
         return out

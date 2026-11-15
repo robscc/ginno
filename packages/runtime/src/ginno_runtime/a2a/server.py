@@ -403,6 +403,93 @@ def _resolve_executor(deps: A2ADeps) -> Any:
     return deps.executor
 
 
+async def _resume_inbound_task(
+    req_id: Any, task: Task, message: Message, deps: A2ADeps, executor: Any, token: str
+) -> JSONResponse:
+    """续跑一条 input-required 任务（远程批准 / ask_user 回答）。
+
+    复用原 task 与原 session（绝不新建），把回信文本映射成 graph 期望的
+    resume_value。映射歧义 → RPC error，task 保持 input-required 可再答。
+    """
+    from .inbound_exec import build_resume_value, pending_interrupt_kind
+
+    sid = str(task.metadata.get("session_id") or "")
+    if not sid:
+        return _rpc_error(
+            req_id,
+            A2AError("input-required 任务缺 session_id，无法续跑", code=INTERNAL_ERROR),
+        )
+    # slug 真源是执行器策略（ExecPolicy.slug），与 _prepare_session 同口径。
+    slug = str(getattr(getattr(executor, "policy", None), "slug", "") or "")
+    if not slug:
+        from .inbound_exec import DEFAULT_SLUG
+
+        slug = DEFAULT_SLUG
+    kind = pending_interrupt_kind(sid, slug)
+    try:
+        resume_value = build_resume_value(kind, message.text())
+    except ValueError as exc:
+        deps.audit.record(
+            method="message/send", token=token, outcome="resume_rejected", task_id=task.id
+        )
+        return _rpc_error(req_id, A2AError(str(exc), code=INVALID_PARAMS))
+
+    task.status = TaskStatus(state=TaskState.WORKING, timestamp=_utcnow())
+    bg = asyncio.create_task(
+        _run_inbound_resume(task, message, deps, executor, token, sid, resume_value)
+    )
+    deps.background.add(bg)
+    bg.add_done_callback(deps.background.discard)
+    deps.audit.record(
+        method="message/send", token=token, outcome="resuming", task_id=task.id
+    )
+    return _rpc_result(req_id, _task_dict(task))
+
+
+async def _run_inbound_resume(
+    task: Task, message: Message, deps: A2ADeps, executor: Any, token: str,
+    session_id: str, resume_value: dict,
+) -> None:
+    """后台续跑至终态，原地更新同一条 Task。"""
+    try:
+        result = await executor.run(
+            instruction=message.text(),
+            context_id=task.context_id,
+            session_id=session_id,
+            peer_name=str(message.metadata.get("peer_name") or "") or "peer",
+            task_id=task.id,
+            resume_value=resume_value,
+        )
+        task.artifacts = list(result.artifacts)
+        if result.session_id:
+            task.metadata["session_id"] = result.session_id
+        if result.denials:
+            task.metadata["guard_denials"] = result.denials
+        body = result.text or result.error or ""
+        task.status = TaskStatus(
+            state=result.state,
+            message=Message(
+                role="agent",
+                parts=[Part(text=body)] if body else [],
+                task_id=task.id,
+                context_id=task.context_id,
+            ),
+            timestamp=_utcnow(),
+        )
+        deps.audit.record(
+            method="message/send", token=token, outcome=result.state.value, task_id=task.id
+        )
+    except Exception as exc:  # noqa: BLE001 — 续跑异常转 failed，绝不悬空 working
+        task.status = TaskStatus(
+            state=TaskState.FAILED,
+            message=Message(role="agent", parts=[Part(text=f"{type(exc).__name__}: {exc}")]),
+            timestamp=_utcnow(),
+        )
+        deps.audit.record(
+            method="message/send", token=token, outcome="failed", task_id=task.id
+        )
+
+
 async def _run_inbound_task(
     task: Task, message: Message, deps: A2ADeps, executor: Any, token: str
 ) -> None:
@@ -449,7 +536,7 @@ async def _run_inbound_task(
         )
 
 
-def _message_send(req_id: Any, params: dict, deps: A2ADeps, token: str) -> JSONResponse:
+async def _message_send(req_id: Any, params: dict, deps: A2ADeps, token: str) -> JSONResponse:
     raw_msg = params.get("message")
     if not isinstance(raw_msg, dict):
         return _rpc_error(
@@ -480,6 +567,14 @@ def _message_send(req_id: Any, params: dict, deps: A2ADeps, token: str) -> JSONR
         return _rpc_error(
             req_id, A2AError(f"inbound exec config error: {exc}", code=INTERNAL_ERROR)
         )
+    # ── input-required 远程批准闭环（P1-2，2026-11-16）────────────────────
+    # 带 referenceTaskIds 且被引用任务处于 input-required → **续跑那条 task**，
+    # 不新建。原实现下 headless 节点遇权限 ask 只能永久挂起（无 UI 可批）。
+    # 歧义文本一律 fail-loud，绝不替用户猜批准/拒绝。
+    if message.reference_task_ids:
+        ref = deps.tasks.get(str(message.reference_task_ids[0]))
+        if ref is not None and ref.status.state == TaskState.INPUT_REQUIRED:
+            return await _resume_inbound_task(req_id, ref, message, deps, executor, token)
     # contextId 客户端给了就接受（规范允许），没给则 server 生成；映射 Ginno
     # session 由执行层照渠道范式落实（type="a2a"/独立 slug/不挂用户目录）。
     task = deps.tasks.create(message, context_id=message.context_id)
@@ -546,7 +641,7 @@ async def _dispatch_rpc(
         )
     try:
         if method == "message/send":
-            return _message_send(req_id, params, deps, token)
+            return await _message_send(req_id, params, deps, token)
         if method == "tasks/get":
             return _tasks_get(req_id, params, deps, token)
         return _tasks_cancel(req_id, params, deps, token)

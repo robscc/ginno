@@ -25,7 +25,8 @@
   拒绝 → blocked bubble（模型可自愈），并记录 denial 供审计/回报。
 - 权限 fail-closed（#7）：worker 钉死 ``bypass_permissions=False``；guard 放行但策略
   判 ask 的工具 → interrupt 挂起 → 任务转 ``input-required``（等本机人工批准）。
-  远端**无协议路径自批**（本期不做 resume 闭环）→ 无法自批。
+  远端**无协议路径自批**；但调用方可带 referenceTaskIds 回信批准/拒绝
+  （P1-2 resume 闭环），由 server 续跑同一 task——仍不是「自批」。
 
 会话隔离（#17/#18/#19）：``type="a2a"`` / ``channel="a2a"`` / 独立 slug
 ``a2a-inbound`` / **不挂用户目录**（只挂 exec_root 专用工作区）/ 读不到用户其他会话。
@@ -35,7 +36,9 @@
 产物（§2.5）：留在 exec_root，Task 以 ``Artifact`` 回**路径+摘要+元信息**，
 **不传文件内容**（L2 文件传取属独立 P1，不在本期）。
 
-不做（设计 §5 / 任务边界）：SSE 流式、input-required resume 闭环、TTL 两态、重启恢复。
+已补（2026-11-16 P1）：input-required resume 闭环（带 referenceTaskIds 的回信
+续跑同一 task，批准/拒绝歧义 fail-loud）、文本产物内容回传（§2.5 修订）。
+仍不做（设计 §5 / 任务边界）：SSE 流式、TTL 两态、重启恢复。
 """
 
 from __future__ import annotations
@@ -553,6 +556,62 @@ def _sniff_kind(p: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# input-required 远程批准闭环（P1-2，2026-11-16）
+# --------------------------------------------------------------------------- #
+_ALLOW_WORDS = {"allow", "approve", "yes", "y", "ok", "批准", "同意", "允许", "可以"}
+_DENY_WORDS = {"deny", "reject", "no", "n", "拒绝", "不同意", "不行", "取消"}
+
+
+def pending_interrupt_kind(session_id: str, slug: str) -> str | None:
+    """读会话当前挂起 interrupt 的 kind；无挂起返回 None。绝不抛。"""
+    from ..checkpointer import FileCheckpointer
+
+    try:
+        pending = FileCheckpointer(slug).get_pending_interrupt(
+            {"configurable": {"thread_id": session_id}}
+        )
+    except Exception:  # noqa: BLE001 — 读不到当作无挂起，由调用方 fail-loud
+        return None
+    if not pending:
+        return None
+    # pending 可能是 list[Interrupt] 或单个 Interrupt / dict
+    item = pending[0] if isinstance(pending, (list, tuple)) and pending else pending
+    value = getattr(item, "value", None)
+    if value is None and isinstance(item, dict):
+        value = item.get("value") if "value" in item else item
+    if isinstance(value, dict):
+        return str(value.get("kind") or "") or None
+    return None
+
+
+def build_resume_value(kind: str | None, text: str) -> dict:
+    """把远端回信文本映射成 graph 期望的 resume_value。
+
+    **歧义一律 fail-loud**（抛 ValueError），绝不猜：批准/拒绝是不可逆的
+    安全决策，猜错等于替用户做了主。
+
+    - permission_request / version_propose → {"decision": "allow"|"deny"}
+      只认白名单词；其它文本报错并提示可用词。
+    - user_question → {"kind":"user_answer","answer":text}（自由文本原样透传）
+    - 无挂起 / 未知 kind → 报错（调用方应转 failed 而非静默新起 turn）
+    """
+    raw = (text or "").strip()
+    if kind in ("permission_request", "version_propose"):
+        low = raw.lower()
+        if low in _ALLOW_WORDS:
+            return {"decision": "allow"}
+        if low in _DENY_WORDS:
+            return {"decision": "deny"}
+        raise ValueError(
+            f"无法把 {raw!r} 解析为批准/拒绝决策；"
+            f"请回复 {'/'.join(sorted(_ALLOW_WORDS))} 或 {'/'.join(sorted(_DENY_WORDS))}"
+        )
+    if kind == "user_question":
+        return {"kind": "user_answer", "answer": raw}
+    raise ValueError(f"会话没有可续跑的挂起请求（kind={kind!r}），无法 resume")
+
+
+# --------------------------------------------------------------------------- #
 # 进程内 turn 链（worker 核心；单测可直接 await）
 # --------------------------------------------------------------------------- #
 async def _run_job(job: dict) -> dict:
@@ -615,11 +674,20 @@ async def _run_job(job: dict) -> dict:
     shared._RUNNING_TURNS[session_id] = turn_id
     ask_tok = set_interactive(False)  # 入站无人应答 ask_user → 模型自决
     error: str | None = None
+    # resume 闭环（2026-11-16，P1-2）：job 带 resume_value 时不新起 turn，
+    # 而是从挂起的 interrupt 续跑（权限批准 / ask_user 回答）。
+    # 会话由 job["session_id"] 复用同一条，绝不新建——否则续跑接不上原图状态。
+    resume_value = job.get("resume_value")
     try:
-        await stream_api._run_stream(
-            None, session["graph"], config, instruction, session, session.get("agent_id"),
-            origin="schedule",
-        )
+        if resume_value is not None:
+            await stream_api._run_resume(
+                None, session["graph"], config, resume_value
+            )
+        else:
+            await stream_api._run_stream(
+                None, session["graph"], config, instruction, session, session.get("agent_id"),
+                origin="schedule",
+            )
     except Exception as exc:  # noqa: BLE001 — turn 崩溃转 failed，不带走 worker
         error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -774,8 +842,14 @@ class InboundExecutor:
         session_id: str | None = None,
         peer_name: str = "",
         task_id: str = "",
+        resume_value: dict | None = None,
     ) -> ExecResult:
-        """派一条任务到 worker 子进程，监督至终态/超时。返回 ExecResult。"""
+        """派一条任务到 worker 子进程，监督至终态/超时。返回 ExecResult。
+
+        ``resume_value`` 非空时走**续跑**而非新 turn：从挂起的 interrupt
+        恢复（权限批准 / ask_user 回答）。必须同时传 ``session_id`` 复用
+        原会话，否则接不上原图状态。
+        """
         data_dir = paths.a2a_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         result_path = data_dir / f"inbound-result-{task_id or uuid.uuid4().hex}.json"
@@ -787,6 +861,8 @@ class InboundExecutor:
             "policy": self.policy.to_dict(),
             "result_path": str(result_path),
         }
+        if resume_value is not None:
+            job["resume_value"] = resume_value
         env = dict(os.environ)
         env["GINNO_HOME"] = str(paths.home())
         # worker 日志落 home（排障用），不污染 server stdout。

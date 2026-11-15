@@ -660,3 +660,101 @@ def test_artifact_invalid_utf8_tail_does_not_lose_whole_file(tmp_path):
     assert a.metadata["kind"] == "text"
     assert a.metadata["content_included"] is True
     assert "正常开头" in a.parts[1].text
+
+
+# ── input-required 远程批准闭环（P1-2，2026-11-16）──────────────────────────
+#
+# 原实现：headless 节点遇权限 ask 永久挂起（无 UI 可批、无协议路径自批）。
+# 现支持带 referenceTaskIds 的回信续跑同一条 task。
+
+
+async def test_resume_allow_completes_the_parked_write(tmp_path, monkeypatch):
+    """挂起后回「批准」→ 续跑同一会话 → 文件真写出、任务转 completed。"""
+    target = tmp_path / "ws" / "needs_approval.txt"
+    scripts = [
+        {"content": "", "tool_calls": [{"name": "write_file", "args": {"path": str(target), "content": "hi"}}]},
+        {"content": "写好了"},
+    ]
+    pol = _policy(tmp_path, trust="normal", caps=["L0", "L1", "L2", "L3"])
+    first = await _run_job(tmp_path, monkeypatch, scripts, pol)
+    assert first["state"] == "input-required"
+    assert not target.exists()
+    sid = first["session_id"]
+    assert sid
+
+    # 读挂起 kind → 映射批准 → 续跑（复用同一 session_id）
+    kind = inbound_exec.pending_interrupt_kind(sid, "a2a-inbound")
+    assert kind == "permission_request"
+    rv = inbound_exec.build_resume_value(kind, "批准")
+    assert rv == {"decision": "allow"}
+
+    scripts_file = tmp_path / "scripts.json"
+    scripts_file.write_text(json.dumps(scripts), encoding="utf-8")
+    monkeypatch.setenv("GINNO_FAKE_LLM", "1")
+    monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts_file))
+    second = await inbound_exec._run_job({
+        "instruction": "批准", "context_id": "ctx-1", "session_id": sid,
+        "peer_name": "tester", "policy": pol, "resume_value": rv,
+    })
+    assert second["state"] == "completed", f"续跑未 completed: {second}"
+    assert target.exists(), "批准后文件必须真写出"
+    assert target.read_text() == "hi"
+
+
+async def test_resume_deny_does_not_write(tmp_path, monkeypatch):
+    """挂起后回「拒绝」→ 续跑但绝不执行被拒工具。"""
+    target = tmp_path / "ws" / "denied.txt"
+    scripts = [
+        {"content": "", "tool_calls": [{"name": "write_file", "args": {"path": str(target), "content": "x"}}]},
+        {"content": "好的，不写了"},
+    ]
+    pol = _policy(tmp_path, trust="normal", caps=["L0", "L1", "L2", "L3"])
+    first = await _run_job(tmp_path, monkeypatch, scripts, pol)
+    assert first["state"] == "input-required"
+    sid = first["session_id"]
+    kind = inbound_exec.pending_interrupt_kind(sid, "a2a-inbound")
+    rv = inbound_exec.build_resume_value(kind, "deny")
+    assert rv == {"decision": "deny"}
+
+    scripts_file = tmp_path / "scripts.json"
+    scripts_file.write_text(json.dumps(scripts), encoding="utf-8")
+    monkeypatch.setenv("GINNO_FAKE_LLM", "1")
+    monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts_file))
+    second = await inbound_exec._run_job({
+        "instruction": "deny", "context_id": "ctx-1", "session_id": sid,
+        "peer_name": "tester", "policy": pol, "resume_value": rv,
+    })
+    assert second["state"] in ("completed", "failed")
+    assert not target.exists(), "拒绝后绝不得执行被拒工具"
+
+
+@pytest.mark.parametrize("text", ["allow", "approve", "yes", "y", "ok", "批准", "同意", "允许"])
+def test_build_resume_value_allow_words(text):
+    assert inbound_exec.build_resume_value("permission_request", text) == {"decision": "allow"}
+
+
+@pytest.mark.parametrize("text", ["deny", "reject", "no", "n", "拒绝", "不同意", "取消"])
+def test_build_resume_value_deny_words(text):
+    assert inbound_exec.build_resume_value("permission_request", text) == {"decision": "deny"}
+
+
+def test_build_resume_value_ambiguous_fails_loud():
+    """歧义文本绝不猜——批准是不可逆安全决策。"""
+    for bad in ["随便", "maybe", "看起来不错", ""]:
+        with pytest.raises(ValueError):
+            inbound_exec.build_resume_value("permission_request", bad)
+
+
+def test_build_resume_value_user_question_passes_text():
+    rv = inbound_exec.build_resume_value("user_question", "用方案A")
+    assert rv == {"kind": "user_answer", "answer": "用方案A"}
+
+
+def test_build_resume_value_no_pending_fails_loud():
+    with pytest.raises(ValueError, match="没有可续跑"):
+        inbound_exec.build_resume_value(None, "allow")
+
+
+def test_pending_interrupt_kind_none_for_fresh_session(tmp_path):
+    """无挂起的会话返回 None，绝不抛。"""
+    assert inbound_exec.pending_interrupt_kind("no-such-session", "a2a-inbound") is None
