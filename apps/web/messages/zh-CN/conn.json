@@ -96,7 +96,9 @@
       "discard": "放弃更改",
       "range": "范围 {min}–{max}",
       "invalidNumber": "请输入 {min} 到 {max} 之间的数字",
-      "unsavedConfirm": "有未保存的更改，确定放弃吗？"
+      "unsavedConfirm": "有未保存的更改，确定放弃吗？",
+      "unsavedTitle": "放弃未保存的更改？",
+      "discardAndLeave": "放弃并离开"
     },
     "detail": {
       "close": "关闭",

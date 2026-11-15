@@ -390,3 +390,89 @@ def test_r3_no_settings_mcp_skills_entries(app):
         "els => els.map(e => e.tagName)"
     )
     assert "A" not in tags, tags
+
+
+# ---- 6. 未保存更改不得把用户困在详情页（2026-11-16 事故回归）------------------
+#
+# 事故：进 A2A 连接器后**切不到任何其他页面**。根因是 canLeave() 同步调
+# window.confirm，而 Tauri WKWebView 屏蔽原生 JS 对话框、confirm() 恒返回
+# false → 关闭与切 tab 全被静默拒绝。vitest/tsc 抓不到（它们不跑 WKWebView），
+# 故按 CLAUDE.md 规矩补浏览器级用例。
+#
+# 这里跑的是 Chromium（原生 confirm 可用），所以断言重点不是「confirm 返回什么」，
+# 而是**确认必须走应用内模态**（role=dialog + 中文标题），且取消/放弃两条路径
+# 都真的能走通——只要有人改回 window.confirm，模态断言立刻红。
+
+
+def _open_a2a_settings_dirty(page):
+    """开 A2A 详情 → 设置 tab → 改 endpoint 造 dirty，返回 drawer。"""
+    drawer = _open_a2a(page)
+    drawer.get_by_role("button", name="设置", exact=True).first.click()
+    # endpoint 是 string 字段，填个值即可让 ConfigEditor 报 dirty
+    box = drawer.get_by_placeholder("https://host:port/a2a#fp=...").first
+    if not box.count():
+        # placeholder 用的是 description，退化为按 label 找文本框
+        box = drawer.locator('input[type="text"], textarea').first
+    box.wait_for(state="visible", timeout=15_000)
+    box.fill("https://example.invalid/a2a")
+    page.wait_for_timeout(400)  # 等 onDirtyChange 上报
+    return drawer
+
+
+def test_unsaved_changes_use_in_app_modal_not_native_confirm(app):
+    """dirty 后点关闭：必须弹应用内模态，取消后仍留在详情页。"""
+    page, _port = app
+    drawer = _open_a2a_settings_dirty(page)
+
+    # 原生 confirm 若被调用会阻塞/自动 dismiss——装个探针钉住它绝不被调
+    page.evaluate(
+        "() => { window.__nativeConfirmCalls = 0;"
+        " const orig = window.confirm;"
+        " window.confirm = (...a) => { window.__nativeConfirmCalls++;"
+        " return orig ? orig.apply(window, a) : false; }; }"
+    )
+
+    drawer.get_by_title("关闭").click()
+
+    modal = page.get_by_role("dialog", name="放弃未保存的更改？")
+    modal.wait_for(state="visible", timeout=10_000)
+    assert modal.get_by_text("有未保存的更改，确定放弃吗？").count() > 0
+
+    calls = page.evaluate("() => window.__nativeConfirmCalls")
+    assert calls == 0, f"仍在调原生 window.confirm（{calls} 次）——Tauri 下会把用户困住"
+
+    # 取消 → 模态消失、详情页仍在（未被误关）
+    modal.get_by_role("button", name="取消").click()
+    modal.wait_for(state="detached", timeout=10_000)
+    drawer.wait_for(state="visible", timeout=5_000)
+
+
+def test_unsaved_discard_actually_leaves_the_page(app):
+    """dirty 后点关闭 → 放弃并离开：详情页必须真的关掉（事故里永远关不掉）。"""
+    page, _port = app
+    drawer = _open_a2a_settings_dirty(page)
+    drawer.get_by_title("关闭").click()
+
+    modal = page.get_by_role("dialog", name="放弃未保存的更改？")
+    modal.wait_for(state="visible", timeout=10_000)
+    modal.get_by_role("button", name="放弃并离开").click()
+
+    # 关键断言：抽屉真的消失了——旧实现恒 false，这里会超时红
+    drawer.wait_for(state="detached", timeout=10_000)
+    page.get_by_test_id("a2a-inbound-toggle").wait_for(state="detached", timeout=10_000)
+    # 回到连接器列表，能继续点别的卡片（导航未被卡死）
+    page.locator('[role="button"]').first.wait_for(state="visible", timeout=10_000)
+
+
+def test_dirty_tab_switch_asks_then_proceeds(app):
+    """dirty 后切 tab 也要走应用内模态，确认后真的切过去。"""
+    page, _port = app
+    drawer = _open_a2a_settings_dirty(page)
+    drawer.get_by_role("button", name="概览", exact=True).first.click()
+
+    modal = page.get_by_role("dialog", name="放弃未保存的更改？")
+    modal.wait_for(state="visible", timeout=10_000)
+    modal.get_by_role("button", name="放弃并离开").click()
+    modal.wait_for(state="detached", timeout=10_000)
+    # 切成功后入站卡（概览 tab 内容）重新可见
+    page.get_by_test_id("a2a-inbound-toggle").wait_for(state="visible", timeout=10_000)

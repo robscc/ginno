@@ -96,7 +96,9 @@
       "discard": "Discard",
       "range": "Range {min}–{max}",
       "invalidNumber": "Enter a number between {min} and {max}",
-      "unsavedConfirm": "You have unsaved changes. Discard them?"
+      "unsavedConfirm": "You have unsaved changes. Discard them?",
+      "unsavedTitle": "Discard unsaved changes?",
+      "discardAndLeave": "Discard and leave"
     },
     "detail": {
       "close": "Close",
