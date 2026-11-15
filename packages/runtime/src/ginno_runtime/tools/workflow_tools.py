@@ -29,7 +29,14 @@ WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_get", "workflow_create", "work
 WORKFLOW_DEV_TOOL_NAMES = {"workflow_propose_edit", "workflow_dry_run"}
 
 # run_id -> latest run snapshot (for the live-turn inline workflow block)
+# 2026-11-15 内存基线治理：旧版只写不清，随 run 数无界增长；插入序帽 32。
 RUN_CACHE: dict[str, dict] = {}
+RUN_CACHE_CAP = 32
+
+
+def _prune_run_cache() -> None:
+    while len(RUN_CACHE) > RUN_CACHE_CAP:
+        RUN_CACHE.pop(next(iter(RUN_CACHE)))
 
 
 def _steps_text(run: dict) -> str:
@@ -113,6 +120,7 @@ def workflow_run(workflow_id: str = "", name: str = "") -> str:
         return "error: workflow not found (use workflow_list to see ids)"
     run = wf_store.create_run(wf)
     RUN_CACHE[run["id"]] = run
+    _prune_run_cache()
     return (
         f"started run_id={run['id']} for workflow '{run['name']}' "
         f"({len(run['steps'])} steps): {_steps_text(run)}"
@@ -174,6 +182,7 @@ def workflow_step(run_id: str, step_id: str, status: str, output: str = "") -> s
     if not run:
         return f"error: run {run_id} not found"
     RUN_CACHE[run_id] = run
+    _prune_run_cache()
     done = sum(1 for s in run["steps"] if s["status"] in ("done", "failed"))
     return (
         f"run_id={run_id} step [{step_id}] -> {status} "

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import Any
 
 from ginno_runtime import jsonx as json
@@ -163,7 +164,38 @@ _hooks: Any = None
 
 # Session registry: holds the compiled graph + metadata (in-memory; the
 # on-disk source of truth for the list is the per-slug session index).
-_SESSIONS: dict[str, dict[str, Any]] = {}
+# 2026-11-15 内存基线治理：OrderedDict + LRU 帽——旧版每打开会话常驻
+# graph+model+全量 tools 且仅删除时 pop，长开进程线性膨胀。逐出跳过活跃
+# 会话（running turn / parked resume / live WS）；被逐出会话下次请求经
+# _ensure_session 懒重建，语义不变。
+_SESSIONS: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+SESSION_REGISTRY_CAP = 16
+
+
+def session_registry_touch(session_id: str) -> None:
+    """LRU 命中刷新（_ensure_session 热带）。"""
+    if session_id in _SESSIONS:
+        _SESSIONS.move_to_end(session_id)
+
+
+def session_registry_put(session_id: str, entry: dict[str, Any]) -> None:
+    """写入 + LRU 逐出最旧 idle 会话（活跃者跳过）。"""
+    _SESSIONS[session_id] = entry
+    _SESSIONS.move_to_end(session_id)
+    while len(_SESSIONS) > SESSION_REGISTRY_CAP:
+        for old_sid in list(_SESSIONS.keys()):
+            if old_sid == session_id:
+                continue
+            if (
+                old_sid in _RUNNING_TURNS
+                or old_sid in _PENDING_RESUME
+                or old_sid in _SESSION_WS
+            ):
+                continue
+            _SESSIONS.pop(old_sid, None)
+            break
+        else:
+            break  # 全活跃，不逐出
 # Per-session cumulative model usage (plan D2/D4). In-memory only — resets on
 # runtime restart, matching the "this app session" meaning users expect.
 _USAGE_BY_SESSION: dict[str, dict[str, int]] = {}
