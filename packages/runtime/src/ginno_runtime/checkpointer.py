@@ -486,6 +486,30 @@ class FileCheckpointer(BaseCheckpointSaver):
     # 需显式回写。类级共享（sessions.py 等每请求新建实例）。LRU=8。
     _TUPLE_CACHE: "OrderedDict[tuple[str, str], tuple[int, int, Any]]" = OrderedDict()
     _TUPLE_CACHE_LOCK = threading.Lock()
+    # 2026-11-15 内存基线治理：旧版 LRU=8 按条数不按字节——每 entry 是完整
+    # 物化链尾 messages，大会话单条数十~百 MB，8 个大会话可吃数百 MB RSS。
+    # 加 64MB 字节预算（messages content 长度估算），超限 LRU 逐出；条数帽
+    # 与 stat 失效语义保留。
+    _TUPLE_CACHE_BUDGET = 64 * 1024 * 1024
+    _TUPLE_CACHE_BYTES: "dict[tuple[str, str], int]" = {}
+    _TUPLE_CACHE_TOTAL = 0
+
+    @staticmethod
+    def _estimate_tuple_bytes(tup: Any) -> int:
+        """物化 tuple 的常驻字节估算：messages content 长度和 + 固定开销。"""
+        try:
+            cp = getattr(tup, "checkpoint", None) or {}
+            msgs = (cp.get("channel_values") or {}).get("messages") or []
+            total = 1024
+            for m in msgs:
+                c = getattr(m, "content", None)
+                if isinstance(c, str):
+                    total += len(c)
+                elif c is not None:
+                    total += len(str(c))
+            return total
+        except Exception:  # noqa: BLE001 — 估算失败不挡缓存
+            return 1024
 
     def _read_hot(self, session_id: str) -> dict[str, Any]:
         """热路径读（2026-11-08 切换会话卡顿治理）：尾部窗口 fold——热路径
@@ -825,11 +849,19 @@ class FileCheckpointer(BaseCheckpointSaver):
         tup = self.get_tuple(config)
         if tup is None:
             return None
+        size = FileCheckpointer._estimate_tuple_bytes(tup)
         with FileCheckpointer._TUPLE_CACHE_LOCK:
+            prev = FileCheckpointer._TUPLE_CACHE_BYTES.get(key, 0)
             FileCheckpointer._TUPLE_CACHE[key] = (*sig, tup)
             FileCheckpointer._TUPLE_CACHE.move_to_end(key)
-            while len(FileCheckpointer._TUPLE_CACHE) > 8:
-                FileCheckpointer._TUPLE_CACHE.popitem(last=False)
+            FileCheckpointer._TUPLE_CACHE_BYTES[key] = size
+            FileCheckpointer._TUPLE_CACHE_TOTAL += size - prev
+            while (
+                len(FileCheckpointer._TUPLE_CACHE) > 8
+                or FileCheckpointer._TUPLE_CACHE_TOTAL > FileCheckpointer._TUPLE_CACHE_BUDGET
+            ):
+                evicted_key, _ = FileCheckpointer._TUPLE_CACHE.popitem(last=False)
+                FileCheckpointer._TUPLE_CACHE_TOTAL -= FileCheckpointer._TUPLE_CACHE_BYTES.pop(evicted_key, 0)
         return tup
 
     def get_pending_interrupt(self, config: dict) -> list | None:

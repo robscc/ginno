@@ -182,6 +182,20 @@ async def lifespan(app: FastAPI):
     from . import server_shared as _shared
 
     _shared.set_main_loop(asyncio.get_running_loop())
+    # 2026-11-15 内存基线治理：线程池右 sizing。anyio worker 池默认上限 40
+    # （sync 端点 + 静态 FileResponse 走 run_in_threadpool，空闲不自退）+
+    # asyncio 默认 executor min(32, cpu+4)=12 → 实测 43 线程。收敛到 12+8，
+    # 栈虚拟内存减半、调度/诊断噪声下降；sync 端点并发上限显式化。
+    try:
+        import anyio
+        from concurrent.futures import ThreadPoolExecutor
+
+        anyio.current_default_thread_limiter().total_tokens = 12
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=8, thread_name_prefix="ginno-io")
+        )
+    except Exception:  # noqa: BLE001 — _sizing 失败不挡启动
+        _log.exception("thread pool right-sizing failed (continuing)")
     # UX-03：标题生成是后台任务，进程重启会丢掉失败的 job——启动时把
     # 「待生成且超过 24h」的会话重新入队（assistant 文本从 checkpoint 回填）。
     # 放在 set_main_loop 之后：生成任务经 spawn_bg 调度。

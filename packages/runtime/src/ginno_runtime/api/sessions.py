@@ -767,7 +767,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         s_entry["depth"] = sub_depth
         # reverse index for the scheduler's tree walks (server_shared)
         shared.subagent_link_child(req.parent_session_id or "", session_id)
-    _SESSIONS[session_id] = s_entry
+    shared.session_registry_put(session_id, s_entry)
     # Mods/classic SessionStart (claude-code-mods-design.md §5.3): classic
     # hooks first, the mods broker after; both observe-only, never fatal.
     try:
@@ -1830,6 +1830,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     restarts; history is restored by the file checkpointer via thread_id)."""
     s = _SESSIONS.get(session_id)
     if s:
+        shared.session_registry_touch(session_id)
         return s
     found = _find_meta(session_id)
     if not found:
@@ -1922,5 +1923,5 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         s["parent_session_id"] = meta.get("parent_session_id")
         s["depth"] = sub_depth
         shared.subagent_link_child(meta.get("parent_session_id") or "", session_id)
-    _SESSIONS[session_id] = s
+    shared.session_registry_put(session_id, s)
     return s
