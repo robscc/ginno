@@ -25,11 +25,14 @@ class InstinctsConfig:
     inject_token_budget: int = 600
     template_threshold: int = 3  # 同类 tool_denied 观察达到该次数 → 生成 pending
     decay_days: int = 90
-    # L2 observer（docs/instincts-design.md §6）：provider 空 = 禁用 LLM 判定
-    # （纯模板模式）；model_id 空 = 供应商默认小模型。
+    # L2 observer（docs/instincts-design.md §6/§10.1）：provider 空 = 跟随
+    # 主模型（默认 provider）；model_id 空 = 供应商默认模型。推荐显式配置
+    # flash/Haiku 级小模型降本。2026-11-15 前空串语义是「禁用 LLM」，导致
+    # 默认安装下纠偏永不总结（管理页空转），恢复设计稿语义。
     observer_model: str = ""
     observer_model_id: str = ""
-    min_observations: int = 20  # 新观察达到该数才触发一次分析
+    min_observations: int = 20  # 非纠偏观察（tool_denied 等）达到该数触发分析
+    correction_min_observations: int = 3  # 纠偏观察低频高价值，单独低门槛
     analyze_gap_min: int = 5    # 两次分析最小间隔（分钟）
     # LLM trigger 泛化增强档（默认关，零 LLM 模板路径不变）：模板生成的
     # pending 规则由小模型把 args_repr 改写为泛化 trigger（一次调用，
@@ -62,7 +65,7 @@ def load_instincts_config(settings: dict[str, Any] | None = None) -> InstinctsCo
         if isinstance(v, (int, float)):
             setattr(cfg, k, float(v))
     for k in ("inject_max_n", "inject_token_budget", "template_threshold", "decay_days",
-              "min_observations", "analyze_gap_min"):
+              "min_observations", "correction_min_observations", "analyze_gap_min"):
         v = raw.get(k)
         if isinstance(v, int) and v > 0:
             setattr(cfg, k, v)

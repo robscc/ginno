@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { Download, Plus, RefreshCw, Sparkles, Trash2, Upload } from "lucide-react";
+import { Download, Plus, RefreshCw, Sparkles, Trash2, Upload, Zap } from "lucide-react";
 import {
+  analyzeInstincts,
   createInstinct,
   deleteInstinct,
   exportInstincts,
   freezeConflict,
+  getObserverState,
   importInstincts,
   listConflicts,
   listEvolveClusters,
@@ -19,6 +21,7 @@ import {
   type ConflictPair,
   type EvolveCluster,
   type Instinct,
+  type ObserverState,
 } from "@/lib/runtime";
 
 /**
@@ -29,6 +32,17 @@ import {
 
 const CONF_COLOR = (c: number) =>
   c >= 0.9 ? "text-green" : c >= 0.7 ? "text-violet" : c >= 0.5 ? "text-amber" : "text-faint";
+
+// observer 跳过原因（与 runtime run_observer 的 skipped 值一一对应）；
+// as const 收窄成字面量联合，满足 next-intl 的 key 类型检查。
+const SKIP_REASONS = [
+  "few-observations",
+  "gap",
+  "disabled",
+  "no-observations",
+  "model-error",
+] as const;
+type SkipReason = (typeof SKIP_REASONS)[number];
 
 export function InstinctsPage() {
   const t = useTranslations("instincts");
@@ -41,6 +55,9 @@ export function InstinctsPage() {
   // P1 收尾（2026-11-12）：冲突对 + evolve 聚类
   const [conflicts, setConflicts] = useState<ConflictPair[]>([]);
   const [clusters, setClusters] = useState<EvolveCluster[]>([]);
+  // P0 可见化（2026-11-15）：分析器状态 + 立即分析
+  const [obsv, setObsv] = useState<ObserverState | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -48,10 +65,35 @@ export function InstinctsPage() {
       setObs(await listObservations(30));
       setConflicts(await listConflicts().catch(() => []));
       setClusters(await listEvolveClusters().catch(() => []));
+      setObsv(await getObserverState().catch(() => null));
     } catch {
       setMsg(t("loadFail"));
     }
   }, [status, t]);
+
+  const analyze = async () => {
+    setAnalyzing(true);
+    setMsg("");
+    try {
+      const r = await analyzeInstincts();
+      if (r.ok) {
+        setMsg(
+          r.created || r.reinforced
+            ? t("analyzeDone", { c: r.created ?? 0, r: r.reinforced ?? 0 })
+            : t("analyzeNone", { n: r.processed ?? 0 }),
+        );
+      } else if (r.skipped && (SKIP_REASONS as readonly string[]).includes(r.skipped)) {
+        setMsg(t(`skip.${r.skipped as SkipReason}`, { n: r.fresh ?? 0, e: r.error ?? "" }));
+      } else {
+        setMsg(t("analyzeFail"));
+      }
+      void reload();
+    } catch {
+      setMsg(t("analyzeFail"));
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   useEffect(() => {
     void reload();
@@ -89,6 +131,15 @@ export function InstinctsPage() {
           className="rounded-md p-1.5 text-faint hover:bg-card2 hover:text-muted"
         >
           <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+        </button>
+        <button
+          onClick={() => void analyze()}
+          disabled={analyzing}
+          title={t("analyze")}
+          className="flex items-center gap-1 rounded-md bg-violet/15 px-2 py-1 text-xs text-violet hover:bg-violet/25 disabled:opacity-50"
+        >
+          <Zap className="h-3 w-3" aria-hidden />
+          {analyzing ? t("analyzing") : t("analyze")}
         </button>
         <button
           onClick={async () => {
@@ -311,15 +362,80 @@ export function InstinctsPage() {
         />
       )}
 
-      <section className="mt-6">
+      {/* P0 可见化（2026-11-15）：分析器状态行——「总结了什么、为什么没
+          总结」不再 invisible（空转事故的直接教训）。 */}
+      {obsv && (
+        <section className="mt-6 rounded-lg border border-line bg-panel px-3 py-2 text-[11px] text-faint">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="font-semibold text-muted">{t("obsv.title")}</span>
+            <span>
+              {t("obsv.last")}:{" "}
+              {obsv.last_analyze_ts
+                ? new Date(obsv.last_analyze_ts * 1000).toLocaleString()
+                : t("obsv.never")}
+            </span>
+            <span>
+              {t("obsv.position", {
+                offset: obsv.offset,
+                total: obsv.total,
+                fresh: obsv.fresh,
+              })}
+            </span>
+            <span>
+              {t("obsv.model")}:{" "}
+              {obsv.resolved_provider
+                ? obsv.observer_model
+                  ? obsv.resolved_provider
+                  : `${obsv.resolved_provider} (${t("obsv.followMain")})`
+                : t("obsv.noModel")}
+            </span>
+            <span>
+              {t("obsv.threshold", {
+                c: obsv.correction_min_observations,
+                n: obsv.min_observations,
+              })}
+            </span>
+          </div>
+          {obsv.last_error && (
+            <div className="mt-1 text-red">
+              {t("obsv.error")}: {obsv.last_error}
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="mt-3">
         <h2 className="mb-2 text-xs font-semibold text-muted">{t("obs.title")}</h2>
         <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-line bg-panel px-3 py-2 font-mono text-[11px] text-faint">
           {obs.length === 0 && <div className="py-4 text-center">{t("obs.empty")}</div>}
           {obs.map((o, i) => (
-            <div key={i} className="truncate">
+            <div key={i} className="py-0.5">
               <span className="text-line2">{String(o.ts ?? "").slice(11, 19)}</span>{" "}
               <span className="text-violet">{String(o.type ?? "")}</span>{" "}
-              {String(o.tool ?? o.signal ?? "")} {String(o.args_repr ?? "").slice(0, 60)}
+              {o.type === "user_correction" ? (
+                <>
+                  {(o.reason === "correction-word" || o.reason === "after-deny") && (
+                    <span className="rounded bg-violet/10 px-1 text-[10px] text-violet">
+                      {t(
+                        o.reason === "correction-word"
+                          ? "obs.reason.correction-word"
+                          : "obs.reason.after-deny",
+                      )}
+                    </span>
+                  )}{" "}
+                  <span className="whitespace-pre-wrap break-all text-muted">
+                    {String(o.after ?? "").slice(0, 160)}
+                  </span>
+                </>
+              ) : o.type === "retry_recovered" ? (
+                <span>
+                  {String(o.retry_kind ?? o.error_class ?? "")} ×{String(o.attempts ?? "")}
+                </span>
+              ) : (
+                <span>
+                  {String(o.tool ?? o.signal ?? "")} {String(o.args_repr ?? "").slice(0, 60)}
+                </span>
+              )}
             </div>
           ))}
         </div>
