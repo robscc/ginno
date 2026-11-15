@@ -363,9 +363,23 @@ async def _prepare_session(
 def _write_inbound_settings(policy: ExecPolicy) -> None:
     """worker 内打补丁：bypass_permissions=False（#7 fail-closed）+ 上下文隔离。
 
-    与 cli._write_exec_settings 的 headless 放行相反——入站**绝不** bypass：guard
-    放行但策略判 ask 的工具会挂起转人工。读工具默认入 allow（L0 观测开箱即用）；
-    写/shell/发送默认 ask（需操作员显式预授权或本机批准）。尊重已有 deny/ask。
+    与 cli._write_exec_settings 的 headless 放行相反——入站**绝不** bypass。
+
+    **权限放行面按 trust 派生**（2026-11-16 修）：
+    原实现不论 trust 一律只放行 3 个读工具，写/shell 一律 ask。但 node 是
+    headless 无 UI、A2A 的 input-required 远程批准闭环尚未实现，于是
+    trust=normal 的节点**连 `pwd && ls -la` 都会挂起等一个永远不来的人工批准**
+    ——实测远端 VPS 派活即卡死在此（会话 jsonl 里的 __interrupt__ 是
+    permission_request/tool=bash/command="pwd && ls -la"）。
+
+    改为：readonly 仍只放行读工具；normal/full 额外放行写与 shell。
+    **这不削弱安全**——guard 在每个工具调用前跑（PreToolUse hook，bypass 与否
+    都跑），强制 trust×caps×exec_root 三重判定，比权限层更严：
+      · readonly 即使被误放行写工具，guard 仍拒（readonly_write_forbidden）
+      · exec_root 越界 guard fail-loud 拒绝（exec_root_violation）
+      · full 仍拒改配置（guard 对 update_config 恒 False）
+    权限层与 guard 对齐后，语义才是「trust=normal 能在 exec_root 内真干活」。
+    尊重已有 deny/ask（操作员显式收紧优先）。
     """
     sp = paths.settings_path()
     try:
@@ -387,7 +401,12 @@ def _write_inbound_settings(policy: ExecPolicy) -> None:
     ).lower()
     allow = list(perms.get("allow") or [])
     # L0 只读观测工具默认放行（guard 仍限 exec_root 内）。
-    for name in ("read_file", "glob_files", "grep_files"):
+    wanted = ["read_file", "glob_files", "grep_files"]
+    if policy.trust in ("normal", "full"):
+        # 写与 shell：guard 已按 exec_root 边界 + caps 阶梯强制，此处对齐放行，
+        # 否则 headless 节点会挂起等一个不存在的人工批准。
+        wanted += ["write_file", "edit_file", "apply_patch", "bash", "repl"]
+    for name in wanted:
         if name not in existing and name not in allow:
             allow.append(name)
     perms["allow"] = allow
