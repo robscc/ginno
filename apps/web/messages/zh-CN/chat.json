@@ -416,6 +416,9 @@
       "lastwordsDismissBtn": "放弃恢复"
     },
     "planBoard": {
+      "viewList": "清单视图",
+      "viewDag": "依赖图视图",
+      "dagAria": "任务依赖图：箭头从上游任务指向下游任务",
       "progress": "{done}/{total}",
       "failedCount": "（{count} 失败）",
       "statusPendingConfirm": "等待确认",

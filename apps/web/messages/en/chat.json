@@ -416,6 +416,9 @@
       "lastwordsDismissBtn": "Discard recovery"
     },
     "planBoard": {
+      "viewList": "List view",
+      "viewDag": "Dependency graph view",
+      "dagAria": "Task dependency graph: arrows point from upstream tasks to downstream tasks",
       "progress": "{done}/{total}",
       "failedCount": " ({count} failed)",
       "statusPendingConfirm": "Awaiting confirmation",
