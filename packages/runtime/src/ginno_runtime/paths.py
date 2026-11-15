@@ -545,3 +545,25 @@ def experiences_path() -> Path:
 
 def watermarks_path() -> Path:
     return home() / "watermarks.json"
+
+
+def a2a_dir() -> Path:
+    """A2A 连接器状态目录（a2a-connector-design.md §5/§8）。
+
+    出站 peer 注册表与 context 映射是**连接器状态**而非会话内容，独立于
+    checkpoint 存储（§8.2 职责分离：不塞 checkpoint）。全局而非 per-project：
+    peer 凭据与信任边界按远端 agent 划分，与 session 的项目归属解耦。"""
+    return home() / "a2a"
+
+
+def a2a_peers_path() -> Path:
+    """出站 peer 注册表（``a2a/peers.json``，设计 §5/§12.B）。"""
+    return a2a_dir() / "peers.json"
+
+
+def a2a_contexts_path() -> Path:
+    """出站 context 映射（``a2a/contexts.json``，设计 §8.2）。
+
+    key 为 ``<ginno_sid>:<peer_slug>``；一个 Ginno session 对多个 peer
+    各持一条 contextId（1:1 映射，追问同 context 开新 task）。"""
+    return a2a_dir() / "contexts.json"

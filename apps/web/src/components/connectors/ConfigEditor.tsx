@@ -131,6 +131,36 @@ function changedKeyCount(a: Values, b: Values): number {
   return n;
 }
 
+/** a2a 域翻译器的查表视图：字段 key 由 schema 属性名动态拼出
+ * （field-<键名>-title/-desc），超出 useTranslations 的字面量 key 类型，
+ * 故在调用处放宽为 string 查表 + has 存在性判定。 */
+type A2aFieldLookup = {
+  (key: string): string;
+  has(key: string): boolean;
+};
+
+/** 字段标题/描述文案：a2a 连接器（id 以 "a2a" 开头——枢纽 "a2a" 与 peer
+ * 实例 "a2a-<slug>"）优先取 a2a 域 i18n（field-<键名>-title/-desc，键名
+ * 下划线转连字符），缺 key 回落 schema.title/description；其他连接器
+ * 完全走 schema，不受影响。纯函数，node 环境可单测。 */
+export function fieldText(
+  connectorId: string,
+  key: string,
+  spec: ConnectorSchemaProperty,
+  a2a: A2aFieldLookup,
+): { title: string; desc: string } {
+  const schemaTitle = String(spec.title || key);
+  const schemaDesc = spec.description ? String(spec.description) : "";
+  if (!connectorId.startsWith("a2a")) {
+    return { title: schemaTitle, desc: schemaDesc };
+  }
+  const base = `field-${key.replace(/_/g, "-")}`;
+  return {
+    title: a2a.has(`${base}-title`) ? a2a(`${base}-title`) : schemaTitle,
+    desc: a2a.has(`${base}-desc`) ? a2a(`${base}-desc`) : schemaDesc,
+  };
+}
+
 export function ConfigEditor({
   connectorId,
   config,
@@ -147,6 +177,9 @@ export function ConfigEditor({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const t = useTranslations("conn");
+  // a2a 域字段文案（仅 connectorId 以 "a2a" 开头时消费，见 fieldText）；
+  // hook 必须无条件调用，其他连接器只是不会走到查表分支。
+  const tA2a = useTranslations("a2a") as unknown as A2aFieldLookup;
   const props = useMemo<Props>(() => {
     const raw = (schema?.properties || {}) as Props;
     // enabled 由卡片/抽屉的标准启停开关负责，不在表单里重复出现。
@@ -375,8 +408,7 @@ export function ConfigEditor({
               const def = defaultOf(spec, defaults, key);
               const value = values[key];
               const modified = !equal(value, def);
-              const title = String(spec.title || key);
-              const desc = spec.description ? String(spec.description) : "";
+              const { title, desc } = fieldText(connectorId, key, spec, tA2a);
               const fieldError = fieldErrors[key];
               // 契约用 x-ginno-secret；内置连接器历史上用 format:"password"。
               const isSecret =

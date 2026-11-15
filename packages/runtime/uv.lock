@@ -918,6 +918,7 @@ version = "0.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
@@ -971,6 +972,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4" },
+    { name = "cryptography", specifier = ">=43.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "lancedb", marker = "extra == 'rag'", specifier = ">=0.10" },
     { name = "langchain-anthropic", specifier = "==1.7.7" },

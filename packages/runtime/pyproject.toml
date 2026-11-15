@@ -27,6 +27,7 @@ dependencies = [
     "anyio>=4",
     "tomli; python_version < '3.11'",
     "typer>=0.27.0",
+    "cryptography>=43.0",  # A2A 自签证书生成（docs/design/a2a-connector-design.md §15）
 ]
 
 [project.optional-dependencies]

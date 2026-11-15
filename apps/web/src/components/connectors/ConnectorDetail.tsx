@@ -15,6 +15,7 @@ import type {
   ConnectorInfo,
   ModCompat,
 } from "@/lib/runtime";
+import { A2aInboundCard } from "./A2aInboundCard";
 import { ConfigEditor } from "./ConfigEditor";
 import { InstallWizard } from "./InstallWizard";
 import { connectorIcon, connectorKind, sourceOf, statusMeta } from "./meta";
@@ -555,6 +556,11 @@ function DetailPane({
     return (
       <div className="space-y-5">
         <p className="text-[12.5px] leading-relaxed text-muted">{current.description}</p>
+
+        {/* A2A 枢纽：入站控制卡 + 出站接入入口（a2a-connector-design.md §5） */}
+        {current.id === "a2a" && (
+          <A2aInboundCard connector={current} onReload={onReload} />
+        )}
 
         <section>
           <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">

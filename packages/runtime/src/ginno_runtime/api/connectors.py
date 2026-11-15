@@ -291,6 +291,24 @@ async def connector_action(cid: str, body: dict) -> Any:
         from ..browser.relay import relay_state
 
         return {"ok": True, "relay": relay_state().snapshot()}
+    if action == "a2a_preview_card":
+        # A2A 接入向导第 2 步 Card 预览（a2a-connector-design.md §6.1）。
+        # 实现体在 connectors/a2a.py（枢纽同模块）：SSRF guard + 20s 拉取 +
+        # 缺字段清单；异常在彼处压成 ok:false，token 绝不回显。
+        from ..connectors.a2a import preview_card as _a2a_preview
+
+        return await _a2a_preview(str((body or {}).get("url") or ""))
+    if action == "a2a_add_peer":
+        # 接入向导第 4 步：建 PeerRecord + 立即同步动态实例。
+        from ..connectors.a2a import add_peer as _a2a_add
+
+        return _a2a_add(body or {})
+    if action == "a2a_reset_inbound_address":
+        # 危险操作：轮换入站能力 token（旧地址立即失效），identity 不动，
+        # 审计必记（实现体内）。
+        from ..connectors.a2a import reset_inbound_address as _a2a_reset
+
+        return _a2a_reset()
     return JSONResponse({"error": f"unknown action: {action}"}, status_code=400)
 
 

@@ -426,6 +426,15 @@ def ensure_builtin_connectors() -> None:
         sync_mod_connectors(reg)
     except Exception:  # noqa: BLE001 — mods 同步失败不挡内置连接器
         log.exception("mod connector sync failed (continuing)")
+    # A2A 枢纽 + 已配置 peer 的动态实例。必须在冷启动就注册：否则连接器列表
+    # 里没有 a2a，前端进不了详情页，管理 action 永远触发不到，而 action 内的
+    # ensure_a2a_hub() 兜底又只在 action 被触发后才生效——鸡生蛋死锁。
+    try:
+        from .a2a import ensure_a2a_hub
+
+        ensure_a2a_hub(reg)
+    except Exception:  # noqa: BLE001 — A2A 初始化失败不挡其他连接器
+        log.exception("a2a connector bootstrap failed (continuing)")
 
 
 class VibeIslandConnector(Connector):

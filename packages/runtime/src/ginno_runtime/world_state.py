@@ -131,6 +131,10 @@ _CONTEXT_DEFAULTS = {
     # money at external providers and can edit files, and the permission
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
     "external_agents_enabled": False,
+    # A2A outbound delegation (a2a-connector-design.md §7.3): task content
+    # leaves the machine to third-party agents over the network — opt-in,
+    # same precedent as external_agents_enabled.
+    "a2a_enabled": False,
     # Plan orchestration (plan-orchestration §6/§7 D2): True = agent-built
     # plans (create_subagent_plan) ALWAYS hold for user confirmation before
     # scheduling, regardless of the tool's needs_confirm arg. Default False =
@@ -207,6 +211,20 @@ def external_agents_enabled() -> bool:
     if env:
         return env in ("1", "true", "yes", "on")
     return bool(context_settings().get("external_agents_enabled"))
+
+
+def a2a_enabled() -> bool:
+    """Gate for the A2A outbound tools (a2a-connector-design.md §7.3).
+
+    Default OFF — delegation sends task content to third-party agents over
+    the network. ``GINNO_A2A`` overrides settings for tests/ops
+    (1/true/on vs 0/false/off); unset falls back to settings.context."""
+    import os
+
+    env = (os.environ.get("GINNO_A2A") or "").strip().lower()
+    if env:
+        return env in ("1", "true", "yes", "on")
+    return bool(context_settings().get("a2a_enabled"))
 
 
 def plan_confirm_agent_plans() -> bool:

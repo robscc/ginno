@@ -847,6 +847,7 @@ def build_all_tools(
     request time in agent_node/permission_node), so a restricted child never
     binds, advertises, or can reach the excluded tools at all.
     """
+    from .tools.a2a_tools import build_a2a_tools
     from .tools.browser_tools import build_browser_tools
     from .tools.code_mode_tools import build_code_mode_tools
     from .tools.external_agent import build_external_agent_tools
@@ -917,6 +918,12 @@ def build_all_tools(
         # [] when disabled in settings; session_id/project_slug bind usage
         # attribution. Deliberately NOT in the permission exempt set.
         + build_external_agent_tools(workspace, session_id, project_slug)
+        # A2A outbound delegation (a2a-connector-design.md §7.4) — [] when
+        # disabled (settings.context.a2a_enabled / GINNO_A2A) or no enabled
+        # peer; session_id/project_slug bind context mapping + usage.
+        # Deliberately NOT in the permission exempt set (confirm_mode=every
+        # default: the user approves each dispatch).
+        + build_a2a_tools(session_id=session_id, project_slug=project_slug)
         # Subagent lifecycle tools (subagent-design.md §5) — [] without a
         # session_id (workflow engine / listing endpoints); spawn_subagent is
         # dropped at depth >= 2 (structural cap). Also deliberately NOT in the
