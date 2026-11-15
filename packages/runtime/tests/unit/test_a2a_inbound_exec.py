@@ -264,10 +264,16 @@ async def test_artifact_returns_path_metadata_not_content(tmp_path, monkeypatch)
     assert a["metadata"]["path"] == str(target)
     assert a["metadata"]["size_bytes"] == len(secret_content)
     assert a["metadata"]["exec_root"] == str(ws)
-    # 回报只含路径+元信息，绝不回传文件内容（§2.5）。
+    # 2026-11-16 设计变更（用户批准 P1-1）：文本产物**回传内容**，走
+    # Artifact.parts 这条显式落地通道（§254），不拼进结果字符串。
+    # 原定案「绝不回传内容」导致调用方拿到报告却读不到，必须再 SSH 进对端 cat。
+    assert a["metadata"]["content_included"] is True
     blob = json.dumps(a, ensure_ascii=False)
-    assert secret_content not in blob
+    assert secret_content in blob
     assert str(target) in blob
+    # 内容必须在独立 part，不混进路径摘要 part
+    assert secret_content not in a["parts"][0]["text"]
+    assert any(secret_content in p.get("text", "") for p in a["parts"][1:])
 
 
 # --------------------------------------------------------------------------- #
@@ -569,3 +575,88 @@ def test_sniff_kind_ascii_and_missing_file(tmp_path):
     p.write_text("hello world\n" * 30)
     assert _sniff_kind(p) == "text"
     assert _sniff_kind(tmp_path / "nope.md") == "binary"
+
+
+# ── 产物内容回传（2026-11-16：原只给路径，调用方读不到成果）─────────────────
+
+
+def _arts_for(tmp_path, files: dict):
+    from ginno_runtime.a2a.inbound_exec import _collect_artifacts
+
+    after = {}
+    for name, data in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+        after[name] = (p.stat().st_size, p.stat().st_mtime_ns)
+    return _collect_artifacts(str(tmp_path), {}, after)
+
+
+def test_artifact_text_content_is_returned(tmp_path):
+    """文本产物必须回传内容（否则调用方拿到报告却读不到）。"""
+    arts = _arts_for(tmp_path, {"report.md": "# 标题\n\n结论：全部实测。\n"})
+    a = arts[0]
+    assert len(a.parts) == 2, "应为 路径摘要 + 内容 两个 part"
+    assert "结论：全部实测" in a.parts[1].text
+    assert a.metadata["content_included"] is True
+    assert a.metadata["content_truncated"] is False
+    assert a.metadata["content_bytes"] > 0
+
+
+def test_artifact_binary_still_path_only(tmp_path):
+    """二进制不回传内容（避免 base64 膨胀与乱码）。"""
+    arts = _arts_for(tmp_path, {"b.bin": bytes(range(256)) * 2})
+    a = arts[0]
+    assert len(a.parts) == 1
+    assert a.metadata["kind"] == "binary"
+    assert a.metadata["content_included"] is False
+
+
+def test_artifact_oversize_text_is_truncated_and_flagged(tmp_path):
+    """超单文件上限须截断并显式标记，不静默丢内容也不撑爆响应。"""
+    from ginno_runtime.a2a.inbound_exec import _ARTIFACT_TEXT_LIMIT
+
+    big = "x" * (_ARTIFACT_TEXT_LIMIT + 5000)
+    arts = _arts_for(tmp_path, {"big.txt": big})
+    a = arts[0]
+    assert a.metadata["content_included"] is True
+    assert a.metadata["content_truncated"] is True
+    assert a.metadata["content_bytes"] == _ARTIFACT_TEXT_LIMIT
+    assert len(a.parts[1].text) == _ARTIFACT_TEXT_LIMIT
+
+
+def test_artifact_total_budget_exhausted_falls_back_to_path(tmp_path):
+    """总配额用完后，后续产物只给路径（不无界增长）。"""
+    from ginno_runtime.a2a.inbound_exec import (
+        _ARTIFACT_TEXT_LIMIT,
+        _ARTIFACT_TOTAL_LIMIT,
+    )
+
+    n = (_ARTIFACT_TOTAL_LIMIT // _ARTIFACT_TEXT_LIMIT) + 2
+    files = {f"f{i}.txt": "y" * _ARTIFACT_TEXT_LIMIT for i in range(n)}
+    arts = _arts_for(tmp_path, files)
+    included = [a.metadata["content_included"] for a in arts]
+    assert included[0] is True
+    assert included[-1] is False, "总配额耗尽后应退回只给路径"
+    total = sum(a.metadata["content_bytes"] for a in arts)
+    assert total <= _ARTIFACT_TOTAL_LIMIT
+
+
+def test_artifact_content_not_merged_into_result_string(tmp_path):
+    """内容走 Artifact.parts（显式落地通道），不拼进路径摘要 part。"""
+    arts = _arts_for(tmp_path, {"r.md": "SECRET-BODY-MARKER\n"})
+    a = arts[0]
+    assert "SECRET-BODY-MARKER" not in a.parts[0].text
+    assert "SECRET-BODY-MARKER" in a.parts[1].text
+
+
+def test_artifact_invalid_utf8_tail_does_not_lose_whole_file(tmp_path):
+    """_sniff_kind 只验开头；中后段非法字节不得让整份产物丢失。"""
+    # 非法字节必须落在 _SNIFF_BYTES 之后，否则开头就被判 binary（那是另一条用例）
+    head = "# 正常开头\n".encode("utf-8") + b"a" * 300
+    data = head + b"\xff\xfe" + "尾部\n".encode("utf-8")
+    arts = _arts_for(tmp_path, {"mixed.md": data})
+    a = arts[0]
+    assert a.metadata["kind"] == "text"
+    assert a.metadata["content_included"] is True
+    assert "正常开头" in a.parts[1].text

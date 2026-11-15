@@ -32,7 +32,8 @@ pytestmark = pytest.mark.unit
 # --------------------- 执行侧：_collect_artifacts 直测 --------------------- #
 
 
-def test_collect_artifacts_path_summary_metadata_no_content(tmp_path):
+def test_collect_artifacts_text_content_returned_binary_path_only(tmp_path):
+    """文本回内容、二进制只给路径、隐藏文件跳过（§2.5 2026-11-16 修订）。"""
     root = tmp_path / "ws"
     root.mkdir()
     unchanged = root / "unchanged.txt"
@@ -64,15 +65,18 @@ def test_collect_artifacts_path_summary_metadata_no_content(tmp_path):
         assert a.metadata["kind"] == kind
         assert a.metadata["exec_root"] == str(root)
         assert a.metadata["modified"]  # ISO 时间戳
-        # parts 是路径+摘要，不是内容
-        text = a.text()
-        assert f"path: {root / name}" in text
-        assert name in text and "bytes" in text
-    # 整个 Artifact 序列化 blob 绝不包含文件内容（§2.5 红线）。
+        # 首个 part 仍是路径+摘要（内容在独立 part，不混进摘要）
+        first = a.parts[0].text
+        assert f"path: {root / name}" in first
+        assert name in first and "bytes" in first
+    # 2026-11-16 设计修订（§2.5，用户批准 P1-1）：**文本**产物回传内容，
+    # 二进制仍只给路径；隐藏文件依旧跳过。
     blob = json.dumps([a.to_dict() for a in arts], ensure_ascii=False)
-    assert secret_text not in blob
-    assert "BIN-SECRET-PAYLOAD" not in blob
-    assert "hidden secret" not in blob
+    assert secret_text in blob, "文本产物内容应回传"
+    assert by_name["report.md"].metadata["content_included"] is True
+    assert "BIN-SECRET-PAYLOAD" not in blob, "二进制不得回传内容"
+    assert by_name["data.bin"].metadata["content_included"] is False
+    assert "hidden secret" not in blob, "隐藏文件仍跳过"
 
 
 def test_collect_artifacts_cap(tmp_path):
