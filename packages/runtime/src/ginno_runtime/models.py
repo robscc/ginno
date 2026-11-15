@@ -517,6 +517,37 @@ def cfg_dump_fields(model) -> dict[str, Any]:
         return {}
 
 
+def resolve_api_key(raw: Any) -> str:
+    """解析 api_key：支持 ``env:VAR`` 引用，让密钥不必落进可读的 settings.json。
+
+    动机（2026-11-16 安全终验）：headless node 以非 root 用户跑，而入站 bash
+    不受 exec_root 约束（见 guard 的 shell 判定），于是同用户可读的
+    settings.json 里的明文 api_key 可被远端派活读走外传。
+    支持 ``env:VAR`` 后，密钥可放进 root-only 的 systemd EnvironmentFile，
+    settings.json 里只留一个无秘密的引用名。
+
+    规则：
+      · ``env:NAME`` → 取 os.environ[NAME]；缺失/空 → 抛 ValueError（fail-loud，
+        绝不静默当无 key 继续，否则会以匿名请求打网关并产生难懂的 401）
+      · 其它值原样返回（含空串，由调用方按各协议既有逻辑处理）
+    **只在构建模型时解析**，不在配置读取层——否则 settings GET 会把明文
+    回给前端，等于换个地方泄露。
+    """
+    val = str(raw or "")
+    if not val.startswith("env:"):
+        return val
+    var = val[len("env:"):].strip()
+    if not var:
+        raise ValueError("api_key 写成 'env:' 但缺少变量名")
+    got = os.environ.get(var, "")
+    if not got:
+        raise ValueError(
+            f"api_key 引用环境变量 {var}，但该变量未设置或为空——"
+            f"请在服务环境（如 systemd EnvironmentFile）中提供它"
+        )
+    return got
+
+
 def build_model(
     provider_id: str,
     model_name: str | None = None,
@@ -558,6 +589,9 @@ def build_model(
     # Every protocol sends the key in a header, and httpx rejects non-ASCII
     # header values with a bare `UnicodeEncodeError: 'ascii' codec ...` raised
     # deep in its internals — fail here with something the user can act on.
+    # env:VAR 引用在此解析（只在这里，不在配置读取层，避免 GET 回明文）
+    cfg = dict(cfg)
+    cfg["api_key"] = resolve_api_key(cfg.get("api_key"))
     _key = str(cfg.get("api_key") or "")
     if prov_mod.is_masked(_key) or not _key.isascii():
         raise ValueError(
