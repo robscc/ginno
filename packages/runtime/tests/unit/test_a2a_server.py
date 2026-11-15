@@ -312,6 +312,10 @@ def test_route_table_is_exactly_the_whitelist(app):
         "/a2a/{token}/",
         "/a2a/{token}/tasks/get",
         "/a2a/{token}/tasks/cancel",
+        # P1-3（2026-11-16）：A2A 标准 SSE 进度流两个操作。
+        # 仍属协议白名单，不是 R3 类路径（settings/mcp/… 依旧 404）。
+        "/a2a/{token}/message/stream",
+        "/a2a/{token}/tasks/resubscribe",
     }
 
 
@@ -343,3 +347,65 @@ async def test_security_headers_on_all_responses(client, token):
         assert resp.headers["x-content-type-options"] == "nosniff"
         assert resp.headers["referrer-policy"] == "no-referrer"
         assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+# ── SSE 进度流（P1-3，2026-11-16）───────────────────────────────────────────
+
+
+async def test_message_stream_returns_sse_with_status_frames(client, token, deps):
+    """message/stream 必须回 text/event-stream 且至少一帧 status。"""
+    resp = await client.post(
+        f"/a2a/{token}/message/stream",
+        json=rpc("message/stream", {"message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}}),
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert "event: status" in body
+    assert "data: " in body
+
+
+async def test_message_stream_rejects_wrong_method(client, token):
+    """专用路由只认自己的 method（与 tasks/get 同口径）。"""
+    resp = await client.post(f"/a2a/{token}/message/stream", json=send_payload("hi"))
+    assert resp.status_code == 200
+    assert "error" in resp.json()
+
+
+async def test_tasks_resubscribe_streams_existing_task(client, token, deps):
+    """resubscribe 既有任务 → SSE 帧含该 task id。"""
+    created = await _send(client, token, "hi")
+    tid = created["id"]
+    resp = await client.post(
+        f"/a2a/{token}/tasks/resubscribe", json=rpc("tasks/resubscribe", {"id": tid})
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert tid in resp.text
+
+
+async def test_tasks_resubscribe_unknown_task_not_found(client, token):
+    with pytest.raises(Exception):
+        await client.post(
+            f"/a2a/{token}/tasks/resubscribe", json=rpc("tasks/resubscribe", {"id": "nope"})
+        )
+
+
+async def test_sse_requires_auth(client, token):
+    """SSE 端点同样受鉴权闸保护（无 token 不得进流）。"""
+    bad = "C" * 26
+    resp = await client.post(
+        f"/a2a/{bad}/message/stream",
+        json=rpc("message/stream", {"message": {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}}),
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_sse_frame_format():
+    """SSE 帧格式：event 行 + data 行 + 空行结尾。"""
+    from ginno_runtime.a2a.server import _sse_frame
+
+    frame = _sse_frame("status", {"id": "t1"})
+    assert frame.startswith("event: status\n")
+    assert '"id": "t1"' in frame or '"id":"t1"' in frame
+    assert frame.endswith("\n\n")
