@@ -659,6 +659,12 @@ def main(argv: list[str] | None = None) -> None:
         from .a2a.node import cli_main as _node_cli
 
         raise SystemExit(_node_cli(argv[1:]))
+    # `ginno tunnel`：到远端 node 的 SSH 隧道守护（P1-4）。node 只绑环回，
+    # 外部访问一律走隧道；本命令把建隧道+断线重连+算本机地址收成一条。
+    if argv and argv[0] == "tunnel":
+        from .a2a.tunnel import cli_main as _tunnel_cli
+
+        raise SystemExit(_tunnel_cli(argv[1:]))
     instruction = ""
     if "--" in argv:
         idx = argv.index("--")
