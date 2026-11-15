@@ -506,3 +506,66 @@ def test_guard_still_blocks_readonly_write_even_if_permission_allows():
     )
     assert d.allowed is False
     assert d.code == "readonly_write_forbidden"
+
+
+# ── _sniff_kind 多字节截断（2026-11-16 修中文产物误判 binary）──────────────
+#
+# 事故：远端 node 写出的中文 markdown 报告被标成 "binary"。根因是读首 256
+# 字节后裸 head.decode()，截断点落在汉字中间（0xe8 是 3 字节序列首字节）
+# → UnicodeDecodeError "unexpected end of data" → 误判。全文 decode 正常。
+
+
+def test_sniff_kind_chinese_text_truncated_mid_char(tmp_path):
+    """截断点落在多字节字符中间仍须判 text（真实事故场景）。"""
+    from ginno_runtime.a2a.inbound_exec import _SNIFF_BYTES, _sniff_kind
+
+    # 确定性构造：ASCII 前缀填到 _SNIFF_BYTES-1，再放一个 3 字节汉字，
+    # 于是第 _SNIFF_BYTES 字节正好是该汉字首字节 → 裸 decode 必炸。
+    p = tmp_path / "report.md"
+    prefix = "a" * (_SNIFF_BYTES - 1)
+    p.write_text(prefix + "结论：全部实测执行。" * 20, encoding="utf-8")
+    head = p.read_bytes()[:_SNIFF_BYTES]
+    try:
+        head.decode("utf-8")
+        truncated = False
+    except UnicodeDecodeError:
+        truncated = True
+    assert truncated, "用例构造失败：截断处未落在多字节字符中间，抓不到原 bug"
+    assert _sniff_kind(p) == "text"
+
+
+def test_sniff_kind_emoji_truncated(tmp_path):
+    """emoji（4 字节）截断同样判 text。"""
+    from ginno_runtime.a2a.inbound_exec import _sniff_kind
+
+    p = tmp_path / "emoji.md"
+    p.write_text("# 标题\n" + "🎉" * 200, encoding="utf-8")
+    assert _sniff_kind(p) == "text"
+
+
+def test_sniff_kind_real_binary_still_rejected(tmp_path):
+    """真二进制不得被放宽：含 NUL 判 binary。"""
+    from ginno_runtime.a2a.inbound_exec import _sniff_kind
+
+    p = tmp_path / "b.bin"
+    p.write_bytes(bytes(range(256)) * 2)
+    assert _sniff_kind(p) == "binary"
+
+
+def test_sniff_kind_invalid_utf8_still_rejected(tmp_path):
+    """中间出现非法 UTF-8 字节仍判 binary（增量解码不放宽这个）。"""
+    from ginno_runtime.a2a.inbound_exec import _sniff_kind
+
+    p = tmp_path / "bad.bin"
+    p.write_bytes(b"\xff\xfe\xfd\xfc" * 80)
+    assert _sniff_kind(p) == "binary"
+
+
+def test_sniff_kind_ascii_and_missing_file(tmp_path):
+    """纯 ASCII 判 text；不存在的路径 fail-safe 判 binary 不抛。"""
+    from ginno_runtime.a2a.inbound_exec import _sniff_kind
+
+    p = tmp_path / "a.txt"
+    p.write_text("hello world\n" * 30)
+    assert _sniff_kind(p) == "text"
+    assert _sniff_kind(tmp_path / "nope.md") == "binary"

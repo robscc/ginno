@@ -304,7 +304,32 @@ async def test_verify_fp_mismatch_blocks_before_any_rpc(monkeypatch):
     assert rec.requests == []  # 校验失败 → 凭据一个字节都不发
 
 
-async def test_verify_fp_default_port_http(monkeypatch):
+async def test_verify_fp_default_port_https(monkeypatch):
+    """https 未写端口 → 指纹校验走 443（端口默认值语义）。
+
+    原用例名 test_verify_fp_default_port_http 断言「http 端点去 80 取 TLS
+    证书」——那正是 bug 本身（明文端口上做 TLS 握手必失败）。2026-11-16 改为
+    https 场景保留端口默认值断言，http 跳过另立用例。
+    """
+    calls = []
+
+    def fake_peer(host, port, timeout_s):
+        calls.append((host, port))
+        return _DER
+
+    monkeypatch.setattr(card, "_peer_cert_der", fake_peer)
+    rec = _RpcRecorder()
+    c = A2AClient(
+        "https://peer.example.com/a2a",
+        verify_fp=fingerprint_of(_DER),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(rec.handler)),
+    )
+    await c.get_task("t-1")
+    assert calls == [("peer.example.com", 443)]
+
+
+async def test_verify_fp_skipped_for_plain_http(monkeypatch):
+    """明文 http 端点即使带 verify_fp 也不做 TLS 校验（兼容旧 node 地址）。"""
     calls = []
 
     def fake_peer(host, port, timeout_s):
@@ -319,7 +344,7 @@ async def test_verify_fp_default_port_http(monkeypatch):
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(rec.handler)),
     )
     await c.get_task("t-1")
-    assert calls == [("peer.example.com", 80)]
+    assert calls == [], "http 端点不得发起 TLS 指纹校验"
 
 
 # ------------------------------ 构造 / 生命周期 ------------------------------ #

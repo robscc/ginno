@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import os
 import signal
@@ -470,13 +471,25 @@ def _collect_artifacts(root: str, before: dict, after: dict) -> list[Artifact]:
 
 
 def _sniff_kind(p: Path) -> str:
-    """仅读首 _SNIFF_BYTES 判定文本/二进制（不回传内容）。"""
+    """仅读首 _SNIFF_BYTES 判定文本/二进制（不回传内容）。
+
+    ⚠️ 必须用**增量解码器**而非 head.decode()：截断点可能正好落在多字节
+    字符中间（中文 3 字节、emoji 4 字节），裸 decode 会抛
+    "unexpected end of data" 把**纯文本误判成 binary**。
+    实测：一份 6996 字节的中文 markdown 报告，第 256 字节是 0xe8
+    （某汉字首字节）→ 旧实现判 binary，全文 decode 其实完全正常。
+
+    incremental decoder 配 final=False 会把尾部不完整序列缓存而非报错，
+    因此：尾部截断 → text；中间出现非法字节 / NUL → binary（真二进制仍被拒）。
+    """
     try:
         with p.open("rb") as fh:
             head = fh.read(_SNIFF_BYTES)
         if b"\x00" in head:
             return "binary"
-        head.decode("utf-8")
+        # final=False：容忍尾部被截断的多字节序列，不代表整文件合法——
+        # 这里只判「开头看起来是不是文本」，与原语义一致。
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
         return "text"
     except (OSError, UnicodeDecodeError):
         return "binary"

@@ -132,7 +132,13 @@ class A2AClient:
     async def _rpc(self, method: str, params: dict) -> Any:
         """组 JSON-RPC 2.0 请求并规整响应；一切失败抛 A2AError。"""
         if self._verify_fp and not self._fp_checked:
-            await _card.verify_endpoint_fingerprint(self.endpoint, self._verify_fp)
+            # 指纹钉住是 **TLS** 概念：明文 http 端点没有证书可校验，
+            # 强行握手必然 SSL record layer failure（2026-11-16 实测）。
+            # 旧版 node 对 http 也广告 #fp=，这里跳过以兼容已发出的地址；
+            # 明文的传输安全由环回/SSH 隧道提供。新地址已在 build_address
+            # 侧不再附 fp。https 端点一律照常校验，绝不放宽。
+            if urlsplit(self.endpoint).scheme == "https":
+                await _card.verify_endpoint_fingerprint(self.endpoint, self._verify_fp)
             self._fp_checked = True
         req_id = next(self._ids)
         payload = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}

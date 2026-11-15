@@ -118,6 +118,12 @@ def build_address(
     fp = (fingerprint or "").strip()
     if fp and not _B32_26.match(fp):
         raise ValueError("指纹非法：应为 26 字符 base32")
+    # #fp 是**服务端 TLS 证书指纹**（设计 §200）。明文 http 没有证书可钉，
+    # 附上它只会误导客户端去做 TLS 校验并必然失败（2026-11-16 实测：
+    # P0 明文 node 的地址带 fp → client SSL record layer failure）。
+    # 明文形态的传输安全由环回/SSH 隧道提供，不是指纹。
+    if scheme != "https":
+        fp = ""
     addr = f"{scheme}://{netloc}/a2a/{token}"
     bits = []
     if fp:
