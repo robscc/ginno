@@ -7,6 +7,7 @@
 | 方案 | 搁置日期 | 优先级/预估 | 一句话 |
 |---|---|---|---|
 | [tabbed-workspace](./tabbed-workspace-design.md)（含 [HTML 原型](./tabbed-workspace.html)） | 2026-11-07 | P2 · 24-40h | 会话内多标签工作台：artifact/文件/浏览器/任务日志 tab 化，与对话同屏 |
+| [byom-remote-machines](./byom-remote-machines-design.md) | 2026-11-15 | **已吸收，不排队** | 自带机器作执行节点。**特性已合并进 [A2A 连接器设计](../design/a2a-connector-design.md)**（其 L3 `turn` 语义等于 A2A `SendMessage`）；本文不会原样重启，保留作设计依据 |
 
 ## 规则
 

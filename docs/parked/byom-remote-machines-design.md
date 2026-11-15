@@ -1,6 +1,26 @@
 # BYOM — Bring Your Own Machine（自带机器）设计
 
-> 状态：**设计稿 v1（待评审）** 日期：2026-11-08
+> **状态：🅿️ 已挂起（2026-11-15）——特性已吸收进 [A2A 连接器设计](../design/a2a-connector-design.md)**
+>
+> ⚠️ **本条与 parked 里其他方案不同：不是「排队等重启」，而是「已合并」**。
+> 本设计不会原样重启；其能力由 A2A 方案承接。保留本文作历史参考与设计依据。
+> 原状态：设计稿 v1（待评审） 日期：2026-11-08
+>
+> **取消理由**：本设计的 L3 `turn`（在机器上跑 headless turn）语义上等于 A2A 的
+> `SendMessage` 委托，两者是同一件事的不同传输。为避免两套重叠设计并存，
+> 评审决定取消 BYOM，把其特性吸收进 A2A 方案，使 A2A 成为**唯一远程协作面**
+> （覆盖别家 agent / 自己的另一台 Ginno / 无桌面机器三类对端）。
+>
+> **已吸收**：信任级别 readonly/normal/full（派发前钉死 + 执行侧复核）、能力分级 L0–L3、
+> root 边界 fail-loud、token 只存 hash、配对码限时单次消费、`ginno node` CLI、
+> `GINNO_FAKE_NODE` 测试缝（改名 `GINNO_FAKE_A2A_PEER`）、进程树 killpg 清理、
+> 用量双写、删除守卫 409、离线 fail-fast、花名册 UI、plan/scheduler 指定对端。
+>
+> **未吸收**：pull 模式反向 WS（破坏 A2A 标准互操作，NAT 改用 Tailscale/SSH 隧道）、
+> 裸 `exec` 操作码（A2A 是 agent 委托不是远程 shell）、独立 `machines.json`、
+> 独立「我的机器」Settings tab、自定义 WS 帧协议。
+>
+> 详见 [a2a-connector-design.md §11.3](../design/a2a-connector-design.md)。本文保留作历史参考，不再推进。
 > 范围：把用户自己的机器（家里 PC / 公司服务器 / NAS / 云 VPS / 局域网台式机）注册为 Ginno 的**执行节点**，agent 可把 bash / 文件 / headless turn 派到那台机器上跑。
 
 ## 0. TL;DR
