@@ -152,6 +152,7 @@ export interface DiagnosticsReport {
   sections: {
     data: { issues: DiagnosticsIssue[] };
     shell: { issues: DiagnosticsIssue[] };
+    web: { issues: DiagnosticsIssue[] };
     tasks: {
       total: number; ok: number; failed: number; caught_up: number;
       latest_failure: { run_id: string; task: string; error: string; hint?: string; kind?: string } | null;
@@ -168,6 +169,15 @@ export interface DiagnosticsReport {
 /** P4-1 built-in self-check (read-only). */
 export async function getDiagnostics() {
   return json<DiagnosticsReport>(`${BASE}/diagnostics`);
+}
+
+/** web_search 一键修复（2026-11-15）：前端先 newSession 建会话，再带 session_id
+ * 调本端点触发系统提供的 SearXNG 安装 turn，随后跳回聊天视图观看。 */
+export async function fixWebSearchSearxng(sessionId: string) {
+  return json<{ ok: boolean; session_id?: string; error?: string }>(
+    `${BASE}/diagnostics/fix/web-search-searxng`,
+    { method: "POST", headers: H, body: JSON.stringify({ session_id: sessionId }) },
+  );
 }
 
 /** 会话已读上报（服务端收件箱语义，session_unread）：前端「正在看」成立时

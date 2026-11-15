@@ -59,7 +59,8 @@
         "tasks": "定时任务",
         "runtime": "运行时",
         "contracts": "接口契约",
-        "shell": "Shell 环境"
+        "shell": "Shell 环境",
+        "web": "Web 搜索"
       },
       "taskStats": {
         "total": "执行 {n}",
@@ -99,12 +100,20 @@
         },
         "contract": {
           "missing_routes": "缺少关键接口"
+        },
+        "web": {
+          "fragile_search_engine": "默认搜索引擎脆弱（DuckDuckGo 抓取易被反爬）"
         }
       },
       "shellTitle": "Shell 环境",
       "fixEquals": "一键修复（写入 ~/.zshenv）",
       "fixEqualsConfirm": "将向 ~/.zshenv 追加 \"unsetopt EQUALS\"，消除非交互 zsh 的 =xx 报错。确认执行？",
-      "fixing": "修复中…"
+      "fixing": "修复中…",
+      "fixWebSearch": "一键修复（安装 SearXNG）",
+      "fixWebSearchConfirm": "将新建一个会话，按系统指令自动安装并配置本地 SearXNG 搜索引擎，替代脆弱的 DuckDuckGo 抓取。需要本机已装 Docker。确认执行？",
+      "fixWebSearchSessionTitle": "安装 SearXNG",
+      "fixWebSearchNoSession": "建会话失败：请先在设置 → 模型 API 启用一个模型",
+      "fixWebSearchFailed": "触发安装失败"
     },
     "autostart": {
       "label": "开机自启动",
