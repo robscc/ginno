@@ -42,6 +42,21 @@ if str(_E2E_DIR) not in sys.path:
 
 import _sidecar  # noqa: E402  (sys.path injected above)
 
+# e2e 的 _patch()（test_session_workflow_lifecycle.py）直接赋值三个模块的
+# build_model 且**不还原**（无 fixture/teardown/finally），会永久污染整个
+# pytest 会话：后跑的 unit 测试拿到别人的 ScriptedChatModel，自己的
+# GINNO_FAKE_LLM_SCRIPTS 失效。test_a2a_inbound_exec 的 8 个 guard 用例曾因此
+# 在 CI 全红（本地只跑 -m unit 不复现——e2e 段没跑，泄漏源不在）。
+# 在 conftest 导入期抓住真实函数，供 isolated_home 每测试前还原。
+from ginno_runtime.api import sessions as _sessions_api  # noqa: E402
+from ginno_runtime.api import workflows as _wf_api  # noqa: E402
+
+_ORIG_BUILD_MODEL = {
+    server: server.build_model,
+    _sessions_api: _sessions_api.build_model,
+    _wf_api: _wf_api.build_model,
+}
+
 
 @pytest.fixture(autouse=True)
 def _clean_running_turns():
@@ -87,6 +102,10 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     server._USAGE_BY_SESSION.clear()
     server_shared._mcp = None
     server_shared._hooks = None
+    # 还原被 e2e _patch() 永久改写的 build_model（见文件头 _ORIG_BUILD_MODEL 注释）。
+    # 用 monkeypatch.setattr 而非裸赋值：测试自身若再 patch 也能正确回滚。
+    for _mod, _fn in _ORIG_BUILD_MODEL.items():
+        monkeypatch.setattr(_mod, "build_model", _fn)
     # Keep the default Playwright MCP out of unrelated tests (it would spawn a
     # headless browser on every server start). ensure_layout only re-seeds the
     # default when mcp.json is missing/empty, so a non-empty stub opts us out.
