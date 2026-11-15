@@ -32,6 +32,12 @@ if len(sys.argv) > 1 and sys.argv[1] == "node":
 
     raise SystemExit(_node_cli(sys.argv[2:]))
 
+# SSH 隧道守护（a2a/tunnel.py，P1-4）：同样必须在落到桌面 server 之前分流。
+if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
+    from .a2a.tunnel import cli_main as _tunnel_cli
+
+    raise SystemExit(_tunnel_cli(sys.argv[2:]))
+
 from . import _frozen_imports  # noqa: F401  (kept for entry compatibility; now a no-op)
 from .server import main
 
