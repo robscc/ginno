@@ -59,6 +59,7 @@ from typing import Any
 
 from ginno_runtime import jsonx as json
 from ginno_runtime import paths
+from ginno_runtime.tools import sandbox as sandbox_mod
 
 from . import guard
 from .models import Artifact, Part, TaskState
@@ -780,6 +781,13 @@ def _worker_main() -> None:
         sys.exit(2)
     result_path = job.get("result_path")
     set_progress_path(str(job.get("progress_path") or ""))
+    # 入站 shell 必须走 OS 级沙箱（tools/sandbox.py）：guard 的 exec_root
+    # 边界对 bash 不生效，只靠它挡不住 `echo x >> /etc/hosts` 这类逃逸。
+    # 设此 env 后 builtin.bash 会把命令包进 bwrap；bwrap 不可用则 fail-closed
+    # 拒绝执行，绝不静默以无沙箱方式跑。桌面端不设此 env，行为零变化。
+    os.environ[sandbox_mod.ENV_ROOT] = str(
+        (job.get("policy") or {}).get("exec_root") or ""
+    )
     emit_progress("state", state="working")
     try:
         result = asyncio.run(_run_job(job))
