@@ -341,6 +341,22 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
 
             kind = msg.get("type")
             if kind == "invoke":
+                # Channel readonly gate (2026-11-16): wecom/dingtalk sessions
+                # converse on the IM side; the desktop is read-only. A UI-only
+                # restriction was bypassable by any raw WS invoke — enforce it
+                # here too. The adapters' own inbound path calls _run_stream
+                # in-process and never passes through this gate.
+                if sessions_mod.is_channel_session(session):
+                    await ws.send_text(
+                        _ev(
+                            "error",
+                            {
+                                "message": "channel sessions are read-only here; converse in the IM app",
+                                "i18n_key": "stream.error_channel_readonly",
+                            },
+                        )
+                    )
+                    continue
                 try:
                     user_text = msg.get("message", "")
                     # Per-turn trace id: prefer the client-supplied one (so the UUID
@@ -376,6 +392,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             _ts = sessions_mod._ensure_session(_tid)
                             if not _ts:
                                 _report.append({"id": _tid, "label": _d["label"], "state": "missing"})
+                                continue
+                            # @session delivery into a channel session is the
+                            # same readonly bypass — refuse that target.
+                            if sessions_mod.is_channel_session(_ts):
+                                _report.append({"id": _tid, "label": _d["label"], "state": "channel_readonly"})
                                 continue
                             _payload_text = f"[来自 {_src_title} 的投递]\n{_body}"
                             if _tid in _RUNNING_TURNS:
@@ -882,6 +903,19 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 continue
             elif kind == "steer":
+                # Same channel readonly gate as invoke — steering injects text
+                # into a running turn, which is conversation by another name.
+                if sessions_mod.is_channel_session(session):
+                    await ws.send_text(
+                        _ev(
+                            "error",
+                            {
+                                "message": "channel sessions are read-only here; converse in the IM app",
+                                "i18n_key": "stream.error_channel_readonly",
+                            },
+                        )
+                    )
+                    continue
                 # A message the user sent while a turn was running
                 # (docs/steering-design.md §3.2). NOT a turn: it is stashed and
                 # absorbed by the next `agent` superstep of the running turn, so

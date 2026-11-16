@@ -482,6 +482,19 @@ async def _goal_driver_loop(session_id: str) -> None:
 # ---- session goal (goal-design.md §4.4) -----------------------------------
 
 
+def is_channel_session(session: dict | None) -> bool:
+    """Channel sessions (wecom/dingtalk) converse on the IM side; the desktop
+    renders them read-only (ChatStream ``isChannel``). The API must enforce the
+    same gate — a UI-only readonly is bypassable by any WS client (2026-11-16).
+    Legacy channel sessions predate the ``type`` marker; the ``channel`` field
+    covers them until the adapter backfill runs. The channel adapters' own
+    inbound path calls ``_run_stream`` in-process and is NOT gated here.
+    """
+    if not session:
+        return False
+    return session.get("type") == "channel" or bool(session.get("channel"))
+
+
 def _goal_slug(session_id: str) -> str | None:
     """Resolve the project slug for a session without building its graph."""
     s = _SESSIONS.get(session_id)
@@ -753,6 +766,10 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
         "type": req.type or "main",
+        # Channel marker rides the in-memory entry too — the WS readonly gate
+        # (is_channel_session) must see it without a disk round-trip, including
+        # legacy sessions that carry only `channel` (no type marker).
+        "channel": req.channel,
         # Type-registry tightening survives graph rebuilds via this entry
         # (turn.py's WorldState roster re-reads it too).
         "restrict_tools": [p for p in (req.restrict_tools or []) if isinstance(p, str) and p.strip()],
@@ -1915,6 +1932,10 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "primary_path": primary_path or "",
         "workflow_id": meta.get("workflow_id"),
         "restrict_tools": restrict_tools,
+        # Survive graph rebuilds: the WS readonly gate reads these from the
+        # in-memory session, so a restarted runtime must restore them too.
+        "type": meta.get("type"),
+        "channel": meta.get("channel"),
         # Tool policy 随会话恢复（meta 真源 → 运行时 dict，供 turn 刷新/rebind 用）
         "tool_policy": meta.get("tool_policy"),
     }
