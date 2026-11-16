@@ -9,6 +9,7 @@ auto 只对 reason=dev-swap 生效）、band/continuation 渲染格式。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -394,6 +395,17 @@ class TestRecover:
         import ginno_runtime.server_shared as shared
 
         monkeypatch.setattr(shared, "_push_global_event", fake_push)
+        # 捕获 spawn_bg 任务：resume_pending 异步化后立即返回，需 await 后台
+        # 任务才能验终态（2026-11-17 修 Load failed）。
+        spawned: list = []
+        _real_spawn = shared.spawn_bg
+
+        def _capture(coro):
+            t = _real_spawn(coro)
+            spawned.append(t)
+            return t
+
+        monkeypatch.setattr(shared, "spawn_bg", _capture)
 
         # 第一段：recover → pending（不直跑）
         n = await lastwords.recover_lastwords()
@@ -405,9 +417,13 @@ class TestRecover:
         # 遗言文件保留（resume/dismiss 才处置）
         assert lastwords._path("s-auto").exists()
 
-        # 第二段：确认续跑 → headless turn
+        # 第二段：确认续跑 → 立即返回（非阻塞）+ 后台 headless turn
         r = await lastwords.resume_pending("s-auto")
         assert r["ok"] is True
+        # 异步化关键：resume 不等 turn 跑完就返回（修「恢复失败：Load failed」）
+        assert calls == []
+        for t in spawned:
+            await t
         assert len(calls) == 1
         cfg = calls[0]["config"]["configurable"]
         assert cfg["thread_id"] == "s-auto"
@@ -419,6 +435,48 @@ class TestRecover:
 
         # 第三段：重复确认 → no_pending（exactly-once）
         assert (await lastwords.resume_pending("s-auto"))["ok"] is False
+
+    async def test_resume_returns_before_turn_completes(
+        self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """回归（2026-11-17「恢复失败：Load failed」）：resume_pending 必须在
+        续跑 turn 完成前返回——慢 turn 绝不阻塞 HTTP 响应（否则浏览器 fetch
+        空闲超时抛 Load failed）。"""
+        (isolated_home / "settings.json").write_text(
+            json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
+        )
+        _write_valid("s-slow", reason="dev-swap")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+        import ginno_runtime.server_shared as shared
+
+        async def _noop(*a, **k):
+            pass
+
+        monkeypatch.setattr(shared, "_push_global_event", _noop)
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def slow_turn(session, snap):
+            started.set()
+            await finish.wait()
+            return True
+
+        monkeypatch.setattr(lastwords, "_run_lastwords_turn", slow_turn)
+        await lastwords.recover_lastwords()  # 人工会话 → 挂起待确认
+        assert "s-slow" in lastwords._PENDING_RESUME
+        # slow_turn 阻塞在 finish 上；resume 若同步 await 它会永远不返回 →
+        # wait_for 2s 超时即证明阻塞回归。异步化则立即返回 ok。
+        r = await asyncio.wait_for(lastwords.resume_pending("s-slow"), timeout=2)
+        assert r["ok"] is True
+        await asyncio.sleep(0)  # 让后台任务起步
+        assert started.is_set()
+        assert not finish.is_set()  # turn 未完成，resume 已返回（非阻塞实锤）
+        finish.set()
+        await asyncio.sleep(0.03)
+        assert "s-slow" not in lastwords._PENDING_RESUME
 
     async def test_auto_signal_stays_notify(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch

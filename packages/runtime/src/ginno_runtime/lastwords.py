@@ -683,7 +683,14 @@ def list_pending(*, now: float | None = None) -> list[dict]:
 
 
 async def resume_pending(session_id: str) -> dict:
-    """确认续跑（/api/lastwords/resume）。"""
+    """确认续跑（/api/lastwords/resume）。
+
+    2026-11-17 修复「恢复失败：Load failed」：原实现在 HTTP 请求里同步
+    await 整个续跑 turn（数分钟），响应迟迟不返回 → 浏览器 fetch 空闲超时
+    抛 "Load failed"（后端 turn 其实可能在正常跑）。改为 spawn_bg 异步起
+    turn、立即返回 ``{ok:true}``（=已发起续跑），与 auto 路径 headless 续跑
+    同范式；终态清理 / 广播在后台任务里完成。
+    """
     snap = pending_resume_snapshot(session_id)
     if not snap:
         return {"ok": False, "error": "no_pending"}
@@ -692,23 +699,27 @@ async def resume_pending(session_id: str) -> dict:
     from .api.sessions import _ensure_session
 
     session = _ensure_session(session_id)
-    ok = False
-    try:
-        ok = await _run_lastwords_turn(session, snap)
-    except Exception:  # noqa: BLE001
-        _log.exception("lastwords_resume_failed session=%s", session_id)
-    drop_lastwords(session_id)
-    if ok:
-        _log.info("lastwords_restored session=%s mode=auto-confirmed reason=%s",
-                  session_id, snap.get("reason"))
+
+    async def _resume_bg() -> None:
+        ok = False
         try:
-            await shared._push_global_event(
-                "runtime.lastwords_restored",
-                {"session_id": session_id, "mode": "auto-confirmed"},
-            )
+            ok = await _run_lastwords_turn(session, snap)
         except Exception:  # noqa: BLE001
-            pass
-    return {"ok": ok}
+            _log.exception("lastwords_resume_failed session=%s", session_id)
+        drop_lastwords(session_id)
+        if ok:
+            _log.info("lastwords_restored session=%s mode=auto-confirmed reason=%s",
+                      session_id, snap.get("reason"))
+            try:
+                await shared._push_global_event(
+                    "runtime.lastwords_restored",
+                    {"session_id": session_id, "mode": "auto-confirmed"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    shared.spawn_bg(_resume_bg())
+    return {"ok": True}
 
 
 def dismiss_pending(session_id: str) -> dict:
