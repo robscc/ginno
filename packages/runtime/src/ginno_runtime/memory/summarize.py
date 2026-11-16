@@ -531,6 +531,53 @@ def _write_memory(text: str) -> None:
     paths.memory_index_path().write_text(sanitized, encoding="utf-8")
 
 
+def _backup_memory():
+    """Snapshot MEMORY.md to memory/backups/ before an unattended apply.
+
+    Keeps at most 10 snapshots (oldest dropped); never raises — a backup
+    failure must not block the pipeline.
+    """
+    try:
+        src = paths.memory_index_path()
+        if not src.exists() or not src.read_text(encoding="utf-8").strip():
+            return None
+        bdir = paths.home() / "memory" / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dst = bdir / f"MEMORY-{stamp}.md"
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        backups = sorted(bdir.glob("MEMORY-*.md"))
+        for old in backups[:-10]:
+            old.unlink(missing_ok=True)
+        return dst
+    except OSError:
+        return None
+
+
+def auto_apply_draft(draft_id: str | None = None, *, reason: str = "schedule") -> dict:
+    """Unattended apply: backup → apply_draft(truncate=True) → log.
+
+    Keeps both safety gates: ``memory_changed`` (someone edited MEMORY.md since
+    the draft was created → refuse, leave the draft pending) and the budget
+    line (over-budget → truncate, never force).
+    """
+    d = read_draft(draft_id)
+    if not d:
+        return {"ok": False, "error": "no_draft"}
+    backup = _backup_memory()
+    result = apply_draft(draft_id=draft_id, truncate=True)
+    result["auto"] = True
+    result["reason"] = reason
+    if backup:
+        result["backup"] = str(backup)
+    record_run(
+        trigger="auto_apply",
+        status="applied" if result.get("ok") else str(result.get("error", "failed")),
+        draft_id=str(d["meta"].get("id", "")),
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Distillation (draft creation)
 # ---------------------------------------------------------------------------

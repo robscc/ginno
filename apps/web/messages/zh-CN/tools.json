@@ -565,7 +565,9 @@
       "splitConfirm": "生成新草稿",
       "splitDone": "已生成拆分草稿",
       "splitEmpty": "至少选择一段",
-      "splitCancel": "取消"
+      "splitCancel": "取消",
+      "autoApply": "自动审批（无人值守）",
+      "autoApplyDesc": "夜间蒸馏的草稿自动写入（先备份旧版，保留冲突检测与预算拦截）"
     },
     "workflows": {
       "title": "工作流",

@@ -565,7 +565,9 @@
       "splitConfirm": "Create draft",
       "splitDone": "Split draft created",
       "splitEmpty": "Select at least one section",
-      "splitCancel": "Cancel"
+      "splitCancel": "Cancel",
+      "autoApply": "Auto-apply (unattended)",
+      "autoApplyDesc": "Nightly drafts applied automatically (backup first, conflict check & budget cap)"
     },
     "workflows": {
       "title": "Workflows",

@@ -94,6 +94,11 @@ class KnowledgeConfig:
     # nightly "dream" window (same design §4.4); off by default.
     dream_nightly: bool = False
     dream_at: str = "03:00"
+    # unattended auto-apply (2026-11-16): apply the nightly draft right after
+    # distillation instead of leaving it pending for a human. Existing safety
+    # gates still run (memory_changed conflict, budget→truncate). Previous
+    # MEMORY.md is backed up to memory/backups/ before each auto-apply.
+    dream_auto_apply: bool = False
     # citation framework (docs/citations-design.md): master switch for the
     # citation contract + usage telemetry; the retrieval usage bonus and its
     # small-sample floor (bonus wiring lands in P2, fields reserved now).
