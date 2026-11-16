@@ -135,7 +135,9 @@ def build_task_tools(
             return f"[error] {e}"
         lines = [
             f"task={rec['id']} status=running pid={rec.get('pid')}",
-            f"log={task_store.log_path(rec['id'])}",
+            # 2026-11-16：不返回 raw path（agent 会拿去 read_file → 撞 home
+            # deny）。bg_logs 直接走 task_store，不经权限层。
+            f"output: bg_logs({rec['id']})",
         ]
         # 管道尾部的 tail/head 会把输出攥到进程退出才放——实时日志整场为空
         # （2026-10-29 实录：`pytest … | tail -60` 跑了半小时 log_bytes=0）。
