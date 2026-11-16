@@ -229,6 +229,22 @@ async def _emit_goal_event(
         await _push_session_event(session_id, "goal.updated", {"goal": goal}, turn_id)
 
 
+async def _archive_complete_goal(slug: str, session_id: str) -> None:
+    """Lifecycle finish (2026-11-16): move a COMPLETE goal to history + clear
+    the chip. Idempotent (archive_goal no-ops once the record is gone).
+
+    Call sites are ordered so the FINAL turn's accounting is never lost:
+    the driver archives AFTER account_turn (goal-turn path); the turn_done
+    hook archives only when no driver owns the session (user-turn path).
+    """
+    try:
+        archived = goal_store.archive_goal(slug, session_id)
+        if archived:
+            await _push_session_event(session_id, "goal.archived", {"goal": archived})
+    except Exception:  # noqa: BLE001 — 归档绝不带崩 driver/turn
+        _log.exception("goal_archive_failed session=%s", session_id)
+
+
 def _stop_goal_driver(session_id: str) -> None:
     task = _GOAL_DRIVERS.pop(session_id, None)
     if task and not task.done():
@@ -378,6 +394,10 @@ async def _goal_driver_loop(session_id: str) -> None:
             slug = session["project_slug"]
             goal = goal_store.get_goal(slug, session_id)
             if not goal or goal.get("status") != goal_store.STATUS_ACTIVE:
+                # A user turn may have marked the goal complete while this
+                # driver was waiting — archive it on the way out.
+                if goal and goal.get("status") == goal_store.STATUS_COMPLETE:
+                    await _archive_complete_goal(slug, session_id)
                 return
             # Goal does not follow an agent switch (review decision 5): the
             # driver auto-pauses instead of continuing under the new agent.
@@ -406,6 +426,8 @@ async def _goal_driver_loop(session_id: str) -> None:
                     or cur.get("goal_id") != goal_id
                     or cur.get("status") != goal_store.STATUS_ACTIVE
                 ):
+                    if cur and cur.get("goal_id") == goal_id and cur.get("status") == goal_store.STATUS_COMPLETE:
+                        await _archive_complete_goal(slug, session_id)
                     return
 
             # Grace period — the user can interject; the invoke path takes the
@@ -421,6 +443,8 @@ async def _goal_driver_loop(session_id: str) -> None:
                     or cur.get("goal_id") != goal_id
                     or cur.get("status") != goal_store.STATUS_ACTIVE
                 ):
+                    if cur and cur.get("goal_id") == goal_id and cur.get("status") == goal_store.STATUS_COMPLETE:
+                        await _archive_complete_goal(slug, session_id)
                     return
                 if _goal_interrupted(session_id):
                     break  # back to the idle-wait loop above
@@ -461,6 +485,13 @@ async def _goal_driver_loop(session_id: str) -> None:
             )
             if accounted:
                 await _emit_goal_event(slug, session_id, accounted)
+            # Lifecycle finish: archive AFTER the final accounting so the
+            # terminating turn's usage lands in the history record (design
+            # §4.3.4 counts the turn that marks complete).
+            cur = goal_store.get_goal(slug, session_id)
+            if cur and cur.get("status") == goal_store.STATUS_COMPLETE:
+                await _archive_complete_goal(slug, session_id)
+                return
     except asyncio.CancelledError:
         raise
     except Exception:
