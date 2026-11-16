@@ -61,7 +61,8 @@ def _failure_suggestion(meta: dict) -> dict | None:
 
 
 def _context_suggestion(meta: dict) -> dict | None:
-    """Warn only when the *current* context nears the model window.
+    """Warn when the *current* context nears the AUTO-COMPACTION threshold
+    (not the model window — see the ratio comment below).
 
     Session totals are cumulative across every call in the session: fifty
     turns sum to dozens of windows while each individual prompt stays small
@@ -83,16 +84,25 @@ def _context_suggestion(meta: dict) -> dict | None:
         window = 0
     if window <= 0:
         return None
-    ratio = used / window
-    if ratio < 0.7:
+    # 预警口径统一（2026-11-16）：阈值绑定「自动压缩触发点」而非窗口固定
+    # 百分比——大窗口模型（1M）上 min(500k, 窗口×0.75)=500k 只占窗口 50%，
+    # 旧的 ratio≥0.7×窗口 永远晚于压缩触发（倒挂），用户从没见过预警就被
+    # 「压缩中…」打断。现在 0.85×阈值 黄、压缩点(100%) 到来前用户有 ~15%
+    # 阈值带宽操作（/compact 或新开会话，由自己掌控时机）。
+    from .usage import _compact_threshold
+
+    threshold = _compact_threshold(window)
+    if used < threshold * 0.85:
         return None
+    ratio = used / threshold
     return {
         "id": "context.pressure",
         "severity": "medium",
-        "title": "上下文接近上限",
+        "title": "上下文接近压缩阈值",
         "detail": (
             f"当前上下文约 {used / 1000:.0f}k tokens，"
-            f"占模型窗口（{window / 1000:.0f}k）的 {ratio * 100:.0f}%。"
+            f"已到自动压缩阈值（{threshold / 1000:.0f}k）的 {ratio * 100:.0f}%；"
+            f"下轮对话将自动压缩，也可现在手动压缩以选择时机。"
         ),
         "action": {"type": "compact"},
     }

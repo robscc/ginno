@@ -77,9 +77,11 @@ function SessionIdChip({ sessionId }: { sessionId?: string }) {
 }
 
 /** Context-window occupancy ring (上下文占用圆环)。SVG 圆环 + 中心百分比：
- * 占用 = 最近一次 LLM 调用的全量 prompt / 会话模型的上下文窗口。阈值变色
- * —— 70% 转黄提醒快满，90% 转红（即将触发 compaction/截断风险）；
- * tooltip 给出精确 token 数（compact 格式，同用量统计口径）。 */
+ * 占用 = 最近一次 LLM 调用的全量 prompt / 会话模型的上下文窗口。
+ * 变色分档（2026-11-16 预警口径统一）：优先按 compact_pct（占用 ÷ 自动
+ * 压缩阈值）—— ≥85% 琥珀、≥95% 红（阈值点即 100%）；无 threshold 数据
+ * 的旧 runtime 回退窗口百分比（70%/90%）。环上以刻度线标出压缩触发点，
+ * tooltip 给出精确 token 数与距阈值余量。 */
 function ContextRing({ ctx }: { ctx: ContextState | null }) {
   const tr = useTranslations("shell");
   if (!ctx || !ctx.window) return null;
@@ -87,17 +89,54 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
   // stroke 几何：r=8, 周长 2πr≈50.27；dashOffset 按 pct 挖空。
   const R = 8;
   const C = 2 * Math.PI * R;
-  const color = pct >= 90 ? "var(--st-error, #ef4444)" : pct >= 70 ? "#d9a93e" : "#8b5cf6";
+  const hasThreshold =
+    typeof ctx.compact_pct === "number" && typeof ctx.threshold === "number" && ctx.threshold > 0;
+  const cpct = hasThreshold ? Math.min(999, Math.max(0, ctx.compact_pct!)) : null;
+  // 分档：阈值口径优先（85/95），旧数据回退窗口口径（70/90）。
+  const warnLevel = hasThreshold
+    ? cpct! >= 95
+      ? "red"
+      : cpct! >= 85
+        ? "amber"
+        : "ok"
+    : pct >= 90
+      ? "red"
+      : pct >= 70
+        ? "amber"
+        : "ok";
+  const color =
+    warnLevel === "red"
+      ? "var(--st-error, #ef4444)"
+      : warnLevel === "amber"
+        ? "#d9a93e"
+        : "#8b5cf6";
+  // 压缩触发刻度：threshold 在环上对应的圆弧位置（12 点起顺时针）。阈值
+  // ≥ 窗口时刻度退化为整圈，不画（异常配置，无参考意义）。
+  const thresholdPctOnRing = hasThreshold ? Math.min(100, (ctx.threshold! / ctx.window) * 100) : 0;
+  const showTick = hasThreshold && thresholdPctOnRing > 4 && thresholdPctOnRing < 96;
+  const tickAngle = (thresholdPctOnRing / 100) * 2 * Math.PI - Math.PI / 2;
+  const tickX1 = 10 + (R - 2.6) * Math.cos(tickAngle);
+  const tickY1 = 10 + (R - 2.6) * Math.sin(tickAngle);
+  const tickX2 = 10 + (R + 2.6) * Math.cos(tickAngle);
+  const tickY2 = 10 + (R + 2.6) * Math.sin(tickAngle);
+  const suggest = warnLevel !== "ok";
+  const title = hasThreshold
+    ? tr("topbar.contextTitleThreshold", {
+        used: fmtTokens(ctx.tokens),
+        window: fmtTokens(ctx.window),
+        percent: ctx.percent.toFixed(0),
+        threshold: fmtTokens(ctx.threshold!),
+        compactPct: ctx.compact_pct!.toFixed(0),
+      })
+    : tr("topbar.contextTitle", {
+        used: fmtTokens(ctx.tokens),
+        window: fmtTokens(ctx.window),
+        percent: ctx.percent.toFixed(0),
+      });
   return (
     <span
       className="flex h-8 w-8 shrink-0 items-center justify-center"
-      title={
-        tr("topbar.contextTitle", {
-          used: fmtTokens(ctx.tokens),
-          window: fmtTokens(ctx.window),
-          percent: ctx.percent.toFixed(0),
-        }) + (pct >= 70 ? " — " + tr("topbar.contextSuggestCompact") : "")
-      }
+      title={title + (suggest ? " — " + tr("topbar.contextSuggestCompact") : "")}
     >
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
         <circle cx="10" cy="10" r={R} fill="none" stroke="var(--line2, #34343f)" strokeWidth="2.5" />
@@ -113,6 +152,17 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
           strokeDashoffset={C * (1 - pct / 100)}
           transform="rotate(-90 10 10)"
         />
+        {showTick && (
+          <line
+            x1={tickX1}
+            y1={tickY1}
+            x2={tickX2}
+            y2={tickY2}
+            stroke="currentColor"
+            strokeWidth="1"
+            opacity="0.55"
+          />
+        )}
         <text
           x="10"
           y="10"

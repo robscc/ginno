@@ -380,6 +380,7 @@ export function ChatStream({
     answerQuestion, homeCreatingRef, homeModel, pendingMounts, resetPendingMounts,
     curSessionIdRef, connectSession, pendingDocsRef, pendingPathsRef,
     uploadOneDoc, attachOne, waitForSocketOpen,
+    compacting,
   });
 
   // Session goal (goal-design.md) — drives the stop=pause button and the
@@ -1105,11 +1106,23 @@ export function ChatStream({
       <div className="px-6 pb-5 pt-2">
         <div className={CHAT_COL}>
           {/* V2 P2-1: execution-time suggestions sit directly above the
-              composer; hidden while a turn runs (their actions would race it). */}
-          {session && !running && visibleSuggestions.length > 0 && (
+              composer. 2026-11-16：context.pressure（压缩预警卡）在 turn
+              运行中也显示——预警的价值恰在长工具 turn 中跨过阈值时，旧的
+              !running 全隐藏让它永远迟到；其余卡的动作会与 running turn
+              竞态，维持 turn 结束后显示（runSuggestionAction 对 running 中
+              点压缩也有 busy 提示兜底）。 */}
+          {session &&
+            (running
+              ? visibleSuggestions.filter((s) => s.id === "context.pressure")
+              : visibleSuggestions
+            ).length > 0 && (
             <SessionSuggestions
             hideDuringCompact={compacting}
-              suggestions={visibleSuggestions}
+              suggestions={
+                running
+                  ? visibleSuggestions.filter((s) => s.id === "context.pressure")
+                  : visibleSuggestions
+              }
               busyId={suggestBusy}
               onAction={(s) => void runSuggestionAction(s)}
               onDismiss={dismissSuggestion}
