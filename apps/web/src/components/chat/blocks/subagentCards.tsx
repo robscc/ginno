@@ -472,6 +472,29 @@ export function WorkerResultCard({
           {block.summary}
         </div>
       )}
+      {block.viaFile && block.filePath && (
+        <div
+          className="mt-1.5 flex items-center gap-1.5 rounded-md border border-violet/30 bg-violet/[0.06] px-2 py-1 text-[10px]"
+          data-testid="digest-via-file-tip"
+        >
+          <span className="shrink-0">📄</span>
+          <span className="shrink-0 font-medium text-violet">{tc("worker.viaFileTip")}</span>
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-faint"
+            title={block.filePath}
+          >
+            {block.filePath}
+          </span>
+          <button
+            onClick={() => {
+              void navigator.clipboard?.writeText(block.filePath ?? "");
+            }}
+            className="shrink-0 rounded border border-line2 px-1 py-0.5 text-[9px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+          >
+            {tc("worker.copyPath")}
+          </button>
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-1.5 border-t border-line/60 pt-1.5">
         <button
           onClick={openWorker}

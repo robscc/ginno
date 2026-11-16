@@ -32,6 +32,9 @@ from .registry import (
 
 SUBSCRIBER_CAP = 8
 DIGEST_MIN_INTERVAL_S = 300  # 同一订阅者两次 digest 的最小间隔
+# digest 节选上限：超过则改文件传递（全文写入会话 digests/ 目录，信封带
+# via_file/file 属性，前端展示完整内容 + 「通过文件传递」tip 标明文件位置）。
+DIGEST_CAP = 300
 
 # 进程内"被订阅的 session id"快查表：on_turn_settled 每回合都过一遍
 # hook，不能为无订阅的会话付磁盘扫描。watch_worker 是唯一写者，
@@ -122,10 +125,12 @@ async def watch_worker(
 
 
 def _worker_result_text(
-    target_id: str, meta: dict, status: str, digest: str = "", msg_id: str = ""
+    target_id: str, meta: dict, status: str, digest: str = "", msg_id: str = "",
+    via_file: bool = False, file_path: str = "",
 ) -> str:
     """``<ginno_worker_result>`` 信封（前端折员工回传卡）。digest 带标识
-    属性；终态回传正文 = result_summary（done）/错误信息。"""
+    属性；终态回传正文 = result_summary（done）/错误信息。超 cap 的 digest
+    带 via_file/file 属性（全文落盘，前端显「通过文件传递」tip + 文件位置）。"""
     title = str(meta.get("title") or target_id[:8])
     goal = str((meta.get("subagent") or {}).get("goal") or meta.get("title") or "")
     if digest:
@@ -145,8 +150,9 @@ def _worker_result_text(
         f'<ginno_worker_result session="{_xml_attr(target_id)}"'
         + (f' msg_id="{_xml_attr(msg_id)}"' if msg_id else "")
         + f' from="{_xml_attr(title)}" status="{_xml_attr(status)}"'
-        f' goal="{_xml_attr(goal[:120])}"{kind}>\n'
-        f"{body}\n</ginno_worker_result>"
+        f' goal="{_xml_attr(goal[:120])}"{kind}'
+        + (f' via_file="1" file="{_xml_attr(file_path)}"' if via_file else "")
+        + f">\n{body}\n</ginno_worker_result>"
     )
 
 
@@ -242,17 +248,35 @@ async def on_turn_settled_hook(session_id: str) -> None:
     # digest 订阅者；空内容 settle 仍静默（防无意义重复）。DIGEST_MIN_
     # INTERVAL_S 仅保留作兼容引用，不再挡内容。
     st = project_status(session_id, meta)
-    excerpt = await _last_assistant_excerpt(slug, session_id)
+    # 取全文（不截断）；超 DIGEST_CAP 时落盘改文件传递，完整内容仍随信封
+    # 正文展示，前端另显「通过文件传递」tip + 文件位置（2026-11-16 用户需求）。
+    excerpt = await _last_assistant_excerpt(slug, session_id, limit=None)
     if not excerpt:
         _log.info(
             "digest suppressed (no new summarize content) session=%s", session_id
         )
         return
     due = list(digests)
-    body = f"[{st}] {excerpt}"
     _digest_msg_id = f"digest-{session_id[:8]}-{now}"
+    via_file = False
+    file_path = ""
+    if len(excerpt) > DIGEST_CAP:
+        try:
+            from .. import paths
+
+            fdir = paths.session_files_dir(slug, session_id) / "digests"
+            fdir.mkdir(parents=True, exist_ok=True)
+            fp = fdir / f"digest-{session_id[:8]}-{now}.md"
+            fp.write_text(excerpt, encoding="utf-8")
+            file_path = str(fp)
+            via_file = True
+        except Exception:
+            # 落盘失败不阻断 digest：降级为 inline 全文（仍不截断）。
+            _log.exception("worker_digest_file_write_failed session=%s", session_id)
+    body = f"[{st}] {excerpt}"
     text = _worker_result_text(
-        session_id, meta, st, digest=body, msg_id=_digest_msg_id
+        session_id, meta, st, digest=body, msg_id=_digest_msg_id,
+        via_file=via_file, file_path=file_path,
     )
     keep = []
     for s in subs:
@@ -286,8 +310,9 @@ async def on_turn_settled_hook(session_id: str) -> None:
             _log.exception("worker_digest_failed target=%s sub=%s", session_id, sid)
 
 
-async def _last_assistant_excerpt(slug: str, session_id: str, limit: int = 300) -> str:
-    """最近一条 assistant 文本的前 ``limit`` 字（digest 节选）。"""
+async def _last_assistant_excerpt(slug: str, session_id: str, limit: int | None = 300) -> str:
+    """最近一条 assistant 文本。``limit`` 为 None 时返回全文（文件传递模式用），
+    否则取前 ``limit`` 字（digest 节选）。"""
     try:
         from langchain_core.messages import AIMessage
 
@@ -306,7 +331,7 @@ async def _last_assistant_excerpt(slug: str, session_id: str, limit: int = 300) 
             if isinstance(m, AIMessage):
                 text = text_of_content(getattr(m, "content", "")).strip()
                 if text:
-                    return text[:limit]
+                    return text[:limit] if limit is not None else text
     except Exception:
         _log.info("worker_digest_excerpt_failed session=%s", session_id)
     return ""
