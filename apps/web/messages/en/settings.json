@@ -42,7 +42,22 @@
       "lastwordsNotify": "Notify (inject restore note)",
       "lastwordsAuto": "Auto-resume (dev-swap only)",
       "lastwordsOff": "Off",
-      "lastwordsSaved": "Last-words mode saved"
+      "lastwordsSaved": "Last-words mode saved",
+      "fontLabel": "Font",
+      "fontHelp": "Display-only preference, applies instantly; does not affect conversation content.",
+      "fontSizeLabel": "Font size",
+      "fontPreview": "Preview: The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳过懒狗。0123456789",
+      "fontFamily": {
+        "inter": "Default (Inter)",
+        "system": "System",
+        "serif": "Serif",
+        "mono": "Monospace"
+      },
+      "fontSize": {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large"
+      }
     },
     "diagnostics": {
       "title": "Diagnostics",

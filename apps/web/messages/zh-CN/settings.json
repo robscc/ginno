@@ -42,7 +42,22 @@
       "lastwordsNotify": "通知（注入恢复提示）",
       "lastwordsAuto": "自动续跑（仅 dev-swap）",
       "lastwordsOff": "关闭",
-      "lastwordsSaved": "遗言模式已保存"
+      "lastwordsSaved": "遗言模式已保存",
+      "fontLabel": "字体",
+      "fontHelp": "纯界面偏好，即时生效，不影响对话内容。",
+      "fontSizeLabel": "字号",
+      "fontPreview": "预览：敏捷的棕色狐狸跳过懒狗。The quick brown fox jumps over the lazy dog. 0123456789",
+      "fontFamily": {
+        "inter": "默认（Inter）",
+        "system": "系统",
+        "serif": "衬线",
+        "mono": "等宽"
+      },
+      "fontSize": {
+        "small": "小",
+        "medium": "中",
+        "large": "大"
+      }
     },
     "diagnostics": {
       "title": "诊断",
