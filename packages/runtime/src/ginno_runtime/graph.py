@@ -15,6 +15,7 @@ import asyncio
 import fnmatch
 import logging
 import time
+import uuid
 from typing import Literal
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -46,6 +47,8 @@ from .graph_models import (
     _is_anthropic_model,
     _is_rate_limit_error,
     _is_stream_chunk_timeout,
+    _llm_call_meta,
+    _llm_usage_of,
     _mark_cache_tail,
     _system_message,
     _with_cache_mark,
@@ -172,14 +175,73 @@ _RATE_LIMIT_WAIT_S = 30.0  # 30/60/120/240/480s,共 ~15 分钟
 _STREAM_STALL_MAX_RETRIES = 2
 _STREAM_STALL_WAIT_S = 30.0
 
+# T3 — LLM 请求级可观测事件（llm.request / llm.response）的字段白名单。
+# graph 层造帧、engine 层翻译下发时共用同一份清单：只允许计数与元数据，
+# prompt 正文/密钥在两层都进不了事件（第二道防线在 engine 的 custom 分支）。
+_LLM_EVENT_FIELDS = (
+    "req_id", "model", "provider", "messages_count",
+    "attempt", "elapsed_ms", "usage", "ok", "error",
+)
+
+
+def _emit_llm_event(kind, req_id, attempt, meta, *, t0=None, result=None, exc=None):
+    """T3：经既有 custom 流总线发一帧 LLM 请求级元数据（ginno_llm_event）。
+
+    与 ginno_model_error / ginno_tool_heartbeat 同一通道（get_stream_writer）：
+    engine 的 stream_mode 已含 "custom"，custom 分支把它翻译成 llm.request /
+    llm.response 经 emit/safe_send 下发——远端节点的事件汇自动拿到，无需
+    额外管线。writer 不可用（非图上下文/旧 langgraph）时退化 no-op。
+    整个助手吞掉一切异常：可观测性绝不影响主 turn。error 只带异常**类型
+    名**，不带消息文本（可能含 prompt 片段/密钥）。
+    """
+    try:
+        from langgraph.config import get_stream_writer
+
+        writer = get_stream_writer()
+        if writer is None:
+            return
+        data = {"kind": kind, "req_id": req_id, "attempt": attempt, **(meta or {})}
+        if t0 is not None:
+            data["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+        if kind == "response":
+            data["ok"] = exc is None
+            if exc is not None:
+                data["error"] = type(exc).__name__
+            else:
+                usage = _llm_usage_of(result)
+                if usage is not None:
+                    data["usage"] = usage
+        writer({"ginno_llm_event": data})
+    except Exception:  # noqa: BLE001 — 埋点失败绝不影响主 turn
+        pass
+
 
 async def _ainvoke_rate_limited(bound, msgs):
     waited = 0
     stalled = 0
     _instinct_retry: dict | None = None  # instincts L1：记录退避形态，成功后捕获
+    # T3 可观测埋点：req_id 在同一次逻辑请求的多次重试间保持稳定，attempt
+    # 每次物理尝试递增；前端按 (req_id, attempt) 配对 request/response。
+    # 元数据提取失败退化为空——不影响调用本身。
+    try:
+        _obs_req_id = uuid.uuid4().hex
+    except Exception:  # noqa: BLE001
+        _obs_req_id = ""
+    try:
+        _obs_meta = _llm_call_meta(bound, msgs)
+    except Exception:  # noqa: BLE001
+        _obs_meta = {}
+    _obs_attempt = 0
     while True:
+        _obs_attempt += 1
+        _obs_t0 = time.monotonic()
+        _emit_llm_event("request", _obs_req_id, _obs_attempt, _obs_meta)
         try:
             result = await bound.ainvoke(msgs)
+            _emit_llm_event(
+                "response", _obs_req_id, _obs_attempt, _obs_meta,
+                t0=_obs_t0, result=result,
+            )
             # instincts L1 捕获（docs/instincts-design.md §5）：重试自救成功
             # 事件（曾退避后成功）——观察失败绝不影响主 turn。
             if _instinct_retry is not None:
@@ -204,6 +266,12 @@ async def _ainvoke_rate_limited(bound, msgs):
                     pass
             return result
         except Exception as exc:  # noqa: BLE001 — 只吞限流,其余照抛
+            # T3：失败尝试也发 response（ok=False + 异常类型名），重试的每
+            # 一次 attempt 都可见；发完再走既有退避/上抛判定，语义不变。
+            _emit_llm_event(
+                "response", _obs_req_id, _obs_attempt, _obs_meta,
+                t0=_obs_t0, exc=exc,
+            )
             if _is_stream_chunk_timeout(exc):
                 if stalled >= _STREAM_STALL_MAX_RETRIES:
                     raise

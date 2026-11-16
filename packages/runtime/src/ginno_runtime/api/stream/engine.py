@@ -33,7 +33,7 @@ from ... import server_shared as shared
 from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
-from ...graph import BLOCK_PREFIX
+from ...graph import BLOCK_PREFIX, _LLM_EVENT_FIELDS
 from ...knowledge import citations as cit
 from ...lang import t
 from ...server_shared import (
@@ -96,6 +96,7 @@ from .errors import (
     turn_error_fields,
     turn_recursion_limit,
 )
+from .event_sink import get_sink
 from .heal import _heal_interrupted_turn, _stop_parked_turn
 from .narration import (
     _SERVER_SEARCH_BLOCK_TYPES,
@@ -232,6 +233,19 @@ async def _stream_graph(
                     alive.append(w)
             _SESSION_WS[session_id] = alive
             ws_closed = not alive
+            # 节点侧 turn 事件汇（可选，默认未注册 → 仅一次 dict.get，零影响）：
+            # a2a 入站 worker 无活 socket，上面所有帧本会被静默丢弃；注册后
+            # 把同一帧交给 sink（写进度 JSONL → SSE 转发给调用方）。解析/
+            # sink 异常一律吞掉——旁路绝不影响主 turn（best-effort）。
+            sink = get_sink(session_id)
+            if sink is not None:
+                try:
+                    frame = json.loads(data)
+                    event = frame.pop("event", "")
+                    if event:
+                        sink.offer(event, frame)
+                except Exception:  # noqa: BLE001
+                    pass
 
         # token.delta/thinking.delta 合帧（delta_coalesce.py）：33ms 窗口
         # ≈30fps，N 路并发时 WS send/json.dumps/前端 setState 同比例降频。
@@ -731,6 +745,16 @@ async def _stream_graph(
                             },
                         )
                     )
+                # T3 — LLM 请求级可观测：graph._ainvoke_rate_limited 经 custom
+                # 总线发来的元数据帧，在这里翻译成 llm.request / llm.response
+                # 走 emit/safe_send 下发（远端节点经事件汇自动拿到）。字段过
+                # 白名单——第二道防线，确保 prompt 正文/密钥到不了前端。
+                if isinstance(payload, dict) and payload.get("ginno_llm_event"):
+                    le = payload["ginno_llm_event"]
+                    if isinstance(le, dict) and le.get("kind") in ("request", "response"):
+                        _le_data = {k: le[k] for k in _LLM_EVENT_FIELDS if k in le}
+                        await _coal.flush()  # 保序：llm 事件不插队到缓冲文本前
+                        await safe_send(emit(f"llm.{le['kind']}", _le_data))
                 continue
             elif mode == "updates":
                 # 合帧保序：updates 携带 tool.start/end、permission.request 等

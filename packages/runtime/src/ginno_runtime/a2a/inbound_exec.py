@@ -703,6 +703,17 @@ async def _run_job(job: dict) -> dict:
     shared._RUNNING_TURNS[session_id] = turn_id
     ask_tok = set_interactive(False)  # 入站无人应答 ask_user → 模型自决
     error: str | None = None
+    # 节点侧 turn 事件汇：worker 内引擎无活 socket，turn 帧本会被静默丢弃。
+    # 按 session 注册 sink，把引擎 safe_send 的同一帧写进进度 JSONL
+    # （kind="turn_event"，形状 {ts,kind,event,data}），server 的 SSE tail
+    # 该文件即可把工具调用/流式文本转发给调用方。finally 里 close（flush
+    # 残留 delta，不丢尾字）+ 注销（对象同一性校验，防误删并发新 sink）。
+    from ..api.stream.event_sink import TurnEventSink, register_sink, unregister_sink
+
+    turn_sink = TurnEventSink(
+        lambda event, data: emit_progress("turn_event", event=event, data=data)
+    )
+    register_sink(session_id, turn_sink)
     # resume 闭环（2026-11-16，P1-2）：job 带 resume_value 时不新起 turn，
     # 而是从挂起的 interrupt 续跑（权限批准 / ask_user 回答）。
     # 会话由 job["session_id"] 复用同一条，绝不新建——否则续跑接不上原图状态。
@@ -720,6 +731,8 @@ async def _run_job(job: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 — turn 崩溃转 failed，不带走 worker
         error = f"{type(exc).__name__}: {exc}"
     finally:
+        turn_sink.close()
+        unregister_sink(session_id, turn_sink)
         reset_interactive(ask_tok)
         if shared._RUNNING_TURNS.get(session_id) == turn_id:
             shared._RUNNING_TURNS.pop(session_id, None)
