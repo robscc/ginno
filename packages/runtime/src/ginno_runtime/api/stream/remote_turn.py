@@ -6,6 +6,11 @@ B（会话级归属远端）共用它。
 
 事件契约：发与本地 turn **同名同形**的 WS 事件（turn.start / token.delta /
 tool.start / tool.end / message.end / done），前端零改动即可渲染。
+2026-11-17 起优先走 A2A ``message/stream``（SSE）：节点侧事件汇把引擎帧
+写进进度 JSONL（``kind="turn_event"``），这里逐帧转发——远端过程实时可见。
+**frame_session 必须改写为本地 sid**：引擎给每帧盖的是远端会话 id，前端
+会丢弃 frame_session 不等于本 socket 会话 id 的帧（2026-10-01 防跨会话
+渲染泄漏守卫）——不改写则一帧都不渲染。
 
 持久化：远端回复经 ``graph.aupdate_state`` 写回本地 checkpoint，
 故 ``get_session_history`` 照常读到历史（它读 channel_values.messages）。
@@ -14,6 +19,11 @@ tool.start / tool.end / message.end / done），前端零改动即可渲染。
 - 对端离线/不可达 → **fail-fast 明确报错**，绝不静默回退本地执行
 - 远端 trust/caps/exec_root 仍由**对端 guard** 强制，本地只是发起方
 - 本地不代批远端权限请求（R4 接权限卡）
+
+降级（绝不因流式不可用而让远端会话瘫痪）：
+- 建流失败（对端不支持 streaming / 网络错误）→ 回落阻塞 ``send_message``；
+- 中途断流 / 流提前收（任务已在对端跑）→ 拿 task id 回落 ``tasks/get`` 轮询，
+  **绝不重复派活**；已流式推过的文本只补未推的尾部，不重复灌全文。
 """
 
 from __future__ import annotations
@@ -23,11 +33,19 @@ import time
 import uuid
 from typing import Any
 
+from ...a2a.errors import A2AError
+from ...a2a.models import Task
 from ...server_shared import _log, _push_session_event
 
 # 远端任务轮询间隔（降级模式：对端不支持 SSE 时）
 _POLL_S = 3.0
 _TERMINAL = ("completed", "failed", "canceled", "rejected", "input-required", "auth-required")
+
+# 生命周期事件由本地执行器自己发（turn.start 带 remote/peer 字段、done 带本地
+# 状态），远端同名帧转发会重复/抢跑——抑制。其余 turn_event（tool.* /
+# token.delta / thinking.* / usage / notice / permission.request …）一律转发。
+# message.end/done 目前不经引擎 safe_send（到不了事件汇），列上是防御未来。
+_SUPPRESS_EVENTS = frozenset({"turn.start", "turn.stopped", "message.end", "done"})
 
 
 class RemoteTurnError(RuntimeError):
@@ -132,6 +150,10 @@ async def run_remote_turn(
 
     state, text, task_id, err = "", "", "", ""
     task = None
+    streamed_parts: list[str] = []  # 已流式推给前端的 token.delta 片段
+    saw_token_delta = False
+    accepted = False  # 接单 notice 只发一次
+    deadline = t0 + float(rec.task_timeout_s or 600)
     try:
         # H2: if the last remote task parked on input-required, this follow-up
         # must reference it so the peer resumes that task instead of starting
@@ -151,33 +173,112 @@ async def run_remote_turn(
                     ref_ids = [tb.task_id]
                     break
 
-        task = await client.send_message(
-            user_text,
-            context_id=ctx_id or None,
-            reference_task_ids=ref_ids or None,
-        )
-        task_id = task.id
-        # 远端 contextId 落盘 → 后续轮次延续同一远端上下文。
-        # M6: 不再整条覆盖——先读旧记录，保留 tasks 影子（peer 删除守卫
-        # 和 delegate 的 referenceTaskIds 依赖它）。
-        if task.context_id and task.context_id != ctx_id:
-            from ...a2a.contexts import ContextRecord
+        async def _bookkeep(t: Any) -> None:
+            """status 帧 / send_message 响应共用记账：task id、contextId 落盘、
+            接单 notice（一次）、状态变化 notice。与旧阻塞路径同语义。"""
+            nonlocal task, task_id, state, accepted, ctx_id
+            task = t
+            if getattr(t, "id", ""):
+                task_id = t.id
+            # 远端 contextId 落盘 → 后续轮次延续同一远端上下文。
+            # M6: 不再整条覆盖——先读旧记录，保留 tasks 影子（peer 删除守卫
+            # 和 delegate 的 referenceTaskIds 依赖它）。
+            if t.context_id and t.context_id != ctx_id:
+                from ...a2a.contexts import ContextRecord
 
-            store.set(ContextRecord(
-                ginno_sid=sid, peer_slug=slug, context_id=task.context_id,
-                tasks=prev_tasks,
-            ))
-        state = str(task.status.state.value if hasattr(task.status.state, "value")
-                    else task.status.state)
-        await _push_session_event(
-            sid, "notice",
-            {"message": f"远端 {rec.name} 已接单（task {task_id[:8]}）", "kind": "remote"},
-            tid,
-        )
-        # 轮询至终态，并把状态变化作为进度发出
+                store.set(ContextRecord(
+                    ginno_sid=sid, peer_slug=slug, context_id=t.context_id,
+                    tasks=prev_tasks,
+                ))
+                ctx_id = t.context_id
+            new_state = str(t.status.state.value if hasattr(t.status.state, "value")
+                            else t.status.state)
+            if not accepted and task_id:
+                accepted = True
+                await _push_session_event(
+                    sid, "notice",
+                    {"message": f"远端 {rec.name} 已接单（task {task_id[:8]}）",
+                     "kind": "remote"},
+                    tid,
+                )
+            elif new_state != state:
+                await _push_session_event(
+                    sid, "notice",
+                    {"message": f"远端状态：{new_state}", "kind": "remote"}, tid,
+                )
+            state = new_state
+
+        # 1) 优先流式：message/stream 逐帧消费（对端不支持时回落阻塞）。
+        #    只捕获 A2AError（client 把一切网络/协议失败规整成它）——自身
+        #    bug（TypeError 等）绝不吞进降级分支伪装成对端故障（假绿教训）。
+        stream_fn = getattr(client, "stream_message", None)
+        if stream_fn is not None:
+            gen = stream_fn(
+                user_text,
+                context_id=ctx_id or None,
+                reference_task_ids=ref_ids or None,
+            )
+            try:
+                async for frame in gen:
+                    if time.time() > deadline:
+                        err = f"远端任务超时（{rec.task_timeout_s}s 未达终态）"
+                        state = "failed"
+                        break
+                    fkind = frame.get("event")
+                    fdata = frame.get("data") or {}
+                    if fkind == "status":
+                        await _bookkeep(Task.from_dict(fdata))
+                    elif fkind == "progress" and fdata.get("kind") == "turn_event":
+                        ev = str(fdata.get("event") or "")
+                        if not ev or ev in _SUPPRESS_EVENTS:
+                            continue
+                        payload = dict(fdata.get("data") or {})
+                        # ⚠️ 关键改写：远端引擎盖的 frame_session 是**远端
+                        # 会话 id**，前端守卫会丢弃 ≠ 本地 sid 的帧。
+                        # _push_session_event 的 {"frame_session": sid, **data}
+                        # 里 data 优先——必须在 data 里显式改写，光靠 push
+                        # 侧盖章会被远端值覆盖。turn_id 同理换成本地 tid。
+                        payload["frame_session"] = sid
+                        payload["turn_id"] = tid
+                        if ev == "token.delta":
+                            saw_token_delta = True
+                            streamed_parts.append(str(payload.get("content") or ""))
+                        await _push_session_event(sid, ev, payload, tid)
+            except A2AError as exc:
+                if task is None:
+                    # 建流失败（对端不支持 streaming / 鉴权 / 网络）→ 回落
+                    # 阻塞派活。此时对端未受理任务，send_message 不会重复派活。
+                    _log.info(
+                        "remote_stream_unavailable_fallback session=%s peer=%s err=%s",
+                        sid, slug, exc,
+                    )
+                    task = await client.send_message(
+                        user_text,
+                        context_id=ctx_id or None,
+                        reference_task_ids=ref_ids or None,
+                    )
+                    await _bookkeep(task)
+                else:
+                    # 中途断流：任务已在对端跑，绝不重复派活——下面轮询兜底。
+                    _log.warning(
+                        "remote_stream_broken_poll_fallback session=%s peer=%s task=%s err=%s",
+                        sid, slug, task_id, exc,
+                    )
+            finally:
+                await gen.aclose()
+        else:
+            # 注入的 client 无流式能力（旧 fake / 旧实现）→ 直接阻塞路径。
+            task = await client.send_message(
+                user_text,
+                context_id=ctx_id or None,
+                reference_task_ids=ref_ids or None,
+            )
+            await _bookkeep(task)
+
+        # 2) 未达终态 → 轮询兜底（覆盖：阻塞回落 / 中途断流 / 对端空闲收流 /
+        #    submitted 占位态）。流式正常到终态时此循环直接跳过。
         last = state
-        deadline = t0 + float(rec.task_timeout_s or 600)
-        while state not in _TERMINAL and time.time() < deadline:
+        while task_id and not err and state not in _TERMINAL and time.time() < deadline:
             await asyncio.sleep(_POLL_S)
             task = await client.get_task(task_id)
             state = str(task.status.state.value if hasattr(task.status.state, "value")
@@ -189,7 +290,7 @@ async def run_remote_turn(
                     {"message": f"远端状态：{state}", "kind": "remote"}, tid,
                 )
         text = _task_text(task)
-        if state not in _TERMINAL:
+        if not err and state not in _TERMINAL:
             err = f"远端任务超时（{rec.task_timeout_s}s 未达终态）"
             state = "failed"
     except Exception as exc:  # noqa: BLE001 — 网络/协议失败一律 fail-fast 报错
@@ -224,8 +325,21 @@ async def run_remote_turn(
         from ...a2a.contexts import _key as _ctx_key
         store.update_task_state(_ctx_key(sid, slug), task_id, state or "unknown")
 
+    # 终稿文本协调：流式已推过 token.delta 就**不再重复灌全文**（会重复渲染）。
+    # - 从未流式推过文本（旧节点无事件汇 / 纯工具轮）→ 照旧一次性灌全文；
+    # - 流式推过且终稿以其为前缀（中途断流回落轮询的场景）→ 只补未推的尾部；
+    # - 流式推过且终稿一致/分叉 → 不补（分叉时宁缺毋重，历史仍落终稿全文）。
+    streamed = "".join(streamed_parts)
+    if not text and streamed:
+        # 终态 task 无 status.message（回复只经 delta 下发）→ 用已流式内容兜底
+        text = streamed
     if text:
-        await _push_session_event(sid, "token.delta", {"content": text}, tid)
+        if not saw_token_delta:
+            await _push_session_event(sid, "token.delta", {"content": text}, tid)
+        elif text.startswith(streamed) and len(text) > len(streamed):
+            await _push_session_event(
+                sid, "token.delta", {"content": text[len(streamed):]}, tid
+            )
     if err:
         await _push_session_event(
             sid, "notice", {"message": f"远端执行失败：{err}", "kind": "error"}, tid
