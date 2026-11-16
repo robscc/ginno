@@ -77,6 +77,11 @@ def _client(rec):
     )
 
 
+def _sid(session: dict) -> str:
+    """Session id: production dict uses ``session_id``; tests may use ``id``."""
+    return str(session.get("session_id") or session.get("id") or "")
+
+
 async def _persist_exchange(session: dict, user_text: str, reply: str) -> None:
     """把本轮问答写回本地 checkpoint，使 history 照常可读。
 
@@ -89,7 +94,7 @@ async def _persist_exchange(session: dict, user_text: str, reply: str) -> None:
     try:
         from langchain_core.messages import AIMessage, HumanMessage
 
-        cfg = {"configurable": {"thread_id": session["id"]}}
+        cfg = {"configurable": {"thread_id": _sid(session)}}
         await graph.aupdate_state(
             cfg, {"messages": [HumanMessage(content=user_text), AIMessage(content=reply)]}
         )
@@ -109,7 +114,7 @@ async def run_remote_turn(
     返回 ``{"ok": bool, "text": str, "state": str, "task_id": str, "error": str}``。
     **不抛**（除 peer 配置类错误）——失败也发 done，前端不会卡在 streaming。
     """
-    sid = session["id"]
+    sid = _sid(session)
     slug = remote_peer_of(session)
     tid = turn_id or uuid.uuid4().hex
     t0 = time.time()
@@ -128,20 +133,40 @@ async def run_remote_turn(
     state, text, task_id, err = "", "", "", ""
     task = None
     try:
-        task = await client.send_message(user_text, context_id=ctx_id or None)
+        # H2: if the last remote task parked on input-required, this follow-up
+        # must reference it so the peer resumes that task instead of starting
+        # a new one on a checkpoint that still has a pending interrupt.
+        ref_ids: list[str] = []
+        prev_tasks = []
+        prev = store.get_or_none(sid, slug)
+        if prev is not None:
+            prev_tasks = list(prev.tasks)
+            for tb in reversed(prev_tasks):
+                if tb.state == "input-required":
+                    ref_ids = [tb.task_id]
+                    break
+
+        task = await client.send_message(
+            user_text,
+            context_id=ctx_id or None,
+            reference_task_ids=ref_ids or None,
+        )
         task_id = task.id
-        # 远端 contextId 落盘 → 后续轮次延续同一远端上下文
+        # 远端 contextId 落盘 → 后续轮次延续同一远端上下文。
+        # M6: 不再整条覆盖——先读旧记录，保留 tasks 影子（peer 删除守卫
+        # 和 delegate 的 referenceTaskIds 依赖它）。
         if task.context_id and task.context_id != ctx_id:
             from ...a2a.contexts import ContextRecord
 
             store.set(ContextRecord(
-                ginno_sid=sid, peer_slug=slug, context_id=task.context_id
+                ginno_sid=sid, peer_slug=slug, context_id=task.context_id,
+                tasks=prev_tasks,
             ))
         state = str(task.status.state.value if hasattr(task.status.state, "value")
                     else task.status.state)
         await _push_session_event(
             sid, "notice",
-            {"text": f"远端 {rec.name} 已接单（task {task_id[:8]}）", "kind": "remote"},
+            {"message": f"远端 {rec.name} 已接单（task {task_id[:8]}）", "kind": "remote"},
             tid,
         )
         # 轮询至终态，并把状态变化作为进度发出
@@ -156,7 +181,7 @@ async def run_remote_turn(
                 last = state
                 await _push_session_event(
                     sid, "notice",
-                    {"text": f"远端状态：{state}", "kind": "remote"}, tid,
+                    {"message": f"远端状态：{state}", "kind": "remote"}, tid,
                 )
         text = _task_text(task)
         if state not in _TERMINAL:
@@ -167,6 +192,19 @@ async def run_remote_turn(
         state = "failed"
         _log.warning("remote_turn_failed session=%s peer=%s err=%s", sid, slug, err)
 
+    # M8: 轮询超时 → best-effort 取消远端任务（否则占死对端并发额度）
+    if state == "failed" and task_id and err and "timeout" in err.lower():
+        try:
+            await client.cancel_task(task_id)
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
+    # M7: 释放 httpx 连接池
+    try:
+        await client.aclose()
+    except Exception:  # noqa: BLE001
+        pass
+
     # 产物内容（P1-1 已实现回传）作为工具结果呈现，前端复用既有渲染
     for art in _task_artifacts(task):
         await _push_session_event(
@@ -176,11 +214,16 @@ async def run_remote_turn(
             sid, "tool.end", {"id": art["id"], "content": art["content"]}, tid
         )
 
+    # 影子记账：更新 task 状态（H2 下一轮 ref_ids 查找 + peer 删除守卫）
+    if task_id:
+        from ...a2a.contexts import _key as _ctx_key
+        store.update_task_state(_ctx_key(sid, slug), task_id, state or "unknown")
+
     if text:
         await _push_session_event(sid, "token.delta", {"content": text}, tid)
     if err:
         await _push_session_event(
-            sid, "notice", {"text": f"远端执行失败：{err}", "kind": "error"}, tid
+            sid, "notice", {"message": f"远端执行失败：{err}", "kind": "error"}, tid
         )
 
     await _persist_exchange(session, user_text, text or (f"[远端执行失败] {err}" if err else ""))
