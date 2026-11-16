@@ -403,8 +403,22 @@ async def test_stream_forwards_tool_thinking_usage_events(wire):
     assert _evs(wire.events, "usage")[0]["turn"]["input_tokens"] == 10
     # 接单 notice 保留且只发一次；working→completed 状态 notice 保留
     notices = _evs(wire.events, "notice")
-    assert sum(1 for d in notices if "已接单" in d.get("message", "")) == 1
-    assert any("远端状态：completed" in d.get("message", "") for d in notices)
+    # 2026-11-17 显示精简：接单走 i18n_key（不再硬编码中文、不带 task id）
+    acc = [d for d in notices if d.get("i18n_key") == "stream.remote_accepted"]
+    assert len(acc) == 1, "接单 notice 应恰好一条"
+    assert acc[0].get("params", {}).get("peer"), "接单应带 peer 参数"
+    assert acc[0].get("task_id"), "task_id 仍留 payload 供排查"
+    # 可见文案不该带 task id 片段（英文 fallback 含 "task" 一词是正常的，
+    # 故断言的是 id 本身不出现，而非单词）
+    assert str(acc[0]["task_id"])[:8] not in acc[0].get("message", ""), (
+        "可见文案不该带 task id"
+    )
+    # completed 属冗余状态，**不再播**（turn 收口已表达）
+    assert not any(
+        d.get("i18n_key") == "stream.remote_state"
+        and d.get("params", {}).get("state") == "completed"
+        for d in notices
+    ), "completed 状态 notice 应被抑制（纯噪声）"
     assert not any(d.get("kind") == "error" for d in notices)
     assert wire.persisted == ["结果是 file-a"]
 
@@ -540,7 +554,7 @@ async def test_stream_establishment_failure_falls_back_to_send(wire):
     assert [c["via"] for c in client.calls] == ["stream", "send"]
     assert client.calls[1]["text"] == "hi"
     notices = _evs(wire.events, "notice")
-    assert any("已接单" in d.get("message", "") for d in notices)
+    assert any(d.get("i18n_key") == "stream.remote_accepted" for d in notices)
     assert not any(d.get("kind") == "error" for d in notices)
     assert [d["content"] for d in _evs(wire.events, "token.delta")] == ["阻塞回落答复"]
 
@@ -578,7 +592,12 @@ async def test_stream_clean_eof_nonterminal_polls_to_completion(wire):
     assert res["text"] == "轮询答复"
     assert len(client.polls) == 2
     notices = _evs(wire.events, "notice")
-    assert any("远端状态：completed" in d.get("message", "") for d in notices)
+    # completed 已抑制；回落路径同样不该播冗余状态
+    assert not any(
+        d.get("i18n_key") == "stream.remote_state"
+        and d.get("params", {}).get("state") == "completed"
+        for d in notices
+    )
 
 
 async def test_stream_and_send_both_fail_reports_peer_error_not_own_bug(wire):
@@ -777,3 +796,35 @@ async def test_integration_run_remote_turn_over_real_server(wire, monkeypatch, t
     assert any(f["event"] == "tool.end" for f in sent)
     deltas = [f["content"] for f in sent if f["event"] == "token.delta"]
     assert deltas == ["节点终稿"], f"终稿重复灌全文: {deltas}"
+
+# ── 2026-11-17：远端 notice 显示精简 ─────────────────────────────────────────
+#
+# 用户反馈「远端 X 已接单（task 4c9a469c）」这条显示要优化。三处噪声：
+# ① peer 名与会话头「远端 · X」徽标重复；② task id 是开发向信息；
+# ③ 硬编码中文没走 i18n。另「远端状态：completed」是纯冗余——turn 收口
+# 与实时工具流本身已经表达了。
+
+
+class TestRemoteNoticeSlimming:
+    def test_notify_states_only_actionable_or_error(self):
+        from ginno_runtime.api.stream import remote_turn as rt
+
+        assert "input-required" in rt._NOTIFY_STATES, "等用户回话必须播"
+        assert "auth-required" in rt._NOTIFY_STATES
+        assert "failed" in rt._NOTIFY_STATES
+        assert "rejected" in rt._NOTIFY_STATES
+        for noisy in ("completed", "canceled", "working", "submitted"):
+            assert noisy not in rt._NOTIFY_STATES, f"{noisy} 属冗余，不该播"
+
+    def test_i18n_keys_exist_in_both_locales(self):
+        """新增键必须 en/zh-CN 齐全且占位符一致（仓库曾有带点 key 事故）。"""
+        import json
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[4] / "apps" / "web" / "messages"
+        for loc in ("en", "zh-CN"):
+            d = json.loads((root / loc / "stream.json").read_text(encoding="utf-8"))
+            for key, ph in (("remote_accepted", "{peer}"), ("remote_state", "{state}")):
+                txt = d["stream"][key]
+                assert ph in txt, f"{loc}/{key} 缺占位符 {ph}"
+                assert "." not in key, "键必须扁平无点"
