@@ -384,7 +384,13 @@ async def _run_compact(monkeypatch, graph, *, running=(), compact_exc=None):
         return None
 
     async def _compact(
-        session, config, force=False, on_summary_start=None, on_summary_done=None
+        session,
+        config,
+        force=False,
+        on_summary_start=None,
+        on_summary_done=None,
+        on_heartbeat=None,
+        abort_event=None,
     ):
         calls["compact"] += 1
         assert force is True  # manual /compact must always force
