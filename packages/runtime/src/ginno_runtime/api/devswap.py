@@ -410,6 +410,24 @@ async def _notify_unattended_confirm() -> None:
             "devswap_unattended_confirm_notify_failed")
 
 
+@router.get("/api/lastwords/pending")
+async def lastwords_pending_list() -> dict:
+    """待确认续跑列表（2026-11-16）：前端 WS 连上后主动拉，重建决策卡。
+
+    广播 ``runtime.lastwords_pending`` 只发活 socket 且无重放，启动 +2s
+    广播早于前端 3s 重连 → 帧丢失。本端点是那条链路的**可靠兜底**。
+    """
+    from .. import lastwords as _lw
+
+    try:
+        return {"ok": True, "pending": _lw.list_pending()}
+    except Exception:  # noqa: BLE001 — 读失败回落空列表，不炸前端
+        import logging
+
+        logging.getLogger(__name__).exception("lastwords_pending_list_failed")
+        return {"ok": True, "pending": []}
+
+
 @router.post("/api/lastwords/resume")
 async def lastwords_resume(body: dict) -> dict:
     """确认续跑（2026-11-10 产品化：auto 模式人工会话的待确认流）。

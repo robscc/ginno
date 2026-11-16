@@ -640,6 +640,48 @@ def pending_resume_snapshot(session_id: str) -> dict | None:
     return snap
 
 
+def list_pending(*, now: float | None = None) -> list[dict]:
+    """列出待确认续跑条目（2026-11-16 新增，供前端**拉取式**重建决策卡）。
+
+    为什么必须拉取而不能只靠广播：``_push_global_event`` 只遍历**当前活着
+    的 socket**（server_shared.py），无缓冲无重放；而 recover 在 lifespan
+    +2s 就广播，前端 WS 重连间隔 3s——**真实帧经常先于 socket 就绪发出，
+    静默丢失**。这正是用户「遗言好像没触发过」的最后一环（前两环是
+    notify 无交互 + pending 条件太窄，已修）。packaged e2e 作者实测撞上
+    此竞态，不得不按契约补投一帧才测得下去。
+
+    拉取式另修一个缺口：收件箱条目的 action 回调不可序列化，应用重启后
+    只剩「跳会话」，决策按钮丢失；有了本端点，前端连上即可重建。
+
+    过期的顺手清掉（与 pending_resume_snapshot 同口径）。
+    """
+    now = time.time() if now is None else now
+    out: list[dict] = []
+    for sid in list(_PENDING_RESUME.keys()):
+        snap = _PENDING_RESUME.get(sid) or {}
+        if now - float(snap.get("pending_at") or 0) > TTL_S:
+            _PENDING_RESUME.pop(sid, None)
+            drop_lastwords(sid)
+            continue
+        eff = snap.get("effort") or {}
+        out.append({
+            "session_id": sid,
+            "head": str(snap.get("user_request_head") or "")[:160],
+            "user_request_head": str(snap.get("user_request_head") or "")[:160],
+            "reason": str(snap.get("reason") or ""),
+            "bg_running": len(snap.get("bg_tasks") or []),
+            "bg_interrupted": len(snap.get("bg_interrupted") or []),
+            "bg_interrupted_ids": list(snap.get("bg_interrupted") or []),
+            "tool_calls": eff.get("tool_calls", 0),
+            "elapsed_s": max(
+                0.0,
+                float(snap.get("ts") or 0) - float(eff.get("started_at") or 0),
+            ),
+            "pending_at": float(snap.get("pending_at") or 0),
+        })
+    return sorted(out, key=lambda d: d["pending_at"])
+
+
 async def resume_pending(session_id: str) -> dict:
     """确认续跑（/api/lastwords/resume）。"""
     snap = pending_resume_snapshot(session_id)

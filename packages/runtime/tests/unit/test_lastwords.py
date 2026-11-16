@@ -1048,3 +1048,107 @@ class TestPendingForAllReasons:
         assert payload["bg_interrupted"] == 2
         assert payload["bg_interrupted_ids"] == ["t_a", "t_b"]
         assert payload["reason"] == "running"
+
+
+# ── 2026-11-16：拉取式 pending 列表（修广播丢帧的最后一环）────────────────────
+#
+# 根因：_push_global_event 只遍历**当前活着的 socket**，无缓冲无重放；
+# recover 在 lifespan +2s 广播，而前端 WS 重连间隔 3s → **真实帧经常先于
+# socket 就绪发出，静默丢失**。这是用户「遗言好像没触发过」的最后一环。
+# packaged e2e 作者实测撞上此竞态，不得不按契约补投一帧才测得下去。
+
+
+class TestListPending:
+    @pytest.fixture(autouse=True)
+    def _clear_pending(self):
+        """_PENDING_RESUME 是模块级 dict，跨测试泄漏会让 list_pending()[0]
+        取到别的会话（实测 6 红全源于此）。前后都清，保证本类互不污染。"""
+        lastwords._PENDING_RESUME.clear()
+        yield
+        lastwords._PENDING_RESUME.clear()
+
+    def test_empty_when_nothing_pending(self):
+        assert lastwords.list_pending() == []
+
+    async def test_recover_then_list_exposes_entry(self, isolated_home, monkeypatch):
+        """挂起后必须能被拉取到——这是前端重建决策卡的唯一可靠来源。"""
+        _write_valid("s-list", reason="running")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+
+        async def fake_push(event, data):
+            pass
+
+        monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
+        await lastwords.recover_lastwords()
+        items = lastwords.list_pending()
+        assert len(items) == 1
+        it = items[0]
+        assert it["session_id"] == "s-list"
+        assert it["reason"] == "running"
+        assert it["head"] and it["user_request_head"] == it["head"]
+        assert "pending_at" in it
+
+    async def test_list_carries_interrupted_counts(self, isolated_home, monkeypatch):
+        from ginno_runtime.tasks import store as task_store
+
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {
+                "t_i1": {"status": task_store.STATUS_INTERRUPTED},
+                "t_i2": {"status": task_store.STATUS_INTERRUPTED},
+            },
+        )
+        _write_valid("s-cnt", reason="signal", bg_interrupted=["t_i1", "t_i2"])
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+
+        async def fake_push(event, data):
+            pass
+
+        monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
+        await lastwords.recover_lastwords()
+        it = lastwords.list_pending()[0]
+        assert it["bg_interrupted"] == 2
+        assert it["bg_interrupted_ids"] == ["t_i1", "t_i2"]
+
+    def test_expired_entry_purged_and_file_dropped(self, isolated_home):
+        """过期条目拉取时顺手清掉（与 pending_resume_snapshot 同口径）。"""
+        _write_valid("s-old", reason="running")
+        lastwords._PENDING_RESUME["s-old"] = {
+            "session_id": "s-old",
+            "pending_at": time.time() - lastwords.TTL_S - 10,
+        }
+        assert lastwords.list_pending() == []
+        assert "s-old" not in lastwords._PENDING_RESUME
+        assert not lastwords._path("s-old").exists()
+
+    async def test_dismiss_removes_from_list(self, isolated_home, monkeypatch):
+        _write_valid("s-dis", reason="running")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+
+        async def fake_push(event, data):
+            pass
+
+        monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
+        await lastwords.recover_lastwords()
+        assert len(lastwords.list_pending()) == 1
+        lastwords.dismiss_pending("s-dis")
+        assert lastwords.list_pending() == []
+
+    def test_sorted_by_pending_at(self):
+        now = time.time()
+        for sid, age in (("s-new", 1), ("s-old2", 100)):
+            lastwords._PENDING_RESUME[sid] = {
+                "session_id": sid, "pending_at": now - age,
+                "user_request_head": "x", "reason": "running",
+            }
+        got = [d["session_id"] for d in lastwords.list_pending()]
+        assert got == ["s-old2", "s-new"]

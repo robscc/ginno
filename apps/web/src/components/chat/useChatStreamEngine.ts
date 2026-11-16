@@ -18,7 +18,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
+import {
+  listLastwordsPending,
+  openSessionSocket,
+  getSessionHistory,
+} from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
@@ -501,6 +505,24 @@ export function useChatStreamEngine(deps: EngineDeps) {
       // 壳收尾重启 sidecar 后整页回来）后先拉 GET /api/devswap/progress
       // 快照，再由总线上的既有订阅继续吃 WS 事件。无进行中 run 时静默清空。
       void resyncDevSwapRun();
+      // 遗言待确认续跑：重连后主动拉 GET /api/lastwords/pending 重建决策卡
+      // （2026-11-16）。后端恢复在 lifespan +2s 广播 runtime.lastwords_pending，
+      // 而 _push_global_event 只发活 socket、无重放，前端重连间隔 3s →
+      // **真实帧经常先于 socket 就绪发出而丢失**，用户因此从没见过提示。
+      // 拉取到的条目合成同形状事件喂**同一个 handle 分发器**（单一渲染
+      // 路径，不另写一套卡片）；handler 内 dedupeKey=lastwords-pending:<sid>
+      // 天然去重，真实帧若也到达不会双弹。范式对齐上面的 resyncDevSwapRun。
+      void (async () => {
+        try {
+          const r = await listLastwordsPending();
+          for (const it of r?.pending ?? []) {
+            if (!it?.session_id) continue;
+            handle(sid, { event: "runtime.lastwords_pending", ...it });
+          }
+        } catch {
+          /* 拉取失败不拦连接：真实广播若到达仍能弹卡 */
+        }
+      })();
       if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
         // A turn was in flight when this socket's predecessor dropped. Turn
         // events broadcast to EVERY socket of the session, so the running

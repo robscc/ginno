@@ -412,10 +412,16 @@
       "dismiss": "关闭",
       "homeModelPicked": "下一个会话将使用 {model}",
       "lastwordsRestored": "重启恢复：中断的会话已注入恢复上下文",
-      "lastwordsPendingTitle": "检测到未完成的工作",
-      "lastwordsPending": "重启前有中断的任务（{tools} 次工具 / 已进行 {elapsed}）——点击进入会话，输入「继续」即可续跑",
-      "lastwordsResumeBtn": "继续未完成的工作",
-      "lastwordsDismissBtn": "放弃恢复"
+      "lastwords-pending-title": "检测到未完成的工作",
+      "lastwords-pending": "重启中断了「{head}」（{tools} 次工具 / 已进行 {elapsed}，{bgInterrupted} 个后台任务被中断）。点「恢复」从中断处继续，或「忽略」放弃恢复",
+      "lastwords-no-head": "（请求摘要不可用）",
+      "lastwords-resume-btn": "恢复",
+      "lastwords-dismiss-btn": "忽略",
+      "lastwords-resume-ok": "已发出恢复请求，正在续跑中断的工作",
+      "lastwords-resume-expired": "该恢复条目已过期或已处理，无需再恢复",
+      "lastwords-resume-failed": "恢复失败：{error}",
+      "lastwords-dismissed": "已忽略该恢复提示，遗言快照已清理",
+      "lastwords-dismiss-failed": "忽略失败：{error}"
     },
     "planBoard": {
       "viewList": "清单视图",

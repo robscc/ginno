@@ -412,10 +412,16 @@
       "dismiss": "Dismiss",
       "homeModelPicked": "Next session will start on {model}",
       "lastwordsRestored": "Restart restore: recovery context injected into the interrupted session",
-      "lastwordsPendingTitle": "Unfinished work detected",
-      "lastwordsPending": "A task was interrupted by the restart ({tools} tool calls / {elapsed} elapsed) — open the session and type \"continue\" to resume",
-      "lastwordsResumeBtn": "Resume unfinished work",
-      "lastwordsDismissBtn": "Discard recovery"
+      "lastwords-pending-title": "Unfinished work detected",
+      "lastwords-pending": "The restart interrupted \"{head}\" ({tools} tool calls / {elapsed} elapsed, {bgInterrupted} background tasks killed). Resume to continue where it left off, or dismiss to discard the recovery",
+      "lastwords-no-head": "(request summary unavailable)",
+      "lastwords-resume-btn": "Resume",
+      "lastwords-dismiss-btn": "Discard",
+      "lastwords-resume-ok": "Resume requested — continuing the interrupted work",
+      "lastwords-resume-expired": "This recovery entry has expired or was already handled — nothing to resume",
+      "lastwords-resume-failed": "Resume failed: {error}",
+      "lastwords-dismissed": "Recovery dismissed — the lastwords snapshot was cleaned up",
+      "lastwords-dismiss-failed": "Dismiss failed: {error}"
     },
     "planBoard": {
       "viewList": "List view",

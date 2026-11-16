@@ -211,6 +211,29 @@ describe("dedupeKey（刷新不堆叠）", () => {
     expect(box[0].text).toBe("n104"); // 最新在前
     expect(box.some((e) => e.text === "n0")).toBe(false);
   });
+
+  it("收卡后同 key 快速反馈不被旧退场定时器误删（id 复用竞态，2026-11-16）", () => {
+    vi.useFakeTimers();
+    try {
+      let latest: import("./notice").Notice[] = [];
+      const un = subscribeNotices((l) => {
+        latest = l;
+      });
+      // 决策卡（常驻）→ 点按钮 = markNoticeRead 收卡（排 180ms 退场定时器）
+      pushNotice("info", "要恢复吗", { dedupeKey: "lw:s1", duration: 0 });
+      const id = latest[0].id;
+      markNoticeRead(id, "lw:s1");
+      // 反馈在 180ms 内到达、同 dedupeKey → 收件箱原位刷新复用同一 id
+      pushNotice("info", "已忽略", { dedupeKey: "lw:s1" });
+      expect(latest[0].text).toBe("已忽略");
+      // 旧退场定时器到期：不得把 entered=true 的新卡摘掉
+      vi.advanceTimersByTime(300);
+      un();
+      expect(toastCount()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("clearNotices（登出/测试）", () => {
@@ -219,5 +242,36 @@ describe("clearNotices（登出/测试）", () => {
     clearNotices();
     expect(unreadNoticeCount()).toBe(0);
     expect(globalThis.localStorage.getItem(NOTICEBOX_KEY)).toBe("[]");
+  });
+});
+
+describe("secondaryAction（次按钮，lastwords 恢复/忽略决策卡）", () => {
+  it("action 与 secondaryAction 并存透传到 toast 条目", () => {
+    let latest: import("./notice").Notice[] = [];
+    const un = subscribeNotices((l) => {
+      latest = l;
+    });
+    const onResume = () => {};
+    const onDismiss = () => {};
+    pushNotice("info", "要恢复吗", {
+      duration: 0,
+      action: { label: "恢复", onClick: onResume },
+      secondaryAction: { label: "忽略", onClick: onDismiss },
+    });
+    un();
+    expect(latest).toHaveLength(1);
+    expect(latest[0].action?.onClick).toBe(onResume);
+    expect(latest[0].secondaryAction?.onClick).toBe(onDismiss);
+    expect(latest[0].duration).toBe(0);
+  });
+
+  it("secondaryAction 不进收件箱持久化（回调不可序列化，与 action 同口径）", () => {
+    pushNotice("info", "要恢复吗", {
+      mode: "silent",
+      secondaryAction: { label: "忽略", onClick: () => {} },
+    });
+    const raw = globalThis.localStorage.getItem(NOTICEBOX_KEY) ?? "";
+    expect(raw).not.toContain("secondaryAction");
+    expect(raw).not.toContain("忽略");
   });
 });
