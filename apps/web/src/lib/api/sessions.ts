@@ -217,6 +217,9 @@ export async function createSession(req: {
   primary_folder?: string | null;
   // "quick" marks floating quick-chat sessions (floating-window-design.md §1.1)
   type?: string;
+  /** 远端会话（remote-session-design.md R1/R3）：挂 peer slug → 整个会话
+   *  在该远端 ginno 节点执行，本地只是显示层。缺省/null = 本地。 */
+  remote_peer?: string;
 }) {
   return json<SessionMeta & { ok?: boolean; error?: string }>(`${BASE}/sessions`, {
     method: "POST",

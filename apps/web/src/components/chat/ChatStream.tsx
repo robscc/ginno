@@ -59,6 +59,7 @@ import { SummarizeMenu } from "./stream/SummarizeMenu";
 import { TranscriptList } from "./stream/TranscriptList";
 import { Composer } from "./stream/Composer";
 import { AgentChips } from "./stream/AgentChips";
+import { parsePeerTarget } from "./stream/peerTarget";
 import { HomeView } from "./stream/HomeView";
 import { useComposerResize } from "./stream/useComposerResize";
 import { useComposerSend } from "./stream/useComposerSend";
@@ -853,7 +854,7 @@ export function ChatStream({
   // 无需额外清理。agentChipsEl 抽成变量：composerBoxEl 是单实例双 key 槽，
   // chip 行不能挪进去（会把 session-only 按钮拖进 home），两槽各渲染一份。
   const switchTarget =
-    target && session && !isChannel && target !== session.agent_id
+    target && session && !isChannel && !parsePeerTarget(target) && target !== session.agent_id
       ? agentById(target)
       : null;
 

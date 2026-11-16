@@ -1,5 +1,7 @@
 {
   "chat": {
+    "remote-peer-chip-ask": "Run on {name}",
+    "remote-peer-chip-title": "Remote node {name} · {endpoint} — the whole session runs on that machine",
     "status": {
       "running": "Running",
       "waiting": "Waiting for your answer",

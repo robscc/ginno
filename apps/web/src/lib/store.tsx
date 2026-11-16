@@ -186,6 +186,9 @@ interface GinnoState {
       /** 出生即挂载(home-mount-picker-design.md §3)——首页 composer 的 pending 目录 */
       context_folders?: string[];
       primary_folder?: string | null;
+      /** 远端会话（remote-session-design.md R3）：执行方选择器选了 A2A
+       *  peer 时随建会话下发；缺省 = 本地。 */
+      remote_peer?: string;
     },
   ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;

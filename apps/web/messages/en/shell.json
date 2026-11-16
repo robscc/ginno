@@ -1,5 +1,8 @@
 {
   "shell": {
+    "remote-badge": "Remote · {name}",
+    "remote-badge-title": "This session runs on remote node {name} ({endpoint}). The executor cannot be switched mid-session.",
+    "remote-badge-title-noendpoint": "This session runs on remote node {name}. The executor cannot be switched mid-session.",
     "runtimeStale": {
       "title": "Runtime updated",
       "hint": "A newer runtime build was installed. Quit and reopen Ginno to load it.",

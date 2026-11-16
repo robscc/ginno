@@ -479,6 +479,21 @@ describe("createSession", () => {
     await createSession(req);
     expectWrite(mock, "POST", `${API}/sessions`, { body: req });
   });
+
+  it("remote_peer 透传（remote-session-design.md R3：远端执行方建会话）", async () => {
+    const mock = stubFetch(META);
+    await createSession({ workspace: "/w", remote_peer: "expense-bot" });
+    expectWrite(mock, "POST", `${API}/sessions`, {
+      body: { project_slug: "default", workspace: "/w", remote_peer: "expense-bot" },
+    });
+  });
+
+  it("不传 remote_peer 时 body 不含该键（本地会话契约不变）", async () => {
+    const mock = stubFetch(META);
+    await createSession({ workspace: "/w", agent_id: "dev" });
+    const [, init] = mock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty("remote_peer");
+  });
 });
 
 describe("patchSession", () => {
