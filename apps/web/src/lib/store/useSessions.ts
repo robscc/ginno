@@ -200,6 +200,9 @@ export function useSessions({
         /** 出生即挂载(home-mount-picker-design.md §3)——首页 composer 的 pending 目录 */
         context_folders?: string[];
         primary_folder?: string | null;
+        /** 远端会话（remote-session-design.md R3）：执行方选择器选了 A2A
+         *  peer 时随建会话下发；缺省 = 本地。 */
+        remote_peer?: string;
       },
     ) => {
       if (creatingRef.current) return null;
@@ -216,6 +219,7 @@ export function useSessions({
           workflow_id: opts?.workflow_id,
           context_folders: opts?.context_folders,
           primary_folder: opts?.primary_folder ?? undefined,
+          remote_peer: opts?.remote_peer,
         });
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);

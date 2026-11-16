@@ -1,5 +1,7 @@
 {
   "chat": {
+    "remote-peer-chip-ask": "在 {name} 上运行",
+    "remote-peer-chip-title": "远端节点 {name} · {endpoint}——整个会话都在那台机器上执行",
     "status": {
       "running": "运行中",
       "waiting": "等待回答",

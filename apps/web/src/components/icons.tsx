@@ -21,6 +21,7 @@ import {
   Zap,
   Clock,
   Slash,
+  Server,
   type LucideProps,
 } from "lucide-react";
 
@@ -105,6 +106,9 @@ const MAP: Record<string, React.ComponentType<LucideProps>> = {
   zap: Zap,
   clock: Clock,
   slash: Slash,
+  // 远端机器语义（remote-session-design.md R3）：peer 执行方 chip 与会话头
+  // 「远端」徽标共用，一眼区分「本机 agent」与「另一台机器」。
+  server: Server,
   "claude-code": ClaudeCodeMark,
   codex: CodexMark,
   pi: PiMark,

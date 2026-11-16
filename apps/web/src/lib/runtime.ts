@@ -19,6 +19,7 @@ export * from "./api/code";
 export * from "./api/knowledge";
 export * from "./api/instincts";
 export * from "./api/connectors";
+export * from "./api/a2a";
 export * from "./api/schedule";
 export * from "./api/tasks";
 export * from "./api/misc";

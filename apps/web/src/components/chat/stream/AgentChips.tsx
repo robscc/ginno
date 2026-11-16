@@ -8,7 +8,9 @@ import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import type { useGinno } from "@/lib/store";
 import type { SessionMeta } from "@/lib/types";
+import { useA2aPeers } from "@/lib/useA2aPeers";
 import { recommendAgentId } from "../streamCore";
+import { peerEndpointHint, peerTargetValue } from "./peerTarget";
 
 export function AgentChips({
   g,
@@ -28,6 +30,10 @@ export function AgentChips({
 }) {
   const tc = useTranslations("chat");
   const recAgentId = recommendAgentId(input, new Set(g.agents.map((a) => a.id)));
+  // 远端 peer 候选（remote-session-design.md R3 定案 #10）：只在首页拉取
+  // ——peer 是「新建对话的执行方」，会话建立后归属已定（定案 #11 不可中途
+  // 切换），会话内不需要这份列表。
+  const peers = useA2aPeers(!session);
 
   // P1-20：团队广场的语义是**投递给成员**，不是「Ask X」换 persona。
   // 此前渲染全量 agent + persona 文案，选到非成员会静默失败（deliver 解析
@@ -66,6 +72,10 @@ export function AgentChips({
     );
   }
 
+  // 远端会话（定案 #11）：执行方已钉死在远端节点，本地 agent 切换 chips
+  // 整行隐藏——留着只会诱导「切了等于换会话」的非法操作。
+  if (session?.remote_peer) return null;
+
   return (
     <>
       {g.agents.map((a) => {
@@ -93,6 +103,36 @@ export function AgentChips({
           </button>
         );
       })}
+      {/* 远端 peer 与本地 agent 并列（定案 #10）：机器图标 + 地址提示，
+          一眼看出「这轮在哪台机器跑」。仅首页（!session）——选中后随
+          createAndSend 以 remote_peer 建会话；target 用 peer:<slug> 前缀
+          与本地 agent id 区分（peerTarget.ts）。 */}
+      {!session &&
+        peers
+          .filter((p) => p.enabled)
+          .map((p) => {
+            const val = peerTargetValue(p.slug);
+            const sel = target === val;
+            return (
+              <button
+                key={p.slug}
+                data-testid={`remote-peer-chip-${p.slug}`}
+                onClick={() => onSelect(sel ? null : val)}
+                title={tc("remote-peer-chip-title", { name: p.name, endpoint: p.endpoint })}
+                className={
+                  sel
+                    ? "flex items-center gap-1.5 rounded-lg border border-violet/60 bg-violet/10 px-2.5 py-1 text-xs text-violet transition-colors"
+                    : "flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted transition-colors hover:border-line2 hover:text-txt"
+                }
+              >
+                <Icon name="server" className="h-3.5 w-3.5" />
+                {tc("remote-peer-chip-ask", { name: p.name })}
+                <span className="max-w-[14rem] truncate font-mono text-[10px] text-faint">
+                  {peerEndpointHint(p.endpoint)}
+                </span>
+              </button>
+            );
+          })}
     </>
   );
 }

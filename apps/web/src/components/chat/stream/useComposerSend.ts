@@ -28,6 +28,7 @@ import {
   type SendPayload,
   type VersionPropose,
 } from "../streamCore";
+import { parsePeerTarget } from "./peerTarget";
 
 export function useComposerSend({
   g,
@@ -188,6 +189,10 @@ export function useComposerSend({
       return;
     }
     const sid = session.id;
+    // peer:<slug> 前缀的 target 只可能来自首页执行方选择器（会话内不渲染
+    // peer chips）；万一残留到这里，按「未暂选」处理——绝不把前缀串当
+    // agent id 发出去（remote-session-design.md R3）。
+    const localTarget = parsePeerTarget(target) ? null : target;
     // Parked at a card: the user is answering or changing their mind, not
     // queueing (design §3.4). Checked BEFORE the busy gate because a parked
     // turn is still busy but must never receive a queue entry. (Answering is
@@ -195,7 +200,7 @@ export function useComposerSend({
     if (parked) {
       if (!text) return;
       inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
-      handleParkedSend(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
+      handleParkedSend(sid, text, localTarget ?? session.agent_id ?? g.agents[0]?.id ?? null);
       setInput("");
       setMenu(null);
       return;
@@ -217,7 +222,7 @@ export function useComposerSend({
       enqueueSteer(
         sid,
         text,
-        target ?? session.agent_id ?? g.agents[0]?.id ?? null,
+        localTarget ?? session.agent_id ?? g.agents[0]?.id ?? null,
         attachments,
         readyFiles,
       );
@@ -229,8 +234,10 @@ export function useComposerSend({
       return;
     }
     if (!text && attachments.length === 0 && readyFiles.length === 0) return;
-    const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
-    if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
+    const agentId = localTarget ?? session.agent_id ?? g.agents[0]?.id ?? null;
+    // 远端会话不换绑本地 agent（定案 #11）：执行方在远端，agent_id 只是
+    // 本地展示残留，PATCH 它没有意义还会误导会话头。
+    if (!session.remote_peer && agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     // Final prune against the raw (untrimmed) input, deduped — only mentions
     // whose @kind:label token is still present are sent. The server treats this
     // structured list as authoritative (text tokens are its raw-client fallback).
@@ -276,12 +283,18 @@ export function useComposerSend({
     setAttachments([]);
     setFileAttachments([]);
     try {
-      const agentId = target ?? g.agents[0]?.id ?? null;
-      const s = await g.newSession(agentId, {
+      // 执行方分流（remote-session-design.md R3 定案 #10）：target 带
+      // peer:<slug> 前缀 = 用户选了远端节点 → 会话挂 remote_peer，本地
+      // agent_id 不下发（执行方在远端，本地 persona 无意义）；否则维持
+      // 原本地 agent 懒创建行为，逐字不变。
+      const peerSlug = parsePeerTarget(target);
+      const agentId = peerSlug ? null : (target ?? g.agents[0]?.id ?? null);
+      const s = await g.newSession(agentId ?? undefined, {
         ...(homeModel ?? {}),
         // 出生即挂载：pending 目录随建会话请求提交(后端 create_session 原生支持)
         context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
         primary_folder: pendingMounts.primary ?? undefined,
+        remote_peer: peerSlug ?? undefined,
       });
       if (!s) {
         restoreComposer(); // sessionError banner carries the reason

@@ -11,6 +11,7 @@ import { agentHex } from "@/lib/theme";
 import { fmtTokens } from "@/lib/format";
 import { AgentIcon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
+import { RemotePeerBadge } from "./RemotePeerBadge";
 import { ContextFoldersChip } from "./ContextFoldersChip";
 import { LinkedSessionsChip } from "./LinkedSessionsChip";
 import { TopBarFuncButton } from "./TopBarFuncButton";
@@ -204,6 +205,9 @@ export function TopBar({
           {session?.title || tr("topbar.newSession")}
         </h1>
         <SessionIdChip sessionId={session?.id} />
+        {/* 远端归属徽标（remote-session-design.md R3）：会话挂 remote_peer
+            时紧跟标题区，一眼看出执行方在另一台机器。 */}
+        {session?.remote_peer && <RemotePeerBadge slug={session.remote_peer} />}
       </div>
 
       {/* 功能按钮组(§2.3):五个同宽 32px,徽标 + hover 数据 + click 面板;

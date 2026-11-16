@@ -237,6 +237,10 @@ export interface SessionMeta {
   labels?: string[];
   backend?: string;
   mode?: string;
+  /** 远端会话（remote-session-design.md R1）：归属的 A2A peer slug。
+   *  挂上后每轮 turn 在远端节点执行；缺省/null = 本地。后端落盘并在
+   *  重启后恢复，前端只读（定案 #11：不支持中途切换执行方）。 */
+  remote_peer?: string | null;
   // 影子会话所属的执行记录 run_id（§4.3）；普通会话缺省。
   schedule_run_id?: string;
   // ---- subagent (subagent-design.md §4.1；与共享契约 1 同形) ----
