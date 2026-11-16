@@ -758,3 +758,68 @@ def test_build_resume_value_no_pending_fails_loud():
 def test_pending_interrupt_kind_none_for_fresh_session(tmp_path):
     """无挂起的会话返回 None，绝不抛。"""
     assert inbound_exec.pending_interrupt_kind("no-such-session", "a2a-inbound") is None
+
+
+# ── 2026-11-17：入站权限放行面从 guard 分类派生（修 headless 永久挂起）────────
+#
+# 事故：原实现只手列 8 个工具，而 guard 分类了 40+ 个。其余工具
+# （web_fetch/web_search/bg_run/ask_user/render_widget/parse_document/
+# browser_* …）落到默认确认模式 → **headless 节点没有 UI，权限请求永远
+# 无人应答 → turn 永久挂起**。真机实锤：远端 web_fetch 发出 tool.start +
+# permission.request 后再无 tool.end，前端卡片永远转圈（3 个 tool.start
+# 只有 2 个 tool.end）。
+#
+# 原则：guard 才是真安全边界（exec_root + caps + trust + 配置写一律拒 +
+# 不可沙箱化派生一律拒）。权限层不该在其上再叠一道永远无人应答的确认。
+
+
+class TestInboundPermissionSurface:
+    def _allow(self, trust):
+        from ginno_runtime.a2a.inbound_exec import (
+            ExecPolicy,
+            _write_inbound_settings,
+        )
+
+        _write_inbound_settings(
+            ExecPolicy(trust=trust, caps=["L0", "L1", "L2", "L3"])
+        )
+        return set(_read_perms()["permissions"]["allow"])
+
+    def test_normal_allows_web_fetch_and_ask_user(self):
+        """核心回归：这两个正是真机上挂死的工具。"""
+        allow = self._allow("normal")
+        for name in ("web_fetch", "ask_user", "web_search", "bg_run",
+                     "render_widget", "parse_document"):
+            assert name in allow, f"{name} 未放行 → headless 会永久挂起"
+
+    def test_full_same_surface_as_normal(self):
+        """normal 与 full 的权限派生本就一致（guard 才是分级点）。"""
+        assert self._allow("normal") == self._allow("full")
+
+    def test_readonly_only_read_tools(self):
+        allow = self._allow("readonly")
+        assert "web_fetch" in allow  # 读类，readonly 也可
+        assert not ({"bash", "write_file", "bg_run", "repl"} & allow)
+
+    def test_unsandboxable_spawn_never_allowed(self):
+        """guard 在任何 trust 都拒的派生工具，权限层不放行（少一条噪声）。"""
+        from ginno_runtime.a2a import guard as g
+
+        for trust in ("readonly", "normal", "full"):
+            assert not (self._allow(trust) & g._UNSANDBOXABLE_SPAWN_TOOLS), (
+                f"{trust} 放行了不可沙箱化派生工具"
+            )
+
+    def test_surface_covers_guard_classified_tools(self):
+        """放行面应覆盖 guard 分类的全集（减去不可沙箱化派生）。"""
+        from ginno_runtime.a2a import guard as g
+
+        expect = (
+            g._READ_TOOLS | g._WRITE_TOOLS | g._SHELL_TOOLS | g._AGENT_OP_TOOLS
+        ) - g._UNSANDBOXABLE_SPAWN_TOOLS
+        assert self._allow("normal") >= expect
+
+    def test_bypass_still_false(self):
+        """放行面扩大 ≠ bypass_permissions（#7 fail-closed 不变）。"""
+        self._allow("full")
+        assert _read_perms()["bypass_permissions"] is False

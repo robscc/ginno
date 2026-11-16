@@ -437,12 +437,32 @@ def _write_inbound_settings(policy: ExecPolicy) -> None:
         str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
     ).lower()
     allow = list(perms.get("allow") or [])
-    # L0 只读观测工具默认放行（guard 仍限 exec_root 内）。
-    wanted = ["read_file", "glob_files", "grep_files"]
+    # 放行面**从 guard 的工具分类派生**（2026-11-17 修）。
+    #
+    # 事故：原实现只手列 8 个工具（read_file/glob_files/grep_files +
+    # write_file/edit_file/apply_patch/bash/repl），而 guard 分类了 40+ 个。
+    # 其余工具（web_fetch/web_search/bg_run/ask_user/render_widget/
+    # parse_document/browser_* …）落到默认确认模式 → **headless 节点没有
+    # UI，权限请求永远无人应答 → turn 永久挂起**。真机实锤：远端 web_fetch
+    # 发出 tool.start + permission.request 后再无 tool.end，前端卡片永远
+    # 转圈（3 个 tool.start 只有 2 个 tool.end）。
+    #
+    # 原则：**guard 才是真安全边界**（exec_root 越界 + caps 阶梯 + trust
+    # 工具面 + 配置写一律拒 + 不可沙箱化派生一律拒）。权限层不该在其上
+    # 再叠一道永远无人应答的确认——那不是多一层安全，是把功能挂死。
+    # 故这里放行 guard 会放行的全集，拒绝仍由 guard 强制。
+    from ..a2a import guard as _guard
+
+    wanted = sorted(_guard._READ_TOOLS)
     if policy.trust in ("normal", "full"):
-        # 写与 shell：guard 已按 exec_root 边界 + caps 阶梯强制，此处对齐放行，
-        # 否则 headless 节点会挂起等一个不存在的人工批准。
-        wanted += ["write_file", "edit_file", "apply_patch", "bash", "repl"]
+        wanted += sorted(
+            _guard._WRITE_TOOLS | _guard._SHELL_TOOLS | _guard._AGENT_OP_TOOLS
+        )
+        # 渠道发送（send_*）：guard 按 L3 + trust 判，这里同样不叠确认。
+        wanted += [n for n in existing if n.startswith(_guard._SEND_PREFIX)]
+    # 不可沙箱化的派生工具：guard 在任何 trust 都拒，权限层不必放行
+    # （放行了也只是让 guard 拒得更晚，反而多一条噪声）。
+    wanted = [n for n in wanted if n not in _guard._UNSANDBOXABLE_SPAWN_TOOLS]
     for name in wanted:
         if name not in existing and name not in allow:
             allow.append(name)
