@@ -32,6 +32,7 @@ import {
   deleteTeamMemberSession,
   deliverToMember,
   detachLinkedSession,
+  dismissLastwords,
   distillSession,
   exportProject,
   exportSessionUrl,
@@ -63,6 +64,7 @@ import {
   putMemberNotes,
   putTeamMd,
   removeTeamMember,
+  resumeLastwords,
   revealSessionFile,
   searchAll,
   searchSessions,
@@ -434,6 +436,42 @@ describe("markSessionSeen", () => {
     const mock = stubFetch({ ok: true });
     await markSessionSeen("s/1");
     expectWrite(mock, "POST", `${API}/sessions/s%2F1/seen`);
+  });
+});
+
+describe("lastwords 恢复确认（resume / dismiss 同端点双语义）", () => {
+  it("resumeLastwords：POST /lastwords/resume，body 只带 session_id（无 dismiss）", async () => {
+    const mock = stubFetch({ ok: true });
+    await expect(resumeLastwords("s1")).resolves.toEqual({ ok: true });
+    expectWrite(mock, "POST", `${API}/lastwords/resume`, { body: { session_id: "s1" } });
+  });
+
+  it("dismissLastwords：同一端点，body 带 dismiss:true", async () => {
+    const mock = stubFetch({ ok: true, had: true });
+    await expect(dismissLastwords("s1")).resolves.toEqual({ ok: true, had: true });
+    expectWrite(mock, "POST", `${API}/lastwords/resume`, {
+      body: { session_id: "s1", dismiss: true },
+    });
+  });
+
+  it("resume 的 no_pending 语义原样透传（调用方据此提示而非重试）", async () => {
+    const mock = stubFetch({ ok: false, error: "no_pending" });
+    await expect(resumeLastwords("gone")).resolves.toEqual({ ok: false, error: "no_pending" });
+    expectWrite(mock, "POST", `${API}/lastwords/resume`, { body: { session_id: "gone" } });
+  });
+
+  it("dismiss 的 had:false（本来就没有条目）幂等透传", async () => {
+    const mock = stubFetch({ ok: true, had: false });
+    await expect(dismissLastwords("none")).resolves.toEqual({ ok: true, had: false });
+  });
+
+  it("网络异常 reject（不吞错，交由调用方 catch 出错误通知）", async () => {
+    const mock = vi.fn().mockImplementation(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    vi.stubGlobal("fetch", mock);
+    await expect(resumeLastwords("s1")).rejects.toThrow("ECONNREFUSED");
+    await expect(dismissLastwords("s1")).rejects.toThrow("ECONNREFUSED");
   });
 });
 

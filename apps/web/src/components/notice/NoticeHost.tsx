@@ -59,17 +59,34 @@ function NoticeCard({ n }: { n: Notice }) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="selectable break-words whitespace-pre-wrap">{n.text}</div>
-        {n.action && (
-          <button
-            onClick={() => {
-              // 已读触发①（§3.2）：点 action = 已读 + 执行原 onClick。
-              markNoticeRead(n.id, n.dedupeKey);
-              n.action!.onClick();
-            }}
-            className="mt-1.5 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/60 hover:text-txt"
-          >
-            {n.action.label}
-          </button>
+        {(n.action || n.secondaryAction) && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {n.action && (
+              <button
+                onClick={() => {
+                  // 已读触发①（§3.2）：点 action = 已读 + 执行原 onClick。
+                  markNoticeRead(n.id, n.dedupeKey);
+                  n.action!.onClick();
+                }}
+                className="rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/60 hover:text-txt"
+              >
+                {n.action.label}
+              </button>
+            )}
+            {n.secondaryAction && (
+              <button
+                onClick={() => {
+                  // 次按钮同主按钮语义：已读 + 执行（lastwords「忽略」=
+                  // 明确的拒绝决策，不是 × 的「已读」）。
+                  markNoticeRead(n.id, n.dedupeKey);
+                  n.secondaryAction!.onClick();
+                }}
+                className="rounded-md px-2 py-0.5 text-[11px] text-faint transition-colors hover:text-txt"
+              >
+                {n.secondaryAction.label}
+              </button>
+            )}
+          </div>
         )}
       </div>
       <button

@@ -2,7 +2,7 @@
 // （markDelivered / adoptOrphanStream / ensureLive / mutateLive / stripFromLive，
 // 自 useChatStreamEngine.ts 机械拆出，函数体逐字一致；原闭包引用改为经 ctx 取用）。
 
-import { getWorkflowRun } from "@/lib/runtime";
+import { dismissLastwords, getWorkflowRun, resumeLastwords } from "@/lib/runtime";
 import { notifyNative } from "@/lib/desktop";
 import { applyPrivacy, osGateOpen } from "@/lib/notifyPrefs";
 import { pushNotice, type NoticeLevel } from "@/lib/notice";
@@ -1072,9 +1072,14 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       break;
     }
     case "runtime.lastwords_pending": {
-      // auto 模式人工会话的待确认续跑（2026-11-10 产品化）：注入带已进
-      // 会话，本条引导用户进会话确认——收件箱点击直达；确认动作为打开
-      // 会话（带内含「继续」引导；正式续跑经会话内 /api/lastwords/resume）。
+      // 遗言恢复确认（2026-11-16 交互补齐）：旧实现只投一条通知、点击仅跳
+      // 会话，靠注入带里的「请从中断处继续」让 agent 自己动——用户没有按钮
+      // 可点（「遗言好像没触发过」的直接原因之一）。现在通知卡片即决策面：
+      // 「恢复」真调 /api/lastwords/resume，「忽略」调同端点 dismiss:true；
+      // 常驻（duration:0）等用户决策，绝不 6s 自动消失。点卡片本体仍跳会话
+      // （actionMeta 保留）。后端契约：人工会话 + 任意 reason + notify/auto
+      // 都发本事件；payload 带 head（请求摘要）与 bg_interrupted（被重启杀掉
+      // 的后台任务数）——文案必须呈现，用户才知道要恢复的是什么。
       const lpSid = String(ev.session_id ?? "");
       if (!lpSid) break;
       {
@@ -1082,17 +1087,106 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         const tools = Number(ev.tool_calls ?? 0);
         const secs = Math.max(0, Math.round(Number(ev.elapsed_s ?? 0)));
         const mm = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-        pushNotice(
-          "info",
-          tr("notice.lastwordsPending", { tools, elapsed: mm }),
-          {
-            source: "general",
-            kind: "lastwords",
-            countInBadge: true,
-            dedupeKey: `lastwords-pending:${lpSid}`,
-            actionMeta: { kind: "session", id: lpSid },
-          },
-        );
+        // head / user_request_head 双键兼容（后端两个都发）；摘要缺失回落
+        // 占位文案，不让卡片出现空引号。用 || 而非 ??：head 为空串时也取备用键。
+        const head =
+          String(ev.head || ev.user_request_head || "").trim() ||
+          tr("notice.lastwords-no-head");
+        const bgInterrupted = Number(ev.bg_interrupted ?? 0);
+        const text = tr("notice.lastwords-pending", { head, tools, elapsed: mm, bgInterrupted });
+        const pendingKey = `lastwords-pending:${lpSid}`;
+        const jumpMeta = { kind: "session" as const, id: lpSid };
+        // 反馈复用 pending dedupeKey：收件箱条目原位刷新成结果文案，不残留
+        // 过期的「要恢复吗」；失败卡带重试按钮（错误不吞、可再点）。
+        const doResume = () => {
+          void (async () => {
+            try {
+              const r = await resumeLastwords(lpSid);
+              if (r?.ok) {
+                pushNotice("success", tr("notice.lastwords-resume-ok"), {
+                  source: "general",
+                  kind: "lastwords",
+                  dedupeKey: pendingKey,
+                  actionMeta: jumpMeta,
+                });
+              } else if (r?.error === "no_pending") {
+                // 条目已过期/已处置（TTL 或别处已确认）——明确告知，不重试。
+                pushNotice("warn", tr("notice.lastwords-resume-expired"), {
+                  source: "general",
+                  kind: "lastwords",
+                  dedupeKey: pendingKey,
+                  actionMeta: jumpMeta,
+                });
+              } else {
+                pushNotice(
+                  "error",
+                  tr("notice.lastwords-resume-failed", { error: String(r?.error ?? "unknown") }),
+                  {
+                    source: "general",
+                    kind: "lastwords",
+                    duration: 0,
+                    dedupeKey: pendingKey,
+                    actionMeta: jumpMeta,
+                    action: { label: tr("notice.lastwords-resume-btn"), onClick: doResume },
+                  },
+                );
+              }
+            } catch (e) {
+              pushNotice(
+                "error",
+                tr("notice.lastwords-resume-failed", {
+                  error: e instanceof Error ? e.message : String(e),
+                }),
+                {
+                  source: "general",
+                  kind: "lastwords",
+                  duration: 0,
+                  dedupeKey: pendingKey,
+                  actionMeta: jumpMeta,
+                  action: { label: tr("notice.lastwords-resume-btn"), onClick: doResume },
+                },
+              );
+            }
+          })();
+        };
+        const doDismiss = () => {
+          void (async () => {
+            try {
+              await dismissLastwords(lpSid);
+              pushNotice("info", tr("notice.lastwords-dismissed"), {
+                source: "general",
+                kind: "lastwords",
+                dedupeKey: pendingKey,
+                actionMeta: jumpMeta,
+              });
+            } catch (e) {
+              pushNotice(
+                "error",
+                tr("notice.lastwords-dismiss-failed", {
+                  error: e instanceof Error ? e.message : String(e),
+                }),
+                {
+                  source: "general",
+                  kind: "lastwords",
+                  duration: 0,
+                  dedupeKey: pendingKey,
+                  actionMeta: jumpMeta,
+                  action: { label: tr("notice.lastwords-dismiss-btn"), onClick: doDismiss },
+                },
+              );
+            }
+          })();
+        };
+        pushNotice("info", text, {
+          source: "general",
+          kind: "lastwords",
+          countInBadge: true,
+          dedupeKey: pendingKey,
+          duration: 0,
+          actionMeta: jumpMeta,
+          action: { label: tr("notice.lastwords-resume-btn"), onClick: doResume },
+          secondaryAction: { label: tr("notice.lastwords-dismiss-btn"), onClick: doDismiss },
+        });
         // 同步发 OS 通知。待人确认的恢复属于高优先级：不走 reply 的合并窗与
         // 60s 冷却门（那是给「完成」类刷屏用的），直接即时弹。
         // P1-5：但仍必须过偏好闸门——修复前这一路连总开关都不看，用户关掉
@@ -1102,8 +1196,8 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           kind: "session",
           notifyKind: "askUser",
           id: lpSid,
-          title: `⚡ ${tr("notice.lastwordsPendingTitle")}`,
-          body: tr("notice.lastwordsPending", { tools, elapsed: mm }),
+          title: `⚡ ${tr("notice.lastwords-pending-title")}`,
+          body: text,
         });
       }
       break;

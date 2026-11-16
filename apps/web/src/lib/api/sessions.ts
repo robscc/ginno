@@ -664,3 +664,54 @@ export interface RunningWork {
 export async function listRunning(): Promise<RunningWork> {
   return json<RunningWork>(`${BASE}/running`);
 }
+
+// ---- lastwords 恢复确认（docs/lastwords-design.md；2026-11-16 产品化）----
+// 同一个端点两种语义：默认 = 确认续跑；dismiss:true = 用户放弃。
+// 不存在单独的 dismiss 端点——别另找。
+
+/** 确认续跑挂起的遗言条目。`ok:false + error:"no_pending"` = 条目已过期/
+ *  已处置（TTL 或已被别处确认/忽略），调用方应提示而非重试。 */
+/** 待确认续跑列表（2026-11-16）：WS 连上后主动拉，重建决策卡。
+ *
+ *  为什么不能只靠 WS 广播：后端 `_push_global_event` 只发**当前活着的
+ *  socket**、无缓冲无重放，而遗言恢复在 sidecar 启动 +2s 就广播，前端
+ *  重连间隔 3s → **真实帧经常先于 socket 就绪发出而静默丢失**（这是
+ *  「遗言好像没触发过」的最后一环）。本拉取是那条链路的可靠兜底，
+ *  也修「收件箱条目跨应用重启只剩跳会话、决策按钮丢失」——回调不可
+ *  序列化，重启后必须靠列表重建。范式对齐 resyncDevSwapRun。 */
+export async function listLastwordsPending() {
+  return json<{ ok: boolean; pending?: LastwordsPending[] }>(
+    `${BASE}/lastwords/pending`,
+  );
+}
+
+export interface LastwordsPending {
+  session_id: string;
+  head?: string;
+  user_request_head?: string;
+  reason?: string;
+  bg_running?: number;
+  bg_interrupted?: number;
+  bg_interrupted_ids?: string[];
+  tool_calls?: number;
+  elapsed_s?: number;
+  pending_at?: number;
+}
+
+export async function resumeLastwords(sessionId: string) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/lastwords/resume`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+/** 放弃恢复：清 pending + 删遗言文件。`had` = 是否真有条目被清
+ *  （false = 本来就没有，幂等无害）。 */
+export async function dismissLastwords(sessionId: string) {
+  return json<{ ok: boolean; had?: boolean }>(`${BASE}/lastwords/resume`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ session_id: sessionId, dismiss: true }),
+  });
+}

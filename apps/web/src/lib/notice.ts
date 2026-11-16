@@ -50,6 +50,11 @@ export interface NoticeOptions {
   duration?: number;
   /** 主按钮（最多一个），如「Model settings」。 */
   action?: NoticeAction;
+  /** 次按钮（最多一个，弱化样式），与主按钮并排。用于「恢复 / 忽略」
+   *  这类必须让用户明确二选一的决策提示（2026-11-16 lastwords 恢复提示）：
+   *  × 关闭语义是「已读」不是「拒绝」，不能拿它承载「不恢复」的决策。
+   *  与 action 一样不可序列化——收件箱跨重启只保留 actionMeta 行为。 */
+  secondaryAction?: NoticeAction;
   /** 来源标签。 */
   source?: NoticeSource;
   /** 渲染模式，默认 toast（§3.1）。 */
@@ -254,7 +259,12 @@ export function dismissNotice(id: number) {
   items = items.map((n) => (n.id === id ? { ...n, entered: false } : n));
   emit();
   setTimeout(() => {
-    if (!items.some((n) => n.id === id)) return;
+    const cur = items.find((n) => n.id === id);
+    // id 可能被同 dedupeKey 的刷新复用（点按钮 = markNoticeRead 收卡 +
+    // 180ms 内同 key 反馈刷新，收件箱原位更新复用同一 id）：只摘除仍在
+    // 退场态（entered=false）的那张，别把刷出来的新卡误删（2026-11-16
+    // lastwords 决策反馈实测被本定时器吞掉）。
+    if (!cur || cur.entered) return;
     items = items.filter((n) => n.id !== id);
     emit();
   }, NOTICE_EXIT_MS);
