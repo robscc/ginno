@@ -21,6 +21,8 @@
     },
     "model_error_backoff": "Model API error: {error}. Auto-retry in {seconds}s ({attempt}/{max}) — for quota/permission errors, stop and switch models",
     "compact_started": "Compaction started; you'll be notified when it finishes",
-    "error_channel_readonly": "Channel sessions (WeCom/DingTalk) converse in the IM app; read-only here"
+    "error_channel_readonly": "Channel sessions (WeCom/DingTalk) converse in the IM app; read-only here",
+    "remote_accepted": "Remote {peer} accepted the task",
+    "remote_state": "Remote state: {state}"
   }
 }

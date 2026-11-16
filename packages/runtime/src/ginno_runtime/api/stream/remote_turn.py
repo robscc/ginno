@@ -47,6 +47,10 @@ _TERMINAL = ("completed", "failed", "canceled", "rejected", "input-required", "a
 # message.end/done 目前不经引擎 safe_send（到不了事件汇），列上是防御未来。
 _SUPPRESS_EVENTS = frozenset({"turn.start", "turn.stopped", "message.end", "done"})
 
+# 需要播 notice 的远端状态（2026-11-17）：只有「要用户动作」或「异常」才播。
+# completed/canceled 由 turn 收口表达；working/submitted 由实时工具流表达。
+_NOTIFY_STATES = frozenset({"input-required", "auth-required", "failed", "rejected"})
+
 
 class RemoteTurnError(RuntimeError):
     """远端 turn 失败。fail-fast，绝不静默回退本地。"""
@@ -195,16 +199,32 @@ async def run_remote_turn(
                             else t.status.state)
             if not accepted and task_id:
                 accepted = True
+                # 显示精简（2026-11-17 用户反馈）：原文案
+                # 「远端 X 已接单（task 4c9a469c）」有三处噪声——
+                # ① peer 名与会话头「远端 · X」徽标重复；② task id 是
+                # 开发向信息，用户不关心；③ 硬编码中文没走 i18n。
+                # 现改为 i18n_key + params，task_id 仍留在 payload 供排查。
                 await _push_session_event(
                     sid, "notice",
-                    {"message": f"远端 {rec.name} 已接单（task {task_id[:8]}）",
+                    {"message": f"Remote {rec.name} accepted the task",
+                     "i18n_key": "stream.remote_accepted",
+                     "params": {"peer": rec.name},
+                     "task_id": task_id,
                      "kind": "remote"},
                     tid,
                 )
-            elif new_state != state:
+            elif new_state != state and new_state in _NOTIFY_STATES:
+                # 只播**需要用户动作或异常**的状态。completed/canceled/
+                # working/submitted 一律不播：turn 收口与实时工具流本身
+                # 已经表达了这些，再播一条「远端状态：completed」是纯噪声
+                # （用户截图实录）。input-required 必须播——它告诉用户
+                # 「远端在等你回话」，是唯一需要用户动作的状态。
                 await _push_session_event(
                     sid, "notice",
-                    {"message": f"远端状态：{new_state}", "kind": "remote"}, tid,
+                    {"message": f"Remote state: {new_state}",
+                     "i18n_key": "stream.remote_state",
+                     "params": {"state": new_state},
+                     "kind": "remote"}, tid,
                 )
             state = new_state
 
