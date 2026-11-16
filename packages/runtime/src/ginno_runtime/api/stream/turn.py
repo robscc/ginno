@@ -383,6 +383,22 @@ async def _run_stream(
     are already reported by their own channels (schedule-run / workflow-run
     notices), avoiding double notifications (2026-11-05 盘点).
     """
+    # ── 远端会话路由（remote-session-design.md R1，定案 #2 单点收口）────────
+    # 会话挂 remote_peer 时，本轮在远端 peer 执行，本地不跑图。放在函数最顶部，
+    # 使全部 6 个调用方（ws 交互/deliver、subagent runner、tasks inject、
+    # lastwords）自动生效，无需各自判断。
+    # **对端离线 fail-fast，绝不静默回退本地**（定案 #7）——否则用户以为在
+    # 远端跑、实际动了本机，是最危险的错觉。
+    from .remote_turn import remote_peer_of, run_remote_turn
+
+    if remote_peer_of(session):
+        await run_remote_turn(
+            session, user_text,
+            (config.get("configurable") or {}).get("turn_id"),
+            agent_id=agent_id,
+        )
+        return
+
     content: Any = user_text
     # origin 标记进 config（engine 收口随 message.end 下发——见 docstring）
     _conf = config.get("configurable") or {}

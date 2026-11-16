@@ -82,6 +82,9 @@ class CreateSessionRequest(BaseModel):
     channel: str | None = None
     provider: str | None = None
     model: str | None = None
+    # 远端会话（remote-session-design.md R1/B）：挂 A2A peer slug 后，本会话
+    # 每轮都在该远端节点执行，本地不跑图。空/缺省=本地。与 agent_id 同层落盘。
+    remote_peer: str | None = None
     # Context folder mounts (context-folders-design.md): library ids; the
     # session starts with these attached. Unknown ids are dropped silently.
     context_folders: list[str] = []
@@ -754,6 +757,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "context_folders": folder_ids,
         "primary_folder": primary_id,
         "workflow_id": req.workflow_id,
+        # 远端会话（remote-session-design.md R1）：挂 peer slug → 每轮在远端跑
+        "remote_peer": (req.remote_peer or "").strip() or None,
         "created": time.time(),
         "updated": time.time(),
     }
@@ -819,6 +824,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
+        # 远端会话（remote-session-design.md R1）：_run_stream 顶部读此字段
+        # 决定本轮是否在远端 peer 执行。内存条目与落盘 meta 必须一致。
+        "remote_peer": (req.remote_peer or "").strip() or None,
         "type": req.type or "main",
         # Channel marker rides the in-memory entry too — the WS readonly gate
         # (is_channel_session) must see it without a disk round-trip, including
@@ -1985,6 +1993,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": meta.get("workflow_id"),
+        # 远端会话随重启恢复（meta 是真源）——漏了这行重启后就变回本地执行
+        "remote_peer": meta.get("remote_peer"),
         "restrict_tools": restrict_tools,
         # Survive graph rebuilds: the WS readonly gate reads these from the
         # in-memory session, so a restarted runtime must restore them too.
