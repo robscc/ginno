@@ -6,10 +6,11 @@
 // 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Globe } from "lucide-react";
+import { ChevronDown, ChevronRight, Globe, Server } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
 import type { SessionMeta } from "@/lib/types";
+import { useA2aPeers } from "@/lib/useA2aPeers";
 
 const EFFORTS = ["auto", "off", "low", "medium", "high"] as const;
 // chip 角标缩写（locale 无关）;auto 不占宽。
@@ -53,6 +54,17 @@ export function ModelChipMenu({
   onPickModelEffort: (pid: string, model: string, effort: string) => void;
 }) {
   const tc = useTranslations("chat");
+  // 远端会话（remote-session-design.md）：模型由远端节点自己的配置决定——
+  // api/stream/remote_turn.py 完全不读 model/provider，本地切换是误导性死
+  // 控件。这里整 chip 禁用（不可点开菜单），tooltip 明确告知归属；label 换
+  // 成 peer 名（与 RemotePeerBadge 同一数据源/回退语义：解析不到显示 slug），
+  // 不再展示本地 session.model（那是本地默认值，与远端实际模型无关）。
+  // useModelPick 的两个 pick 函数另有 fail-closed 守卫（纵深防御）。
+  const remotePeer = session?.remote_peer || null;
+  const peers = useA2aPeers(!!remotePeer);
+  const remoteName = remotePeer
+    ? peers.find((p) => p.slug === remotePeer)?.name || remotePeer
+    : "";
   // 手风琴内联（2026-11-14 用户反馈「选模型还要点两次+难度要优化」）：
   // 点模型行 = 选择 + 关闭（一次完成）；行尾箭头 = 内联展开该模型的思考
   // 强度档（不跳页、无返回键），点强度档 = 选模型+设档+关闭。取代旧二级
@@ -70,23 +82,33 @@ export function ModelChipMenu({
       <button
         type="button"
         onClick={onToggle}
+        disabled={!!remotePeer}
+        data-testid={remotePeer ? "model-chip-remote" : undefined}
         title={
-          session
-            ? tc("model.switchTitle")
-            : homeModelSource === "agent"
-              ? tc("model.fromAgentTitle", {
-                  agent: targetAgent?.name ?? "",
-                  model: label,
-                })
-              : homeModelSource === "default"
-                ? tc("model.fromDefaultTitle", { model: label })
-                : tc("model.pickTitle")
+          remotePeer
+            ? tc("model-remote-title", { name: remoteName })
+            : session
+              ? tc("model.switchTitle")
+              : homeModelSource === "agent"
+                ? tc("model.fromAgentTitle", {
+                    agent: targetAgent?.name ?? "",
+                    model: label,
+                  })
+                : homeModelSource === "default"
+                  ? tc("model.fromDefaultTitle", { model: label })
+                  : tc("model.pickTitle")
         }
-        className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
+        className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line2 disabled:hover:bg-card disabled:hover:text-muted"
       >
-        <Globe className="h-3.5 w-3.5 shrink-0" />
-        <span className="max-w-[160px] truncate font-medium">{label}</span>
-        {EFFORT_BADGE[thinkingEffort] && (
+        {remotePeer ? (
+          <Server className="h-3.5 w-3.5 shrink-0" />
+        ) : (
+          <Globe className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="max-w-[160px] truncate font-medium">
+          {remotePeer ? remoteName : label}
+        </span>
+        {!remotePeer && EFFORT_BADGE[thinkingEffort] && (
           <span
             className="shrink-0 rounded border border-violet/40 px-1 text-[9px] leading-4 font-medium text-violet"
             title={tc("model.thinkingTitle")}
@@ -94,9 +116,9 @@ export function ModelChipMenu({
             {EFFORT_BADGE[thinkingEffort]}
           </span>
         )}
-        <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+        {!remotePeer && <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />}
       </button>
-      {open && (
+      {open && !remotePeer && (
         <>
           <div className="fixed inset-0 z-40" onClick={onClose} />
           <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">

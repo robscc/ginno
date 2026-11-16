@@ -206,14 +206,18 @@ return { ...q, status: "skipped" };
 /** Close a dead turn's unfinished blocks so `running` unsticks: pending tool
  * bubbles become "(interrupted)"; pending question cards flip to skipped via
  * their own status field — mirroring what the backend's stop-heal persists
- * ("(interrupted)" tool result), which history replay reads as skipped. */
+ * ("(interrupted)" tool result), which history replay reads as skipped.
+ * llm_call 行同治：pending 的「请求中…」定格为中性 interrupted 态（哨兵
+ * error 值，渲染成灰字而非失败红/琥珀）——否则 turn 已停、秒表永远转。 */
 export function closePendingBlocks(blocks: Block[]): Block[] {
 return blocks.map((b) =>
   b.kind === "tool" && b.pending
     ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
     : b.kind === "question" && b.status === "pending"
       ? { ...b, status: "skipped" as const }
-      : b,
+      : b.kind === "llm_call" && b.pending
+        ? { ...b, pending: false, ok: false, error: "interrupted" }
+        : b,
 );
 }
 
@@ -439,8 +443,82 @@ switch (ev.event) {
         mtime: ev.mtime as number | undefined,
       },
     ];
+  // ---- LLM 请求级可观测（T3）：llm.request / llm.response 按 (req_id,
+  // attempt) 配对合并成一条 llm_call 行（契约见 graph._LLM_EVENT_FIELDS /
+  // engine custom 分支白名单）。req_id 跨重试稳定、attempt 逐次递增——
+  // 合并键必须含 attempt，否则重试的失败尝试会被成功尝试覆盖掉。
+  case "llm.request": {
+    const key = llmFrameKey(ev);
+    if (!key) return blocks; // 无配对键的退化帧：不建无法合并的行
+    // 重连重放幂等：同 (reqId, attempt) 已存在 → 原样返回（与 tool.end /
+    // user.question 的按 id 合并同一哲学）。
+    if (blocks.some((b) => b.kind === "llm_call" && b.reqId === key.reqId && b.attempt === key.attempt)) {
+      return blocks;
+    }
+    return [...blocks, { kind: "llm_call", ...key, ...llmFrameMeta(ev), pending: true }];
+  }
+  case "llm.response": {
+    const key = llmFrameKey(ev);
+    if (!key) return blocks;
+    const patch = llmResponsePatch(ev);
+    const i = blocks.findIndex(
+      (b) => b.kind === "llm_call" && b.reqId === key.reqId && b.attempt === key.attempt,
+    );
+    if (i >= 0) {
+      // 原地更新：位置不变、数组长度不变——「请求中…」行补上耗时与 token。
+      const next = blocks.slice();
+      next[i] = { ...(next[i] as Extract<Block, { kind: "llm_call" }>), ...llmFrameMeta(ev), ...patch };
+      return next;
+    }
+    // request 丢帧/晚认领（孤儿流）：兜底追加一条**已完成**行，不静默丢结果
+    // ——与 tool.end 无配对块时的 append 兜底对齐。pending 显式置 false
+    // （patch 是 Partial，展开后必填字段需显式给出）。
+    return [...blocks, { kind: "llm_call", ...key, ...llmFrameMeta(ev), ...patch, pending: false }];
+  }
   default:
     return blocks;
 }
+}
+
+/** llm.request/response 帧的配对键：req_id 必须是非空字符串；attempt 缺省
+ *  归 1（后端契约保证 ≥1，这里只防畸形帧）。返回 null = 无法配对。 */
+function llmFrameKey(ev: { [k: string]: unknown }): { reqId: string; attempt: number } | null {
+  const reqId = typeof ev.req_id === "string" ? ev.req_id : "";
+  if (!reqId) return null;
+  const attempt =
+    typeof ev.attempt === "number" && Number.isFinite(ev.attempt) && ev.attempt >= 1
+      ? Math.floor(ev.attempt)
+      : 1;
+  return { reqId, attempt };
+}
+
+/** 帧上的模型元数据（request/response 都带同一份）：只收非空值——response
+ *  元数据提取失败退化为 {} 时，展开空对象不会清掉 request 已填的字段。 */
+function llmFrameMeta(ev: { [k: string]: unknown }): Partial<Extract<Block, { kind: "llm_call" }>> {
+  return {
+    ...(typeof ev.model === "string" && ev.model ? { model: ev.model } : {}),
+    ...(typeof ev.provider === "string" && ev.provider ? { provider: ev.provider } : {}),
+    ...(typeof ev.messages_count === "number" ? { messagesCount: ev.messages_count } : {}),
+  };
+}
+
+/** response 帧 → llm_call 行的终态补丁。usage 缺失（provider 未上报）时
+ *  省略 token 字段，不造数。ok 缺省按成功（后端契约必带 ok，防御畸形帧）。 */
+function llmResponsePatch(ev: { [k: string]: unknown }): Partial<Extract<Block, { kind: "llm_call" }>> {
+  const patch: Partial<Extract<Block, { kind: "llm_call" }>> = {
+    pending: false,
+    ok: ev.ok !== false,
+  };
+  if (typeof ev.error === "string" && ev.error) patch.error = ev.error;
+  if (typeof ev.elapsed_ms === "number" && Number.isFinite(ev.elapsed_ms)) patch.elapsedMs = ev.elapsed_ms;
+  const u = ev.usage;
+  if (u && typeof u === "object") {
+    const r = u as Record<string, unknown>;
+    if (typeof r.input_tokens === "number") patch.inputTokens = r.input_tokens;
+    if (typeof r.output_tokens === "number") patch.outputTokens = r.output_tokens;
+    if (typeof r.total_tokens === "number") patch.totalTokens = r.total_tokens;
+    if (typeof r.cache_read_tokens === "number") patch.cacheReadTokens = r.cache_read_tokens;
+  }
+  return patch;
 }
 

@@ -9,7 +9,7 @@ import { pushNotice, type NoticeLevel } from "@/lib/notice";
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
-import { hasPendingTool, foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
+import { hasPendingTool, hasPendingLlmCall, foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
 import type {
   ContextChange,
   ContextState,
@@ -454,6 +454,15 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     case "widget.emit":
     case "ref.emit":
     case "image.emit":
+      adoptOrphanStream(ctx, sid);
+      mutateLive(ctx, sid, ev);
+      break;
+    // LLM 请求级可观测（T3）：llm.request / llm.response 在 applyBlock 里按
+    // (req_id, attempt) 配对合并成一条 llm_call 行并原地更新。与 tool 帧同
+    // 范式（认领孤儿流 + mutateLive），但**独立 case 体**——不 fall through
+    // 进上面 5 事件共享体（共享体副作用警告见 tool.* 注释）。
+    case "llm.request":
+    case "llm.response":
       adoptOrphanStream(ctx, sid);
       mutateLive(ctx, sid, ev);
       break;
@@ -1849,9 +1858,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
         // Close out any in-flight tool blocks (and pending question cards —
         // the backend heals a parked ask_user to "(interrupted)" too, which
-        // replay reads as skipped) so `running` unsticks.
+        // replay reads as skipped) so `running` unsticks. pending 的 llm_call
+        // 行同治（停在模型调用中途、工具还没起跑的气泡也要收口）。
         .map((msg) =>
-          hasPendingTool(msg.blocks)
+          hasPendingTool(msg.blocks) || hasPendingLlmCall(msg.blocks)
             ? { ...msg, blocks: closePendingBlocks(msg.blocks) }
             : msg,
         );
@@ -1914,7 +1924,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           // a normal completed assistant reply.
           .map((msg) => {
             const marked = msg.id === liveMsgId ? { ...msg, failed: true } : msg;
-            if (!hasPendingTool(marked.blocks)) return marked;
+            if (!hasPendingTool(marked.blocks) && !hasPendingLlmCall(marked.blocks)) return marked;
             return { ...marked, blocks: closePendingBlocks(marked.blocks) };
           }),
         {
