@@ -47,6 +47,18 @@ export function pushDevSwapRun(run: DevSwapRun) {
   }
   latest = { ...run, stageStartedAt: started };
   emit();
+  // 确认门兜底提升到**唯一漏斗**（2026-11-17 实案）：原来只在
+  // resyncDevSwapRun（卡片挂载 / WS 重连）里做，而 `make dev-swap`
+  // 走的 scripts/dev_swap.sh **从不广播 runtime.dev_swap_pending**
+  // （只写 state.json + POST 进度；广播只存在于会话内 /dev-swap 命令
+  // 与企微 go 路径）。于是终端跑 make dev-swap 后：广播没有、卡片早已
+  // 挂载过（effect [] 只跑一次）、WS 也没重连 → **确认框永不出现，
+  // finish:running 永久卡住**（用户实测卡住且二击取消被 409 拒绝）。
+  // 放在 pushDevSwapRun 里，进度帧/轮询/resync 三条路都能点亮确认门。
+  // 「暂不」是 truthy 的 "postponed"，不会被这里强行重开。
+  if (run.stage === "finish" && run.state === "running" && !pendingConfirm) {
+    setDevSwapPendingConfirm("pending");
+  }
 }
 
 export function getDevSwapRun(): DevSwapRun | null {

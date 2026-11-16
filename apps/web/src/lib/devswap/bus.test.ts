@@ -326,3 +326,58 @@ describe("切换确认门三态", () => {
     expect(bus.isDevSwapConfirmPending()).toBe("pending");
   });
 });
+
+// ── 2026-11-17：确认门兜底必须在**唯一漏斗** pushDevSwapRun 里 ──────────────
+//
+// 实案：终端跑 `make dev-swap` 后确认框永不出现，finish:running 永久卡住。
+// 根因：scripts/dev_swap.sh **从不广播 runtime.dev_swap_pending**（只写
+// state.json + POST 进度；广播只存在于会话内 /dev-swap 命令与企微 go 路径）。
+// 而原兜底只在 resyncDevSwapRun（卡片挂载 effect [] 只跑一次 / WS 重连）里，
+// 两者都没发生 → 卡死。用户二击取消还被 409 past_switch_point 拒绝。
+describe("确认门兜底覆盖所有进度来源", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("纯进度帧（无 pending 广播）也能点亮确认门", async () => {
+    const bus = await freshBus();
+    expect(bus.isDevSwapConfirmPending()).toBeFalsy();
+    // 模拟 scripts/dev_swap.sh 的最后一帧：只有进度，没有 dev_swap_pending
+    bus.pushDevSwapRun(mkRun({ stage: "finish", state: "running" }));
+    expect(bus.isDevSwapConfirmPending()).toBe("pending");
+  });
+
+  it("轮询快照路径同样点亮（不依赖 WS 重连）", async () => {
+    const bus = await freshBus();
+    stubFetchJson({
+      ok: true,
+      run: { run_id: "r-poll", stage: "finish", state: "running", ts: 1000 },
+    });
+    await bus.fetchDevSwapSnapshot().then((r) => r && bus.pushDevSwapRun(r));
+    expect(bus.isDevSwapConfirmPending()).toBe("pending");
+  });
+
+  it("用户点「暂不」后不被强行重开", async () => {
+    const bus = await freshBus();
+    bus.pushDevSwapRun(mkRun({ stage: "finish", state: "running" }));
+    bus.setDevSwapPendingConfirm("postponed");
+    // 后续同 run 的进度帧不得把 postponed 拽回 pending
+    bus.pushDevSwapRun(mkRun({ stage: "finish", state: "running", pct: 90 }));
+    expect(bus.isDevSwapConfirmPending()).toBe("postponed");
+  });
+
+  it("构建中阶段不误弹确认门", async () => {
+    const bus = await freshBus();
+    const stages = ["quiesce", "unit", "build_runtime", "preflight", "switch"] as const;
+    for (const stage of stages) {
+      bus.pushDevSwapRun(mkRun({ stage, state: "running" }));
+    }
+    expect(bus.isDevSwapConfirmPending()).toBeFalsy();
+  });
+
+  it("finish 已终态（ok/failed）不弹确认门", async () => {
+    const bus = await freshBus();
+    bus.pushDevSwapRun(mkRun({ stage: "finish", state: "ok" }));
+    expect(bus.isDevSwapConfirmPending()).toBeFalsy();
+  });
+});
