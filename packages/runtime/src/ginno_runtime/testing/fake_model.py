@@ -145,7 +145,18 @@ class ScriptedChatModel(BaseChatModel):
             "2) 重启运行时，并去掉 GINNO_FAKE_LLM 这个环境变量。\n\n"
             "（如果只想让这个演示模型回复别的内容，可把 GINNO_FAKE_LLM_SCRIPTS 指向一个 JSON 回复列表。）"
         )
-        return AIMessage(content=text)
+        # 兜底占位回复也带 usage_metadata（2026-11-16）：usage 遥测/ContextRing
+        # 圆环（context_state ← latest_record）此前在 fake 环境全空——packaged
+        # UI e2e（圆环阈值文案）因此拿不到 context。粗估 4 chars/token，够显示。
+        input_tok = sum(len(str(getattr(m, "content", ""))) // 4 for m in messages) or 8
+        return AIMessage(
+            content=text,
+            usage_metadata={
+                "input_tokens": input_tok,
+                "output_tokens": max(1, len(text) // 4),
+                "total_tokens": input_tok + max(1, len(text) // 4),
+            },
+        )
 
     def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
         # Test seam: GINNO_FAKE_LLM_DELAY=<seconds> sleeps per turn so a step

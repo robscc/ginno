@@ -21,7 +21,7 @@ pytestmark = pytest.mark.e2e
 
 _RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
 RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
-PORT = 8899
+PORT = 8898
 
 
 def _port_open(port: int) -> bool:

@@ -2,7 +2,10 @@
 
 import { useTranslations } from "next-intl";
 import { BotOff, Check, ChevronDown, Hand, Square, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { RowFanMenu } from "@/components/shell/RowFanMenu";
+import { SessionContextMenu } from "@/components/shell/SessionContextMenu";
+import { SessionTagsPanel } from "@/components/shell/SessionTagsPanel";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
@@ -63,6 +66,9 @@ export interface SidebarSessionRowProps {
   /** Session label/icon（session-label-icon-design.md §3.2）：扇形菜单「标签
    *  与图标」面板的保存回调（PUT tags 全量覆盖；不传则不渲染该扇叶）。 */
   onSetTags?: (id: string, icon: string | null, labels: string[]) => void;
+  /** 手动未读标注（2026-11-16）：右键菜单与扇形菜单共用；乐观写 s.unread
+   *  （服务端 forced_unread），打开会话随 seen 清除。 */
+  onUnread?: (id: string, unread: boolean) => void;
   onRemoveSession: (id: string) => void;
   onSetTreeCollapsed: (id: string, collapsed: boolean) => void;
   /** 子会话分节折叠：显式传当前展开态（默认值由本组件决定）。 */
@@ -107,6 +113,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     onWorker,
     onForkSession,
     onSetTags,
+    onUnread,
     onRemoveSession,
     onSetTreeCollapsed,
     onToggleSubGroupFold,
@@ -133,6 +140,13 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
   const waiting = !!waitingKind;
   const subStatus = s.subagent?.status;
   const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
+  // 右键菜单锚点 + 行级「标签与图标」面板开合（onUnread 态取任一未读源：
+  // 服务端 s.unread（含 forced）或本地 turn 结束计数——都未读时菜单显示
+  // 「标为已读」，清除走 clearSessionUnread 全链）。
+  const [ctxAnchor, setCtxAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [ctxTagsOpen, setCtxTagsOpen] = useState(false);
+  const unreadNow = !!s.unread || unreadSessions[s.id] !== undefined;
+
   const subActive = subStatus === "running" || subStatus === "waiting";
   const runRows = runsOf.get(s.id) ?? [];
   const hasKids = childRows.length > 0 || runRows.length > 0;
@@ -167,7 +181,17 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
 
   return (
     <div>
+      {/* 右键上下文菜单（2026-11-16）：动作与扇形菜单同源（useRowActions），
+          竖列 icon+label。「标签与图标」项由行级 tags 面板承载（右键菜单的
+          onTags 打开它——RowFanMenu 内部那份面板独立存在，两入口不共享
+          开合状态）。 */}
       <div
+        onContextMenu={(e) => {
+          if (editing) return; // 重命名中的行不弹菜单（textarea 原生菜单留给复制粘贴）
+          e.preventDefault();
+          setCtxTagsOpen(false);
+          setCtxAnchor({ x: e.clientX, y: e.clientY });
+        }}
         className={`nav-item group ${sel ? "text-txt" : ""} ${
           isSub && !subActive && !sel ? "opacity-60" : ""
         } ${dimmed ? "opacity-60" : ""} ${running ? "relative" : ""}`}
@@ -454,6 +478,8 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                       // 正在跑的会话端点会 busy 拒绝，提示不打断。
                       onForkSession ? () => onForkSession(s.id) : undefined
                     }
+                    unread={unreadNow}
+                    onUnread={onUnread ? (u) => onUnread(s.id, u) : undefined}
                   />
                 </>
               )}
@@ -494,6 +520,39 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
             : childRows.map(renderChildRow)}
           {runRows.map((r) => renderRunRow(r, depth + 1))}
         </div>
+      )}
+      {/* 右键菜单（portal fixed，锚点=鼠标点）：动作同源扇形菜单。 */}
+      {ctxAnchor && (
+        <SessionContextMenu
+          anchor={ctxAnchor}
+          onClose={() => setCtxAnchor(null)}
+          pinned={!!s.pinned}
+          onPin={(pinned) => onPin(s.id, pinned)}
+          onRename={() => onStartRename(s)}
+          onDelete={() => onDelete(s)}
+          worker={s.worker !== false}
+          onWorker={
+            onWorker && (!s.type || s.type === "main")
+              ? (w) => onWorker(s.id, w)
+              : undefined
+          }
+          forkSid={s.id}
+          onFork={onForkSession ? () => onForkSession(s.id) : undefined}
+          onTags={onSetTags ? () => setCtxTagsOpen(true) : undefined}
+          unread={unreadNow}
+          onUnread={onUnread ? (u) => onUnread(s.id, u) : undefined}
+        />
+      )}
+      {/* 右键菜单入口的「标签与图标」面板（与 RowFanMenu 内那份独立）。 */}
+      {ctxTagsOpen && ctxAnchor && onSetTags && (
+        <SessionTagsPanel
+          anchor={ctxAnchor}
+          title={s.title || t("session.untitled")}
+          initialIcon={s.label_icon ?? null}
+          initialLabels={s.labels ?? []}
+          onClose={() => setCtxTagsOpen(false)}
+          onSave={(icon, labels) => onSetTags(s.id, icon, labels)}
+        />
       )}
     </div>
   );

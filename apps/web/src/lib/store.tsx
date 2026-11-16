@@ -202,6 +202,8 @@ interface GinnoState {
   pinSession: (id: string, pinned: boolean) => Promise<void>;
   // Worker 协议「接活」标注（扇形菜单入口）：乐观写 worker，随后提交后端。
   setSessionWorker: (id: string, worker: boolean) => Promise<void>;
+  /** 手动未读标注（右键/扇形菜单）：true=forced_unread+本地投影，false=清链。 */
+  setSessionUnread: (id: string, unread: boolean) => Promise<void>;
   // Session label/icon（session-label-icon-design.md §3.2）：PUT tags 全量覆盖。
   setSessionTags: (id: string, icon: string | null, labels: string[]) => Promise<void>;
   // Merge a server-pushed or optimistic partial into one session's meta
@@ -368,6 +370,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     renameSession,
     pinSession,
     setSessionWorker,
+    setSessionUnread,
     setSessionTags,
     applySessionPatch,
   } = sessionApi;
@@ -633,6 +636,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     renameSession,
     pinSession,
     setSessionWorker,
+    setSessionUnread,
     setSessionTags,
     applySessionPatch,
     notifySubagentSpawned,

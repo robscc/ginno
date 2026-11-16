@@ -761,6 +761,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       onRename={(id, title) => void g.renameSession(id, title)}
       onPin={(id, pinned) => void g.pinSession(id, pinned)}
       onWorker={(id, worker) => void g.setSessionWorker(id, worker)}
+      onUnread={(id, unread) => void g.setSessionUnread(id, unread)}
       onSetTags={(id, icon, labels) => void g.setSessionTags(id, icon, labels)}
       onForkSession={(id) => void forkAndOpen(id)}
       onRemoveSession={(id) => {
