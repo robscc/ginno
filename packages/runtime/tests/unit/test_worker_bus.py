@@ -647,12 +647,14 @@ def test_worker_bus_does_not_import_teams():
 # ----------------------------- digest 文件传递（2026-11-16）----------------- #
 
 
-async def test_digest_over_cap_writes_file_and_marks_via_file(monkeypatch, inject_calls):
-    """超 DIGEST_CAP：全文落盘 digests/ + 信封 via_file/file 属性 + 正文含
-    完整内容（不截断）。"""
+async def test_digest_over_cap_writes_file_and_marks_via_file(monkeypatch, inject_calls, tmp_path):
+    """超 DIGEST_CAP：全文落盘共享 tmp/ginno-digests/ + 信封 via_file/file
+    属性 + 正文含完整内容（不截断）。"""
     import re
+    import tempfile
     from pathlib import Path
 
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     _put_meta(SLUG, _worker_meta("W1", status="running", subscribers=[
         {"session_id": "SUB", "want": "digest", "since": 1, "last_digest": 0}]))
     ww._WATCHED.add("W1")
@@ -672,7 +674,8 @@ async def test_digest_over_cap_writes_file_and_marks_via_file(monkeypatch, injec
     fp = Path(m.group(1))
     assert fp.exists()
     assert fp.read_text(encoding="utf-8") == long_text
-    assert fp.parent.name == "digests"
+    assert fp.parent.name == "ginno-digests"
+    assert fp.parent.parent == tmp_path  # 共享 tmp，跨会话可读
 
 
 async def test_digest_under_cap_inline_no_file(monkeypatch, inject_calls):
@@ -708,7 +711,7 @@ async def test_digest_file_write_failure_degrades_inline(monkeypatch, inject_cal
         raise OSError("disk full")
 
     monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
-    monkeypatch.setattr(ww.paths, "session_files_dir", boom)
+    monkeypatch.setattr(ww, "_digest_file_path", boom)
     await worker_bus.on_turn_settled_hook("W3")
     assert len(inject_calls) == 1
     text = inject_calls[0]["text"]

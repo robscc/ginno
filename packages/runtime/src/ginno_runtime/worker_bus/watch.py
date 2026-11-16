@@ -36,6 +36,23 @@ DIGEST_MIN_INTERVAL_S = 300  # 同一订阅者两次 digest 的最小间隔
 # via_file/file 属性，前端展示完整内容 + 「通过文件传递」tip 标明文件位置）。
 DIGEST_CAP = 300
 
+
+def _digest_file_path(session_id: str, now: int):
+    """digest 全文落盘路径——共享 tmp 目录（``<tmp>/ginno-digests/``）。
+
+    2026-11-16 用户定规：digest 投给**订阅者**会话，若落在 target 会话私有
+    目录（session_files_dir），订阅者跨会话读取不到。改落共享 tmp，任何会话
+    都能读。0o700 限属主（单用户桌面，避免世界可读）。内容同时随信封正文
+    完整展示，tmp 重启即清也不丢信息。
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    d = Path(tempfile.gettempdir()) / "ginno-digests"
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d / f"digest-{session_id[:8]}-{now}.md"
+
 # 进程内"被订阅的 session id"快查表：on_turn_settled 每回合都过一遍
 # hook，不能为无订阅的会话付磁盘扫描。watch_worker 是唯一写者，
 # reconcile_subscriptions 启动时重建。
@@ -262,11 +279,7 @@ async def on_turn_settled_hook(session_id: str) -> None:
     file_path = ""
     if len(excerpt) > DIGEST_CAP:
         try:
-            from .. import paths
-
-            fdir = paths.session_files_dir(slug, session_id) / "digests"
-            fdir.mkdir(parents=True, exist_ok=True)
-            fp = fdir / f"digest-{session_id[:8]}-{now}.md"
+            fp = _digest_file_path(session_id, now)
             fp.write_text(excerpt, encoding="utf-8")
             file_path = str(fp)
             via_file = True
