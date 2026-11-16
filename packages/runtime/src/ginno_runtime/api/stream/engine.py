@@ -1270,6 +1270,24 @@ async def _stream_graph(
             # terminal branch (not the finally leg: retry/interrupt parking
             # traverse it too) and not paused_at_interrupt / TurnStopped.
             note_turn_finished(slug, session_id)
+            # Goal lifecycle finish (2026-11-16): a COMPLETE goal archives
+            # itself at the turn's explicit terminal branch — the achievement
+            # chip stays visible through the completing turn, then the record
+            # moves to goals-history.jsonl and the chip clears. Retry/interrupt
+            # parking never reach this branch, so an unfinished goal is never
+            # archived by a transient turn failure.
+            try:
+                from ...goals import store as _goal_store
+
+                _g = _goal_store.get_goal(slug, session_id)
+                if _g and _g.get("status") == _goal_store.STATUS_COMPLETE:
+                    _archived = _goal_store.archive_goal(slug, session_id)
+                    if _archived:
+                        await _push_session_event(
+                            session_id, "goal.archived", {"goal": _archived}
+                        )
+            except Exception:  # noqa: BLE001 — 钩子绝不带崩 turn
+                _log.exception("goal_archive_hook_failed session=%s", session_id)
             # AgentTeam 成员 turn 终态钩子（backlog P0-7/P1-2/P1-3）：回帖 +
             # 状态回流 + 放行排队的**唯一触发源**。非团队成员会话内部 no-op。
             try:

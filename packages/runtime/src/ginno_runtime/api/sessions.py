@@ -539,6 +539,29 @@ async def set_session_goal(session_id: str, req: dict) -> dict:
             return {"ok": False, "error": str(e)}
         await _emit_goal_event(slug, session_id, goal)
         _start_goal_driver(session_id)
+        # Running-turn awareness (2026-11-16): a goal set mid-turn is invisible
+        # to the running model — goal continuation only fires when the session
+        # is idle, so users perceived "set a goal while running, nothing
+        # happened". Steer the new objective in so the current turn knows about
+        # it at its next tool boundary (the driver still owns continuation).
+        if session_id in _RUNNING_TURNS:
+            from .. import server_shared
+
+            _obj = goal["objective"]
+            _obj_short = _obj if len(_obj) <= 500 else _obj[:500] + "…"
+            server_shared.steer_enqueue(
+                session_id,
+                {
+                    "steer_id": f"goal-set-{goal['goal_id']}",
+                    "text": (
+                        f"[System] The user just set a session goal: {_obj_short}\n"
+                        "Finish your current work first; once this turn settles, "
+                        "the goal driver will pursue the goal automatically.\n"
+                        f"【系统】用户刚设置了会话目标：{_obj_short}\n"
+                        "先完成当前工作；本回合结束后 goal driver 会自动续跑该目标。"
+                    ),
+                },
+            )
         return {"ok": True, "goal": goal}
 
     if status is not None:
