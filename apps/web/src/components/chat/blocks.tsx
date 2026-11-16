@@ -423,9 +423,14 @@ export function InnerBlocks({
       // 的常驻 TaskCard；此处只为时间线留下「结果何时回来」的锚。
       out.push(<TaskEventBand key={`tev-${b.taskId}-${key++}`} block={b} />);
     } else if (b.kind === "llm_call") {
-      // LLM 请求级可观测（T3）：紧凑行内条目，按 (reqId, attempt) 稳定 key
-      // ——response 原地更新时 React 复用同一 DOM 行，不闪不重排。
-      out.push(<LlmCallLine key={`llm-${b.reqId}-${b.attempt}`} block={b} />);
+      // LLM 请求级可观测（T3）：**按用户要求默认不渲染**（2026-11-17）。
+      // 用户看到实际效果后反馈「不需要这个」——每次大模型请求一行，长 turn
+      // 里刷屏且对日常使用无价值。数据链路完整保留：后端仍发
+      // llm.request/llm.response，reducer 仍按 (reqId, attempt) 合并成
+      // llm_call block，closePendingBlocks / hasPendingLlmCall 闸门照常
+      // 工作（只是不可见）。要恢复显示，把下面这行取消注释即可。
+      // out.push(<LlmCallLine key={`llm-${b.reqId}-${b.attempt}`} block={b} />);
+      void b;
     } else if (b.kind === "subagent_spawn") {
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
