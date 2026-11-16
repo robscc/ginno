@@ -1127,4 +1127,40 @@ def _messages_to_ui(
         ui.append({"id": None, "role": "user", "blocks": group})
     pending_bands.clear()
     flush_assistant()
+    # P4（2026-11-16）microcompact 的持久痕迹：被清理的 ToolMessage 以
+    # ``[old tool output ...]`` placeholder 留在 checkpoint 里，但 live 的
+    # context.microcompacted 系统行只在 WS 在场时落到前端内存 store——
+    # 后台会话/断线时发生的清理，重载后完全无感知。这里从消息特征重建
+    # 一行系统行（与 live 行同一个 i18n key），插到 transcript 开头。
+    try:
+        from ..microcompact import _CLEARED_PREFIX
+
+        _cleared = sum(
+            1
+            for m in messages
+            if isinstance(m, ToolMessage)
+            and isinstance(getattr(m, "content", ""), str)
+            and m.content.startswith(_CLEARED_PREFIX)
+        )
+        if _cleared:
+            ui.insert(
+                0,
+                {
+                    "id": None,
+                    "role": "system",
+                    "blocks": [
+                        {
+                            "kind": "context",
+                            "text": (
+                                f"Cleared {_cleared} older tool outputs to save "
+                                "context; call the tools again to re-fetch when needed."
+                            ),
+                            "i18n_key": "chat.context.microcompacted",
+                            "params": {"n": _cleared},
+                        }
+                    ],
+                },
+            )
+    except Exception:  # noqa: BLE001 — 痕迹行是辅助视图，绝不拖垮历史渲染
+        pass
     return ui

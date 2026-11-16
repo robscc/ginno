@@ -48,6 +48,10 @@ from .world_state import (
 
 log = logging.getLogger("ginno.compaction")
 
+# P3（2026-11-16）：摘要期间的进度心跳间隔。有 predicted_s 时每 30s 推一帧
+# 时间轴 pct——大历史摘要分钟级，8%→92% 之间前端只能干瞪着近乎冻结的条。
+_HEARTBEAT_S = 30.0
+
 # Structured summarization prompt (Claude-Code-style 9-section template with
 # Ginno adaptations: machine-marker guard + first-line UI preview contract +
 # "Work Completed"/"Context for Continuing Work" tail for the kept-turns
@@ -220,6 +224,7 @@ async def maybe_compact_history(
     force: bool = False,
     on_summary_start=None,
     on_summary_done=None,
+    on_heartbeat=None,
     abort_event=None,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
@@ -238,6 +243,12 @@ async def maybe_compact_history(
     cheap early-return check. Callers use it to push a "compacting…"
     status event; the summary call is the only slow step, so the UI hint
     brackets exactly the wait the user would otherwise stare at.
+
+    ``on_heartbeat(pct)`` (async callable, 2026-11-16 P3): progress ticks
+    every ``_HEARTBEAT_S`` while the summarizer runs, pct = time-axis
+    8+elapsed/predicted×84. Only wired when predicted_s exists — without an
+    ETA a heartbeat number would be fabricated motion; the frontend's
+    ease-out easing covers that case.
 
     ``abort_event`` (asyncio.Event, turn path only): the cooperative stop
     signal. The summarizer call can run for minutes on a huge history —
@@ -320,13 +331,15 @@ async def maybe_compact_history(
     if abort_event is not None and abort_event.is_set():
         log.info("compaction aborted before summary session=%s", session_id)
         return None
-    if on_summary_start is not None:
-        # 进度预估（2026-11-14）：按历史压缩时长 + 本次消息量预测秒数，随
-        # start 事件下发，前端据此走时间轴进度 + 显示 ETA（取代盲目缓动）。
-        from . import compaction_stats
+    # 进度预估（2026-11-14 起；2026-11-16 与 on_summary_start 解耦）：按历史
+    # 压缩时长 + 本次消息量预测秒数——start 事件下发它（前端时间轴进度 +
+    # ETA），心跳循环也用它算时间轴 pct，两者是独立消费者，任何一方缺省
+    # 不应牵连另一方。
+    from . import compaction_stats
 
-        predicted_s = compaction_stats.predict(len(old))
-        _t_summary = time.perf_counter()
+    predicted_s = compaction_stats.predict(len(old))
+    _t_summary = time.perf_counter()
+    if on_summary_start is not None:
         try:
             await on_summary_start(predicted_s)
         except TypeError:
@@ -337,11 +350,6 @@ async def maybe_compact_history(
                 log.warning("compaction_status_callback_failed session=%s", session_id)
         except Exception:
             log.warning("compaction_status_callback_failed session=%s", session_id)
-    else:
-        from . import compaction_stats
-
-        predicted_s = None
-        _t_summary = time.perf_counter()
     summary_task = asyncio.ensure_future(
         model.ainvoke(
             [
@@ -355,16 +363,55 @@ async def maybe_compact_history(
             ]
         )
     )
-    if abort_event is not None:
-        stop_task = asyncio.ensure_future(abort_event.wait())
-        done, _pending = await asyncio.wait(
-            {summary_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if stop_task in done and not summary_task.done():
-            summary_task.cancel()
-            log.info("compaction aborted by stop session=%s", session_id)
-            return None
-        stop_task.cancel()
+    # P5（2026-11-16）：摘要飞行期间登记到 server_shared._COMPACTING——
+    # turn.state 重连探针据此让前端保住「压缩中」镜像（断线不清锁）。
+    # 惰性 import 保持模块级无环（server_shared 不 import 本模块）。
+    try:
+        from .server_shared import _COMPACTING
+
+        _COMPACTING.add(session_id)
+    except Exception:  # noqa: BLE001 — 探针辅助，注册失败不影响压缩
+        pass
+    try:
+        while True:
+            if abort_event is not None:
+                stop_task = asyncio.ensure_future(abort_event.wait())
+                done, _pending = await asyncio.wait(
+                    {summary_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                    # P3：无心跳需求的调用方维持原语义（等到完成为止）；
+                    # 有心跳时最多等 _HEARTBEAT_S 就醒来推一帧进度。
+                    timeout=(_HEARTBEAT_S if on_heartbeat is not None else None),
+                )
+                if stop_task in done and not summary_task.done():
+                    summary_task.cancel()
+                    log.info("compaction aborted by stop session=%s", session_id)
+                    return None
+                stop_task.cancel()
+            else:
+                done, _pending = await asyncio.wait(
+                    {summary_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=(_HEARTBEAT_S if on_heartbeat is not None else None),
+                )
+            if summary_task.done():
+                break
+            # timeout 分支（P3 心跳）：任务还活着 → 推时间轴 pct。elapsed 对
+            # predicted 的比值线性映射到 8..92（与 writing 档衔接）。
+            if on_heartbeat is not None and predicted_s:
+                elapsed = time.perf_counter() - _t_summary
+                pct = int(min(90, 8 + (elapsed / max(1.0, predicted_s)) * 82))
+                try:
+                    await on_heartbeat(pct)
+                except Exception:
+                    log.warning("compaction_heartbeat_failed session=%s", session_id)
+    finally:
+        try:
+            from .server_shared import _COMPACTING
+
+            _COMPACTING.discard(session_id)
+        except Exception:  # noqa: BLE001
+            pass
     summary_resp = await summary_task
     # 记录本次摘要耗时（进度预估的历史样本）。
     try:

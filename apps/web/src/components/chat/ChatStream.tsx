@@ -191,7 +191,11 @@ export function ChatStream({
   const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
 
   // 压缩进度（2026-11-14 升级）：有 predicted_s（历史压缩时长预估）→ 按时间轴
-  // 走进度 + 显示 ETA；无预估（历史样本不足）→ 回退旧的每 1.8s +4 缓动。
+  // 走进度 + 显示 ETA + 后端每 30s 心跳帧校准；无预估 → ease-out 时间轴
+  // 缓动（2026-11-16 P3：旧的每 1.8s +4 线性档在分钟级摘要上 5 分钟才爬
+  // 到 66%，观感近乎冻结；改 90s 时间常数的指数逼近——60s ≈41%、3min
+  // ≈79%、上限 88%（writing=92 档仍由事件接管）。心跳只在有预估时发，
+  // 与本缓动互斥，两条路径不会互相覆盖 pct。
   const compactStartRef = useRef(0);
   useEffect(() => {
     if (!compacting || !compactStage) return;
@@ -210,7 +214,8 @@ export function ChatStream({
             eta: Math.max(0, Math.round(predicted - elapsed)),
           };
         }
-        return { ...p, pct: Math.min(90, p.pct + 4) };
+        const eased = 1 - Math.exp(-elapsed / 90);
+        return { ...p, pct: Math.min(88, Math.round(8 + eased * 80)) };
       });
     }, predicted ? 500 : 1800);
     return () => clearInterval(t);

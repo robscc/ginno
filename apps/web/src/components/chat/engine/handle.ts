@@ -410,7 +410,11 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
   // 「压缩中…」收尾：压缩期间该会话不会有其他流事件,所以除置位事件本身
   // 之外的任何事件到达 = 压缩已结束(成功→context.compacted/流恢复;失败
   // →turn 照常继续,compaction 从不当 blocker)。含 turn.stopped/error。
-  if (ev.event !== "context.compacting" && ctx.compactingBySessionRef.current[sid]) {
+  // 例外(P5,2026-11-16)：turn.state 携带 compacting=true 时是重连探针
+  // 在报告「摘要还在飞」——恰恰要保住镜像,不能当结束信号清掉。
+  const isCompactingProbe =
+    ev.event === "turn.state" && ev.compacting === true;
+  if (ev.event !== "context.compacting" && !isCompactingProbe && ctx.compactingBySessionRef.current[sid]) {
     ctx.compactingBySessionRef.current[sid] = false;
     ctx.compactStageRef.current[sid] = null;
     ctx.syncDisplay(sid);
@@ -1556,6 +1560,14 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (ctx.reconcileTimerRef.current[sid]) {
         clearTimeout(ctx.reconcileTimerRef.current[sid]!);
         ctx.reconcileTimerRef.current[sid] = null;
+      }
+      // P5（2026-11-16）：探针报告摘要飞行中 → 恢复「压缩中」镜像。
+      // 断线期间 context.compacting 帧丢失，重连后没有这条恢复分支的话
+      // 一个还在压缩的 turn 会显示为普通 running（进度条消失）。
+      if (ev.compacting === true && !ctx.compactingBySessionRef.current[sid]) {
+        ctx.compactingBySessionRef.current[sid] = true;
+        ctx.compactStageRef.current[sid] = { stage: "summarizing", pct: 8 };
+        ctx.syncDisplay(sid);
       }
       if (ctx.serverRunningRef.current[sid] !== !!ev.running) {
         ctx.serverRunningRef.current[sid] = !!ev.running;

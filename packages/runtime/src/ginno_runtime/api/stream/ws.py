@@ -1329,7 +1329,16 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # Post-reconnect probe (frontend ChatStream): is a turn still
                 # streaming (or parked at an interrupt) for this session? If
                 # not, the client reconciles against /history instead of
-                # waiting on a stream that will never resume.
+                # waiting on a stream that will never resume. ``compacting``
+                # (2026-11-16 P5)：E3 摘要飞行中为 true——重连后前端据此
+                # 保住「压缩中」镜像（否则任何事件都会清掉它，还在压缩的
+                # turn 提前解锁 Composer）。
+                try:
+                    from ...server_shared import _COMPACTING
+
+                    _compacting = session_id in _COMPACTING
+                except Exception:  # noqa: BLE001 — 探针辅助
+                    _compacting = False
                 try:
                     await ws.send_text(
                         _ev(
@@ -1337,6 +1346,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             {
                                 "running": session_id in _RUNNING_TURNS,
                                 "turn_id": _RUNNING_TURNS.get(session_id, ""),
+                                "compacting": _compacting,
                             },
                         )
                     )
