@@ -141,15 +141,31 @@ def _is_injected(m: Any) -> bool:
 
 def _running_bg_tasks(session_id: str) -> list[str]:
     """该 session 名下 running 态的后台任务 id（重启后 bg_logs 可收割）。"""
+    return _bg_tasks_by_status(session_id, running=True)
+
+
+def _interrupted_bg_tasks(session_id: str) -> list[str]:
+    """该 session 名下 **interrupted** 态的后台任务 id（2026-11-16 补）。
+
+    为什么必须收：sidecar 退出会杀掉所有非 detached 子进程，store 把它们
+    标为 interrupted（store.py §「app quit」）。**这些恰恰是最该提示用户
+    「要不要恢复」的任务**，而原实现只收 running，把它们全过滤了——实测
+    索引里 4 个 interrupted（含 SSH 隧道、CI watch）一个都没进遗言带。
+    """
+    return _bg_tasks_by_status(session_id, running=False)
+
+
+def _bg_tasks_by_status(session_id: str, *, running: bool) -> list[str]:
+    """按状态取该 session 名下的后台任务 id。best effort，异常返回空。"""
     try:
         from .tasks import store as task_store
 
+        want = task_store.STATUS_RUNNING if running else task_store.STATUS_INTERRUPTED
         idx = task_store.read_index()
         return sorted(
             tid
             for tid, rec in idx.items()
-            if rec.get("origin_session") == session_id
-            and rec.get("status") == task_store.STATUS_RUNNING
+            if rec.get("origin_session") == session_id and rec.get("status") == want
         )
     except Exception:  # noqa: BLE001 — best effort
         return []
@@ -188,6 +204,8 @@ def snapshot_from_messages(
         "last_agent_message": agent_last,
         "running_tools": pending_tools,
         "bg_tasks": _running_bg_tasks(session_id),
+        # 被重启杀掉的后台任务（可重跑）——与 running（可收割）语义不同，分开列
+        "bg_interrupted": _interrupted_bg_tasks(session_id),
         "ts": int(time.time()),
     }
 
@@ -517,7 +535,7 @@ def reconcile_bg_tasks(snap: dict) -> None:
     提示收割一次，不静默吞掉可能在跑的任务。
     """
     bg = snap.get("bg_tasks") or []
-    if not bg:
+    if not bg and not (snap.get("bg_interrupted") or []):
         return
     try:
         from .tasks import store as task_store
@@ -544,6 +562,22 @@ def reconcile_bg_tasks(snap: dict) -> None:
             len(bg) - len(live),
         )
     snap["bg_tasks"] = live
+    # interrupted 列表同样实时核对（2026-11-16）：仍 interrupted 的才提示重跑；
+    # 已被认领/重跑成别的状态就移除，避免提示用户去重跑一个已在跑的任务。
+    dead = snap.get("bg_interrupted") or []
+    if dead:
+        still = [
+            t
+            for t in dead
+            if str((idx.get(str(t)) or {}).get("status") or "")
+            == task_store.STATUS_INTERRUPTED
+        ]
+        if len(still) != len(dead):
+            _log.info(
+                "lastwords_bg_interrupted_reconciled session=%s kept=%d dropped=%d",
+                snap.get("session_id"), len(still), len(dead) - len(still),
+            )
+        snap["bg_interrupted"] = still
 
 
 def render_band(snap: dict) -> str:
@@ -558,7 +592,9 @@ def render_band(snap: dict) -> str:
     if bg:
         suffix = "，状态未知" if snap.get("bg_tasks_unknown") else ""
         bg_note = f" · 后台任务 {len(bg)} 个可收割(bg_logs{suffix})"
-    return f"[lastwords] {reason} 重启恢复：{summary}{fp_note}{bg_note}"
+    dead = snap.get("bg_interrupted") or []
+    dead_note = f" · {len(dead)} 个后台任务被中断(可重跑)" if dead else ""
+    return f"[lastwords] {reason} 重启恢复：{summary}{fp_note}{bg_note}{dead_note}"
 
 
 def render_continuation(snap: dict) -> str:
@@ -576,6 +612,12 @@ def render_continuation(snap: dict) -> str:
     if bg:
         lines.append(
             f"后台任务 {', '.join(map(str, bg))} 可能仍在跑或已结束，用 bg_logs 收割结果。"
+        )
+    dead = snap.get("bg_interrupted") or []
+    if dead:
+        lines.append(
+            f"另有 {len(dead)} 个后台任务被本次重启中断（{', '.join(map(str, dead))}）："
+            "它们**已不在运行**，需要时先问用户是否重跑，不要擅自重启。"
         )
     return "\n".join(lines)
 
@@ -699,7 +741,16 @@ async def recover_lastwords() -> int:
                 else:
                     ok = await _inject_lastwords_message(session, snap)
                     how = "notify"
-            elif m == "auto" and reason == REASON_DEV_SWAP:
+            elif m in ("notify", "auto"):
+                # 人工会话：**任何 reason** 都挂起待确认（2026-11-16 放宽）。
+                # 原条件 `m == "auto" and reason == REASON_DEV_SWAP` 太窄：
+                # 重启/崩溃（reason=running/signal）拿不到任何交互提示，
+                # 而默认 mode 就是 notify → 用户只看到静默注入的带 + 一条
+                # 被动收件箱条目，实测「遗言好像没触发过」。
+                # **安全分级不破**：这里只挂起 + 广播，绝不自动跑 turn；
+                # 续跑必须用户点「恢复」经 /api/lastwords/resume。崩溃场景
+                # 不自动烧 token 的既有约束因此仍然成立。
+                # off 已在上面早退，不会走到这里。
                 ok = await _inject_lastwords_message(session, snap)
                 how = "notify"
                 if ok:
@@ -710,7 +761,17 @@ async def recover_lastwords() -> int:
                             "runtime.lastwords_pending",
                             {
                                 "session_id": sid,
-                                "head": str(snap.get("head") or "")[:160],
+                                # 快照真字段是 user_request_head；原实现取
+                                # snap["head"]（从不存在）→ 通知摘要恒空。
+                                # 两个键都发：head 兼容既有前端读法。
+                                "head": str(snap.get("user_request_head") or "")[:160],
+                                "user_request_head": str(
+                                    snap.get("user_request_head") or ""
+                                )[:160],
+                                "reason": reason,
+                                "bg_running": len(snap.get("bg_tasks") or []),
+                                "bg_interrupted": len(snap.get("bg_interrupted") or []),
+                                "bg_interrupted_ids": list(snap.get("bg_interrupted") or []),
                                 "tool_calls": eff.get("tool_calls", 0),
                                 "elapsed_s": max(
                                     0.0,

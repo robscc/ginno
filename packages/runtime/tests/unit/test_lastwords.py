@@ -324,7 +324,8 @@ class TestRecover:
 
         monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
         n = await lastwords.recover_lastwords()
-        assert n == 1
+        # 挂起待确认不计 restored（2026-11-16）；带已注入、pending 已挂
+        assert n == 0
         # aupdate_state 追加了一条 HumanMessage（带 ginno_task_event 戳）
         assert len(g.updates) == 1
         cfg, upd = g.updates[0]
@@ -333,10 +334,12 @@ class TestRecover:
         assert msg.content.startswith("[lastwords]")
         kw = msg.additional_kwargs["ginno_task_event"]
         assert kw["kind"] == "lastwords" and kw["task"].startswith("lastwords-")
-        # exactly-once：文件已删
-        assert not lastwords._path("s-rec").exists()
-        # 通知中心广播
-        assert pushed and pushed[0][0] == "runtime.lastwords_restored"
+        # 2026-11-16 语义变更：人工会话改为**挂起待确认**——文件保留到
+        # 用户点「恢复」/「忽略」才处置（exactly-once 由 resume/dismiss 收口）。
+        assert lastwords._path("s-rec").exists()
+        assert lastwords.pending_resume_snapshot("s-rec") is not None
+        # 广播的是待确认事件（可操作），不再是被动的 restored 回执
+        assert pushed and pushed[0][0] == "runtime.lastwords_pending"
         assert pushed[0][1]["session_id"] == "s-rec"
 
     async def test_session_gone_silent_drop(self, monkeypatch: pytest.MonkeyPatch):
@@ -420,7 +423,12 @@ class TestRecover:
     async def test_auto_signal_stays_notify(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """安全分级（§4）：auto 只对 reason=dev-swap 生效，signal/running 走 notify。"""
+        """安全分级（§4）：signal/running 的人工会话**绝不自动跑 turn**。
+
+        2026-11-16 放宽：不再限于 dev-swap，任何 reason 都挂起待确认——
+        但**仍不自动续跑**（崩溃不烧 token 的约束不变）。restored 计数为 0
+        因为挂起未续跑；真正的续跑要用户经 /api/lastwords/resume 确认。
+        """
         (isolated_home / "settings.json").write_text(
             json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
         )
@@ -438,8 +446,9 @@ class TestRecover:
         import ginno_runtime.api.stream as stream_mod
 
         monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
-        assert await lastwords.recover_lastwords() == 1
-        assert g.updates and not stream_calls  # 注入了折叠带，没跑 turn
+        assert await lastwords.recover_lastwords() == 0  # 挂起待确认，未续跑
+        assert g.updates and not stream_calls  # 注入了折叠带，**没跑 turn**
+        assert lastwords.pending_resume_snapshot("s-sig") is not None
 
     async def test_auto_signal_subagent_runs_headless_turn(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -858,6 +867,184 @@ class TestBgReconcile:
             pass
 
         monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
-        assert await lastwords.recover_lastwords() == 1
+        # 挂起待确认路径不计 restored（2026-11-16）；带仍已注入
+        assert await lastwords.recover_lastwords() == 0
         band = g.updates[0][1]["messages"][0].content
         assert "1 个" in band and "2 个" not in band
+
+
+# ── 2026-11-16：interrupted 后台任务采集 + 人工会话任意 reason 挂起待确认 ──────
+#
+# 事故：用户报「遗言好像没如我所愿触发过」。查明三因：
+#   ① 默认 mode=notify 对人工会话只静默注入带 + 被动收件箱条目，无交互提示；
+#   ② 待确认流程原条件 `auto AND dev-swap` 太窄，重启/崩溃拿不到；
+#   ③ _running_bg_tasks 只收 running，把被重启杀掉的 interrupted 全过滤了
+#      ——实测索引里 4 个 interrupted（含 SSH 隧道、CI watch）一个都没进带。
+
+
+class TestInterruptedBgTasks:
+    def test_interrupted_collected_separately_from_running(self, monkeypatch):
+        from ginno_runtime.tasks import store as task_store
+
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {
+                "t_run": {"origin_session": "s1", "status": task_store.STATUS_RUNNING},
+                "t_int": {"origin_session": "s1", "status": task_store.STATUS_INTERRUPTED},
+                "t_fin": {"origin_session": "s1", "status": "finished"},
+                "t_other": {"origin_session": "s2", "status": task_store.STATUS_INTERRUPTED},
+            },
+        )
+        assert lastwords._running_bg_tasks("s1") == ["t_run"]
+        assert lastwords._interrupted_bg_tasks("s1") == ["t_int"]
+
+    def test_snapshot_carries_both_lists(self, monkeypatch):
+        from ginno_runtime.tasks import store as task_store
+
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {
+                "t_run": {"origin_session": "s1", "status": task_store.STATUS_RUNNING},
+                "t_int": {"origin_session": "s1", "status": task_store.STATUS_INTERRUPTED},
+            },
+        )
+        snap = lastwords.snapshot_from_messages("s1", "default", [], reason="running")
+        assert snap["bg_tasks"] == ["t_run"]
+        assert snap["bg_interrupted"] == ["t_int"]
+
+    def test_band_mentions_interrupted_as_rerunnable(self):
+        band = lastwords.render_band({
+            "user_request_head": "干活", "reason": "running",
+            "bg_tasks": ["t1"], "bg_interrupted": ["t2", "t3"],
+        })
+        assert "1 个可收割" in band
+        assert "2 个后台任务被中断" in band and "可重跑" in band
+
+    def test_continuation_tells_agent_not_to_auto_rerun(self):
+        """interrupted 已不在运行——必须让 agent 先问用户，不擅自重启。"""
+        txt = lastwords.render_continuation({
+            "user_request_head": "干活", "bg_interrupted": ["t2"],
+        })
+        assert "已不在运行" in txt
+        assert "先问用户" in txt or "不要擅自重启" in txt
+
+    def test_reconcile_keeps_only_still_interrupted(self, monkeypatch):
+        from ginno_runtime.tasks import store as task_store
+
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {
+                "t_still": {"status": task_store.STATUS_INTERRUPTED},
+                "t_restarted": {"status": task_store.STATUS_RUNNING},
+            },
+        )
+        snap = {"session_id": "s1", "bg_tasks": [],
+                "bg_interrupted": ["t_still", "t_restarted"]}
+        lastwords.reconcile_bg_tasks(snap)
+        assert snap["bg_interrupted"] == ["t_still"]
+
+    def test_reconcile_runs_when_only_interrupted_present(self, monkeypatch):
+        """bg_tasks 空但有 interrupted 时也必须核对（原实现会早退）。"""
+        from ginno_runtime.tasks import store as task_store
+
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {"t_gone": {"status": "finished"}},
+        )
+        snap = {"session_id": "s1", "bg_tasks": [], "bg_interrupted": ["t_gone"]}
+        lastwords.reconcile_bg_tasks(snap)
+        assert snap["bg_interrupted"] == []
+
+    def test_store_unavailable_does_not_raise(self, monkeypatch):
+        from ginno_runtime.tasks import store as task_store
+
+        def boom():
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(task_store, "read_index", boom)
+        assert lastwords._interrupted_bg_tasks("s1") == []
+
+
+class TestPendingForAllReasons:
+    @pytest.mark.parametrize("reason", ["running", "signal", "dev-swap"])
+    @pytest.mark.parametrize("mode", ["notify", "auto"])
+    async def test_human_session_any_reason_gets_pending(
+        self, isolated_home, monkeypatch, reason, mode
+    ):
+        """人工会话任何 reason 都挂起待确认——但绝不自动跑 turn。"""
+        (isolated_home / "settings.json").write_text(
+            json.dumps({"devswap": {"lastwords": {"mode": mode}}})
+        )
+        _write_valid("s-p", reason=reason)
+        g = FakeGraph()
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, g),
+        )
+        stream_calls: list = []
+
+        async def fake_run_stream(*a, **kw):
+            stream_calls.append(1)
+
+        import ginno_runtime.api.stream as stream_mod
+
+        monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
+        pushed: list = []
+
+        async def fake_push(event, data):
+            pushed.append((event, data))
+
+        monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
+        await lastwords.recover_lastwords()
+        assert stream_calls == [], f"{mode}/{reason} 不得自动跑 turn"
+        assert lastwords.pending_resume_snapshot("s-p") is not None
+        assert any(e == "runtime.lastwords_pending" for e, _ in pushed)
+        # 文件保留至 resume/dismiss
+        assert lastwords._path("s-p").exists()
+
+    async def test_off_mode_still_drops_without_pending(self, isolated_home, monkeypatch):
+        """off 语义不变：不注入不挂起，直接删。"""
+        (isolated_home / "settings.json").write_text(
+            json.dumps({"devswap": {"lastwords": {"mode": "off"}}})
+        )
+        _write_valid("s-off", reason="running")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+        await lastwords.recover_lastwords()
+        assert lastwords.pending_resume_snapshot("s-off") is None
+        assert not lastwords._path("s-off").exists()
+
+    async def test_pending_payload_carries_head_and_interrupted(
+        self, isolated_home, monkeypatch
+    ):
+        """广播必须带真实请求摘要与 interrupted 计数（原 head 恒空）。"""
+        from ginno_runtime.tasks import store as task_store
+
+        # reconcile 会实时核对——桩索引让这两个任务仍是 interrupted
+        monkeypatch.setattr(
+            task_store, "read_index",
+            lambda: {
+                "t_a": {"status": task_store.STATUS_INTERRUPTED},
+                "t_b": {"status": task_store.STATUS_INTERRUPTED},
+            },
+        )
+        _write_valid("s-pay", reason="running", bg_interrupted=["t_a", "t_b"])
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+        pushed: list = []
+
+        async def fake_push(event, data):
+            pushed.append((event, data))
+
+        monkeypatch.setattr(server_shared, "_push_global_event", fake_push)
+        await lastwords.recover_lastwords()
+        payload = next(d for e, d in pushed if e == "runtime.lastwords_pending")
+        assert payload["head"], "head 不得为空（原实现取不存在的 snap['head']）"
+        assert payload["user_request_head"] == payload["head"]
+        assert payload["bg_interrupted"] == 2
+        assert payload["bg_interrupted_ids"] == ["t_a", "t_b"]
+        assert payload["reason"] == "running"
