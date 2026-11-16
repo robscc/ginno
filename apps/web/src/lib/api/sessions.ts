@@ -189,6 +189,15 @@ export async function markSessionSeen(session_id: string) {
   );
 }
 
+/** 手动「标为未读」（session 行右键/扇形菜单入口）：置 forced_unread，
+ * 打开会话即随 seen 清除——与 IM 同语义。 */
+export async function markSessionUnread(session_id: string) {
+  return json<{ ok: boolean }>(
+    `${BASE}/sessions/${encodeURIComponent(session_id)}/unread`,
+    { method: "POST" },
+  );
+}
+
 /** Fork 会话（侧栏扇形菜单入口；/fork 命令的 REST 面）。返回新会话 id；
  * busy（turn 在跑）/existing（已有副本）等语义由端点字段表达。 */
 export async function forkSession(session_id: string) {

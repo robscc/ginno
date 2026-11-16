@@ -53,6 +53,7 @@ from ..session_meta import (
 )
 from ..session_unread import is_unread as _session_is_unread
 from ..session_unread import mark_session_seen as _mark_session_seen
+from ..session_unread import mark_session_unread as _session_unread_mark
 from ..subagent_scheduler import (
     SUBAGENT_MAX_DEPTH,
     _is_subagent,
@@ -1049,6 +1050,18 @@ async def mark_session_seen_endpoint(session_id: str) -> dict:
         return {"ok": False, "error": "not_found"}
     _mark_session_seen(slug, session_id)
     return {"ok": True}
+
+
+@router.post("/api/sessions/{session_id}/unread")
+async def mark_session_unread_endpoint(session_id: str) -> dict:
+    """手动「标为未读」（2026-11-16，session 行右键/扇形菜单）：置
+    forced_unread（session_unread），打开会话即随 seen 清除——与 IM 同
+    语义。touch=False 不重排侧栏；未找到会话返回 not_found。"""
+    slug = _session_slug(session_id)
+    if slug is None:
+        return {"ok": False, "error": "not_found"}
+    ok = _session_unread_mark(slug, session_id)
+    return {"ok": ok, **({} if ok else {"error": "not_found"})}
 
 
 @router.post("/api/sessions/{session_id}/fork")

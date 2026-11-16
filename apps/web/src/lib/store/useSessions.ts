@@ -357,6 +357,29 @@ export function useSessions({
     }
   }, []);
 
+  /** 手动未读标注（2026-11-16，session 行右键/扇形菜单）：置未读 = 服务端
+   *  forced_unread + 本地未读投影（markSessionUnread 的 silent notice 收件
+   *  联动、正在看守卫都复用）+ s.unread 乐观写；标已读 = clearSessionUnread
+   *  （seen 上报 + 本地清 + notice 双写已读，一条不漏）。 */
+  const setSessionUnread = useCallback(
+    async (id: string, unread: boolean) => {
+      if (!id) return;
+      if (unread) {
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, unread: true } : s)));
+        markSessionUnread(id);
+        try {
+          await api.markSessionUnread(id);
+        } catch {
+          /* ignore — reconcile on next reload */
+        }
+      } else {
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, unread: false } : s)));
+        clearSessionUnread(id);
+      }
+    },
+    [markSessionUnread, clearSessionUnread],
+  );
+
   /** Session label/icon（session-label-icon-design.md §3.2）：乐观写 + PUT
    *  tags 全量覆盖；失败 toast 由面板负责（这里静默，下次 reload 对齐）。 */
   const setSessionTags = useCallback(
@@ -397,6 +420,7 @@ export function useSessions({
     removeSession,
     renameSession,
     pinSession,
+    setSessionUnread,
     setSessionWorker,
     applySessionPatch,
   };

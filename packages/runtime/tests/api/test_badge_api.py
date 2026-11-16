@@ -128,3 +128,50 @@ def test_schedule_runs_memo_invalidates_on_new_run(client):
     assert _get_badge(client)["schedule_runs"] == 1
     _seed_run("sr-2")  # 新 run 落盘改 mtime，第二轮必须看到
     assert _get_badge(client)["schedule_runs"] == 2
+
+
+# ---- 手动「标为未读」（2026-11-16 forced_unread）--------------------------------
+
+def test_mark_unread_endpoint_and_badge(client):
+    """forced_unread：已读会话标未读 → badge/list 装饰未读；打开（seen）清除。"""
+    _seed_session("s-manual", last_finished=100.0, seen=200.0)  # 已读基线
+    assert _get_badge(client)["sessions"] == 0
+
+    r = client.post("/api/sessions/s-manual/unread")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert _get_badge(client)["sessions"] == 1
+    rows = {s["id"]: s for s in client.get("/api/sessions").json()}
+    assert rows["s-manual"]["unread"] is True
+
+    # seen 端点（前端「正在看」/标已读共用）清除 forced_unread
+    assert client.post("/api/sessions/s-manual/seen").json()["ok"] is True
+    assert _get_badge(client)["sessions"] == 0
+
+
+def test_mark_unread_touch_false_no_reorder(client):
+    """置未读不改 updated——读态操作不重排侧栏（同 seen 语义）。"""
+    _seed_session("s-keep", last_finished=100.0, seen=200.0, updated=111.0)
+    before = {m["id"]: m["updated"] for m in _session_meta_list("default")}
+    client.post("/api/sessions/s-keep/unread")
+    after = {m["id"]: m["updated"] for m in _session_meta_list("default")}
+    assert after["s-keep"] == before["s-keep"]
+
+
+def test_mark_unread_endpoint_unknown_session(client):
+    r = client.post("/api/sessions/nope/unread")
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "not_found"}
+
+
+def test_forced_unread_survives_new_turn_finish(client):
+    """手动未读不被后台 turn 终态写入自然覆盖（独立标志，与 last_finished
+    解耦——伪造成 last_finished 的方案会在下次 turn finish 时语义漂移）。"""
+    import time as _t
+    _seed_session("s-bg", last_finished=100.0, seen=200.0)
+    client.post("/api/sessions/s-bg/unread")
+    # 后台 turn 又跑完一次（note_turn_finished 语义）
+    from ginno_runtime.session_unread import note_turn_finished
+    note_turn_finished("default", "s-bg", at=_t.time() - 10)
+    assert _get_badge(client)["sessions"] == 1  # 仍只算 1（forced or finished>seen）
+    client.post("/api/sessions/s-bg/seen")
+    assert _get_badge(client)["sessions"] == 0  # seen 同时压掉两条路径
