@@ -138,7 +138,12 @@ async def run_remote_turn(
         # a new one on a checkpoint that still has a pending interrupt.
         ref_ids: list[str] = []
         prev_tasks = []
-        prev = store.get_or_none(sid, slug)
+        # ContextMap.get_or_none 只收**单个已构造的 key**（contexts.py:143），
+        # 原实现误传 (sid, slug) 两参 → TypeError，远端会话每轮必崩。
+        # 与下面 update_task_state 处同口径先 _key(sid, slug)。
+        from ...a2a.contexts import _key as _prev_key
+
+        prev = store.get_or_none(_prev_key(sid, slug))
         if prev is not None:
             prev_tasks = list(prev.tasks)
             for tb in reversed(prev_tasks):
