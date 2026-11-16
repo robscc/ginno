@@ -158,3 +158,77 @@ def test_create_session_request_accepts_remote_peer():
     assert r.remote_peer == "vps"
     r2 = CreateSessionRequest(project_slug="default", workspace="/w")
     assert r2.remote_peer is None
+
+
+# ── R2：peer 当子 agent（A）─────────────────────────────────────────────────
+
+
+async def test_create_subagent_with_unknown_peer_fails_fast(monkeypatch):
+    """peer 不存在 → ok:False，**绝不静默改成本地子代理**。"""
+    from ginno_runtime.subagent_scheduler import spawn as sp
+    from ginno_runtime.a2a import peers as peers_mod
+
+    monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: None)
+    res = await sp.create_subagent("parent-1", "干活", peer="ghost")
+    assert res["ok"] is False
+    assert "ghost" in res["error"]
+
+
+async def test_create_subagent_peer_fork_mutually_exclusive():
+    """fork 依赖本地 checkpoint 重放，远端图状态不在本机（定案 #12）。"""
+    from ginno_runtime.subagent_scheduler import spawn as sp
+
+    res = await sp.create_subagent("parent-1", "干活", peer="vps", fork=True)
+    assert res["ok"] is False
+    assert "fork" in res["error"].lower()
+
+
+async def test_create_subagent_disabled_peer_fails_fast(monkeypatch):
+    from ginno_runtime.subagent_scheduler import spawn as sp
+    from ginno_runtime.a2a import peers as peers_mod
+
+    rec = peers_mod.PeerRecord(slug="vps", endpoint="http://h/a2a", enabled=False)
+    monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: rec)
+    res = await sp.create_subagent("parent-1", "干活", peer="vps")
+    assert res["ok"] is False
+
+
+async def test_peers_api_masks_token(monkeypatch):
+    """/api/a2a/peers 绝不回 token 明文。"""
+    from ginno_runtime.api import connectors as capi
+    from ginno_runtime.a2a import peers as peers_mod
+
+    rec = peers_mod.PeerRecord(slug="vps", name="VPS", endpoint="http://h/a2a",
+                               token="SUPER-SECRET-TOKEN")
+    monkeypatch.setattr(peers_mod.PeerStore, "list_all", lambda self: [rec])
+    res = await capi.list_a2a_peers()
+    assert res["ok"] is True
+    assert len(res["peers"]) == 1
+    p = res["peers"][0]
+    assert p["slug"] == "vps" and p["name"] == "VPS"
+    blob = str(res)
+    assert "SUPER-SECRET-TOKEN" not in blob, "token 明文不得出现在响应里"
+    assert "token" not in p, "选择器不需要 token 字段"
+
+
+async def test_peers_api_read_failure_returns_empty(monkeypatch):
+    from ginno_runtime.api import connectors as capi
+    from ginno_runtime.a2a import peers as peers_mod
+
+    def boom(self):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(peers_mod.PeerStore, "list_all", boom)
+    res = await capi.list_a2a_peers()
+    assert res == {"ok": True, "peers": []}
+
+
+def test_spawn_subagent_tool_exposes_peer():
+    """工具面必须有 peer 参数，否则模型/用户无法显式指派远端。"""
+    import inspect
+
+    from ginno_runtime.tools import subagent as sa
+
+    src = inspect.getsource(sa)
+    assert "peer: str" in src
+    assert "peer=peer" in src

@@ -126,6 +126,7 @@ def build_subagent_tools(
         constraints: str = "",
         acceptance: str = "",
         agent_type: str = "",
+        peer: str = "",
         fork: bool = False,
         thinking_effort: str = "",
     ) -> str:
@@ -159,6 +160,11 @@ def build_subagent_tools(
             goal: 自足的完整目标描述（必填）。
             constraints: 约束（只读、不改某文件、时间预算…），可为空。
             acceptance: 验收标准，供你收到结果后对照判定，可为空。
+            peer: 可选的**远端 A2A peer slug**（remote-session-design.md R2）。
+                非空时该子代理是远端会话——每轮在那台远端节点执行，本地不跑图；
+                worker 卡/进度/结果回注与本地子代理完全一致。peer 列表见
+                连接器页的 A2A 对端。不存在/禁用则 fail-fast 报错，绝不静默
+                改成本地子代理。与 fork 互斥（远端图状态不在本机）。
             agent_type: 可选的 subagent 类型名（见系统提示的类型注册表清单）。
                 按类型路由 persona/工具集/模型；未知类型会返回可用清单。
             fork: true 时子代理继承本对话的完整上下文（并行分支，适用于
@@ -187,6 +193,7 @@ def build_subagent_tools(
         res = await create_subagent(
             session_id, goal, constraints, acceptance, origin="agent",
             agent_type=agent_type, fork=fork, thinking_effort=thinking_effort,
+            peer=peer,
         )
         if not res.get("ok"):
             return str(

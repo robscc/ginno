@@ -85,6 +85,7 @@ async def create_subagent(
     agent_type: str = "",
     fork: bool = False,
     thinking_effort: str = "",
+    peer: str = "",
 ) -> dict:
     """Create + launch one child session. Never raises; ``ok: False`` results
     carry an ``[error]``-style message the tool returns verbatim.
@@ -97,10 +98,36 @@ async def create_subagent(
     ``fork=True``; fork does NOT change the depth rules.
 
     ``thinking_effort``(P2,thinking-effort-design §9):子代理默认不继承父会话
-    档位(auto);深研子任务可显式带参覆盖。"""
+    档位(auto);深研子任务可显式带参覆盖。
+
+    ``peer``(remote-session-design.md R2/A):非空时该子代理是**远端会话**——
+    挂 A2A peer slug，每轮在那台远端节点执行，本地不跑图。worker 卡 /
+    digest / 结果回注 / watch_worker 全部复用既有 subagent 基建，零改动。
+    peer 不存在/禁用时 **fail-fast 返回 ok:False**，绝不静默改成本地子代理
+    （否则用户以为派到了远端，实际在本机跑）。``fork`` 与 ``peer`` 互斥：
+    fork 依赖本地 checkpoint 重放，远端图状态不在本机（定案 #12）。"""
     goal = (goal or "").strip()
     if not goal:
         return {"ok": False, "error": _NS.t("goal must not be empty", "goal 不能为空")}
+    peer = (peer or "").strip()
+    if peer:
+        if fork:
+            return {"ok": False, "error": _NS.t(
+                "fork is not supported for remote-peer subagents (remote graph state is not local)",
+                "远端 peer 子代理不支持 fork（远端图状态不在本机）",
+            )}
+        from ..a2a.peers import PeerStore
+
+        _rec = PeerStore().find(peer)
+        if _rec is None:
+            return {"ok": False, "error": _NS.t(
+                f"remote peer {peer!r} not found", f"远端 peer {peer!r} 不存在"
+            )}
+        if not _rec.enabled or not _rec.endpoint:
+            return {"ok": False, "error": _NS.t(
+                f"remote peer {peer!r} is disabled or has no endpoint",
+                f"远端 peer {peer!r} 已禁用或未配置 endpoint",
+            )}
     from ..api.sessions import _ensure_session  # lazy: cycle
 
     parent = _NS._SESSIONS.get(parent_session_id) or _ensure_session(parent_session_id)
@@ -270,6 +297,8 @@ async def create_subagent(
             ),
             primary_folder=parent_meta.get("primary_folder") or None,
             parent_session_id=parent_session_id,
+            # 远端子代理（R2/A）：挂 peer slug → turn 在远端执行
+            remote_peer=peer or None,
             restrict_tools=list(st.tools_allow) if st is not None else [],
             subagent={
                 "goal": goal,
