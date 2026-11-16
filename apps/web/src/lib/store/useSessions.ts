@@ -127,6 +127,16 @@ export function useSessions({
       // 双写已读（§3.3 原子双写的另一半）：收件箱里的 session 投影条目
       // 一并标已读（幂等；无投影条目时是 no-op）。
       markNoticeReadByKey(`session:${id}`);
+      // 清服务端装饰的 s.unread（2026-11-16 修不对称）：
+      // setSessionUnread(id,true) 会乐观写 s.unread=true，而本函数原先只清
+      // unreadRef map，**不碰 sessions 数组** → 手动标未读后点开会话，
+      // 服务端 forced_unread 已清但本地 s.unread 仍 true，紫点与「标为已读」
+      // 菜单项都留着，只有下次 reloadSessions 才纠正。清除必须与写入对称。
+      setSessions((prev) =>
+        prev.some((s) => s.id === id && s.unread)
+          ? prev.map((s) => (s.id === id ? { ...s, unread: false } : s))
+          : prev,
+      );
       if (unreadRef.current[id] === undefined) return;
       const next = { ...unreadRef.current };
       delete next[id];

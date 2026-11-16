@@ -124,3 +124,75 @@ def test_packaged_ui_session_context_menu_mark_unread(tmp_path):
             browser.close()
     finally:
         sc.stop_sidecar(proc)
+
+
+def test_packaged_ui_opening_session_clears_manual_unread(tmp_path):
+    """标为未读后**点开会话**应自动变已读（2026-11-16 事故回归）。
+
+    事故：clearSessionUnread 只清 unreadRef map + 上报 /seen，不清 sessions
+    数组里的 s.unread → 服务端 forced_unread 已清但本地乐观态残留，紫点与
+    「标为已读」菜单项都留着。既有用例只测「菜单点标为已读」，漏了这条
+    「打开即已读」路径（代码注释承诺的 IM 语义）。
+    """
+    if not RUNTIME_BIN.exists():
+        pytest.skip("packaged sidecar not built (run `make runtime`)")
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        pytest.skip("playwright not installed")
+    if _port_open(PORT):
+        pytest.skip(f"port {PORT} already in use")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps(_settings()))
+
+    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(PORT))
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
+    try:
+        _wait_health(PORT)
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
+            page.wait_for_timeout(1500)
+
+            ta = page.locator("textarea").first
+            ta.click()
+            ta.fill("open clears unread")
+            ta.press("Enter")
+            page.wait_for_timeout(1800)
+
+            # 回 home 让行失去选中态（紫点条件含 !sel）
+            page.get_by_title("Back to the landing", exact=False).first.click()
+            page.wait_for_timeout(600)
+            row = page.locator(".nav-item.group", has_text="open clears unread").first
+            assert row.count() >= 1
+
+            # 标为未读 → 紫点出现
+            row.click(button="right")
+            page.locator('[role="menuitem"]', has_text="Mark as unread").click()
+            page.wait_for_timeout(800)
+            assert page.locator('.nav-item.group [title*="unread" i]').count() >= 1, (
+                "unread dot should appear after mark-as-unread"
+            )
+
+            # **点开会话**（不是走菜单）→ 应立即变已读
+            row.click()
+            page.wait_for_timeout(1000)
+            # 切回 home 让行再次失去选中态，才能观察紫点是否真的清了
+            page.get_by_title("Back to the landing", exact=False).first.click()
+            page.wait_for_timeout(800)
+            assert page.locator('.nav-item.group [title*="unread" i]').count() == 0, (
+                "打开会话后紫点必须清除——s.unread 乐观态没清就会残留"
+            )
+
+            # 菜单也应回到「Mark as unread」双态（证明 unreadNow 已 false）
+            row = page.locator(".nav-item.group", has_text="open clears unread").first
+            row.click(button="right")
+            assert page.locator('[role="menuitem"]', has_text="Mark as unread").count() == 1, (
+                "打开会话后菜单应回到「标为未读」，说明已读态生效"
+            )
+            browser.close()
+    finally:
+        sc.stop_sidecar(proc)
