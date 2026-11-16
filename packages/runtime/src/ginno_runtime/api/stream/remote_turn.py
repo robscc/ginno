@@ -366,6 +366,30 @@ async def run_remote_turn(
         )
 
     await _persist_exchange(session, user_text, text or (f"[远端执行失败] {err}" if err else ""))
+    # 收口本地 running 态（2026-11-17 修「远端结束了本地还在运行」）。
+    #
+    # 根因：ws invoke 在接受时登记 `_RUNNING_TURNS[sid]=turn_id`，而清理
+    # **归 `_stream_graph` 所有**（engine.py 的 finally）。远端路径在
+    # `_run_stream` 顶部就拦截 return，**根本走不到 `_stream_graph`**，
+    # 于是这条登记永远没人清 → 会话永远读作 running → 停止按钮常亮、
+    # 输入框锁死。真机实锤 + 探针复现（turn 返回 input-required 后
+    # sid 仍在 _RUNNING_TURNS 里）。
+    #
+    # **远端一律清，不像本地那样为 interrupt 保留**：本地保留是因为
+    # checkpoint 上挂着待 resume 的 interrupt、有本地机制要接管；远端
+    # 没有任何东西在本机跑，续跑就是用户再发一条消息（H2 带
+    # referenceTaskIds 让对端 resume 那个 task）。「远端在等你回话」由
+    # input-required 的 notice 表达，不该用「本地正在运行」来表达。
+    # 身份校验后再清，绝不删掉后继 turn 的登记。
+    try:
+        from ...server_shared import _RUNNING_TURNS, _RUNNING_TURNS_AT, _TURN_STOP
+
+        if _RUNNING_TURNS.get(sid) == tid:
+            _RUNNING_TURNS.pop(sid, None)
+            _RUNNING_TURNS_AT.pop(sid, None)
+        _TURN_STOP.pop(sid, None)
+    except Exception:  # noqa: BLE001 — 收口清理不得影响回执
+        _log.exception("remote_turn_unregister_failed session=%s", sid)
     await _push_session_event(sid, "message.end", {}, tid)
     await _push_session_event(
         sid, "done", {"turn_id": tid, "remote": True, "state": state}, tid

@@ -828,3 +828,91 @@ class TestRemoteNoticeSlimming:
                 txt = d["stream"][key]
                 assert ph in txt, f"{loc}/{key} 缺占位符 {ph}"
                 assert "." not in key, "键必须扁平无点"
+
+
+# ── 2026-11-17：远端 turn 必须收口本地 running 态 ────────────────────────────
+#
+# 事故：用户报「远端已经结束了但是本地依旧在运行的状态」——停止按钮常亮、
+# 输入框锁死。根因：ws invoke 接受时登记 _RUNNING_TURNS[sid]=turn_id，
+# 而清理归 _stream_graph 所有（engine.py finally）；远端路径在 _run_stream
+# 顶部就拦截 return，**根本走不到 _stream_graph** → 登记永远没人清。
+# 探针复现：turn 返回 input-required 后 sid 仍在 _RUNNING_TURNS 里。
+
+
+class TestRemoteTurnUnregistersRunning:
+    @pytest.fixture
+    def _wire(self, isolated_home, monkeypatch):
+        from types import SimpleNamespace
+
+        from ginno_runtime import server_shared as ss
+        from ginno_runtime.a2a import peers as peers_mod
+
+        rec = peers_mod.PeerRecord(slug="vps", endpoint="http://127.0.0.1:1/a2a")
+        monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: rec)
+
+        async def fake_push(sid, ev, data, tid=None):
+            pass
+
+        monkeypatch.setattr(rt, "_push_session_event", fake_push)
+
+        async def fake_persist(s, u, r):
+            pass
+
+        monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
+        return ss, SimpleNamespace
+
+    def _client(self, ns, state):
+        class FakeClient:
+            async def send_message(self, text, **kw):
+                return ns(
+                    id="t1", context_id="c1",
+                    status=ns(state=state,
+                              message=ns(parts=[ns(text="回复")])),
+                    artifacts=[],
+                )
+
+            async def aclose(self):
+                pass
+
+        return FakeClient()
+
+    @pytest.mark.parametrize("state", ["completed", "input-required", "failed"])
+    async def test_running_cleared_for_every_terminal_state(
+        self, _wire, monkeypatch, state
+    ):
+        """**任何**终态都要清——远端不像本地那样为 interrupt 保留登记。"""
+        ss, ns = _wire
+        monkeypatch.setattr(rt, "_client", lambda rec: self._client(ns, state))
+        sid = f"s-clear-{state}"
+        ss._RUNNING_TURNS[sid] = "tid-x"
+        sess = {"id": sid, "remote_peer": "vps", "graph": None}
+        await rt.run_remote_turn(sess, "干活", "tid-x")
+        assert sid not in ss._RUNNING_TURNS, (
+            f"{state} 后仍登记 running → 停止按钮常亮、输入框锁死"
+        )
+
+    async def test_successor_registration_not_clobbered(self, _wire, monkeypatch):
+        """身份校验：绝不删掉后继 turn 的登记。"""
+        ss, ns = _wire
+        monkeypatch.setattr(rt, "_client", lambda rec: self._client(ns, "completed"))
+        sid = "s-successor"
+        ss._RUNNING_TURNS[sid] = "tid-SUCCESSOR"  # 后继 turn 已登记
+        sess = {"id": sid, "remote_peer": "vps", "graph": None}
+        await rt.run_remote_turn(sess, "干活", "tid-OLD")
+        assert ss._RUNNING_TURNS.get(sid) == "tid-SUCCESSOR", "误删了后继 turn 的登记"
+
+    async def test_cleanup_failure_does_not_break_receipt(self, _wire, monkeypatch):
+        """清理抛异常不得影响回执（best-effort）。"""
+        ss, ns = _wire
+        monkeypatch.setattr(rt, "_client", lambda rec: self._client(ns, "completed"))
+        sid = "s-boom"
+        ss._RUNNING_TURNS[sid] = "tid-b"
+
+        class Boom(dict):
+            def pop(self, *a, **k):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(ss, "_RUNNING_TURNS", Boom({sid: "tid-b"}))
+        sess = {"id": sid, "remote_peer": "vps", "graph": None}
+        res = await rt.run_remote_turn(sess, "干活", "tid-b")
+        assert res["ok"] is True, "清理异常不得让 turn 失败"
