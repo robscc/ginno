@@ -58,6 +58,25 @@ USAGE_FIELDS = (
 )
 
 
+def _compact_threshold(window: int) -> int:
+    """当前生效的自动压缩阈值，与 compaction._effective_compact_threshold 同式：
+    min(settings.context.compact_threshold_tokens(默认 500k), 窗口×0.75)。
+
+    放在 usage.py（而非复用 compaction 的函数）是因为 compaction 顶部 import
+    本模块（last_chat_input_tokens），反向 import 会成环；阈值式子很短，双写
+    并由 test_context_state 钉住一致性。窗口未知（0）时只看用户配置值。
+    """
+    try:
+        from .world_state import context_settings
+
+        threshold = int(context_settings().get("compact_threshold_tokens", 500000))
+    except Exception:  # noqa: BLE001 — 显示辅助
+        threshold = 500_000
+    if window > 0:
+        threshold = min(threshold, int(window * 0.75))
+    return max(1, threshold)
+
+
 def context_state(last_input_tokens: int, provider: str = "", model: str = "") -> dict:
     """Context-window occupancy for the UI ring (TopBar 圆环).
 
@@ -66,6 +85,11 @@ def context_state(last_input_tokens: int, provider: str = "", model: str = "") -
     best proxy for "current context size". Window resolution mirrors
     mods/ops._op_usage: the config's explicit context_window → model-name
     lookup → 200k fallback (token-weather's contract). Never raises.
+
+    2026-11-16 起同时带 ``threshold``（自动压缩触发点）与 ``compact_pct``
+    （占用 ÷ 阈值）——预警口径统一：圆环变色/建议卡此前按窗口固定百分比
+    （70%/90%）设计，大窗口模型上阈值(500k)只占窗口 50%，预警永远晚于
+    压缩触发（倒挂）。前端优先用 compact_pct 分档，旧字段保留兼容。
     """
     try:
         from .providers import context_window_for, get_config
@@ -76,10 +100,13 @@ def context_state(last_input_tokens: int, provider: str = "", model: str = "") -
     except Exception:  # noqa: BLE001 — 显示辅助，解析失败走兜底窗口
         window = 200_000
     tokens = max(0, int(last_input_tokens or 0))
+    threshold = _compact_threshold(window)
     return {
         "tokens": tokens,
         "window": window,
         "percent": round(tokens * 100 / window, 1) if window > 0 else 0.0,
+        "threshold": threshold,
+        "compact_pct": round(tokens * 100 / threshold, 1) if threshold > 0 else 0.0,
     }
 
 

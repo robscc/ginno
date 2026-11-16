@@ -227,8 +227,10 @@ export function Composer({
       {session && steerItems.length > 0 && (
         <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
       )}
+      {/* P2（2026-11-16）：压缩期间不再锁输入框——发送按 steer 入队
+          （useComposerSend 的 compacting 分支），压缩结束后的首个
+          superstep 吸收。textarea 保持可编辑，让用户预输入。 */}
       <textarea
-          readOnly={compacting}
         ref={textareaRef}
         value={input}
         onChange={(e) => {
@@ -504,7 +506,8 @@ export function Composer({
           disabled={
             parked ||
             running ||
-            compacting ||
+            // compacting 不再禁用（P2）：压缩期间发送 = steer 入队，由
+            // 压缩后的 superstep 吸收；用户不该为后台优化干等。
             // In-session uploads run immediately and gate the send; on
             // home they're deferred until lazy creation, so they must
             // not disable the button (same deadlock as send()'s guard).

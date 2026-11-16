@@ -389,10 +389,15 @@ export interface SessionUsage {
 // recent LLM call (runtime usage.context_state — input already includes cache
 // read/creation) against the session model's resolved window. This is a
 // *current state*, replaced (not accumulated) on every turn.
+// threshold/compact_pct（2026-11-16 预警口径统一）：自动压缩触发点与
+// 占用÷阈值——大窗口模型上 threshold 只占窗口 50%，按窗口百分比分档的
+// 预警永远晚于压缩触发；圆环变色优先按 compact_pct，缺省回退旧 percent。
 export interface ContextState {
   tokens: number;
   window: number;
   percent: number;
+  threshold?: number;
+  compact_pct?: number;
 }
 
 // One WorldState change announced via the `context.updated` WS event (C3).
