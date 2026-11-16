@@ -232,3 +232,131 @@ def test_spawn_subagent_tool_exposes_peer():
     src = inspect.getsource(sa)
     assert "peer: str" in src
     assert "peer=peer" in src
+
+
+# ── 2026-11-17：真跑执行器的成功路（补假绿缺口）──────────────────────────────
+#
+# 事故：远端会话在真机上每轮必崩
+#   TypeError: ContextMap.get_or_none() takes 2 positional arguments but 3 were given
+# 而 18 例既有测试全绿。两层假绿：
+#   ① 路由测试 monkeypatch.setattr(rt, "run_remote_turn", fake_remote)
+#      ——把整个执行器桩掉，真实代码路径从未跑过；
+#   ② 唯一真调执行器的 test_remote_turn_network_failure_reports_not_silent
+#      断言的是 `ok is False` + "远端执行失败"——**TypeError 也满足这两条**，
+#      自己的代码崩了被当成「对端不可达」，测试照绿。
+# 教训：失败路断言必须能区分「对端故障」与「自身 bug」；成功路不可缺席。
+
+
+class TestRemoteTurnSuccessPath:
+    @pytest.fixture
+    def _wire(self, isolated_home, monkeypatch):
+        """真 ContextMap（隔离 home）+ 假 A2A client（成功返回）。
+
+        **不桩 run_remote_turn 本身**——那正是漏掉 bug 的原因。
+        """
+        from types import SimpleNamespace
+
+        from ginno_runtime.a2a import peers as peers_mod
+
+        rec = peers_mod.PeerRecord(
+            slug="vps", endpoint="http://127.0.0.1:18790/a2a/CAP",
+        )
+        monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: rec)
+        events: list = []
+
+        async def fake_push(sid, ev, data, tid=None):
+            events.append((ev, data))
+
+        monkeypatch.setattr(rt, "_push_session_event", fake_push)
+        persisted: list = []
+
+        async def fake_persist(session, user_text, reply):
+            persisted.append(reply)
+
+        monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
+
+        sent: list = []
+
+        class FakeClient:
+            async def send_message(self, text, *, context_id=None,
+                                   reference_task_ids=None):
+                sent.append({"text": text, "context_id": context_id,
+                             "refs": reference_task_ids})
+                return SimpleNamespace(
+                    id="task-1",
+                    context_id="ctx-remote-1",
+                    status=SimpleNamespace(
+                        state="completed",
+                        message=SimpleNamespace(
+                            parts=[SimpleNamespace(text="hostname=vps pwd=/work")],
+                        ),
+                    ),
+                    artifacts=[],
+                )
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setattr(rt, "_client", lambda rec: FakeClient())
+        return SimpleNamespace(events=events, persisted=persisted, sent=sent)
+
+    async def test_success_path_reaches_peer_and_returns_text(self, _wire):
+        """成功路必须真跑通——这条才能抓住执行器内部的 TypeError。"""
+        sess = {"id": "s-ok", "remote_peer": "vps", "graph": None}
+        res = await rt.run_remote_turn(sess, "报告 hostname 和 pwd", "tid-ok")
+        assert res["ok"] is True, f"远端成功路必须通，实际 error={res.get('error')!r}"
+        assert "hostname=vps" in res["text"]
+        assert _wire.sent and _wire.sent[0]["text"] == "报告 hostname 和 pwd"
+        evs = [e for e, _ in _wire.events]
+        assert "turn.start" in evs and "done" in evs
+        assert not any(
+            e == "notice" and d.get("kind") == "error" for e, d in _wire.events
+        ), "成功路不得发 error notice"
+
+    async def test_second_turn_reuses_remote_context(self, _wire):
+        """第二轮必须带上首轮拿到的 contextId（云端续作的基础）。"""
+        sess = {"id": "s-ctx", "remote_peer": "vps", "graph": None}
+        r1 = await rt.run_remote_turn(sess, "第一轮", "t1")
+        assert r1["ok"] is True, r1.get("error")
+        r2 = await rt.run_remote_turn(sess, "第二轮", "t2")
+        assert r2["ok"] is True, r2.get("error")
+        assert _wire.sent[1]["context_id"] == "ctx-remote-1"
+
+    async def test_context_lookup_uses_single_key(self, _wire):
+        """ContextMap.get_or_none 只收单个已构造 key——直接钉住签名契约。"""
+        from ginno_runtime.a2a.contexts import ContextMap, _key
+
+        cm = ContextMap()
+        # 两参调用必须 TypeError（契约本身），单参必须可用
+        with pytest.raises(TypeError):
+            cm.get_or_none("s", "vps")  # type: ignore[call-arg]
+        assert cm.get_or_none(_key("s", "vps")) is None
+
+
+async def test_network_failure_error_is_not_our_own_bug(monkeypatch, isolated_home):
+    """加固既有失败路：错误必须是**对端故障**，不能是自身代码的 TypeError。
+
+    原断言 `ok is False` + "远端执行失败" 无法区分两者，导致执行器内部
+    TypeError 被当成网络故障、测试假绿（2026-11-17 实锤）。
+    """
+    from ginno_runtime.a2a import peers as peers_mod
+
+    rec = peers_mod.PeerRecord(slug="vps", endpoint="http://127.0.0.1:1/a2a",
+                               task_timeout_s=5)
+    monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: rec)
+
+    async def fake_push(sid, ev, data, tid=None):
+        pass
+
+    monkeypatch.setattr(rt, "_push_session_event", fake_push)
+
+    async def fake_persist(session, user_text, reply):
+        pass
+
+    monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
+    sess = {"id": "s-net", "remote_peer": "vps", "graph": None}
+    res = await rt.run_remote_turn(sess, "干活", "tid-net")
+    assert res["ok"] is False
+    err = str(res.get("error") or "")
+    assert "TypeError" not in err, f"自身代码 bug 不得伪装成网络故障：{err}"
+    assert "get_or_none" not in err, f"自身代码 bug：{err}"
