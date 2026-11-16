@@ -135,6 +135,33 @@ async def list_connectors() -> dict:
     return payload
 
 
+@router.get("/api/a2a/peers")
+async def list_a2a_peers() -> dict:
+    """已接入的 A2A 远端对端列表（remote-session-design.md R2/R3）。
+
+    供新建对话的执行方选择器与 @ 菜单列出远端 peer。**脱敏**：绝不回 token
+    明文（用既有 to_public 口径），只给选择器需要的展示与路由字段。
+    """
+    from ..a2a.peers import PeerStore
+
+    try:
+        records = PeerStore().list_all()
+    except Exception:  # noqa: BLE001 — 读失败给空列表，不让选择器崩
+        return {"ok": True, "peers": []}
+    out = []
+    for r in records:
+        out.append({
+            "slug": r.slug,
+            "id": r.id,
+            "name": r.name or r.slug,
+            "endpoint": r.endpoint,
+            "enabled": bool(r.enabled),
+            "trust": r.trust,
+            "caps": list(r.caps or []),
+        })
+    return {"ok": True, "peers": out}
+
+
 @router.get("/api/connectors/{cid}")
 async def connector_detail(cid: str) -> Any:
     ensure_builtin_connectors()  # 幂等:先同步 mod 集合,再解析 id
