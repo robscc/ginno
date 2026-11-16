@@ -11,6 +11,16 @@ import * as api from "@/lib/runtime";
 import { useLocaleCtx, setLocale } from "@/i18n/provider";
 import type { LanguageSetting } from "@/i18n/config";
 import { readMermaidPref, writeMermaidPref } from "@/lib/mermaidPrefs";
+import {
+  FONT_DEFAULT,
+  FONT_FAMILY_ORDER,
+  FONT_FAMILY_STACKS,
+  FONT_SIZE_ORDER,
+  readFontPrefs,
+  writeFontPrefs,
+  type FontFamily,
+  type FontPrefs,
+} from "@/lib/fontPrefs";
 
 export function applyTheme(t: string) {
   if (typeof document === "undefined") return;
@@ -337,6 +347,8 @@ export function GeneralSettings() {
   // Mermaid 图形渲染（纯前端偏好，localStorage；见 lib/mermaidPrefs.ts）。
   // 渲染与否跟 runtime 无关，所以不进 settings.json。
   const [mermaid, setMermaid] = useState(true);
+  // 字体族 + 字号（纯前端偏好，localStorage；见 lib/fontPrefs.ts）。
+  const [font, setFont] = useState<FontPrefs>(FONT_DEFAULT);
   // subagent 并发上限（P3 共享契约 3）：settings 键 subagent.max_concurrent，
   // 默认 5、范围 1-16；runtime 调度器动态读取，保存后即生效。
   const [subMax, setSubMax] = useState("5");
@@ -367,6 +379,7 @@ export function GeneralSettings() {
     setTheme(t);
     applyTheme(t);
     setMermaid(readMermaidPref());
+    setFont(readFontPrefs());
     api
       .getSettings()
       .then((s) => {
@@ -513,6 +526,47 @@ export function GeneralSettings() {
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="field-label">{tSettings("general.fontLabel")}</label>
+          <select
+            className="field"
+            value={font.family}
+            onChange={(e) => setFont(writeFontPrefs({ family: e.target.value as FontFamily }))}
+            aria-label={tSettings("general.fontLabel")}
+            data-testid="font-family-select"
+          >
+            {FONT_FAMILY_ORDER.map((f) => (
+              <option key={f} value={f}>
+                {tSettings(`general.fontFamily.${f}`)}
+              </option>
+            ))}
+          </select>
+          <label className="field-label mt-2">{tSettings("general.fontSizeLabel")}</label>
+          <div className="flex gap-2" role="group" aria-label={tSettings("general.fontSizeLabel")}>
+            {FONT_SIZE_ORDER.map((s) => (
+              <button
+                key={s}
+                onClick={() => setFont(writeFontPrefs({ size: s }))}
+                aria-pressed={font.size === s}
+                data-testid={`font-size-${s}`}
+                className={
+                  "rounded-lg border px-3 py-1.5 text-xs " +
+                  (font.size === s ? "border-violet text-txt" : "border-line text-muted")
+                }
+              >
+                {tSettings(`general.fontSize.${s}`)}
+              </button>
+            ))}
+          </div>
+          <p
+            className="mt-2 rounded-lg border border-line bg-card2/40 px-3 py-2 text-sm text-muted"
+            style={{ fontFamily: FONT_FAMILY_STACKS[font.family] }}
+            data-testid="font-preview"
+          >
+            {tSettings("general.fontPreview")}
+          </p>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.fontHelp")}</p>
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">

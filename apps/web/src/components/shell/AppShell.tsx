@@ -10,6 +10,7 @@ import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { applyTheme } from "@/components/settings/GeneralSettings";
+import { applyFontPrefs, readFontPrefs } from "@/lib/fontPrefs";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { rememberMessageTarget } from "@/components/shell/searchShared";
@@ -318,6 +319,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       /* ignore */
     }
     applyTheme(theme);
+    // 字体族 + 字号偏好（纯前端 localStorage，与 theme 同范式）：首帧即应用。
+    applyFontPrefs(readFontPrefs());
   }, []);
 
   // Tauri shell bridges: clicking a native notification fires one of these via
