@@ -150,9 +150,24 @@ export async function uploadFile(sessionId: string, file: File) {
   );
 }
 
+const _filesInflight = new Map<string, Promise<import("../types").FileEntry[]>>();
+
 export async function listFiles(project_slug = "default", session_id?: string) {
   const q = session_id ? `&session_id=${encodeURIComponent(session_id)}` : "";
-  return json<import("../types").FileEntry[]>(`${BASE}/files?project_slug=${project_slug}${q}`);
+  // In-flight dedupe (2026-11-16 perf): a session switch fired 16 concurrent
+  // identical /files requests (file picker + @ menu + context panel all load
+  // on mount). Concurrent callers share one promise; it clears on settle so
+  // the next call still sees fresh data.
+  const key = `${project_slug}|${session_id ?? ""}`;
+  const existing = _filesInflight.get(key);
+  if (existing) return existing;
+  const p = json<import("../types").FileEntry[]>(
+    `${BASE}/files?project_slug=${project_slug}${q}`,
+  ).finally(() => {
+    _filesInflight.delete(key);
+  });
+  _filesInflight.set(key, p);
+  return p;
 }
 
 // Attach an OS file by native path (Tauri desktop drag & drop — WKWebView can't

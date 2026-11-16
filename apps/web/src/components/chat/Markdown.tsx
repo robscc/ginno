@@ -4,6 +4,7 @@ import {
   Children,
   isValidElement,
   memo,
+  useEffect,
   useState,
   type ReactElement,
   type ReactNode,
@@ -121,6 +122,35 @@ export const Markdown = memo(function Markdown({
   streaming?: boolean;
 }) {
   const t = useTranslations("composer");
+  // Syntax highlighting deferred to idle (2026-11-16 perf). Bench over 461
+  // history blocks: rehypeHighlight costs ~4× remarkGfm (343ms vs 81ms SSR).
+  // Static blocks first paint GFM-only — code chrome / copy / mermaid still
+  // work because the `language-*` class comes from the fence, not the
+  // highlighter — then each block upgrades to highlighted during idle via its
+  // OWN requestIdleCallback. Per-block, NOT a global batch: a single batched
+  // flip would re-create the very long task we're removing. Streaming blocks
+  // highlight immediately to avoid live flicker.
+  const [hl, setHl] = useState(!!streaming);
+  useEffect(() => {
+    if (streaming) {
+      setHl(true);
+      return;
+    }
+    let cancelled = false;
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const schedule =
+      w.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 32) as unknown as number);
+    const id = schedule(() => {
+      if (!cancelled) setHl(true);
+    }, { timeout: 1000 });
+    return () => {
+      cancelled = true;
+      w.cancelIdleCallback?.(id);
+    };
+  }, [streaming]);
   // Frontmatter（Obsidian 属性块）：剥离正文交给属性条渲染——预览窗/知识库
   // 页阅读视图里的 .md 原文以 `---\ntitle: …` 开头时，YAML 不再被当正文裸奔。
   const { body: fmBody, entries: fmEntries } = splitFrontmatter(text);
@@ -146,7 +176,7 @@ export const Markdown = memo(function Markdown({
         remarkPlugins={[remarkGfm]}
         // plainText: mermaid 源码不是代码高亮对象——交给 MermaidBlock 出图。
         // 不声明的话 lowlight 每块都会走一次 "Unknown language" 异常分支。
-        rehypePlugins={[[rehypeHighlight, { plainText: ["mermaid"] }]]}
+        rehypePlugins={hl ? [[rehypeHighlight, { plainText: ["mermaid"] }]] : []}
         components={{
           pre({ children }) {
             // Fenced code: consume the inner <code> element, keep its highlighted
