@@ -671,7 +671,9 @@
       "senderLabel": "Assigned by",
       "waitingNotice": "⏳ Now waiting for \"{title}\" — its result will arrive in this chat automatically when it finishes (normal waiting, not stuck)",
       "resumedNotice": "✅ \"{title}\" finished — its result is arriving in this chat",
-      "progressNotice": "🔄 \"{title}\" has new progress — a digest excerpt just arrived in this chat"
+      "progressNotice": "🔄 \"{title}\" has new progress — a digest excerpt just arrived in this chat",
+      "viaFileTip": "Delivered via file",
+      "copyPath": "Copy path"
     },
     "jumpLatest": "Jump to latest message",
     "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)",

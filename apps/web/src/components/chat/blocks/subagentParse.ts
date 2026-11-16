@@ -98,6 +98,8 @@ export function parseWorkerResults(
   goal: string;
   summary: string;
   digest: boolean;
+  viaFile: boolean;
+  filePath: string;
 }> {
   const doc = parseEnvelope(text);
   if (!doc) return [];
@@ -109,6 +111,8 @@ export function parseWorkerResults(
     goal: string;
     summary: string;
     digest: boolean;
+    viaFile: boolean;
+    filePath: string;
   }> = [];
   for (const el of Array.from(doc.getElementsByTagName("ginno_worker_result"))) {
     out.push({
@@ -119,6 +123,8 @@ export function parseWorkerResults(
       goal: el.getAttribute("goal") ?? "",
       summary: (el.textContent ?? "").trim(),
       digest: el.getAttribute("kind") === "digest",
+      viaFile: el.getAttribute("via_file") === "1",
+      filePath: el.getAttribute("file") ?? "",
     });
   }
   return out;
@@ -224,6 +230,8 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
           goal: r.goal || undefined,
           summary: r.summary,
           digest: r.digest,
+          viaFile: r.viaFile || undefined,
+          filePath: r.filePath || undefined,
         });
       }
       continue;

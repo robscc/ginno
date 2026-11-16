@@ -642,3 +642,89 @@ def test_worker_bus_does_not_import_teams():
             if re.match(r"^(from|import)\s+.*\bteams\b", stripped):
                 offenders.append(f"{f.name}: {stripped}")
     assert not offenders, f"worker_bus 不应 import teams/*：{offenders}"
+
+
+# ----------------------------- digest 文件传递（2026-11-16）----------------- #
+
+
+async def test_digest_over_cap_writes_file_and_marks_via_file(monkeypatch, inject_calls):
+    """超 DIGEST_CAP：全文落盘 digests/ + 信封 via_file/file 属性 + 正文含
+    完整内容（不截断）。"""
+    import re
+    from pathlib import Path
+
+    _put_meta(SLUG, _worker_meta("W1", status="running", subscribers=[
+        {"session_id": "SUB", "want": "digest", "since": 1, "last_digest": 0}]))
+    ww._WATCHED.add("W1")
+    long_text = "长" * (ww.DIGEST_CAP + 50)
+
+    async def fake_excerpt(slug, sid, limit=300):
+        return long_text if limit is None else long_text[:limit]
+
+    monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
+    await worker_bus.on_turn_settled_hook("W1")
+    assert len(inject_calls) == 1
+    text = inject_calls[0]["text"]
+    assert 'via_file="1"' in text
+    assert long_text in text  # 完整内容随正文展示，不截断
+    m = re.search(r' file="([^"]+)"', text)
+    assert m, text
+    fp = Path(m.group(1))
+    assert fp.exists()
+    assert fp.read_text(encoding="utf-8") == long_text
+    assert fp.parent.name == "digests"
+
+
+async def test_digest_under_cap_inline_no_file(monkeypatch, inject_calls):
+    """未超 cap：inline 节选，无 via_file/file 属性，不落盘。"""
+    _put_meta(SLUG, _worker_meta("W2", status="running", subscribers=[
+        {"session_id": "SUB", "want": "digest", "since": 1, "last_digest": 0}]))
+    ww._WATCHED.add("W2")
+    short_text = "短结论：一切正常"
+
+    async def fake_excerpt(slug, sid, limit=300):
+        return short_text if limit is None else short_text[:limit]
+
+    monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
+    await worker_bus.on_turn_settled_hook("W2")
+    assert len(inject_calls) == 1
+    text = inject_calls[0]["text"]
+    assert "via_file" not in text
+    assert 'file="' not in text
+    assert short_text in text
+
+
+async def test_digest_file_write_failure_degrades_inline(monkeypatch, inject_calls):
+    """落盘失败不阻断 digest：降级 inline 全文（仍不截断、无 via_file）。"""
+    _put_meta(SLUG, _worker_meta("W3", status="running", subscribers=[
+        {"session_id": "SUB", "want": "digest", "since": 1, "last_digest": 0}]))
+    ww._WATCHED.add("W3")
+    long_text = "x" * (ww.DIGEST_CAP + 10)
+
+    async def fake_excerpt(slug, sid, limit=300):
+        return long_text if limit is None else long_text[:limit]
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ww, "_last_assistant_excerpt", fake_excerpt)
+    monkeypatch.setattr(ww.paths, "session_files_dir", boom)
+    await worker_bus.on_turn_settled_hook("W3")
+    assert len(inject_calls) == 1
+    text = inject_calls[0]["text"]
+    assert long_text in text  # 仍全文
+    assert "via_file" not in text  # 降级无文件标记
+
+
+def test_worker_result_text_via_file_attrs():
+    meta = {"title": "W"}
+    t = ww._worker_result_text(
+        "W1", meta, "running", digest="body", msg_id="m1",
+        via_file=True, file_path="/x/digests/d.md",
+    )
+    assert 'via_file="1"' in t
+    assert 'file="/x/digests/d.md"' in t
+    assert 'kind="digest"' in t
+    t2 = ww._worker_result_text("W1", meta, "running", digest="body")
+    assert "via_file" not in t2
+    assert 'file="' not in t2
