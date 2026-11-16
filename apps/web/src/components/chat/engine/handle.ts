@@ -1258,6 +1258,9 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 清单快照；store 按 plan_id upsert，PlanBoard 重渲染。
       if (ev.plan) ctx.g.notifyPlanUpdated(ev.plan as Plan);
       break;
+    case "goal.archived":
+      // Lifecycle finish (2026-11-16): complete goal auto-archived at turn
+      // end — record moved to goals-history.jsonl, chip clears like cleared.
     case "goal.cleared":
       ctx.g.notifyGoal(sid, null);
       break;

@@ -126,3 +126,61 @@ def test_list_goals(isolated_home):
     goals = store.list_goals(SLUG)
     assert set(goals) == {"a", "b"}
     assert goals["a"]["objective"] == "one"
+
+
+# ---- archive_goal (lifecycle finish, 2026-11-16) -------------------------
+
+
+def test_archive_complete_moves_to_history(isolated_home):
+    store.create_goal(SLUG, SID, "Ship the report")
+    store.update_status(SLUG, SID, "complete")
+    archived = store.archive_goal(SLUG, SID)
+    assert archived is not None
+    assert archived["objective"] == "Ship the report"
+    assert archived["status"] == "complete"
+    assert archived["archived_at"] > 0
+    # active store no longer holds it
+    assert store.get_goal(SLUG, SID) is None
+    # history is append-only jsonl with the full record
+    from ginno_runtime import paths
+
+    hp = paths.project_goals_path(SLUG).with_name("goals-history.jsonl")
+    lines = hp.read_text().strip().splitlines()
+    assert len(lines) == 1
+    import json
+
+    rec = json.loads(lines[0])
+    assert rec["objective"] == "Ship the report"
+    assert rec["archived_at"] == archived["archived_at"]
+
+
+def test_archive_non_complete_is_noop(isolated_home):
+    store.create_goal(SLUG, SID, "still working")
+    assert store.archive_goal(SLUG, SID) is None
+    assert store.get_goal(SLUG, SID)["status"] == "active"
+
+
+def test_archive_missing_returns_none(isolated_home):
+    assert store.archive_goal(SLUG, "nope") is None
+
+
+def test_archive_history_appends(isolated_home):
+    store.create_goal(SLUG, "s1", "first")
+    store.update_status(SLUG, "s1", "complete")
+    store.create_goal(SLUG, "s2", "second")
+    store.update_status(SLUG, "s2", "complete")
+    store.archive_goal(SLUG, "s1")
+    store.archive_goal(SLUG, "s2")
+    from ginno_runtime import paths
+
+    hp = paths.project_goals_path(SLUG).with_name("goals-history.jsonl")
+    assert len(hp.read_text().strip().splitlines()) == 2
+
+
+def test_archive_preserves_usage(isolated_home):
+    store.create_goal(SLUG, SID, "accounted")
+    store.account_turn(SLUG, SID, 40.0)  # account_turn rounds to int seconds
+    store.update_status(SLUG, SID, "complete")
+    archived = store.archive_goal(SLUG, SID)
+    assert archived["time_used_seconds"] == 40
+    assert archived["turns_used"] == 1

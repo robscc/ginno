@@ -139,9 +139,11 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   if (!goal) {
     return (
       <>
-        <TopBarFuncButton onClick={() => setEditing(true)} title={tr("chip.setTitle")}>
-          <Target className="h-4 w-4" />
-        </TopBarFuncButton>
+        <span data-testid="goal-set-button" className="contents">
+          <TopBarFuncButton onClick={() => setEditing(true)} title={tr("chip.setTitle")}>
+            <Target className="h-4 w-4" />
+          </TopBarFuncButton>
+        </span>
         {editing && (
           <GoalEditor
             initial=""
@@ -187,7 +189,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   };
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0" data-testid="goal-chip" data-status={goal.status}>
       <TopBarFuncButton
         onClick={() => setPop((p) => !p)}
         open={pop}

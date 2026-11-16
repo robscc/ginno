@@ -207,3 +207,30 @@ def clear_goal(slug: str, session_id: str) -> bool:
     del goals[session_id]
     _write(slug, goals)
     return True
+
+
+def archive_goal(slug: str, session_id: str) -> dict[str, Any] | None:
+    """Move a COMPLETE goal to ``goals-history.jsonl`` and drop it from the
+    active store (2026-11-16 lifecycle finish).
+
+    Achieved goals should not linger as chip/store noise: the completion chip
+    stays visible through the completing turn, then the turn-end hook archives
+    the record. History is append-only (audit trail of objective + usage);
+    ``goals.json`` only ever holds goals that still demand attention.
+
+    Non-complete goals are left untouched (returns None) — archiving an open
+    goal would silently discard unfinished work.
+    """
+    goals = _read(slug)
+    g = goals.get(session_id)
+    if not g or g.get("status") != STATUS_COMPLETE:
+        return None
+    archived = dict(g)
+    archived["archived_at"] = time.time()
+    hp = paths.project_goals_path(slug).with_name("goals-history.jsonl")
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    with hp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(archived, ensure_ascii=False) + "\n")
+    del goals[session_id]
+    _write(slug, goals)
+    return archived
