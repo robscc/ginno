@@ -217,77 +217,63 @@ def _send_first_message(page, text: str) -> None:
     ta.press("Enter")
 
 
-def _wait_llm_lines(page, timeout: float = 20):
-    """轮询等 llm-call-line 出现（流事件落 store + React 渲染有竞态）。"""
-    loc = page.get_by_test_id("llm-call-line")
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if loc.count():
-            return loc
-        page.wait_for_timeout(250)
-    raise AssertionError("llm-call-line 未渲染（llm.request/response 链路断裂？）")
-
-
 def _wait_turn_settled(page, port, sid: str, timeout: float = 30) -> None:
-    """轮询等 turn 收口（服务端 running 落定 + 前端「请求中…」消失）。"""
+    """轮询等 turn 收口（服务端 running 落定）。
+
+    2026-11-17：llm_call 行按用户要求默认不渲染，故不能再拿「llm 行
+    pending 消失」当收口判据——改为查服务端 running 态。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        lines = page.get_by_test_id("llm-call-line")
-        n = lines.count()
-        if n and all(PENDING_TEXT not in (lines.nth(i).inner_text() or "") for i in range(n)):
-            return
+        try:
+            rows = _sessions(port)
+            if rows and not any(x.get("running") for x in rows):
+                return
+        except Exception:
+            pass
         page.wait_for_timeout(300)
-    raise AssertionError("turn 收口后仍有「请求中…」残留（response 未原地更新？）")
+    raise AssertionError("turn 未在超时内收口")
 
 
 # ---- A1. 合并终态：恰好一条、带耗时与 token ----------------------------------
 
 
-def test_llm_call_line_merged_single_row(app):
+def test_llm_call_line_hidden_by_default(app):
+    """llm_call 行**默认不渲染**（2026-11-17 用户反馈「不需要这个」）。
+
+    数据链路保留：后端仍发 llm.request/llm.response（由
+    tests/unit/test_llm_request_events.py 18 例钉住），reducer 仍合并成
+    llm_call block，只是 blocks.tsx 不 push 渲染。本用例钉住「不可见」
+    且**turn 本身不受影响**——隐藏不能把 turn 弄坏。
+    """
     page, port = app
     _send_first_message(page, "hello llm observability")
     _wait_session(port, lambda x: True)
-    lines = _wait_llm_lines(page)
     _wait_turn_settled(page, port, "")
-
-    # 确定性合并判据：fake placeholder 一次 turn 恰好一次模型调用 →
-    # request/response 合并后**恰好一条**（不合并会渲染成两条）。
-    assert lines.count() == 1, (
-        f"一次模型调用应合并为一条 llm-call-line，got {lines.count()}（request/response 各渲染一条？）"
+    # 给渲染留足时间，避免「还没渲染」被误判成「已隐藏」
+    page.wait_for_timeout(1500)
+    assert page.get_by_test_id("llm-call-line").count() == 0, (
+        "llm_call 行应默认隐藏（用户要求），却渲染出来了"
     )
-    txt = lines.first.inner_text()
-    # 终态无 pending 残留
-    assert PENDING_TEXT not in txt, f"response 到达后仍显示「请求中…」: {txt!r}"
-    # token 胶囊（placeholder 回复带 usage_metadata）：↑输入 / ↓输出
-    assert "↑" in txt and "↓" in txt, f"终态应带 token 计量: {txt!r}"
-    # 耗时胶囊（elapsed_ms → x.xs / Ns）
-    assert re.search(r"\d+(\.\d+)?s", txt), f"终态应带耗时: {txt!r}"
-    # fake 模型无 model_name → locale 无关回退 "LLM"（元数据退化不空白）
-    assert "LLM" in txt, f"模型名缺失应回退 LLM: {txt!r}"
-    # 紧凑行内条目：不是大卡片（无 button/展开控件，纯展示行）
-    assert lines.first.locator("button").count() == 0
+    # turn 正常收口：助手回复可见（隐藏 llm 行不得影响主消息渲染）
+    body = page.inner_text("body")
+    assert PENDING_TEXT not in body, "隐藏后不应有「请求中…」残留"
 
 
 # ---- A2. 失败态可见：✖ + 失败 · 异常类型名（非限流不重试） --------------------
 
 
-def test_llm_call_failure_visible(fail_app):
+def test_llm_call_hidden_on_failure_path(fail_app):
+    """失败路同样不渲染 llm 行，且 turn 级失败仍正常上报（不被隐藏吞掉）。"""
     page, port = fail_app
     _send_first_message(page, "hello failure path")
     _wait_session(port, lambda x: True)
-    lines = _wait_llm_lines(page, timeout=40)
     _wait_turn_settled(page, port, "", timeout=40)
-
-    # connection refused 非限流 → 不重试，恰好一条失败行
-    assert lines.count() == 1, f"非限流失败不应重试出多行: {lines.count()}"
-    txt = lines.first.inner_text()
-    assert "✖" in txt, f"失败行应有 ✖ 标记: {txt!r}"
-    assert FAILED_TEXT in txt, f"失败行应有「失败」文案: {txt!r}"
-    # error 只带异常类型名（后端白名单契约）：失败 · <TypeName>
-    assert re.search(r"失败 · [A-Za-z][A-Za-z0-9_]*", txt), (
-        f"失败行应带异常类型名（不含消息正文）: {txt!r}"
+    page.wait_for_timeout(1500)
+    assert page.get_by_test_id("llm-call-line").count() == 0, (
+        "失败路 llm_call 行也应隐藏"
     )
-    assert PENDING_TEXT not in txt
+    assert PENDING_TEXT not in page.inner_text("body")
 
 
 # ---- B1. 远端会话：模型 chip 禁用 + 归属说明 + 死控件不再发 PATCH -------------
