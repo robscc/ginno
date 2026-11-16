@@ -61,6 +61,10 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   const [modelOpen, setModelOpen] = useState(false);
   async function pickModel(pid: string, model: string) {
     setModelOpen(false);
+    // 远端会话 fail-closed（remote_turn.py 不读 model/provider，模型由远端
+    // 节点配置决定）：chip 已在 ModelChipMenu 禁用，这里再守一道——任何
+    // 未来路径重开菜单也发不出 PATCH。本地会话（无 remote_peer）零影响。
+    if (session?.remote_peer) return;
     // Never select an empty model. The chip label falls back to the provider id
     // (`model || provider`), so an empty model leaves the label unchanged and the
     // click reads as "nothing happened" — the exact shape of the "cannot pick a
@@ -173,6 +177,8 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   // 顺带省掉一次冗余往返。
   async function pickModelAndThinking(pid: string, model: string, value: string) {
     setModelOpen(false);
+    // 远端会话 fail-closed（同 pickModel）：模型与思考档位都由远端节点决定。
+    if (session?.remote_peer) return;
     if (!model) return;
     if (!session) {
       // 首页态：会话未建，三字段一并写进 homeModel，随懒创建下发。

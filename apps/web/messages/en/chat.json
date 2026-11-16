@@ -2,6 +2,12 @@
   "chat": {
     "remote-peer-chip-ask": "Run on {name}",
     "remote-peer-chip-title": "Remote node {name} · {endpoint} — the whole session runs on that machine",
+    "model-remote-title": "Model is decided by the remote node ({name}) — switching here has no effect",
+    "llm-call-pending": "requesting…",
+    "llm-call-attempt": "attempt {n}",
+    "llm-call-failed": "failed",
+    "llm-call-interrupted": "interrupted",
+    "llm-call-messages": "{n} messages",
     "status": {
       "running": "Running",
       "waiting": "Waiting for your answer",

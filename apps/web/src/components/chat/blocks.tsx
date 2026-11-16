@@ -36,6 +36,7 @@ import {
 import { FileChips, SkillChips } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
+import { LlmCallLine } from "./blocks/llmCallLine";
 import { TaskEventBand } from "./TaskCard";
 import { imageUrl, ImageGallery } from "./blocks/media";
 import { ContextBlocks } from "./blocks/sources";
@@ -421,6 +422,10 @@ export function InnerBlocks({
       // 后台任务事件注入点（评审决策 4）：极薄标记行，完整状态在 bg_run
       // 的常驻 TaskCard；此处只为时间线留下「结果何时回来」的锚。
       out.push(<TaskEventBand key={`tev-${b.taskId}-${key++}`} block={b} />);
+    } else if (b.kind === "llm_call") {
+      // LLM 请求级可观测（T3）：紧凑行内条目，按 (reqId, attempt) 稳定 key
+      // ——response 原地更新时 React 复用同一 DOM 行，不闪不重排。
+      out.push(<LlmCallLine key={`llm-${b.reqId}-${b.attempt}`} block={b} />);
     } else if (b.kind === "subagent_spawn") {
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
@@ -504,6 +509,15 @@ export function hasPendingTool(blocks: Block[]): boolean {
   return blocks.some(
     (b) => (b.kind === "tool" && b.pending) || (b.kind === "question" && b.status === "pending"),
   );
+}
+
+/** 是否有仍在「请求中…」的 llm_call 行（T3）。**不并入 hasPendingTool**——
+ *  后者驱动 running 指示器，模型请求 pending 是流式常态，不该改变其语义。
+ *  只用于 turn.stopped / error 的收口闸门：没有 pending 工具但有 pending
+ *  LLM 行的气泡（停在模型调用中途、工具还没起跑）也要走 closePendingBlocks，
+ *  否则「请求中…」脉冲永远转下去（同 turn_meta 秒表停跳的教训）。 */
+export function hasPendingLlmCall(blocks: Block[]): boolean {
+  return blocks.some((b) => b.kind === "llm_call" && b.pending);
 }
 
 /** "09:41" from the server's epoch-seconds stamp ("" when absent). */

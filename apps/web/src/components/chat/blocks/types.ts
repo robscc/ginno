@@ -48,6 +48,20 @@ export type Block =
   // logTail（点开看尾 30 行，与 DevSwapCard 日志同源）。
   | { kind: "devswap_result"; runId: string; state: "ok" | "fail" | "rolled_back";
       failedStage?: string | null; elapsedS?: number | null; logTail?: string | null }
+  // ---- LLM 请求级可观测（T3：llm.request / llm.response 事件对）----
+  // 每次物理尝试一条紧凑行内条目，按 (reqId, attempt) 配对合并：request 建
+  // pending 行（「请求中…」），response **原地**补耗时/token/成败——不渲染成
+  // 两条。reqId 在同一次逻辑请求的多次重试间稳定，attempt 逐次递增（>1 显示
+  // 重试角标）。error 只带异常**类型名**（后端两层白名单，prompt/密钥不进
+  // 事件）；error==="interrupted" 是前端哨兵值（turn 中止/失败时
+  // closePendingBlocks 定格 pending 行，中性灰显示，不算模型失败）。
+  // live-only（不落 checkpoint，同 subagent_spawn 先例）：reload 后行消失，
+  // turn 级总量仍由 turn_meta 承载。
+  | { kind: "llm_call"; reqId: string; attempt: number;
+      model?: string; provider?: string; messagesCount?: number;
+      pending: boolean; ok?: boolean; error?: string; elapsedMs?: number;
+      inputTokens?: number; outputTokens?: number; totalTokens?: number;
+      cacheReadTokens?: number }
   // Answer provenance (docs/citations-design.md): wiki pages / web sources the
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
