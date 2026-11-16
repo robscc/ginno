@@ -190,8 +190,11 @@ export function ToolPolicyPopover({
 
   function stateOf(s: McpServer): RowState {
     if (!s.enabled) return "disabled";
-    if (!s.connected) return s.error ? "failed" : "offline";
+    // 会话黑名单优先于连接状态：拉黑一个 failed/offline 的 server 时，
+    // 视觉必须立刻变成 off（用户反馈「出错的也关不掉」——点击后没有
+    // 状态变化就是这里没读黑名单）。
     if (mcpOff.has(s.name)) return "off";
+    if (!s.connected) return s.error ? "failed" : "offline";
     if ((toolOff[s.name]?.size || 0) > 0) return "partial";
     return "on";
   }
@@ -391,9 +394,9 @@ export function ToolPolicyPopover({
   const statusChip = (s: McpServer) => {
     const st = stateOf(s);
     if (st === "disabled") return t("statusDisabled");
+    if (st === "off") return `${s.tools} · ${t("offShort")}`;
     if (st === "failed") return t("statusFailed");
     if (st === "offline") return t("statusOffline");
-    if (st === "off") return `${s.tools} · ${t("offShort")}`;
     const { enabled, tokens } = serverStats(s);
     return `${enabled === s.tools ? s.tools : `${enabled}/${s.tools}`} · ${
       tokens ? `≈${fmt(tokens)}` : "—"
@@ -502,12 +505,14 @@ export function ToolPolicyPopover({
                 <div
                   onClick={(e) => {
                     if (e.target instanceof HTMLElement && e.target.closest("button")) return;
-                    if (disabled || st === "failed" || st === "offline") return;
-                    toggleServer(s, st === "off");
+                    if (disabled) return;
+                    // 连接失败/未连接也允许拉黑：语义是「修好之后也不注入」，
+                    // 用户反馈「出错的也关不掉」——这类行最需要能关。
+                    toggleServer(s, !(st === "on" || st === "partial" || st === "failed" || st === "offline"));
                   }}
                   className={
-                    "flex items-center gap-1.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-card2/60 " +
-                    (disabled ? "opacity-45" : "cursor-pointer")
+                    "flex items-center gap-1.5 rounded-md px-1.5 py-1.5 transition-colors " +
+                    (disabled ? "opacity-45" : "cursor-pointer hover:bg-card2/60")
                   }
                 >
                   {/* 故意用 span[role=button]：button 是 labelable，会成为
@@ -541,7 +546,10 @@ export function ToolPolicyPopover({
                     {chevron(open)}
                   </span>
                   {switchEl(
-                    st !== "off",
+                    // 开关显示「会话注入态」：on/partial=注入中；failed/
+                    // offline=未注入但可拉黑（修好后不注入）；disabled=
+                    // 设置停用（本来就没注入，恒 off）。
+                    st === "on" || st === "partial",
                     (next) => toggleServer(s, next),
                     s.name,
                     disabled,
