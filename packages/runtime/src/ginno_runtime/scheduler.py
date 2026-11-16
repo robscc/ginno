@@ -1156,10 +1156,21 @@ async def _maybe_nightly_dream() -> None:
         if isinstance(state, dict) and state.get("last_run") == today:
             return
 
-        from .memory import create_draft, has_draft, pool_count
+        from .memory import auto_apply_draft, create_draft, has_draft, pool_count
 
         if has_draft():
-            return  # a review is pending; leave the rest of the day open
+            if not cfg.dream_auto_apply:
+                return  # a review is pending; leave the rest of the day open
+            # Unattended mode: apply the leftover draft instead of blocking.
+            apply_r = auto_apply_draft(reason="schedule_pending")
+            _log.info(
+                "nightly_dream_auto_apply_leftover ok=%s err=%s",
+                apply_r.get("ok"), apply_r.get("error", ""),
+            )
+            if apply_r.get("ok"):
+                await shared._push_global_event("memory.changed", {"draft": False})
+            if not apply_r.get("ok") and apply_r.get("error") not in {"no_draft"}:
+                return  # memory_changed etc: leave for tomorrow, don't distill on top
         if pool_count() < int(cfg.pool_flush_threshold or 30):
             return
         result = await create_draft(trigger="schedule")
@@ -1169,7 +1180,17 @@ async def _maybe_nightly_dream() -> None:
                 json.dumps({"last_run": today, "draft_id": result.get("id")}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            if result.get("draft"):
+            if cfg.dream_auto_apply:
+                apply_r = auto_apply_draft(
+                    str(result.get("id") or ""), reason="schedule"
+                )
+                _log.info(
+                    "nightly_dream_auto_apply ok=%s err=%s backup=%s",
+                    apply_r.get("ok"), apply_r.get("error", ""), apply_r.get("backup", ""),
+                )
+                if apply_r.get("ok"):
+                    await shared._push_global_event("memory.changed", {"draft": False})
+            elif result.get("draft"):
                 await shared._push_global_event("memory.changed", {"draft": True})
             _log.info("nightly_dream_done draft=%s pool=%s", result.get("id"), result.get("pool_entries"))
     except asyncio.CancelledError:

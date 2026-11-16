@@ -4,6 +4,7 @@ from .pool import append_to_pool, clear_pool, pool_count, read_pool, sanitize_fo
 from .status import memory_status, memory_trend, record_snapshot, render_injected
 from .summarize import (
     apply_draft,
+    auto_apply_draft,
     create_draft,
     discard_draft,
     draft_payload,
@@ -28,6 +29,7 @@ __all__ = [
     "sanitize_for_memory",
     "pool_count",
     "apply_draft",
+    "auto_apply_draft",
     "create_draft",
     "discard_draft",
     "draft_payload",

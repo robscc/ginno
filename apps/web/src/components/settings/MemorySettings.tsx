@@ -46,6 +46,7 @@ type KbForm = {
   draft_max_pending: number;
   draft_keep: number;
   dream_nightly: boolean;
+  dream_auto_apply: boolean;
   dream_at: string;
 };
 
@@ -61,6 +62,7 @@ const FORM_DEFAULTS: KbForm = {
   draft_max_pending: 3,
   draft_keep: 20,
   dream_nightly: false,
+  dream_auto_apply: false,
   dream_at: "03:00",
 };
 
@@ -955,6 +957,7 @@ export function MemorySettings() {
                   ["capture", "capture", "captureDesc"],
                   ["auto_summarize", "auto", "autoDesc"],
                   ["dream_nightly", "nightly", "nightlyDesc"],
+                  ["dream_auto_apply", "autoApply", "autoApplyDesc"],
                 ] as const
               ).map(([field, label, desc]) => (
                 <label
