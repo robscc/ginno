@@ -110,6 +110,12 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
       : warnLevel === "amber"
         ? "#d9a93e"
         : "#8b5cf6";
+  // 淡底（2026-11-16 用户反馈）：同色系 RGB 的低透明字面量——CSS 变量
+  // 没法直接做 alpha 分解，三档各写两份（实心底 8% / track 22%）。底色
+  // 跟随语义档变色，占用越高底色越「暖」，不引入第四种颜色语言。
+  const rgb =
+    warnLevel === "red" ? "239,68,68" : warnLevel === "amber" ? "217,169,62" : "139,92,246";
+  const trackColor = `rgba(${rgb},0.22)`;
   // 压缩触发刻度：threshold 在环上对应的圆弧位置（12 点起顺时针）。阈值
   // ≥ 窗口时刻度退化为整圈，不画（异常配置，无参考意义）。
   const thresholdPctOnRing = hasThreshold ? Math.min(100, (ctx.threshold! / ctx.window) * 100) : 0;
@@ -139,7 +145,10 @@ function ContextRing({ ctx }: { ctx: ContextState | null }) {
       title={title + (suggest ? " — " + tr("topbar.contextSuggestCompact") : "")}
     >
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
-        <circle cx="10" cy="10" r={R} fill="none" stroke="var(--line2, #34343f)" strokeWidth="2.5" />
+        {/* 淡底：实心圆 8% 同色系——弧线浮在柔光底上（用户反馈 2026-11-16
+            「最好能有个淡淡的底色」），track 同步从硬灰线换成 22% 同色。 */}
+        <circle cx="10" cy="10" r={R} fill={`rgba(${rgb},0.08)`} />
+        <circle cx="10" cy="10" r={R} fill="none" stroke={trackColor} strokeWidth="2.5" />
         <circle
           cx="10"
           cy="10"
