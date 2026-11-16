@@ -200,14 +200,14 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
           ...(depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined),
         }}
       >
-        {/* 运行中左边缘强调条（§2）：余光可辨、不抢标题空间；呼吸透明度
-            与脉冲点同一节奏。语义色走 --st-running（禁绿色）。 */}
+        {/* 运行中左边缘强调条（§2）：余光可辨、不抢标题空间。2026-11-17 用户
+            选定「彩虹边缘条」——流动彩虹竖条取代静态青色脉冲（Tesla 彩虹路）。
+            色谱主题无关，reduced-motion 降级回 --st-running（globals.css）。 */}
         {running && (
           <span
             aria-hidden
             title={statusT("running")}
-            className="absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 animate-pulse rounded-full"
-            style={{ background: "var(--st-running)" }}
+            className="running-rainbow-edge absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 rounded-full"
           />
         )}
         {/* ask_user/权限 interrupt 等待应答（2026-11-05）：琥珀 Hand 图标 +

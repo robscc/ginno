@@ -386,6 +386,24 @@ html.light .hljs-name {
   animation: ginno-pulse-ring 1.2s ease-out 2;
 }
 
+/* ---- Running session rainbow edge bar (Tesla rainbow road, 2026-11-17) ----
+   侧栏 running 会话左边缘条：流动彩虹竖条取代静态青色脉冲条（用户选定方案
+   01）。彩虹色谱主题无关——暗底鲜亮、白底 crisp；reduced-motion 降级回
+   --st-running 静态语义色（见下方 prefers-reduced-motion 块）。 */
+@keyframes ginno-rainbow-edge {
+  to {
+    background-position: 0 300%;
+  }
+}
+.running-rainbow-edge {
+  background-image: linear-gradient(
+    180deg,
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  );
+  background-size: 100% 300%;
+  animation: ginno-rainbow-edge 2s linear infinite;
+}
+
 /* ---- TTFT waiting indicator animations ---- */
 @keyframes ginno-wave {
   0%, 60%, 100% {
@@ -440,6 +458,11 @@ html.light .hljs-name {
   }
   .btn-press:active {
     transform: none;
+  }
+  .running-rainbow-edge {
+    animation: none;
+    background-image: none;
+    background-color: var(--st-running);
   }
 }
 
