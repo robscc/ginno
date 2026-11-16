@@ -586,6 +586,14 @@ async def _run_stream(
                 {"stage": "writing", "pct": 92}, turn_id,
             )
 
+        async def _announce_heartbeat(pct: int) -> None:
+            # P3（2026-11-16）：摘要期间的时间轴进度心跳（每 30s）——
+            # 大历史摘要分钟级，8%→92% 之间进度条不该近乎冻结。
+            await _push_session_event(
+                session_id, "context.compacting",
+                {"stage": "summarizing", "pct": pct}, turn_id,
+            )
+
         async def _announce_done() -> None:
             # 终态必达：自动压缩后若无后续事件，前端 compacting 永不清。
             await _push_session_event(
@@ -603,6 +611,7 @@ async def _run_stream(
                 ctx_factory=_world_ctx,
                 on_summary_start=_announce_compacting,
                 on_summary_done=_announce_summary_done,
+                on_heartbeat=_announce_heartbeat,
                 abort_event=_TURN_STOP.setdefault(session_id, asyncio.Event()),
             )
         finally:

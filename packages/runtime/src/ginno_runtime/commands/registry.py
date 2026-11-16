@@ -643,6 +643,12 @@ async def _compact_async_handler(
                 sid, "context.compacting", {"stage": "writing", "pct": 92}
             )
 
+        async def _announce_heartbeat(pct: int) -> None:
+            # P3（2026-11-16）：与 turn 入口自动压缩同一条进度契约。
+            await _push_session_event(
+                sid, "context.compacting", {"stage": "summarizing", "pct": pct}
+            )
+
         async def _announce_done() -> None:
             # 终态必达（2026-11-12 卡死修复）：compact 是后台任务，结束后
             # 若无后续事件，前端 compacting 镜像永不清 → Composer 永久
@@ -656,6 +662,7 @@ async def _compact_async_handler(
                 session, config, force=True,
                 on_summary_start=_announce_compacting,
                 on_summary_done=_announce_summary_done,
+                on_heartbeat=_announce_heartbeat,
             )
         except Exception as e:
             _log.exception("compact_cmd_failed session=%s", sid)
