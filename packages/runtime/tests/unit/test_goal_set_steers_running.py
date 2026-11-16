@@ -19,6 +19,14 @@ SLUG = "default"
 SID = "sess-steer"
 
 
+@pytest.fixture(autouse=True)
+def _clean_stash():
+    """test_steering asserts the GLOBAL stash is empty — never leak our
+    entries into later tests (root conftest clears _RUNNING_TURNS, not stash)."""
+    yield
+    server_shared._STEER_STASH.pop(SID, None)
+
+
 def _wire(monkeypatch, running: bool):
     monkeypatch.setattr(
         sessions,

@@ -8,6 +8,7 @@ the agent-switch auto-pause rule.
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -76,15 +77,19 @@ def test_continuation_completes_goal(create_session, client):
     sid = create_session(model)
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "Write the report"})
 
-    goal = _wait_goal(
-        client,
-        sid,
-        # status 与 turns_used 的记账存在写序窗口（工具先置 complete，turn
-        # 收尾才 +1）——两者齐备才算到达，否则慢机上断言会读到 complete+0。
-        lambda g: g and g["status"] == "complete" and g["turns_used"] >= 1,
-    )
-    assert goal["turns_used"] >= 1
-    assert goal["time_used_seconds"] >= 0
+    # Lifecycle finish (2026-11-16): a complete goal auto-archives AFTER the
+    # driver's final accounting — the active record disappears, and the
+    # archived record in goals-history.jsonl carries the terminating turn's
+    # usage (design §4.3.4 counts the turn that marks complete).
+    _wait_goal(client, sid, lambda g: g is None)
+    from ginno_runtime import paths
+
+    hp = paths.project_goals_path("default").with_name("goals-history.jsonl")
+    assert hp.exists(), "complete goal must be archived to history"
+    rec = json.loads(hp.read_text().strip().splitlines()[-1])
+    assert rec["status"] == "complete"
+    assert rec["turns_used"] >= 1
+    assert rec["time_used_seconds"] >= 0
 
     # The continuation turn landed in history as a short context row + reply.
     hist = client.get(f"/api/sessions/{sid}/history").json()
@@ -232,7 +237,9 @@ def test_goal_context_row_in_history(create_session, client):
     ]
     sid = create_session(model)
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "Render check"})
-    _wait_goal(client, sid, lambda g: g and g["status"] == "complete")
+    # Lifecycle finish: complete goal auto-archives after the goal turn —
+    # waiting for the active record to disappear means the turn has landed.
+    _wait_goal(client, sid, lambda g: g is None)
 
     hist = client.get(f"/api/sessions/{sid}/history").json()
     ctx_texts = [

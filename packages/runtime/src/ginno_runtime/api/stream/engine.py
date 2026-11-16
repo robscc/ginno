@@ -1277,15 +1277,20 @@ async def _stream_graph(
             # parking never reach this branch, so an unfinished goal is never
             # archived by a transient turn failure.
             try:
+                from ..sessions import _GOAL_DRIVERS, _archive_complete_goal
                 from ...goals import store as _goal_store
 
                 _g = _goal_store.get_goal(slug, session_id)
-                if _g and _g.get("status") == _goal_store.STATUS_COMPLETE:
-                    _archived = _goal_store.archive_goal(slug, session_id)
-                    if _archived:
-                        await _push_session_event(
-                            session_id, "goal.archived", {"goal": _archived}
-                        )
+                if (
+                    _g
+                    and _g.get("status") == _goal_store.STATUS_COMPLETE
+                    and session_id not in _GOAL_DRIVERS
+                ):
+                    # User-turn path: no driver owns this session → archive
+                    # here. Goal-turn path: turn_done fires BEFORE the driver's
+                    # account_turn, so the driver archives after accounting
+                    # (the terminating turn's usage must land in history).
+                    await _archive_complete_goal(slug, session_id)
             except Exception:  # noqa: BLE001 — 钩子绝不带崩 turn
                 _log.exception("goal_archive_hook_failed session=%s", session_id)
             # AgentTeam 成员 turn 终态钩子（backlog P0-7/P1-2/P1-3）：回帖 +
