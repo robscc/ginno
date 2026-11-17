@@ -85,6 +85,39 @@ def _usage_msg():
     )
 
 
+async def test_engine_translates_llm_frames(llm_frames):
+    """engine 翻译分支已移除（2026-11-18）：graph 埋点仍在 custom 总线上发
+    ginno_llm_event，但 engine 不再翻译成 llm.request/llm.response 下发。
+
+    原因：bisect1/2 实锤该分支在 CI(ubuntu) 上导致 runtime-tests 63% 后
+    卡死 16 分钟被 runner 关停（main 同区间 0.36s；只撤该分支 CI 9m44s
+    通过），且用户已要求前端不渲染 llm 行——分支唯一消费方已不存在。
+    本测试钉住：graph 侧事件仍发（埋点未删），防未来误删埋点。
+    """
+    from ginno_runtime import graph as g
+
+    await g._ainvoke_rate_limited(_FakeBound(), [{"role": "user", "content": "hi"}])
+    assert llm_frames, "graph 埋点必须在 custom 总线上发 ginno_llm_event"
+    kinds = {f.get("ginno_llm_event", {}).get("kind") for f in llm_frames}
+    assert kinds >= {"request", "response"}
+
+
+def test_engine_no_longer_translates_llm_frames():
+    """防线哨兵：engine.py 不得再包含 llm 翻译分支（CI 卡死元凶）。
+
+    恢复前置条件（写在注释里给未来的人）：先查清 ubuntu runner 上卡死
+    的根因——本地 macOS 全绿、writer 阻塞/flush 互锁/队列有界三个假设
+    均已实证否掉，疑与环境相关。
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "src/ginno_runtime/api/stream/engine.py"
+    text = src.read_text(encoding="utf-8")
+    assert '"ginno_llm_event" in payload' not in text, (
+        "engine 翻译分支是 CI(ubuntu) 63% 卡死元凶（bisect1/2），不得恢复"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # graph 层：正常请求
 # --------------------------------------------------------------------------- #
@@ -346,78 +379,7 @@ async def _drive(frames, sid="llm-obs-engine"):
     return ws
 
 
-async def test_engine_translates_llm_frames(isolated_home):
-    frames = [
-        ("custom", {"ginno_llm_event": {
-            "kind": "request", "req_id": "r1", "attempt": 1,
-            "model": "glm-4.6", "provider": "openai", "messages_count": 3,
-        }}),
-        ("custom", {"ginno_llm_event": {
-            "kind": "response", "req_id": "r1", "attempt": 1, "ok": True,
-            "elapsed_ms": 123,
-            "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
-        }}),
-    ]
-    ws = await _drive(frames)
-    reqs, resps = _ws_events(ws, "llm.request"), _ws_events(ws, "llm.response")
-    assert len(reqs) == 1 and len(resps) == 1
-    assert reqs[0]["req_id"] == resps[0]["req_id"] == "r1"
-    assert reqs[0]["model"] == "glm-4.6"
-    assert resps[0]["ok"] is True and resps[0]["elapsed_ms"] == 123
-    assert resps[0]["usage"]["total_tokens"] == 120
-    # 走的是 emit 链路：frame_session / turn_id 与其他 turn 事件同口径
-    assert reqs[0]["frame_session"] == "llm-obs-engine"
-    assert reqs[0]["turn_id"] == "turn-llm-obs-engine"
 
 
-async def test_engine_whitelist_drops_foreign_fields(isolated_home):
-    frames = [
-        ("custom", {"ginno_llm_event": {
-            "kind": "request", "req_id": "r2", "attempt": 1,
-            "prompt": "SECRET-PROMPT-BODY", "api_key": "sk-leak-999",
-            "messages": [{"content": "SECRET-PROMPT-BODY"}],
-        }}),
-        ("custom", {"ginno_llm_event": {
-            "kind": "response", "req_id": "r2", "attempt": 1, "ok": False,
-            "error": "ValueError", "traceback": "SECRET-PROMPT-BODY",
-        }}),
-    ]
-    ws = await _drive(frames)
-    llm_raw = [raw for raw in ws.sent
-               if json.loads(raw).get("event", "").startswith("llm.")]
-    assert len(llm_raw) == 2
-    blob = "".join(llm_raw)
-    assert "SECRET-PROMPT-BODY" not in blob
-    assert "sk-leak-999" not in blob
-    for raw in llm_raw:
-        frame = json.loads(raw)
-        assert "prompt" not in frame and "api_key" not in frame
-        assert "messages" not in frame and "traceback" not in frame
 
 
-async def test_engine_ignores_unknown_kind(isolated_home):
-    frames = [("custom", {"ginno_llm_event": {"kind": "bogus", "req_id": "x"}})]
-    ws = await _drive(frames)
-    assert not [r for r in ws.sent if '"llm.' in r]
-
-
-# --------------------------------------------------------------------------- #
-# 两层接线：graph 真实造帧 → 真实 engine 翻译（契约一致性）
-# --------------------------------------------------------------------------- #
-async def test_graph_frames_flow_through_engine(isolated_home, llm_frames, monkeypatch):
-    monkeypatch.setattr(graph_mod, "_RATE_LIMIT_WAIT_S", 0.01)
-    monkeypatch.setattr("ginno_runtime.graph.asyncio.sleep", _no_sleep)
-    bound = _FakeBound(result=_usage_msg(), failures=1,
-                       exc=RuntimeError("429 rate limit"))
-    await _ainvoke_rate_limited(bound, [SystemMessage(content="s"),
-                                        HumanMessage(content=" secret-body ")])
-    # graph 层造出的帧原样喂进 engine（生产里经 LangGraph custom 通道传递）
-    ws = await _drive([("custom", f) for f in llm_frames], sid="llm-obs-wire")
-    reqs, resps = _ws_events(ws, "llm.request"), _ws_events(ws, "llm.response")
-    assert [r["attempt"] for r in reqs] == [1, 2]
-    assert [r["ok"] for r in resps] == [False, True]
-    assert len({r["req_id"] for r in reqs + resps}) == 1
-    assert resps[0]["error"] == "RuntimeError"
-    assert resps[1]["usage"]["total_tokens"] == 120
-    blob = "".join(ws.sent)
-    assert "secret-body" not in blob

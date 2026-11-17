@@ -33,7 +33,7 @@ from ... import server_shared as shared
 from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
-from ...graph import BLOCK_PREFIX, _LLM_EVENT_FIELDS
+from ...graph import BLOCK_PREFIX
 from ...knowledge import citations as cit
 from ...lang import t
 from ...server_shared import (
@@ -745,16 +745,15 @@ async def _stream_graph(
                             },
                         )
                     )
-                # T3 — LLM 请求级可观测：graph._ainvoke_rate_limited 经 custom
-                # 总线发来的元数据帧，在这里翻译成 llm.request / llm.response
-                # 走 emit/safe_send 下发（远端节点经事件汇自动拿到）。字段过
-                # 白名单——第二道防线，确保 prompt 正文/密钥到不了前端。
-                if isinstance(payload, dict) and payload.get("ginno_llm_event"):
-                    le = payload["ginno_llm_event"]
-                    if isinstance(le, dict) and le.get("kind") in ("request", "response"):
-                        _le_data = {k: le[k] for k in _LLM_EVENT_FIELDS if k in le}
-                        await _coal.flush()  # 保序：llm 事件不插队到缓冲文本前
-                        await safe_send(emit(f"llm.{le['kind']}", _le_data))
+                # T3 LLM 帧的 engine 翻译分支已移除（2026-11-18）：
+                # bisect1/2 实锤它在 CI(ubuntu) 上导致 runtime-tests 63% 后
+                # 卡死 16 分钟被 runner 关停（main 同区间 0.36s；只撤本分支
+                # CI 9m44s 通过）。且用户已要求前端不渲染 llm 行——本分支
+                # 唯一作用（把 custom 帧翻译成 llm.request/response 发前端）
+                # 已无消费方。graph 埋点保留（bisect2 证明无害），事件仍在
+                # custom 总线上，未来要恢复前端展示需先查清 Linux 卡死根因
+                # （本地 macOS 全绿、writer/flush/队列三假设均已实证否掉，
+                # 疑与 ubuntu runner 环境相关）再重新引入。
                 continue
             elif mode == "updates":
                 # 合帧保序：updates 携带 tool.start/end、permission.request 等
