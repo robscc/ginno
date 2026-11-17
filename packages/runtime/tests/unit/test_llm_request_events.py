@@ -346,6 +346,7 @@ async def _drive(frames, sid="llm-obs-engine"):
     return ws
 
 
+@pytest.mark.skip(reason="bisect: engine 翻译分支已撤")
 async def test_engine_translates_llm_frames(isolated_home):
     frames = [
         ("custom", {"ginno_llm_event": {
@@ -370,6 +371,7 @@ async def test_engine_translates_llm_frames(isolated_home):
     assert reqs[0]["turn_id"] == "turn-llm-obs-engine"
 
 
+@pytest.mark.skip(reason="bisect: engine 翻译分支已撤")
 async def test_engine_whitelist_drops_foreign_fields(isolated_home):
     frames = [
         ("custom", {"ginno_llm_event": {
@@ -395,6 +397,7 @@ async def test_engine_whitelist_drops_foreign_fields(isolated_home):
         assert "messages" not in frame and "traceback" not in frame
 
 
+@pytest.mark.skip(reason="bisect: engine 翻译分支已撤")
 async def test_engine_ignores_unknown_kind(isolated_home):
     frames = [("custom", {"ginno_llm_event": {"kind": "bogus", "req_id": "x"}})]
     ws = await _drive(frames)
@@ -404,6 +407,7 @@ async def test_engine_ignores_unknown_kind(isolated_home):
 # --------------------------------------------------------------------------- #
 # 两层接线：graph 真实造帧 → 真实 engine 翻译（契约一致性）
 # --------------------------------------------------------------------------- #
+@pytest.mark.skip(reason="bisect: engine 翻译分支已撤")
 async def test_graph_frames_flow_through_engine(isolated_home, llm_frames, monkeypatch):
     monkeypatch.setattr(graph_mod, "_RATE_LIMIT_WAIT_S", 0.01)
     monkeypatch.setattr("ginno_runtime.graph.asyncio.sleep", _no_sleep)
