@@ -1619,15 +1619,12 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // 事件所属 sid 落到对应会话的气泡上，不受此守卫影响。
       const active = ctx.activeSidRef.current;
       const t = ev.turn as Partial<SessionUsage> | undefined;
-      if (t && typeof t.input_tokens === "number" && sid === active) {
-        ctx.onUsageChange?.({
-          input_tokens: t.input_tokens ?? 0,
-          output_tokens: t.output_tokens ?? 0,
-          cache_read_tokens: t.cache_read_tokens ?? 0,
-          cache_creation_tokens: t.cache_creation_tokens ?? 0,
-          calls: 1,
-        });
-        // turn-meta live（turn 右下角）：本 turn 多次调用逐次累加。
+      if (t && typeof t.input_tokens === "number") {
+        // turn-meta live（turn 右下角）：本 turn 多次调用逐次累加。**按事件
+        // 所属 sid 落块，不受 active 守卫**——后台/子代理会话（非当前活跃
+        // 视图）的 turn 统计也要累加，否则切过去看右下角耗时+token 全空
+        // （用户反馈 2026-11-17「subagent turn 统计有时不显示」；修复前这段
+        // 被误关进 sid===active 守卫，与上方注释意图相悖）。
         const _lid = ctx.liveBySessionRef.current[sid];
         const _cur = (
           _lid &&
@@ -1639,6 +1636,17 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           inputTokens: (_cur?.inputTokens ?? 0) + (t.input_tokens ?? 0),
           outputTokens: (_cur?.outputTokens ?? 0) + (t.output_tokens ?? 0),
         });
+        // TopBar 全局圆环/增量是全局单值，只给当前活跃会话（防多会话混用，
+        // P0 2026-11-07）——这一路才需要 active 守卫。
+        if (sid === active) {
+          ctx.onUsageChange?.({
+            input_tokens: t.input_tokens ?? 0,
+            output_tokens: t.output_tokens ?? 0,
+            cache_read_tokens: t.cache_read_tokens ?? 0,
+            cache_creation_tokens: t.cache_creation_tokens ?? 0,
+            calls: 1,
+          });
+        }
       }
       // 上下文占用（TopBar 圆环）：当前状态，直接替换——仅当前活跃会话
       // 的帧（见上面的 active 守卫）。

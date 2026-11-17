@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { innerTail, isWaitingNextRound } from "./waitState";
+import { innerTail, isWaitingNextRound, tailLineVisible } from "./waitState";
 import type { Block } from "./blocks/types";
 
 // 最小块工厂：只填判据关心的字段（判据只读 kind/pending/status）。
@@ -85,5 +85,52 @@ describe("isWaitingNextRound", () => {
   it("turn_meta 块不掩盖等待态：usage 追加的小字排在尾部也不熄灭等待行", () => {
     const blocks = [text("前言"), tool(false), { kind: "turn_meta", t0Ms: 1 } as Block];
     expect(isWaitingNextRound(blocks, true, false)).toBe(true);
+  });
+});
+
+describe("tailLineVisible（dev-swap 进度行的 sid 门控）", () => {
+  // 基线：流式中、无连接中断、无瞬态覆盖、非 dev-swap 发起会话、非尾部进度。
+  const base = {
+    streaming: true,
+    connLost: false,
+    waitingNextRound: false,
+    hasStatusOverride: false,
+    dsOwn: false,
+    dsTail: false,
+  };
+
+  it("回归（用户反馈 2026-11-17）：别的会话在跑 dev-swap，本会话思考/执行中不点亮等待行", () => {
+    // 全局 dsActive=true 但本会话 dsOwn=false：判据只认 dsOwn，绝不能因
+    // 全局 dev-swap 运行就把其他 streaming 气泡的尾部行点亮成「等待下一轮」。
+    expect(tailLineVisible(base)).toBe(false);
+  });
+
+  it("本会话发起 dev-swap（dsOwn）→ 流式中点亮进度行", () => {
+    expect(tailLineVisible({ ...base, dsOwn: true })).toBe(true);
+  });
+
+  it("真正的轮次静默窗（waitingNextRound）→ 点亮", () => {
+    expect(tailLineVisible({ ...base, waitingNextRound: true })).toBe(true);
+  });
+
+  it("连接中断 → 点亮（改报断线文案）", () => {
+    expect(tailLineVisible({ ...base, connLost: true })).toBe(true);
+  });
+
+  it("瞬态覆盖（压缩中…）→ 点亮", () => {
+    expect(tailLineVisible({ ...base, hasStatusOverride: true })).toBe(true);
+  });
+
+  it("发起会话尾部进度行（dsTail，turn 已结束仍挂）→ 点亮", () => {
+    expect(tailLineVisible({ ...base, streaming: false, dsTail: true })).toBe(true);
+  });
+
+  it("非流式且无尾部进度 → 不点亮", () => {
+    expect(tailLineVisible({ ...base, streaming: false })).toBe(false);
+    expect(tailLineVisible({ ...base, streaming: undefined })).toBe(false);
+  });
+
+  it("非发起会话即使 dsTail 误传也只在尾部进度成立时点亮（dsOwn=false 不单独点亮）", () => {
+    expect(tailLineVisible({ ...base, dsOwn: false, dsTail: false })).toBe(false);
   });
 });
