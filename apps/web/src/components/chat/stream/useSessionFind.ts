@@ -74,6 +74,22 @@ export function useSessionFind(
     }
   }, [open, hits, activeIdx, debounced, scrollRef]);
 
+  // 时间分片挂载落定（TranscriptList 的 ginno:transcript-slices-settled）：
+  // 晚挂载的行错过了上面的 paint，按当前 hits/activeIdx 补刷一次。状态经
+  // ref 读——监听器只挂一次，不随 query/idx 重建。
+  const paintStateRef = useRef({ open: false, activeIdx: 0, debounced: "" });
+  paintStateRef.current = { open, activeIdx, debounced };
+  useEffect(() => {
+    const onSettled = () => {
+      const s = paintStateRef.current;
+      if (s.open && scrollRef.current) {
+        painter.paint(scrollRef.current, hitsRef.current, s.activeIdx, s.debounced);
+      }
+    };
+    window.addEventListener("ginno:transcript-slices-settled", onSettled);
+    return () => window.removeEventListener("ginno:transcript-slices-settled", onSettled);
+  }, [scrollRef]);
+
   // 关闭/卸载/会话切换：清高亮 + reset（对齐 headKeep 重置模式）。
   useEffect(() => {
     if (!open) painter.clear();
@@ -117,7 +133,13 @@ export function useSessionFind(
         new CustomEvent("ginno:scroll-to-message", { detail: hit.msgId }),
       );
       if (scrollRef.current) {
-        painter.focusActiveHit(scrollRef.current, hit, debounced);
+        // 目标行可能刚扩窗/刚分片挂载：落定后补刷一次 paint——否则首次
+        // paint 时行还不存在，active 高亮会漏（时间分片挂载后同理）。
+        painter.focusActiveHit(scrollRef.current, hit, debounced, () => {
+          if (scrollRef.current) {
+            painter.paint(scrollRef.current, hitsRef.current, bounded, debounced);
+          }
+        });
       }
     },
     [debounced, scrollRef],

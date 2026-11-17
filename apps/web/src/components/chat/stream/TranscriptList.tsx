@@ -5,7 +5,8 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { MutableRefObject, RefObject } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
@@ -34,6 +35,13 @@ import {
   flashMessageAnchor,
   scrollToMessageAnchor,
 } from "@/components/shell/searchShared";
+import {
+  SLICE_INITIAL_BLOCKS,
+  SLICE_STEP_BLOCKS,
+  clampSkip,
+  sliceResetNeeded,
+  sliceStart,
+} from "@/lib/transcriptSlices";
 
 export function TranscriptList({
   messages,
@@ -54,6 +62,8 @@ export function TranscriptList({
   retryError,
   retryFromCheckpoint,
   dismissContext,
+  scrollRef,
+  stickRef,
 }: {
   messages: ChatMsg[];
   session: SessionMeta | null;
@@ -82,6 +92,10 @@ export function TranscriptList({
   retryFromCheckpoint: (msgId: string) => void;
   /** 系统提示条（context chips）逐条关闭（2026-11-05）：从 store 移除该块。 */
   dismissContext?: (msgId: string, blockIndex: number) => void;
+  /** 滚动容器与贴底标志（ChatStream 持有）：分片挂载的滚动补偿用——
+   *  stick 时每片重新贴底；用户上翻时按 prepend 高度差平移 scrollTop。 */
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  stickRef?: MutableRefObject<boolean>;
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
@@ -142,12 +156,115 @@ export function TranscriptList({
   const hiddenCount = Math.max(0, messages.length - headKeep);
   const visible = hiddenCount > 0 ? messages.slice(-headKeep) : messages;
   const visibleOffset = messages.length - visible.length; // 窗口首条的全量索引
+
+  // ── 时间分片挂载（2026-11-17 perf）─────────────────────────────────────
+  // 窗口化之后，重会话首屏（~80 条 / ~1700 blocks）仍是一次性同步 React
+  // mount——切换剩余 max longtask（实测 ~341ms）的主体。现在尾部先挂
+  // （SLICE_INITIAL_BLOCKS 块预算，首帧即见最新消息），更旧的消息经
+  // requestIdleCallback 逐片向上 prepend（每片 ≤ SLICE_STEP_BLOCKS blocks），
+  // 片间让出主线程。范式同 Markdown.tsx 逐块 idle 高亮：rIC + setTimeout
+  // 兜底、卸载/会话切换取消。纯逻辑（预算切片/夹紧/重置判定）在
+  // lib/transcriptSlices.ts，vitest 覆盖。
+  const blockCounts = useMemo(() => visible.map((m) => m.blocks.length), [visible]);
+  const countsRef = useRef(blockCounts);
+  countsRef.current = blockCounts;
+  const [headSkip, setHeadSkip] = useState(0);
+  const slicePrevRef = useRef<{ sid: string | undefined; len: number }>({
+    sid: undefined,
+    len: 0,
+  });
+  // 重置必须 render 期派生：等 useEffect 的话首帧已整窗同步 mount，长任务
+  // 照样发生。同组件 render 期 setState 是 React 文档的「render 期调整
+  // state」模式——commit 前立即重渲染，不会多挂一帧。
+  if (sliceResetNeeded(slicePrevRef.current, sessionId, messages.length)) {
+    slicePrevRef.current = { sid: sessionId, len: messages.length };
+    const next = sliceStart(blockCounts, visible.length, SLICE_INITIAL_BLOCKS);
+    if (next !== headSkip) setHeadSkip(next);
+  }
+  slicePrevRef.current.len = messages.length;
+  // 夹紧：旧会话残留 skip / 消息缩水时仍保底尾部 SLICE_MIN_RENDERED 条。
+  const skip = clampSkip(headSkip, visible.length);
+  const rendered = skip > 0 ? visible.slice(skip) : visible;
+
   const revealUpTo = (id: string) => {
     const i = messages.findIndex((m) => m.id === id);
-    if (i >= 0 && i < visibleOffset) {
+    if (i < 0) return;
+    if (i < visibleOffset) {
       setHeadKeep(messages.length - i + 8); // +8：目标行上方的少量上下文
+      // 扩窗后目标位于窗口 idx 8：立即挂到目标行（不等 idle 片），锚点
+      // 重试环下一帧自然命中。min：不收回已挂载的行。
+      setHeadSkip((s) => Math.min(s, 8));
+    } else {
+      // 目标在窗口内但可能尚未分片挂载：同样立即挂到目标行。
+      const idx = i - visibleOffset;
+      setHeadSkip((s) => Math.min(s, idx));
     }
   };
+
+  // 分片滚动补偿：idle 回调在 commit 前记录高度/位置，useLayoutEffect
+  // （paint 前）按两种姿态之一补偿——贴底则重新贴底（pinToBottom 的 12 帧
+  // 窗口早已结束，分片期靠这里续贴）；用户上翻则按 prepend 高度差平移，
+  // 视口内容纹丝不动。只在分片 commit 时生效（comp 仅由 idle 回调写入），
+  // 不干预流式增长/缩水等其它高度变化。
+  const sliceCompRef = useRef<{ height: number; top: number; stuck: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const comp = sliceCompRef.current;
+    sliceCompRef.current = null;
+    const el = scrollRef?.current;
+    if (!comp || !el) return;
+    if (comp.stuck) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      const delta = el.scrollHeight - comp.height;
+      if (delta > 0) el.scrollTop = comp.top + delta;
+    }
+  });
+
+  // idle 逐片推进。deps 只用 skip（数值）：messages 引用随流式每帧翻新，
+  // 若进 deps 会不停取消重排 → 直播期间分片饿死；最新块数经 countsRef 读。
+  useEffect(() => {
+    if (skip <= 0) return;
+    let cancelled = false;
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const schedule =
+      w.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 32) as unknown as number);
+    const id = schedule(() => {
+      if (cancelled) return;
+      const el = scrollRef?.current;
+      if (el) {
+        sliceCompRef.current = {
+          height: el.scrollHeight,
+          top: el.scrollTop,
+          stuck: stickRef?.current ?? true,
+        };
+      }
+      setHeadSkip((s) => {
+        const cur = clampSkip(s, countsRef.current.length);
+        return sliceStart(countsRef.current, cur, SLICE_STEP_BLOCKS);
+      });
+    }, { timeout: 250 });
+    return () => {
+      cancelled = true;
+      w.cancelIdleCallback?.(id);
+    };
+  }, [skip, scrollRef, stickRef]);
+
+  // 分片落定事件：晚挂载的行错过了 ⌘F 高亮的首次 paint，useSessionFind
+  // 监听本事件按当前 hits 补刷（window 事件范式同 ginno:scroll-to-message）。
+  const sliceSettledRef = useRef(true);
+  useEffect(() => {
+    if (skip > 0) {
+      sliceSettledRef.current = false;
+      return;
+    }
+    if (!sliceSettledRef.current) {
+      sliceSettledRef.current = true;
+      window.dispatchEvent(new Event("ginno:transcript-slices-settled"));
+    }
+  }, [skip]);
 
   // ── V2 P0-1 message anchoring ────────────────────────────────────────────
   // data-msg-id mapping: user rows carry their own HumanMessage id; assistant
@@ -239,7 +356,7 @@ export function TranscriptList({
           </button>
         </div>
       )}
-      {visible.map((m, idx) =>
+      {rendered.map((m, idx) =>
         m.role === "system" ? (
           <div key={m.id} className="flex flex-col items-center gap-2">
             <ContextBlocks
@@ -468,7 +585,7 @@ export function TranscriptList({
           </div>
         ) : (
           <Fragment key={m.id}>
-            {handoffBefore[visibleOffset + idx] && (
+            {handoffBefore[visibleOffset + skip + idx] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
             <div data-msg-id={m.id} className="min-w-0 rounded-xl">

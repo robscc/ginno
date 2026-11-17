@@ -1024,6 +1024,8 @@ export function ChatStream({
             retryError={retryError}
             retryFromCheckpoint={retryFromCheckpoint}
             dismissContext={dismissContextChip}
+            scrollRef={scrollRef}
+            stickRef={stickRef}
           />
 
           {runs.map((r) => (
