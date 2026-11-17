@@ -266,6 +266,7 @@ def _maybe_refresh_session_graph(session: dict) -> None:
         # And the type-registry tightening (P3 contract 1) — an MCP-drift
         # rebuild must not hand a restricted child its tools back.
         restrict_tools=session.get("restrict_tools") or [],
+        skill_dirs=session.get("skill_dirs") or [],
     )
     router, tool_selector = build_middlewares(session.get("session_id", ""))
     session["graph"] = build_graph(
@@ -308,7 +309,9 @@ def _bound_workflow_view(session: dict) -> dict | None:
     return wf
 
 
-def _slash_sticky(skill_name: str | None, project_slug: str) -> list[str]:
+def _slash_sticky(skill_name: str | None, project_slug: str,
+                  skill_dirs: list[str] | None = None,
+                  context: dict | None = None) -> list[str]:
     """[skill_name] when a slash-invoked skill declares `sticky: true`, else [].
 
     The sticky_skills channel has an append-only reducer, so this never
@@ -316,9 +319,11 @@ def _slash_sticky(skill_name: str | None, project_slug: str) -> list[str]:
     if not skill_name:
         return []
     try:
-        from ...skills.loader import SkillLoader
+        from ...skills.loader import SkillLoader, session_access_roots
 
-        sk = SkillLoader(project_slug=project_slug).get(skill_name)
+        sk = SkillLoader(project_slug=project_slug,
+                         extra_dirs=tuple(skill_dirs or []),
+                         access_roots=session_access_roots(context or {})).get(skill_name)
         return [skill_name] if sk and sk.sticky else []
     except Exception:  # noqa: BLE001 — activation bookkeeping must never block a turn
         return []
@@ -525,6 +530,7 @@ async def _run_stream(
                     # type-restricted subagent session (P3 contract 1) must
                     # not advertise tools its graph cannot call.
                     restrict_tools=session.get("restrict_tools") or [],
+                    skill_dirs=list(session.get("skill_dirs") or []),
                 )
             ]
         return SessionCtx(
@@ -536,6 +542,7 @@ async def _run_stream(
             workspace=str(session.get("workspace") or ""),
             context_dirs=list(session.get("context_dirs") or []),
             primary_path=str(session.get("primary_path") or ""),
+            skill_dirs=list(session.get("skill_dirs") or []),
             tool_policy=dict(session.get("tool_policy") or {}),
         )
 
@@ -733,7 +740,8 @@ async def _run_stream(
         # todo) also enter the session-persistent sticky channel. Append-only
         # reducer: [] is a no-op, and prior entries from earlier turns are
         # never cleared. use_skill activations append from the tools node.
-        "sticky_skills": _slash_sticky(skill_name, session["project_slug"]),
+        "sticky_skills": _slash_sticky(skill_name, session["project_slug"],
+                                       session.get("skill_dirs"), session),
         "pending_tool_calls": [],
         "attached_files": attached,
         # Always present (even []) so the channel resets per turn — mentions
@@ -744,6 +752,9 @@ async def _run_stream(
         # other channels, refreshed on every invoke. Live value (not the
         # session-dict freeze) so the snapshot converges with reality.
         "mcp_tool_names": list(_world_ctx().mcp_tool_names),
+        # Session-scoped skill dirs (skill-paths design): last-value-wins
+        # channel, refreshed from session meta on every invoke.
+        "skill_dirs": list(session.get("skill_dirs") or []),
         # Mounted context folders (context-folders-design.md): stable within a
         # mount set; a change goes through PUT /sessions/{id}/context (or
         # /mount), which rebuilds the graph and updates the session dict.

@@ -41,6 +41,8 @@ def build_skill_tools(
     project_slug: str | None = None,
     session_id: str | None = None,
     primary_path: str | None = None,
+    skill_dirs: list[str] | None = None,
+    skill_access_roots: tuple[str, ...] = (),
 ) -> list:
     slug = project_slug or ""
 
@@ -108,7 +110,9 @@ def build_skill_tools(
         ``request`` is the user's concrete ask (passed through as the skill
         argument). Returns the skill body, or an error string.
         """
-        skill = SkillLoader(project_slug=slug or None).get(name)
+        skill = SkillLoader(project_slug=slug or None,
+                            extra_dirs=tuple(skill_dirs or []),
+                            access_roots=skill_access_roots).get(name)
         if not skill:
             return f"[error] unknown skill: {name}"
         # Session Tool Policy（2026-11-12 P0）：被禁 skill 明确报错（内置豁免）。
@@ -168,6 +172,13 @@ def build_skill_tools(
                 seen.add(name)
                 desc = (s.description if s else "") or ""
                 lines.append(f"- {name} [{scope}] {desc} ({p.parent})".rstrip())
+
+        # Session discovery is private to this tool closure, never installed.
+        if skill_dirs:
+            for sk in SkillLoader(slug or None, tuple(skill_dirs), skill_access_roots).load(include_body=False):
+                if sk.path and any(sk.path.is_relative_to(Path(d)) for d in skill_dirs):
+                    seen.add(sk.name)
+                    lines.append(f"- {sk.name} [session] {sk.description} ({sk.path.parent})")
 
         # Repo copies first — farthest from Ginno's own storage.
         for root in _known_repo_roots():

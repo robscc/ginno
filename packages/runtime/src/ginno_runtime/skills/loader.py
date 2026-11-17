@@ -6,7 +6,7 @@ Skill format (Claude-Code-inspired):
     ~/.ginno/skills/<name>/SKILL.md                  (global, user-installed)
     ~/.ginno/projects/<slug>/skills/<name>/SKILL.md  (project-scoped override)
 
-Precedence on name conflict: builtin < global < project (a user copy
+Precedence on name conflict: builtin < global < project < session (a user copy
 overrides a built-in without breaking it; built-ins can't be deleted).
 A copy that omits `tools:`/`sticky:` inherits those bindings from the
 built-in it shadows, so an old copy can't orphan a lazy tool family.
@@ -96,8 +96,21 @@ def wrap_skill_body(skill: Skill, request: str = "") -> str:
     return "\n".join(blocks)
 
 
-def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
-    raw = p.read_text(encoding="utf-8")
+def _parse_skill_file(p: Path, builtin: bool = False, *, include_body: bool = True) -> Skill | None:
+    if include_body:
+        raw = p.read_text(encoding="utf-8")
+    else:
+        # Index discovery reads frontmatter only, never the instruction body.
+        with p.open(encoding="utf-8") as stream:
+            first = stream.readline()
+            if first.strip() != "---":
+                return None
+            lines = [first]
+            for line in stream:
+                lines.append(line)
+                if line.strip() == "---":
+                    break
+            raw = "".join(lines)
     m = _FRONTMATTER_RE.match(raw)
     if not m:
         return None
@@ -116,11 +129,11 @@ def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
     )
 
 
-def _scan_dir(root: Path, builtin: bool, into: dict[str, Skill]) -> None:
+def _scan_dir(root: Path, builtin: bool, into: dict[str, Skill], *, include_body: bool = True) -> None:
     if not root.exists():
         return
     for p in root.glob("*/SKILL.md"):
-        s = _parse_skill_file(p, builtin=builtin)
+        s = _parse_skill_file(p, builtin=builtin, include_body=include_body)
         if not s:
             continue
         prev = into.get(s.name)
@@ -141,30 +154,90 @@ def _scan_dir(root: Path, builtin: bool, into: dict[str, Skill]) -> None:
         into[s.name] = s
 
 
-def load_all_skills(project_slug: str | None = None) -> list[Skill]:
+def load_all_skills(project_slug: str | None = None, *, include_body: bool = True) -> list[Skill]:
     """Load builtin + global + project skills. Later tiers win on conflict
     (builtin < global < project), so a user copy overrides a built-in —
     except that undeclared ``tools:``/``sticky:`` bindings are inherited
     from the built-in (see _scan_dir)."""
     skills: dict[str, Skill] = {}
 
-    _scan_dir(paths.builtin_skills_dir(), builtin=True, into=skills)
-    _scan_dir(paths.global_skills_dir(), builtin=False, into=skills)
+    _scan_dir(paths.builtin_skills_dir(), builtin=True, into=skills, include_body=include_body)
+    _scan_dir(paths.global_skills_dir(), builtin=False, into=skills, include_body=include_body)
     if project_slug:
-        _scan_dir(paths.project_skills_dir(project_slug), builtin=False, into=skills)
+        _scan_dir(paths.project_skills_dir(project_slug), builtin=False, into=skills, include_body=include_body)
 
     return list(skills.values())
+
+
+def session_access_roots(context: dict) -> tuple[str, ...]:
+    """Existing session grants only; skill_paths never grant filesystem access."""
+    roots = [d["path"] for d in context.get("context_dirs", [])
+             if d.get("path") and not d.get("missing")]
+    if context.get("workspace"):
+        roots.append(context["workspace"])
+    return tuple(roots)
+
+
+def validate_skill_paths(values: list[str], access_roots: tuple[str, ...] = ()) -> list[str]:
+    """Canonicalize explicit directories using the file tools' permission fence."""
+    from ..tools.builtin import _DenyPolicy
+
+    if len(values) > 20:
+        raise ValueError("skill_paths accepts at most 20 directories")
+    result = []
+    for raw in values:
+        p = Path(raw).expanduser()
+        if not raw.strip() or not p.is_absolute():
+            raise ValueError("skill_paths entries must be absolute directories")
+        try:
+            p = p.resolve(strict=True)
+            if not p.is_dir():
+                raise ValueError("skill_paths entries must be directories")
+            if _DenyPolicy(None, [Path(r) for r in access_roots]).denied(p):
+                raise ValueError("skill_paths entry is protected")
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("skill_paths entry cannot be resolved") from exc
+        if str(p) not in result:
+            result.append(str(p))
+    return result
 
 
 @dataclass
 class SkillLoader:
     project_slug: str | None = None
+    extra_dirs: tuple[str, ...] = ()
+    access_roots: tuple[str, ...] = ()
 
-    def load(self) -> list[Skill]:
-        return load_all_skills(self.project_slug)
+    def load(self, *, include_body: bool = True) -> list[Skill]:
+        from ..tools.builtin import _DenyPolicy
+
+        skills = {s.name: s for s in load_all_skills(self.project_slug, include_body=include_body)}
+        builtins = {}
+        _scan_dir(paths.builtin_skills_dir(), builtin=True, into=builtins, include_body=False)
+        for raw in self.extra_dirs:
+            try:
+                root = Path(validate_skill_paths([raw], self.access_roots)[0])
+                candidates = [root / "SKILL.md"] if (root / "SKILL.md").exists() else sorted(root.glob("*/SKILL.md"))
+                for candidate in candidates:
+                    real = candidate.resolve(strict=True)
+                    # Never follow a package's link outside the explicitly selected tree.
+                    if not real.is_relative_to(root) or _DenyPolicy(None, [Path(r) for r in self.access_roots]).denied(real):
+                        continue
+                    skill = _parse_skill_file(real, include_body=include_body)
+                    if skill is None:
+                        continue
+                    builtin = builtins.get(skill.name)
+                    if builtin is not None and not skill.allowed_tools:
+                        skill.allowed_tools = list(builtin.allowed_tools)
+                        skill.sticky = skill.sticky or builtin.sticky
+                    skills[skill.name] = skill
+            except (OSError, RuntimeError, ValueError, yaml.YAMLError):
+                # Revalidate on every index/use, including after restore or link changes.
+                continue
+        return list(skills.values())
 
     def build_index_prompt(self) -> str:
-        skills = self.load()
+        skills = self.load(include_body=False)
         if not skills:
             return ""
         lines = [
@@ -176,7 +249,10 @@ class SkillLoader:
         return "\n".join(lines)
 
     def get(self, name: str) -> Skill | None:
-        for s in self.load():
-            if s.name == name:
-                return s
-        return None
+        skill = next((s for s in self.load(include_body=False) if s.name == name), None)
+        if skill is not None and skill.path is not None:
+            parsed = _parse_skill_file(skill.path, builtin=skill.builtin)
+            if parsed is None:
+                return None
+            skill.body = parsed.body
+        return skill

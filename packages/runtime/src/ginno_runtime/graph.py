@@ -142,9 +142,13 @@ def _skill_extra_allow(state: dict | None) -> list[str]:
     # connectors_deny still outranks all of this (tool_allowed checks it
     # BEFORE extra_allow).
     slug = (state or {}).get("project_slug") or None
-    from .skills.loader import SkillLoader
+    from .skills.loader import SkillLoader, session_access_roots
 
-    loader = SkillLoader(project_slug=slug)
+    loader = SkillLoader(
+        project_slug=slug,
+        extra_dirs=tuple((state or {}).get("skill_dirs") or []),
+        access_roots=session_access_roots(state or {}),
+    )
     extra: list[str] = []
     seen: set[str] = set()
     for name in names:
@@ -314,6 +318,7 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
                 primary_path=state.get("primary_path", "") or "",
                 extra_allow=extra,
                 tool_policy=state.get("tool_policy") or {},
+                skill_dirs=state.get("skill_dirs") or [],
             ),
             model,
         )
@@ -822,6 +827,7 @@ def build_all_tools(
     primary_path: str | None = None,
     subagent_depth: int | None = None,
     restrict_tools: list[str] | None = None,
+    skill_dirs: list[str] | None = None,
 ) -> list:
     """The union toolset shared by the main chat graph and the workflow engine.
 
@@ -886,7 +892,9 @@ def build_all_tools(
             primary_path=primary_path,
             session_id=session_id,
         )
-        + build_skill_tools(project_slug, session_id, primary_path)
+        + build_skill_tools(project_slug, session_id, primary_path,
+                            skill_dirs=skill_dirs,
+                            skill_access_roots=tuple([d["path"] for d in (context_dirs or []) if d.get("path") and not d.get("missing")] + ([workspace] if workspace else [])))
         # Code Mode repl（code-mode-design.md，原型 opt-in env GINNO_CODE_MODE=1）：
         # 默认 [] 不影响生产；启用后 agent 可一步编排多工具、return-only。
         + build_code_mode_tools(workspace, context_dirs=context_dirs, primary_path=primary_path)
@@ -1088,9 +1096,13 @@ def _tools_node_factory(all_tools):
             # gated in tool_allowed) stays bound for the rest of the session
             # after ONE activation. The channel is APPEND-only (operator.add),
             # so the reducer accumulates; send just the new names.
-            from .skills.loader import SkillLoader as _Loader
+            from .skills.loader import SkillLoader as _Loader, session_access_roots
 
-            loader = _Loader(project_slug=state.get("project_slug") or None)
+            loader = _Loader(
+                project_slug=state.get("project_slug") or None,
+                extra_dirs=tuple(state.get("skill_dirs") or []),
+                access_roots=session_access_roots(state),
+            )
             sticky_now = [n for n in activated if (sk := loader.get(n)) and sk.sticky]
             if sticky_now:
                 update["sticky_skills"] = sticky_now

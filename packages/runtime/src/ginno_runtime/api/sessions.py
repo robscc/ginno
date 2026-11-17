@@ -90,6 +90,10 @@ class CreateSessionRequest(BaseModel):
     # session starts with these attached. Unknown ids are dropped silently.
     context_folders: list[str] = []
     primary_folder: str | None = None
+    # Session-scoped skill dirs (skill-paths design): SKILL.md roots beyond
+    # the three fixed discovery tiers. Validated at creation (absolute dir);
+    # Invalid entries fail with HTTP 422; no implicit filesystem grants.
+    skill_paths: list[str] = []
     # Bound workflow for workflow-dev refine sessions (docs/workflow-dsl-design.md
     # §8.3). Injected into every turn's [turn context] as the current DSL.
     workflow_id: str | None = None
@@ -110,6 +114,15 @@ class CreateSessionRequest(BaseModel):
     # None/"auto" = 跟随 provider 配置(现状行为)。解析链:req > agent 默认
     # > auto(见 _resolve_thinking_effort)。
     thinking_effort: str | None = None
+
+
+def _validate_skill_paths(paths: list[str], context: dict | None = None) -> list[str]:
+    from ..skills.loader import session_access_roots, validate_skill_paths
+
+    try:
+        return validate_skill_paths(paths, session_access_roots(context or {}))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | None]:
@@ -712,6 +725,11 @@ async def create_session(req: CreateSessionRequest) -> dict:
     folder_ids = [fid for fid in (req.context_folders or []) if cf.get_folder(fid)]
     primary_id = req.primary_folder if req.primary_folder in folder_ids else None
     context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
+    # skill-paths design: validate BEFORE build_all_tools so use_skill binds
+    # the same dirs the WS layer will re-serve from meta["skill_dirs"].
+    skill_dirs = _validate_skill_paths(
+        req.skill_paths, {"workspace": workspace, "context_dirs": context_dirs}
+    )
     for d in context_dirs:
         if not d.get("missing"):
             cf.touch_folder(d["id"])
@@ -724,6 +742,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         primary_path=primary_path,
         subagent_depth=sub_depth,
         restrict_tools=req.restrict_tools,
+        skill_dirs=skill_dirs,
     )
     router, tool_selector = build_middlewares(session_id)
     graph = build_graph(
@@ -770,6 +789,12 @@ async def create_session(req: CreateSessionRequest) -> dict:
     meta["type"] = req.type or "main"
     if _tp_src:
         meta["tool_policy"] = _tp_src["tool_policy"]
+    # skill-paths design: session-scoped skill dirs → meta["skill_dirs"]
+    # (the WS turn layer reads this key to build AgentState.skill_dirs and
+    # the WorldState skills index). Validation happened above build_all_tools
+    # so the use_skill tool binds the same dirs.
+    if skill_dirs:
+        meta["skill_dirs"] = skill_dirs
     if req.channel:
         meta["channel"] = req.channel
     if is_team_member:
@@ -822,6 +847,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "mcp_tool_names": [t.name for t in mcp_tools],
         # Context folder mounts (context-folders-design.md)
         "context_dirs": context_dirs,
+        # Session-scoped skill dirs (skill-paths design) — mirrors meta so the
+        # WS turn layer can build AgentState.skill_dirs / skills index.
+        "skill_dirs": skill_dirs,
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
@@ -1755,6 +1783,7 @@ def _apply_context_to_live_session(
         subagent_depth=s.get("depth") if s.get("type") == "subagent" else None,
         # And the type-registry tightening (P3 contract 1).
         restrict_tools=s.get("restrict_tools") or [],
+        skill_dirs=s.get("skill_dirs") or [],
     )
     router, tool_selector = build_middlewares(s.get("session_id", ""))
     s["graph"] = build_graph(
@@ -1974,6 +2003,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         primary_path=primary_path,
         subagent_depth=sub_depth,
         restrict_tools=restrict_tools,
+        # skill-paths design: restart rebuild restores session skill dirs.
+        skill_dirs=meta.get("skill_dirs") or [],
     )
     router, tool_selector = build_middlewares(session_id)
     graph = build_graph(
@@ -2015,6 +2046,9 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "channel": meta.get("channel"),
         # Tool policy 随会话恢复（meta 真源 → 运行时 dict，供 turn 刷新/rebind 用）
         "tool_policy": meta.get("tool_policy"),
+        # skill-paths design: restart rebuild must re-serve skill_dirs so the
+        # turn layer keeps injecting AgentState.skill_dirs / skills index.
+        "skill_dirs": meta.get("skill_dirs") or [],
     }
     if sub_depth is not None:
         s["type"] = "subagent"

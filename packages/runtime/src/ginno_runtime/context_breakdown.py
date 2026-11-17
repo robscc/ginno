@@ -96,6 +96,7 @@ def build(session_id: str, session: dict | None) -> dict:
             project_slug=str(info.get("project_slug") or "default"),
             session_id=session_id,
             context_dirs=list(info.get("context_dirs") or []),
+            skill_dirs=list(info.get("skill_dirs") or []),
             primary_path=str(info.get("primary_path") or ""),
             subagent_depth=info.get("depth") if info.get("type") == "subagent" else None,
             restrict_tools=list(info.get("restrict_tools") or []),
@@ -158,6 +159,7 @@ def build(session_id: str, session: dict | None) -> dict:
             agent=_agent_by_id(info.get("agent_id")),
             workspace=str(info.get("workspace") or ""),
             context_dirs=list(info.get("context_dirs") or []),
+            skill_dirs=list(info.get("skill_dirs") or []),
             primary_path=str(info.get("primary_path") or ""),
             tool_policy=info,
         )
@@ -189,6 +191,7 @@ def build(session_id: str, session: dict | None) -> dict:
             session_id=session_id,
             workspace=str(info.get("workspace") or ""),
             context_dirs=list(info.get("context_dirs") or []),
+            skill_dirs=list(info.get("skill_dirs") or []),
             primary_path=str(info.get("primary_path") or ""),
             tool_policy=info,
         )
