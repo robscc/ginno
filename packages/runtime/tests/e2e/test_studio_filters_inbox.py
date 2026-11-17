@@ -89,7 +89,10 @@ class _SlowScripted(ScriptedChatModel):
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         await asyncio.sleep(self.delay)
-        return super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        # await 不可省：漏掉时本方法把协程对象当 ChatResult 返回，langchain-core
+        # _agenerate_with_cache 取 result.generations 即炸 AttributeError →
+        # run failed。是否炸取决于 pause 是否赶在首个节点模型调用前落位（竞态）。
+        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
         await asyncio.sleep(self.delay)
