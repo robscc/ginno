@@ -7,7 +7,84 @@ versions.
 
 ## [Unreleased]
 
-（暂无）
+## [0.4.0] - 2026-11-17
+
+65 commits since 0.3.3（~20 feat / ~32 fix / 3 test / 3 perf / 2 docs）。
+主题：A2A 双向协作与远端会话（本次最大块）、上下文压缩体验重构、
+session 收件箱语义、运行时性能治理。
+
+### A2A 连接器 + ginno node（外部 Agent 双向协作）
+
+**能力**
+- **A2A 连接器 P0**：双向外部 Agent 协作——能力地址接入 + 独立入站 listener
+- **ginno node headless**：trust/caps/exec_root 执行侧强制 + 入站执行层
+  + 自环互通 + peer_offline
+- **SSE 进度流**：派活不再只有一个 WORKING 干等；Card 广告 streaming
+- **input-required 远程批准闭环**：headless 节点不再永久挂起（reference_task_ids resume）
+- **ginno tunnel**：SSH 隧道守护，不再手敲手接
+- **文本产物回传**：修「能干活却看不到成果」
+- **远端会话 R1/R2/R3**：turn 可在 A2A peer 上执行 / 远端 peer 当子
+  agent / 新建对话可选远端节点执行方
+- 入站权限放行面按 trust 派生
+
+**安全**
+- 入站 shell/repl/bg_run 全部走 bwrap 沙箱——闭合三个逃逸口
+- 外部派活入站一律拒
+- 渠道会话 readonly 在 API 层强制——堵 WS invoke/steer/投递绕过
+- providers api_key 支持 `env:VAR` 引用——密钥不必落进可读的 settings
+
+**修复**
+- A2A 远端 turn 五项（键名崩溃 / notice 字段 / 续答带 referenceTaskIds /
+  影子 contexts / httpx 泄漏与超时不取消）
+- 远端会话每轮必崩（ContextMap.get_or_none 误传两参）
+- SSE 终态帧去重 + 掩码地址不再显示空 #fp
+
+### 上下文压缩体验（预警口径 + 过程硬化）
+
+- **预警口径统一绑定压缩阈值**：圆环/建议卡此前按窗口固定百分比
+  （70%/90%）设计，大窗口模型（1M）上阈值只占窗口 50%——预警永远晚于
+  触发（倒挂）；现在 `usage.context` 带 threshold/compact_pct，圆环变色
+  + 刻度线 + tooltip 三口径，建议卡 0.85×阈值且 turn 运行中可见
+- **压缩期间可输入**：发送经 steer 队列在压缩后注入（此前 readOnly 干等）
+- **过程硬化**：摘要 30s 进度心跳（有预估时时间轴 pct）+ 无预估
+  ease-out 缓动；microcompact 历史重放痕迹行（后台清理重载可感知）；
+  断线重连保住「压缩中」状态（turn.state 探针 + _COMPACTING 注册表）
+- ContextRing 淡色底座（同色系 8% 实心 + 22% track，随语义档变色）
+
+### Session 收件箱与侧栏
+
+- **标为未读 + 右键上下文菜单**：forced_unread 服务端语义（打开即清），
+  右键菜单与扇形菜单动作单源（useRowActions），紫点/Dock/notice 全链
+  联动；修标未读后点开不变已读（乐观态漏清）
+- running 会话左边缘条改流动彩虹
+- 会话切换渲染提速（highlight 延迟 idle + files 请求去重）
+
+### 可靠性与性能
+
+- **lastwords 恢复决策卡**：重启/热切换弹恢复/忽略卡 + 拉取式兜底修
+  广播丢帧；收 interrupted 后台任务 + 人工会话任意 reason 挂起待确认
+- **记忆自动审批（无人值守）**：夜间蒸馏草稿自动应用 + 备份/安全闸
+- **worker digest 超上限改文件传递**：不截断 + 完整展示 + 跨会话可读
+- **内存基线治理**：tuple 缓存字节预算 / 会话 LRU / 线程右 sizing 修复
+  （anyio 4.x API 路径错）/ RUN_CACHE 加帽
+- **空闲态 CPU 治理**：终态鸭静态化 / 隐藏 pill 条件渲染 / 停表与 bailout
+- 线程池 sizing 真正生效；正文被工具行拦腰切断（合帧缓冲漏 flush）；
+  工具结果错位与「执行命令中」卡死（tool.end 丢配对 id）
+- bg_run 不再返回 raw log path（agent 拿去 read_file 撞 home deny）
+- goal 生命周期收尾：complete 自动归档 + 运行中设 goal 自动 steer
+
+### 平台与工程
+
+- **版本号单一真源修复**：_version.py 从未被 bump，7 处自报 0.1.0
+  （实际 0.3.3）——/api/health、A2A Agent Card、UA 网关识别全错；
+  现统一 import `_version.__version__`，CI 钉一致性
+- **web lib 补测两批**：26 文件 933 用例，覆盖率 4.91%→69.29% + 门禁上调
+- ui-e2e 闸门修复 + macos-14 退役 → macos-15
+- 设置页加字体族 + 三档字号
+- web_search 一键修复：诊断面板自动安装 SearXNG 替代脆弱 DDG
+- PlanBoard 依赖图视图（Workflow 同构横向 DAG）
+- team 回帖不再截断 / 协作广场空回复 / live 气泡尾部状态与统计语义修复
+- dev-swap 确认框永不出现修复；studio inbox flaky 修复
 
 ## [0.3.3] - 2026-11-15
 
