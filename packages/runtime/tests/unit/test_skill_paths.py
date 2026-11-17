@@ -125,6 +125,22 @@ def test_raw_user_message_not_expanded(tmp_path):
         assert plan.text == text and "PRIVATE BODY" not in plan.text
 
 
+def test_static_slash_still_substitutes_in_skill_dirs_session(tmp_path, monkeypatch):
+    """skill_dirs 会话中，静态层技能的斜杠展开不被静默禁用（review M1）。"""
+    builtin = tmp_path / "builtin"
+    skill(builtin, name="slashdemo", body="# Builtin demo")
+    monkeypatch.setattr(paths, "builtin_skills_dir", lambda: builtin)
+    d = skill(tmp_path / "sess")
+    plan = resolve_turn({"message": "/slashdemo tail args"},
+                        {"project_slug": "default", "skill_dirs": [str(d)]})
+    assert plan.text.startswith('<skill name="slashdemo">') and "# Builtin demo" in plan.text
+    assert "tail args" in plan.text and plan.skill_name == "slashdemo"
+    # 会话级技能仍不做斜杠展开，原文保留。
+    raw = resolve_turn({"message": "/local-demo x"},
+                       {"project_slug": "default", "skill_dirs": [str(d)]})
+    assert raw.text == "/local-demo x" and "PRIVATE BODY" not in raw.text
+
+
 def test_create_restore_and_two_sessions(client, patch_build_model, tmp_path):
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script
     patch_build_model(ScriptedChatModel(scripts=[script(text="ok")]))
