@@ -60,14 +60,14 @@ describe("clampSkip — 首帧保底与残留夹紧", () => {
     expect(clampSkip(0, 80)).toBe(0);
   });
 
-  it("旧会话残留 skip ≥ 新窗口长度 → 仍保底尾部 4 条", () => {
+  it("旧会话残留 skip ≥ 新窗口长度 → 仍保底尾部 2 条", () => {
     expect(clampSkip(184, 75)).toBe(75 - SLICE_MIN_RENDERED);
     expect(clampSkip(80, 80)).toBe(80 - SLICE_MIN_RENDERED);
   });
 
   it("小窗口（≤ 保底条数）全量渲染", () => {
-    expect(clampSkip(10, 3)).toBe(0);
-    expect(clampSkip(4, 4)).toBe(0);
+    expect(clampSkip(10, 2)).toBe(0);
+    expect(clampSkip(2, 2)).toBe(0);
     expect(clampSkip(0, 0)).toBe(0);
   });
 });
