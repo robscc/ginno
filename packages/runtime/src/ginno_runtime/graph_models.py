@@ -76,46 +76,6 @@ def _is_stream_chunk_timeout(exc: Exception) -> bool:
     )
 
 
-def _llm_call_meta(bound, msgs) -> dict:
-    """T3 请求级可观测：一次 LLM 调用的元数据（model/provider/messages_count）。
-
-    只读模型实例属性与消息**计数**，绝不读消息正文（prompt/密钥不进事件）。
-    任何异常吞掉返回 {}——可观测性绝不影响主 turn。bound 可能是 bind_tools
-    后的 RunnableBinding，真实模型在 ``.bound`` 上（与 _is_anthropic_model
-    同一解包口径）。
-    """
-    try:
-        target = getattr(bound, "bound", bound)
-        model = getattr(target, "model_name", None) or getattr(target, "model", None) or ""
-        provider = (type(target).__module__ or "").split(".")[0]
-        if provider.startswith("langchain_"):
-            provider = provider[len("langchain_"):]
-        count = len(msgs) if isinstance(msgs, (list, tuple)) else 0
-        return {"model": str(model), "provider": provider, "messages_count": count}
-    except Exception:  # noqa: BLE001 — 元数据拿不到就留空，绝不抛
-        return {}
-
-
-def _llm_usage_of(result) -> dict | None:
-    """T3 请求级可观测：从 AIMessage.usage_metadata 提取本次请求 token 用量。
-
-    复用 usage.extract_usage 的规范化口径（input_tokens 为全量 prompt，含
-    cache 部分），另补 total_tokens = input + output。拿不到（非消息对象/
-    provider 未上报/提取异常）返回 None——事件里省略 usage 字段。
-    """
-    try:
-        from .usage import extract_usage
-
-        u = extract_usage(result)
-        if not u:
-            return None
-        out = dict(u)
-        out["total_tokens"] = int(out.get("input_tokens") or 0) + int(out.get("output_tokens") or 0)
-        return out
-    except Exception:  # noqa: BLE001 — 用量拿不到就留空，绝不抛
-        return None
-
-
 def _is_anthropic_model(model) -> bool:
     """Detect ChatAnthropic without a hard import (works on bound models too)."""
     target = getattr(model, "bound", model)  # RunnableBinding from bind_tools

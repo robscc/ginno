@@ -33,7 +33,7 @@ from ... import server_shared as shared
 from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
-from ...graph import BLOCK_PREFIX, _LLM_EVENT_FIELDS
+from ...graph import BLOCK_PREFIX
 from ...knowledge import citations as cit
 from ...lang import t
 from ...server_shared import (
@@ -745,16 +745,6 @@ async def _stream_graph(
                             },
                         )
                     )
-                # T3 — LLM 请求级可观测：graph._ainvoke_rate_limited 经 custom
-                # 总线发来的元数据帧，在这里翻译成 llm.request / llm.response
-                # 走 emit/safe_send 下发（远端节点经事件汇自动拿到）。字段过
-                # 白名单——第二道防线，确保 prompt 正文/密钥到不了前端。
-                if isinstance(payload, dict) and payload.get("ginno_llm_event"):
-                    le = payload["ginno_llm_event"]
-                    if isinstance(le, dict) and le.get("kind") in ("request", "response"):
-                        _le_data = {k: le[k] for k in _LLM_EVENT_FIELDS if k in le}
-                        await _coal.flush()  # 保序：llm 事件不插队到缓冲文本前
-                        await safe_send(emit(f"llm.{le['kind']}", _le_data))
                 continue
             elif mode == "updates":
                 # 合帧保序：updates 携带 tool.start/end、permission.request 等
