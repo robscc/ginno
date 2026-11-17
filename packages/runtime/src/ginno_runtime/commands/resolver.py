@@ -382,10 +382,9 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
     )
 
     # 3) Skill substitution on the raw text (tokens in the tail survive).
-    if session.get("skill_dirs"):
-        new_text, skill_name = text, None
-    else:
-        new_text, skill_name = substitute_skill(text, slug)
+    # substitute_skill 的 loader 只扫 builtin/global/project 三层静态目录，
+    # 会话级技能不参与斜杠展开——用户原文保留，经 use_skill 按需加载。
+    new_text, skill_name = substitute_skill(text, slug)
 
     # 4) Assemble the plan.
     plan = TurnPlan(text=new_text, agent_override=agent_override, skill_name=skill_name)
