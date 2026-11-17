@@ -43,3 +43,29 @@ export function isWaitingNextRound(
     tail.kind === "steer"
   );
 }
+
+/**
+ * live 气泡尾部活性行是否可见（streamCards 的 lineVisible 判据，抽纯函数供
+ * node 测试）。dev-swap 进度行只门控到**发起会话** dsOwn——绝不能传全局
+ * dsActive：否则任意会话在跑 dev-swap 时，所有其他 streaming 气泡（子代理/
+ * 并行会话）都被强制点亮尾部行，而文案只在 dsOwn 时取进度、其余回退成
+ * 「等待下一轮」，正在思考/执行命令的气泡也顶着「等待下一轮」骗人
+ * （用户反馈 2026-11-17，与 §4.5「其他会话不打扰」sid 门控意图一致）。
+ */
+export function tailLineVisible(opts: {
+  streaming: boolean | undefined;
+  connLost: boolean;
+  waitingNextRound: boolean;
+  hasStatusOverride: boolean;
+  dsOwn: boolean;
+  dsTail: boolean;
+}): boolean {
+  return (
+    (!!opts.streaming &&
+      (opts.connLost ||
+        opts.waitingNextRound ||
+        opts.hasStatusOverride ||
+        opts.dsOwn)) ||
+    opts.dsTail
+  );
+}

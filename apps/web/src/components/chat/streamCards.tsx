@@ -11,7 +11,7 @@ import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { InnerBlocks, RefBlocks, subagentStatusMeta, SubagentKindBadges, useStatusLabel, type Block } from "@/components/chat/blocks";
-import { innerTail, isWaitingNextRound } from "./waitState";
+import { innerTail, isWaitingNextRound, tailLineVisible } from "./waitState";
 import { useDevSwapProgress } from "@/lib/useDevSwapProgress";
 import { expectationFor, waitLineData, fmtClock } from "@/lib/devswap/stats";
 import { copyText } from "./copyText";
@@ -409,8 +409,19 @@ const dsLine = useMemo(() => {
 // 壳重启断 WS 属预期流程，此行不让位给断线文案。
 const dsTail = dsOwn && !!isTail && !!dsLine;
 const dsLabelOn = dsTail || (dsOwn && !connLost && streaming);
-const lineVisible =
-  (streaming && (connLost || waitingNextRound || !!statusOverride || dsActive)) || dsTail;
+// dev-swap 进度行只门控到**发起会话**（dsOwn），不能用全局 dsActive：
+// 否则任意会话在跑 dev-swap 时，所有其他 streaming 气泡（子代理/并行会话）
+// 都被强制点亮尾部行，而文案只在 dsOwn 时取 dev-swap 进度、其余回退成
+// 「等待下一轮」——正在思考/执行命令的气泡也顶着「等待下一轮」骗人
+// （用户反馈 2026-11-17，与 §4.5「其他会话不打扰」sid 门控意图一致）。
+const lineVisible = tailLineVisible({
+  streaming,
+  connLost,
+  waitingNextRound,
+  hasStatusOverride: !!statusOverride,
+  dsOwn,
+  dsTail,
+});
 // 优先级：进度行（dsOwn）> 连接中断 > 瞬态覆盖 > 泛化等待。
 const tailLabel = dsLabelOn ? (dsLine?.text ?? waitText) : waitText;
 const tailAmber = dsLabelOn && !!dsLine?.slow;
