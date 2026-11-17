@@ -36,7 +36,7 @@ from . import paths
 from .agents.memory import read_agent_memory
 from .lang import current_locale, t
 from .permission.policy import PermissionPolicy, is_bypass_permissions
-from .skills.loader import SkillLoader
+from .skills.loader import SkillLoader, session_access_roots
 
 # Message markers — the UI history endpoint maps these to "context" blocks and
 # the model sees them as contextual user messages (Codex-style bundles).
@@ -295,6 +295,9 @@ class SessionCtx:
     # with F1/F2 until the 2026-08 skill-install incident proved the model
     # cannot improvise file operations without knowing where it is.
     workspace: str = ""
+    # Session-scoped skill dirs (skill-paths design): feeds the skills
+    # section's index so session-passed SKILL.md roots are discoverable.
+    skill_dirs: list[str] = field(default_factory=list)
     # Mounted context folders (docs/context-folders-design.md): serializable
     # dicts {id, path, name, access, load_rules, missing}. Constant within a
     # mount set — mount changes rebuild the graph, so prefix stability holds.
@@ -743,7 +746,9 @@ class SkillsSection:
     def snapshot(self, ctx: SessionCtx) -> dict | None:
         from .graph import tool_allowed  # local import: avoid cycle
 
-        skills = SkillLoader(project_slug=ctx.project_slug).load()
+        skills = SkillLoader(project_slug=ctx.project_slug,
+                             extra_dirs=tuple(ctx.skill_dirs or []),
+                             access_roots=session_access_roots({"workspace": ctx.workspace, "context_dirs": ctx.context_dirs})).load(include_body=False)
         if not _browser_tools_enabled():
             # The builtin browser skill is the lazy-activation surface for the
             # browser_* toolset; with browser disabled in settings the tools

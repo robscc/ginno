@@ -336,6 +336,18 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
 
     # 1) Built-in commands short-circuit (no agent resolution, no persistence).
     cmd = parse_slash(text, slug)
+    # Session skill invocations keep the original user text. The model loads
+    # instructions through use_skill; never persist a skill body as user input.
+    if session.get("skill_dirs"):
+        from ..skills.loader import session_access_roots
+
+        match = _SLASH_RE.match(text)
+        selected = SkillLoader(
+            project_slug=slug, extra_dirs=tuple(session["skill_dirs"]),
+            access_roots=session_access_roots(session),
+        ).get(match.group(1)) if match else None
+        if selected and selected.user_invocable() and selected.name not in BUILTINS:
+            cmd = (selected.name, (match.group(2) or "").strip())
     if cmd and cmd[0] in BUILTINS:
         name, tail = cmd
         _log.info("builtin_cmd name=%s slug=%s", name, slug)
@@ -370,7 +382,10 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
     )
 
     # 3) Skill substitution on the raw text (tokens in the tail survive).
-    new_text, skill_name = substitute_skill(text, slug)
+    if session.get("skill_dirs"):
+        new_text, skill_name = text, None
+    else:
+        new_text, skill_name = substitute_skill(text, slug)
 
     # 4) Assemble the plan.
     plan = TurnPlan(text=new_text, agent_override=agent_override, skill_name=skill_name)

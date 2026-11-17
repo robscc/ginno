@@ -84,6 +84,7 @@ def build_stable_system(
     primary_path: str = "",
     extra_allow: list[str] | None = None,
     tool_policy: dict | None = None,
+    skill_dirs: list[str] | None = None,
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -119,6 +120,7 @@ def build_stable_system(
         agent=agent,
         workspace=workspace,
         context_dirs=list(context_dirs or []),
+        skill_dirs=list(skill_dirs or []),
         primary_path=primary_path or "",
         tool_policy=dict(tool_policy or {}),
     )

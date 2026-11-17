@@ -37,6 +37,11 @@ class AgentState(TypedDict):
     # a mid-session MCP reload can be detected and announced (plan A7). Set by
     # the WS layer every invoke; persists across steps like other channels.
     mcp_tool_names: list[str]
+    # Session-scoped skill directories (skill-paths design): SKILL.md roots
+    # beyond the three fixed discovery tiers, passed at session creation
+    # (CreateSessionRequest.skill_paths). Last-value-wins per turn, refreshed
+    # from the session meta by the WS layer.
+    skill_dirs: list[str]
     # Mounted context folders (docs/context-folders-design.md): serializable
     # dicts {id, path, name, access, load_rules, missing}. Session-scoped and
     # stable across turns (mount changes rebuild the graph); feeds the
