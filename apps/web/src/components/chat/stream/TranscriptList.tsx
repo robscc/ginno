@@ -161,9 +161,9 @@ export function TranscriptList({
   // 窗口化之后，重会话首屏（~80 条 / ~1700 blocks）仍是一次性同步 React
   // mount——切换剩余 max longtask（实测 ~341ms）的主体。现在尾部先挂
   // （SLICE_INITIAL_BLOCKS 块预算，首帧即见最新消息），更旧的消息经
-  // requestIdleCallback 逐片向上 prepend（每片 ≤ SLICE_STEP_BLOCKS blocks），
-  // 片间让出主线程。范式同 Markdown.tsx 逐块 idle 高亮：rIC + setTimeout
-  // 兜底、卸载/会话切换取消。纯逻辑（预算切片/夹紧/重置判定）在
+  // setTimeout 逐片向上 prepend（每片 ≤ SLICE_STEP_BLOCKS blocks，~1 片/帧），
+  // 片间让出主线程。不用 rIC 的理由见下方推进 effect（idle 队列被逐块
+  // 高亮升级塞满会饿死分片）。纯逻辑（预算切片/夹紧/重置判定）在
   // lib/transcriptSlices.ts，vitest 覆盖。
   const blockCounts = useMemo(() => visible.map((m) => m.blocks.length), [visible]);
   const countsRef = useRef(blockCounts);
@@ -191,7 +191,7 @@ export function TranscriptList({
     if (i < 0) return;
     if (i < visibleOffset) {
       setHeadKeep(messages.length - i + 8); // +8：目标行上方的少量上下文
-      // 扩窗后目标位于窗口 idx 8：立即挂到目标行（不等 idle 片），锚点
+      // 扩窗后目标位于窗口 idx 8：立即挂到目标行（不等分片），锚点
       // 重试环下一帧自然命中。min：不收回已挂载的行。
       setHeadSkip((s) => Math.min(s, 8));
     } else {
@@ -220,18 +220,16 @@ export function TranscriptList({
     }
   });
 
-  // idle 逐片推进。deps 只用 skip（数值）：messages 引用随流式每帧翻新，
+  // 逐片推进。deps 只用 skip（数值）：messages 引用随流式每帧翻新，
   // 若进 deps 会不停取消重排 → 直播期间分片饿死；最新块数经 countsRef 读。
+  // 用 setTimeout 而非 rIC：Markdown 逐块 idle 高亮升级在 mount 期排入数千
+  // 个 rIC，idle 队列长期满员 → 分片回调只能等 timeout 兜底（实测 ~300ms/
+  // 片，全量挂载 10s+）。挂载是结构性进度，不能被 idle 队列饿死；宏任务
+  // 队列独立，~1 片/帧。goal 允许 rIC 或 setTimeout 切片，此处取后者。
   useEffect(() => {
     if (skip <= 0) return;
     let cancelled = false;
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-    const schedule =
-      w.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 32) as unknown as number);
-    const id = schedule(() => {
+    const id = setTimeout(() => {
       if (cancelled) return;
       const el = scrollRef?.current;
       if (el) {
@@ -245,10 +243,10 @@ export function TranscriptList({
         const cur = clampSkip(s, countsRef.current.length);
         return sliceStart(countsRef.current, cur, SLICE_STEP_BLOCKS);
       });
-    }, { timeout: 250 });
+    }, 16);
     return () => {
       cancelled = true;
-      w.cancelIdleCallback?.(id);
+      clearTimeout(id);
     };
   }, [skip, scrollRef, stickRef]);
 
@@ -277,14 +275,21 @@ export function TranscriptList({
   // re-centering across frames: ChatStream's session-switch effect pins the
   // transcript to the bottom for its first ~12 frames, which would otherwise
   // override a single scrollIntoView.
-  const anchorRef = useRef<{ id: string; until: number } | null>(null);
+  const anchorRef = useRef<{ id: string; until: number; sid: string | undefined } | null>(null);
   useEffect(() => {
+    // 锚点属于它被消费的那次会话入口：会话切换即清——否则 3s 重定位环会
+    // 在窗口期内的下次入口复活，重新扩窗并强制整挂（时间分片挂载后实测
+    // 会把 76 行一次性 mount，长任务 ~180ms；基线代码同 bug 表现为热切换
+    // 被拽回旧锚点、贴底断言失败）。放在 messages 守卫之前：切到空会话也要清。
+    if (anchorRef.current && anchorRef.current.sid !== session?.id) {
+      anchorRef.current = null;
+    }
     if (!messages.length) return;
     if (!anchorRef.current) {
       const id = consumeMessageTarget();
       // 3s：会话切换后历史可能异步拉取；期间 ChatStream 还会把转录钉到底部
       // ~12 帧，所以这里持续把目标行重新居中直到窗口结束。
-      if (id) anchorRef.current = { id, until: Date.now() + 3000 };
+      if (id) anchorRef.current = { id, until: Date.now() + 3000, sid: session?.id };
     }
     const anchor = anchorRef.current;
     if (!anchor) return;
@@ -314,6 +319,11 @@ export function TranscriptList({
   // Same-session message hit: the modal broadcasts this instead of a storage
   // hand-off (the session-switch effect does not re-run, so no messages change
   // would ever consume it). Retries a few frames in case the row just mounted.
+  // revealUpTo 经 ref 读最新闭包：本 effect 只挂一次（deps []），直接引用
+  // 会捕获首帧的 revealUpTo（那时 messages 还是空，findIndex 恒 -1）——
+  // 窗口外命中永远扩不了窗（2026-11-17 时间分片挂载时实锤修复）。
+  const revealRef = useRef(revealUpTo);
+  revealRef.current = revealUpTo;
   useEffect(() => {
     let raf = 0;
     const onScrollToMessage = (e: Event) => {
@@ -327,7 +337,7 @@ export function TranscriptList({
             flashMessageAnchor(el);
             return;
           }
-          revealUpTo(id); // 窗口外消息：扩窗后帧重试自然完成
+          revealRef.current(id); // 窗口外消息：扩窗后帧重试自然完成
         } catch {
           return;
         }
