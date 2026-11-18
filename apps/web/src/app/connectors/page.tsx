@@ -84,6 +84,17 @@ export default function ConnectorsPage() {
     }
   }, []);
 
+  // WS 事件 → refresh 节流（2026-11-18）：后端广播一旦异常密集（历史上
+  // report_meta 无条件广播曾造成 6s 652 次请求的自激风暴，打满浏览器
+  // 6 连接池 → 页面卡「正在加载」），前端自保护限 1 次/秒；轮询兜底不受影响。
+  const lastWsRefresh = useRef(0);
+  const throttledRefresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastWsRefresh.current < 1000) return;
+    lastWsRefresh.current = now;
+    void refresh();
+  }, [refresh]);
+
   useEffect(() => {
     void refresh();
     timer.current = setInterval(refresh, POLL_MS);
@@ -111,7 +122,7 @@ export default function ConnectorsPage() {
           setConnectors(snap.connectors?.connectors || []);
           setPushedPage(snap.latestPage || null);
         } else if (msg.type === "connector_status_changed") {
-          void refresh();
+          throttledRefresh();
         } else if (msg.type === "tool_progress") {
           setProgress({
             tool: String(msg.tool || ""),
@@ -122,7 +133,7 @@ export default function ConnectorsPage() {
             setTimeout(() => setProgress(null), 1500);
           }
         } else if (msg.type === "handoff_changed") {
-          void refresh();
+          throttledRefresh();
         } else if (msg.type === "page_pushed") {
           setPushedPage(msg as unknown as PushedPage);
         }
