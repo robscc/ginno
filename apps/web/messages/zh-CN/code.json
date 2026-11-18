@@ -12,7 +12,8 @@
       "reading": "读取中…",
       "emptyTitle": "从文件树打开一个文件开始查看",
       "emptyHint": "按 ⌘B 展开文件树",
-      "reloadFile": "刷新当前文件"
+      "reloadFile": "刷新当前文件",
+      "remoteNote": "{name} 执行此会话：文件写入对端节点的工作区，本地不落盘。此处仅显示本地挂载的文件夹。"
     },
     "notice": {
       "reloadDiscardConfirm": "未保存的修改将被丢弃。确定从磁盘重新加载？",

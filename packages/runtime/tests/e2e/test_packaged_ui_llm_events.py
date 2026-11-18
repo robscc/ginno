@@ -57,6 +57,12 @@ FAILED_TEXT = "失败"              # llm-call-failed
 REMOTE_TITLE_FRAG = "模型由远端节点"  # model-remote-title
 LOCAL_TITLE_FRAG = "切换本会话的模型"  # model.switchTitle
 MENU_FOOTNOTE_FRAG = "下一回合生效"   # model.footnote
+# 审计 C2（2026-11-18）：composer 守卫 + 面板归属说明
+REMOTE_ATTACH_FRAG = "远端会话暂不支持附件"  # composer.remoteAttachTitle
+REMOTE_SLASH_FRAG = "远端会话暂不支持 / 命令"  # composer.remoteSlashTitle
+MENU_ARIA_LABEL = "命令与提及补全"          # composer.menu.ariaLabel
+CODE_TAB_LABEL = "代码"                     # right.tabs.code
+REMOTE_FILES_FRAG = "对端节点"              # code.panel.remoteNote
 
 
 def _free_port() -> int:
@@ -341,3 +347,103 @@ def test_local_session_model_chip_still_works(app):
     page.get_by_text(MENU_FOOTNOTE_FRAG, exact=False).first.wait_for(
         state="visible", timeout=10_000
     )
+
+
+# ---- B3. 远端会话 composer 守卫：附件/slash 禁用 + 菜单 fail-closed -----------
+# （2026-11-18 远程特性审计 C2：remote turn 只转发 user_text，附件/@mention/
+# slash skill 到不了对端——入口禁用带原因；面板显示归属说明而非空列表。）
+
+
+def _open_remote_session(page, port, text: str = "hello remote composer guard") -> None:
+    chip = page.get_by_test_id(f"remote-peer-chip-{PEER_SLUG}")
+    chip.wait_for(state="visible", timeout=30_000)
+    chip.click()
+    _send_first_message(page, text)
+    _wait_session(port, lambda x: x.get("remote_peer") == PEER_SLUG)
+
+
+def test_remote_session_composer_entrypoints_disabled(app):
+    page, port = app
+    _open_remote_session(page, port)
+    page.get_by_test_id("remote-peer-badge").wait_for(state="visible", timeout=15_000)
+
+    # 附件按钮：禁用 + 原因 tooltip（远端会话暂不支持附件）
+    attach = page.get_by_test_id("composer-attach-remote")
+    attach.wait_for(state="visible", timeout=15_000)
+    assert attach.is_disabled(), "远端会话附件按钮必须禁用"
+    title = attach.get_attribute("title") or ""
+    assert REMOTE_ATTACH_FRAG in title, f"附件 tooltip 应说明远端不支持: {title!r}"
+
+    # slash 按钮：禁用 + 原因 tooltip
+    slash = page.get_by_test_id("composer-slash-remote")
+    slash.wait_for(state="visible", timeout=15_000)
+    assert slash.is_disabled(), "远端会话 slash 按钮必须禁用"
+    title = slash.get_attribute("title") or ""
+    assert REMOTE_SLASH_FRAG in title, f"slash tooltip 应说明远端不支持: {title!r}"
+
+    # 纯文本通道不受影响：textarea 可编辑
+    ta = page.locator("textarea").first
+    assert ta.is_editable(), "远端会话 textarea 必须保持可编辑（纯文本发送通道）"
+
+    # 手打 "/" 也不弹补全菜单（recomputeMenu fail-closed）
+    ta.fill("/")
+    page.wait_for_timeout(600)
+    assert page.get_by_role("listbox", name=MENU_ARIA_LABEL).count() == 0, (
+        "远端会话不应弹出 slash/@ 补全菜单"
+    )
+    ta.fill("@")
+    page.wait_for_timeout(600)
+    assert page.get_by_role("listbox", name=MENU_ARIA_LABEL).count() == 0, (
+        "远端会话打 @ 不应弹 mention 菜单"
+    )
+
+    # plans 面板：显示对端管理说明卡（而非静默空白）
+    note = page.get_by_test_id("plan-board-remote-note")
+    note.wait_for(state="visible", timeout=15_000)
+    assert PEER_NAME in note.inner_text(), (
+        f"plans 说明应带 peer 名: {note.inner_text()!r}"
+    )
+
+
+def test_remote_session_code_panel_shows_note(app):
+    page, port = app
+    _open_remote_session(page, port, "hello remote code panel note")
+    page.get_by_test_id("remote-peer-badge").wait_for(state="visible", timeout=15_000)
+
+    # 右栏切到「代码」tab（默认 tab 顺序里可见；面板保持可打开）
+    page.get_by_role("tab", name=CODE_TAB_LABEL, exact=False).first.click()
+    note = page.get_by_test_id("code-panel-remote-note")
+    note.wait_for(state="visible", timeout=15_000)
+    body = note.inner_text()
+    assert REMOTE_FILES_FRAG in body, f"文件面板说明应含「对端节点」语义: {body!r}"
+    assert PEER_NAME in body, f"文件面板说明应带 peer 名: {body!r}"
+    # 恒空的「会话工作区」根不再出现在根切换器（不渲染空列表；本地挂载保留）
+    page.wait_for_timeout(400)
+    assert page.get_by_text("Session workspace", exact=False).count() == 0, (
+        "远端会话不应显示恒空的会话工作区根"
+    )
+
+
+# ---- B4. 本地会话零回归：附件/slash 可用、菜单正常弹出 ------------------------
+
+
+def test_local_session_composer_entrypoints_still_work(app):
+    page, port = app
+    page.get_by_test_id(f"remote-peer-chip-{PEER_SLUG}").wait_for(
+        state="visible", timeout=30_000
+    )
+    _send_first_message(page, "hello local composer guard")
+    _wait_session(port, lambda x: True)
+
+    # 无远端定位点；附件/slash 按钮可点
+    assert page.get_by_test_id("composer-attach-remote").count() == 0
+    assert page.get_by_test_id("composer-slash-remote").count() == 0
+    ta = page.locator("textarea").first
+    ta.click()
+    ta.fill("/")
+    page.get_by_role("listbox", name=MENU_ARIA_LABEL).first.wait_for(
+        state="visible", timeout=10_000
+    )
+    # plans 面板：本地会话无说明卡（不渲染任何 remote 空态）
+    page.wait_for_timeout(600)
+    assert page.get_by_test_id("plan-board-remote-note").count() == 0

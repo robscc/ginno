@@ -8,6 +8,7 @@ import { loadToolLabels } from "@/lib/toolLabels";
 import * as api from "@/lib/runtime";
 import { getLinkedSessions } from "@/lib/api/sessions";
 import type { LinkedMentionEntry } from "@/components/chat/commandMenu";
+import { isRemoteSession } from "@/components/chat/remoteGuard";
 import { pushNotice } from "@/lib/notice";
 import { useTranslations } from "next-intl";
 import { agentHex } from "@/lib/theme";
@@ -707,6 +708,13 @@ export function ChatStream({
   // Re-evaluate whether the composer's current text+caret opens a menu. Called
   // on every input change and after programmatic edits (the "/" button).
   function recomputeMenu(text: string) {
+    // 远端会话（审计 C2 fail-closed）：remote turn 只转发 user_text，
+    // @mention / slash skill 到不了对端——菜单整体不弹（附件/slash 按钮
+    // 已在 Composer 禁用，这里兜住键盘打 @ 与手打 "/" 的路径）。
+    if (isRemoteSession(session)) {
+      setMenu(null);
+      return;
+    }
     const caret = textareaRef.current?.selectionStart ?? text.length;
     const trigger = detectTrigger(text, caret);
     if (!trigger) {
@@ -764,6 +772,10 @@ export function ChatStream({
     // P1-12：disabled（@ 投递的 blocked 成员）一律拒绝——鼠标侧已有守卫，
     // 但本函数也被键盘与程序化路径调用，入口再挡一次才是真禁选。
     if (item.disabled) return;
+    // 远端会话（审计 C2）：recomputeMenu 已 fail-closed，菜单理论上开不了；
+    // 这里再守一道（纵深防御，同 useModelPick 范式）——结构化 mention 在
+    // remote turn 只会被当纯文本丢弃，不让它进输入框。
+    if (isRemoteSession(session)) return;
     const caret = textareaRef.current?.selectionStart ?? input.length;
     const r = applySelection(input, caret, menu.trigger, item);
     let text = r.text;

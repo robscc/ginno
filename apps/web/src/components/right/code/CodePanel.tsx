@@ -39,9 +39,11 @@ import {
   Info,
   RotateCcw,
   Save,
+  Server,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
+import { isRemoteSession, remotePeerDisplayName } from "@/components/chat/remoteGuard";
 import {
   CodeApiError,
   CodeConflictError,
@@ -313,12 +315,31 @@ export function CodePanel() {
   readsRef.current = reads;
   const jumpNonceRef = useRef(0);
 
-  const effectiveRootId = codeRootId ?? roots[0]?.id ?? null;
+  // ---- 远端会话守卫（审计 C2）------------------------------------------------
+  // remote 会话的执行与文件落盘都在对端节点：本地「会话工作区」根恒空，
+  // 列出来只会读作「文件丢了」。处理 = 说明条（主 return 顶部）解释归属 +
+  // 根切换器隐藏 session 根（本地挂载的文件夹是真实本地目录，照常可浏览）。
+  const activeSessionMeta = useMemo(
+    () => g.sessions.find((s) => s.id === sessionId) ?? null,
+    [g.sessions, sessionId],
+  );
+  const remoteSession = isRemoteSession(activeSessionMeta);
+  const displayRoots = useMemo(
+    () => (remoteSession ? roots.filter((r) => r.id !== "session") : roots),
+    [remoteSession, roots],
+  );
+  // remote 且残留选中 session 根时回退到首个本地根——否则 FileTree 会对
+  // 一个（本地）不存在的根发请求。本地会话 displayRoots === roots，零变化。
+  const effectiveRootId = remoteSession
+    ? codeRootId && displayRoots.some((r) => r.id === codeRootId)
+      ? codeRootId
+      : (displayRoots[0]?.id ?? null)
+    : codeRootId ?? roots[0]?.id ?? null;
   /** The root object behind `effectiveRootId` — file ops need its absolute
    *  `path` (the Tauri commands and the clipboard take absolute paths). */
   const activeRoot = useMemo(
-    () => roots.find((r) => r.id === effectiveRootId) ?? null,
-    [roots, effectiveRootId],
+    () => displayRoots.find((r) => r.id === effectiveRootId) ?? null,
+    [displayRoots, effectiveRootId],
   );
   /** Absolute path of a root-relative entry in the ACTIVE root. */
   const absInActiveRoot = useCallback(
@@ -404,15 +425,16 @@ export function CodePanel() {
 
   // Pick a root once roots arrive (primary folder first is the server's order).
   useEffect(() => {
-    if (codeRootId || !roots.length) return;
+    if (codeRootId || !displayRoots.length) return;
     // Default to the SESSION WORKSPACE rather than `roots[0]`: the server orders
     // mounts first, so `roots[0]` is a mounted project folder when one exists —
     // but the session workspace always exists and is where the agent's own
     // output lands, so it is never an empty pane. A project folder is one click
-    // away in the switcher.
-    const preferred = roots.find((r) => r.id === "session") ?? roots[0];
+    // away in the switcher. (Remote sessions: the workspace root is filtered
+    // out of `displayRoots` above, so this falls through to the first mount.)
+    const preferred = displayRoots.find((r) => r.id === "session") ?? displayRoots[0];
     setCodeRootId(preferred.id);
-  }, [codeRootId, roots, setCodeRootId]);
+  }, [codeRootId, displayRoots, setCodeRootId]);
 
   // ---- layout auto-sizing ---------------------------------------------------
   useEffect(() => {
@@ -1177,7 +1199,7 @@ export function CodePanel() {
   const treeColumn = effectiveRootId ? (
     <>
       <RootBar
-        roots={roots}
+        roots={displayRoots}
         activeRootId={effectiveRootId}
         onSelectRoot={selectRoot}
         onRefresh={onRefresh}
@@ -1227,6 +1249,16 @@ export function CodePanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* 远端会话说明条（审计 C2）：文件在对端节点落盘，本地工作区恒空。 */}
+      {remoteSession && (
+        <div
+          data-testid="code-panel-remote-note"
+          className="flex shrink-0 items-start gap-1.5 border-b border-violet/25 bg-violet/[0.06] px-2.5 py-1.5 text-[11px] leading-relaxed text-violet"
+        >
+          <Server className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{t("panel.remoteNote", { name: remotePeerDisplayName(activeSessionMeta) })}</span>
+        </div>
+      )}
       {/* Top bar: breadcrumb + tree/layout toggles */}
       <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1">
         {treeVisible ? (

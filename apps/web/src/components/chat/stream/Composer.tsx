@@ -6,13 +6,14 @@
 
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useState } from "react";
-import { Boxes, Paperclip, Keyboard, ArrowUp, AlertCircle, Square, RotateCcw } from "lucide-react";
+import { Boxes, Paperclip, Keyboard, ArrowUp, AlertCircle, Server, Square, RotateCcw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import type { useGinno } from "@/lib/store";
 import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
 import { pruneMentions, mentionAtomicDeleteStart, nextEnabledIndex } from "@/components/chat/commandMenu";
+import { isRemoteSession } from "@/components/chat/remoteGuard";
 import type { MenuItem, ResolvedMention, Trigger } from "@/components/chat/commandMenu";
 import type { SessionMeta } from "@/lib/types";
 import {
@@ -124,6 +125,10 @@ export function Composer({
   const [policyOpen, setPolicyOpen] = useState(false);
   const ctp = useTranslations("composer.toolPolicy");
   const tc = useTranslations("chat");
+  // 远端会话（审计 C2）：remote turn 只转发 user_text，附件/@mention/slash
+  // skill 都到不了对端——入口全部禁用并说明原因（发送纯文本不受影响；
+  // 后端 fail-loud 由 C1 补）。范式同 ModelChipMenu：disabled + tooltip。
+  const remoteSession = isRemoteSession(session);
   const {
     pendingMounts, setPendingMounts, modelOpen, setModelOpen, pickModel,
     enabledProviders, targetAgent, homeEffective, homeModelSource, modelChipLabel,
@@ -143,6 +148,9 @@ export function Composer({
       onDrop={(e) => {
         e.preventDefault();
         setDragOver(false);
+        // 远端会话不收文件：拖入即静默丢弃只会读作「传了没反应」——这里
+        // 不调 addFiles，附件禁用的 tooltip（回形针按钮）解释原因。
+        if (remoteSession) return;
         void addFiles(e.dataTransfer.files);
       }}
       className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
@@ -224,6 +232,15 @@ export function Composer({
           <span>{tc("composer.subtaskSteerHint")}</span>
         </div>
       )}
+      {remoteSession && running && (
+        // 远端会话的运行中输入（审计 C2 顺带项）：remote turn 无本地
+        // superstep 边界，steer 队列不会在工具间隙注入——输入在本轮
+        // 结束后作为新消息送达远端节点。把语义标出来，避免「发了没反应」。
+        <div className="mb-1 flex items-center gap-1.5 px-0.5 text-[10px] text-faint">
+          <Server className="h-3 w-3 shrink-0 animate-pulse" aria-hidden />
+          <span>{tc("composer.remoteSteerHint")}</span>
+        </div>
+      )}
       {session && steerItems.length > 0 && (
         <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
       )}
@@ -247,6 +264,9 @@ export function Composer({
         }}
         onPaste={(e) => {
           if (e.clipboardData?.files?.length) {
+            // 远端会话：文件不入列（同 onDrop），且不 preventDefault——
+            // 剪贴板里的文本部分照常贴入，纯文本输入路径不受影响。
+            if (remoteSession) return;
             e.preventDefault();
             void addFiles(e.clipboardData.files);
           }
@@ -389,8 +409,14 @@ export function Composer({
           />
           <button
             onClick={() => fileRef.current?.click()}
-            className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
-            title={tc("composer.addAttachmentsTitle")}
+            disabled={remoteSession}
+            data-testid={remoteSession ? "composer-attach-remote" : undefined}
+            title={
+              remoteSession
+                ? tc("composer.remoteAttachTitle")
+                : tc("composer.addAttachmentsTitle")
+            }
+            className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-faint"
           >
             <Paperclip className="h-4 w-4" />
           </button>
@@ -413,9 +439,11 @@ export function Composer({
                 textareaRef.current?.focus();
               }
             }}
-            className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-            title={tc("composer.slashTitle")}
+            disabled={remoteSession}
+            data-testid={remoteSession ? "composer-slash-remote" : undefined}
+            title={remoteSession ? tc("composer.remoteSlashTitle") : tc("composer.slashTitle")}
             aria-label={tc("composer.slashAria")}
+            className="rounded-md p-1.5 hover:bg-card2 hover:text-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-faint"
           >
             <Keyboard className="h-4 w-4" />
           </button>

@@ -60,7 +60,10 @@
       "channelReadonly": "{channel} 会话 · 此处只读",
       "channelHint": "回复在聊天应用里进行；在此改的智能体/模型/挂载目录仍会生效",
       "channelGeneric": "渠道",
-      "compactingPlaceholder": "压缩中……输入内容将在压缩完成后注入本轮对话"
+      "compactingPlaceholder": "压缩中……输入内容将在压缩完成后注入本轮对话",
+      "remoteAttachTitle": "远端会话暂不支持附件——文件不会送达远端节点",
+      "remoteSlashTitle": "远端会话暂不支持 / 命令与 @ 提及",
+      "remoteSteerHint": "远端会话运行中 · 输入将在本轮结束后作为新消息送达远端节点"
     },
     "mods": {
       "promptBlocked": "本轮输入已被 mod 拦截。",
@@ -449,7 +452,8 @@
       "expand": "展开清单",
       "collapse": "折叠清单",
       "updateTitle": "清单状态更新",
-      "dismiss": "不再显示（出错未终态的清单会一并取消）"
+      "dismiss": "不再显示（出错未终态的清单会一并取消）",
+      "remoteNote": "此会话由远端节点 {name} 执行，计划在对端管理，本地不展示"
     },
     "team": {
       "replyBadge": "回帖",

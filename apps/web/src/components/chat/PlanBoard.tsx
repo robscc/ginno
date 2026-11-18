@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { ChevronDown, ChevronRight, ClipboardList, List, Loader2, Network, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import { isRemoteSession, remotePeerDisplayName } from "@/components/chat/remoteGuard";
 import { cancelSessionPlan, confirmSessionPlan } from "@/lib/runtime";
 import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
 import { SUBAGENT_STATUS_META } from "@/components/chat/blocks/types";
@@ -79,7 +80,28 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
         .sort((a, b) => (b.updated ?? b.created ?? 0) - (a.updated ?? a.created ?? 0)),
     [g.plansBySession, sessionId, dismissed],
   );
-  if (plans.length === 0) return null;
+  // 远端会话（审计 C2）：计划数据在本地 store 恒空（plan 工具在对端节点
+  // 跑，plan.updated 事件不会转发回来）——与其静默不渲染读作「计划丢了」，
+  // 不如一条归属说明卡讲清楚「由对端管理」。
+  const remoteSessionMeta = useMemo(
+    () => g.sessions.find((s) => s.id === sessionId) ?? null,
+    [g.sessions, sessionId],
+  );
+  const remotePeer = isRemoteSession(remoteSessionMeta) ? remoteSessionMeta?.remote_peer : null;
+  if (plans.length === 0) {
+    if (!remotePeer) return null;
+    return (
+      <div className="mx-auto mb-2 w-full max-w-3xl">
+        <div
+          data-testid="plan-board-remote-note"
+          className="flex items-center gap-1.5 rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2 text-xs text-violet"
+        >
+          <Network className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{t("planBoard.remoteNote", { name: remotePeerDisplayName(remoteSessionMeta) })}</span>
+        </div>
+      </div>
+    );
+  }
 
   const dismiss = (plan: Plan) => {
     // 出错但未终态的清单（失败条目阻塞 pending，永远到不了 completed）在关掉时
