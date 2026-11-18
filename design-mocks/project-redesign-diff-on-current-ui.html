@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ginno 项目重设计 · 基于现有 UI 的逐区改造</title>
+<style>
+@property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
+:root{--base:#0a0a0f;--panel:#0e0e15;--card:#15151d;--card2:#1b1b25;--line:#262632;--line2:#34343f;
+--txt:#e9e9f0;--mut:#9a9aa6;--faint:#62626e;--ac:#8b5cf6;--cy:#22d3ee;--am:#f59e0b;--ok:#22c55e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:var(--base);color:var(--txt);height:100vh;
+overflow:hidden;display:flex;flex-direction:column;font-size:13px}
+#bar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-shrink:0;flex-wrap:wrap}
+#bar b{font-size:13px}
+#bar button.stp{background:var(--card);border:1px solid var(--line);color:var(--mut);border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer}
+#bar button.stp.on{border-color:var(--ac);color:var(--ac)}
+#pp{width:28px;height:28px;border-radius:8px;border:1px solid var(--line2);background:var(--card2);color:var(--txt);cursor:pointer}
+#cap{flex:1;font-size:12.5px;line-height:1.5}
+.op{display:inline-flex;align-items:center;gap:5px;border-radius:7px;padding:1px 8px;font-size:11.5px;margin-right:8px}
+.op.add{background:rgba(34,211,238,.13);color:var(--cy);border:1px solid var(--cy)}
+.op.mod{background:rgba(245,158,11,.13);color:var(--am);border:1px solid var(--am)}
+.op.keep{background:rgba(34,197,94,.12);color:var(--ok);border:1px solid var(--ok)}
+.op.del{background:rgba(244,63,94,.13);color:#f43f5e;border:1px solid #f43f5e}
+.file{color:var(--faint);font-size:11px;font-family:ui-monospace,Menlo,monospace}
+.app{flex:1;display:flex;min-height:0;position:relative}
+aside{width:270px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.center{flex:1;display:flex;flex-direction:column;min-width:0}
+.right{width:225px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:8px;padding:12px 14px 6px}
+.brand img{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#8b5cf6,#6d28d9)}
+.brand .up{font-size:10px;border:1px solid var(--line2);border-radius:5px;padding:1px 5px;color:var(--faint)}
+.projsw{margin:2px 12px 7px;padding:6px 10px;border-radius:9px;background:var(--card);
+border:1px solid var(--ac);align-items:center;gap:9px;cursor:pointer;display:flex;position:relative}
+.projsw .ic{width:22px;height:22px;border-radius:7px;background:rgba(139,92,246,.2);display:flex;align-items:center;justify-content:center;font-size:12px}
+.projsw b{font-size:12.5px}.projsw small{font-size:10px;color:var(--faint);display:block}
+.projsw .cnt{margin-left:auto;font-size:10px;color:var(--cy)}
+.toolbar{display:flex;align-items:center;gap:4px;padding:0 10px 8px}
+.seg{display:flex;gap:2px;border:1px solid var(--line);border-radius:6px;padding:2px}
+.seg span{font-size:11px;color:var(--faint);padding:1px 7px;border-radius:4px;cursor:pointer}
+.seg span.on{background:var(--card2);color:var(--txt)}
+.toolbar .rt{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--mut)}
+.toolbar .icb{border:1px solid var(--line);border-radius:5px;padding:2px 5px;font-size:11px}
+.navitem{display:flex;align-items:center;gap:9px;margin:0 8px;padding:6px 8px;border-radius:8px;
+font-size:12.5px;color:var(--mut);cursor:pointer}
+.navitem:hover{background:var(--card);color:var(--txt)}
+.navitem kbd{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--faint);
+border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.primacts{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:6px}
+.chips{display:flex;gap:5px;padding:2px 8px 8px;flex-wrap:wrap}
+.chip{font-size:11px;border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)}
+.chip.on{border-color:var(--ac);color:var(--ac);background:rgba(139,92,246,.12)}
+.list{flex:1;overflow:auto;padding:0 8px}
+.grp{font-size:10.5px;color:var(--faint);margin:10px 8px 4px}
+.row{display:flex;gap:8px;padding:6px 8px;border-radius:8px;color:var(--mut);cursor:pointer;align-items:center}
+.row:hover{background:var(--card)}.row.cur{background:var(--card2);color:var(--txt)}
+.row .sub{font-size:10.5px;color:var(--faint)}
+.nav{border-top:1px solid var(--line);padding:6px 8px 6px;display:flex;flex-direction:column;gap:1px}
+.nav .ni{display:flex;align-items:center;gap:9px;padding:5px 9px;border-radius:8px;font-size:12px;color:var(--mut);cursor:pointer}
+.nav .ni:hover{background:var(--card);color:var(--txt)}
+.nav .ni svg{width:14px;height:14px;opacity:.7;flex-shrink:0}
+.nav .ni .bdg{margin-left:auto;font-size:10px;border:1px solid var(--line2);border-radius:99px;padding:0 6px;color:var(--faint)}
+.nav .ni .dot-r{margin-left:auto;width:7px;height:7px;border-radius:50%;background:#ef4444}
+.nav .ni .dot-g{margin-left:auto;width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pl 1.4s infinite}
+@keyframes pl{0%,100%{opacity:.4}50%{opacity:1}}
+.nav .ft{color:var(--faint);font-size:10px;margin-top:6px;padding:0 9px}
+.chead{height:42px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line)}
+.chead .sid{font-size:10px;color:var(--faint);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-family:ui-monospace,Menlo,monospace}
+.chead .grow{flex:1}
+.laybtns{display:flex;gap:4px}
+.laybtns button{background:var(--card);border:1px solid var(--line);color:var(--mut);border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer}
+.laybtns button.on{border-color:var(--ac);color:var(--ac)}
+.panes{flex:1;display:grid;gap:6px;padding:8px;min-height:0}
+.panes.g1{grid-template-columns:1fr}.panes.g22{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.ph{display:flex;align-items:center;gap:6px;padding:5px 9px;border-bottom:1px solid var(--line);font-size:11px}
+.ph .pj{color:var(--faint)}
+.pb{flex:1;padding:10px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.msg{max-width:80%;padding:7px 11px;border-radius:11px;line-height:1.5}
+.msg.u{align-self:flex-end;background:var(--card2);border:1px solid var(--line2)}
+.msg.a{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
+.tool{align-self:flex-start;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mut);
+background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.inp{border-top:1px solid var(--line);padding:8px 12px}
+.inp .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--faint);font-size:12px}
+.acts{display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap}
+.acts span{font-size:11px;border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)}
+.acts .pri{border-color:var(--ac);color:var(--ac)}
+.rtabs{display:flex;font-size:12px;border-bottom:1px solid var(--line)}
+.rtabs span{flex:1;text-align:center;padding:9px 0;color:var(--faint);cursor:pointer}
+.rtabs span.on{color:var(--txt);border-bottom:2px solid var(--ac)}
+.rlist{flex:1;overflow:auto;padding:8px}
+.ritem{padding:6px 8px;border-radius:8px;color:var(--mut);font-size:11.5px;cursor:pointer}
+.ritem:hover{background:var(--card)}
+.hl{outline:2px solid var(--cy)!important;outline-offset:2px;border-radius:10px;position:relative;animation:gl 1.2s infinite}
+@keyframes gl{0%,100%{outline-color:rgba(34,211,238,.35)}50%{outline-color:var(--cy)}}
+.diffcard{position:absolute;z-index:60;background:var(--card);border:1px solid var(--cy);border-radius:11px;
+padding:10px 13px;width:270px;box-shadow:0 14px 40px rgba(0,0,0,.6);font-size:12px;line-height:1.55;
+opacity:0;transform:translateY(8px);transition:.4s;pointer-events:none}
+.diffcard.on{opacity:1;transform:none}
+.diffcard h4{font-size:12.5px;margin-bottom:5px}
+.diffcard .d{color:var(--mut);margin-top:5px}
+.newel{display:none}.newel.on{display:flex}
+.rainbow{position:relative}
+.rainbow::before{content:"";position:absolute;inset:-2px;border-radius:12px;z-index:0;
+background:conic-gradient(from var(--a),#f43f5e,#f59e0b,#22c55e,#22d3ee,#8b5cf6,#f43f5e);animation:rs 3.5s linear infinite}
+@keyframes rs{to{--a:360deg}}
+.rainbow>*{position:relative;z-index:1}
+@media(prefers-reduced-motion:reduce){.hl,.rainbow::before{animation:none}}
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="pp">⏸</button><b>现状 Layout 逐区改造</b>
+  <button class="stp on" data-i="0">总览</button>
+  <button class="stp" data-i="1">① 插入项目切换器</button>
+  <button class="stp" data-i="2">② 移除时间/项目切换</button>
+  <button class="stp" data-i="3">③ 移除 agent chips</button>
+  <button class="stp" data-i="4">④ 会话列表按项目过滤</button>
+  <button class="stp" data-i="5">⑤ 底部导航不动</button>
+  <button class="stp" data-i="6">⑥ 顶栏+彩虹</button>
+  <button class="stp" data-i="7">⑦ 单栏→网格(双模式)</button>
+  <button class="stp" data-i="8">⑧ 右栏跟聚焦面板</button>
+  <button class="stp" data-i="9">⑨ 新建会话动线</button>
+  <div id="cap"><span class="op keep">🟢 保留</span><span class="op mod">🟡 改造</span><span class="op add">🔵 新增</span><span class="op del">🔴 移除</span>自动播放中，点步骤可手动看</div>
+</div>
+<div class="app" style="position:relative">
+  <aside>
+    <div class="brand"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">GinnoWork <span class="up">更新</span></div>
+    <div class="projsw newel" id="el-projsw"><div class="ic">📦</div><div><b>default</b><small>绑定 ginno 仓库</small></div><span class="cnt">⚡2</span></div>
+    <div class="toolbar" id="el-toolbar">
+      <div class="seg" id="el-tabs" style="opacity:.35"><span class="on" style="text-decoration:line-through">时间</span><span style="text-decoration:line-through">项目</span></div>
+      <span class="rt"><span class="icb" title="一键归档">🗄</span><span>多选</span></span>
+    </div>
+    <div class="list" style="flex:0 0 auto;overflow:visible;padding:0">
+      <div class="primacts">
+        <div class="navitem" id="el-newsess">＋ 新会话 <kbd>⌘N</kbd></div>
+        <div class="navitem">🔍 搜索会话 <kbd>⌘K</kbd></div>
+      </div>
+      <div class="chips" id="el-chips" style="padding:2px 8px 8px"><span class="chip on">Dev Agent</span><span class="chip">Analyst</span><span class="chip">Research Agent</span><span class="chip">Workflow Dev</span></div>
+    </div>
+    <div class="list" id="el-list">
+      <div class="grp">置顶</div>
+      <div class="row cur">📌 Ginno <span class="sub">· 目前</span></div>
+      <div class="grp">今天</div>
+      <div class="row">IBU代理通前端 <span class="sub">2小时前</span></div>
+      <div class="row">AMS/ADES×SOP… <span class="sub">5小时前</span></div>
+      <div class="row">ADES 知识库 <span class="sub">7小时前</span></div>
+      <div class="grp">Earlier</div>
+      <div class="row">Cloudflare+VPS… <span class="sub">8天前</span></div>
+      <div class="row">agent-prd skill… <span class="sub">8天前</span></div>
+      <div class="row">泡泡玛特调研 <span class="sub">11-01</span></div>
+    </div>
+    <div class="nav" id="el-nav">
+      <div class="ni">👥 AgentTeam<span class="bdg">2</span></div>
+      <div class="ni">🔗 连接器</div>
+      <div class="ni">⏰ 定时任务<i class="dot-r"></i></div>
+      <div class="ni">📊 后台任务<i class="dot-g"></i></div>
+      <div class="ni">📚 知识库</div>
+      <div class="ni">⚡ 本能</div>
+      <div class="ni">🗂 工作流</div>
+      <div class="ni">⚙ 设置</div>
+      <div class="ft">© 2026 GinnoWork</div>
+    </div>
+  </aside>
+  <div class="center">
+    <div class="chead" id="el-chead">
+      <b>Ginno</b><span class="sid">a98a4b9566</span>
+      <div class="grow"></div>
+      <div class="laybtns newel" id="el-laybtns" style="display:none">
+        <button class="on" data-m="sess">按会话</button><button data-m="proj">按项目</button>
+        <span style="width:1px;height:12px;background:var(--line2);margin:0 2px"></span>
+        <button class="on" data-g="g1">1×1</button><button data-g="g22">2×2</button><button data-g="g22">3×3</button>
+      </div>
+    </div>
+    <div class="panes g1" id="panes">
+      <div class="pane" id="pane0">
+        <div class="ph" id="el-pane0ph" style="display:none"><span>📦</span><b>Ginno 构建排障</b><span class="pj">default</span></div>
+        <div class="pb">
+          <div class="msg u">make app 跑一下</div>
+          <div class="tool">工具 执行命令 … exit 0</div>
+          <div class="msg a">构建中：web 编译完成，PyInstaller 打包 sidecar（4/6）…</div>
+        </div>
+      </div>
+      <div class="pane" style="display:none" id="pane1">
+        <div class="ph"><span>🧾</span><b>PRD 校对</b><span class="pj">agent-prd</span></div>
+        <div class="pb"><div class="msg u">按规则20做最小 diff 更新</div><div class="msg a">已以正式稿为底稿完成 13 处比对…</div></div>
+      </div>
+      <div class="pane" style="display:none" id="pane2">
+        <div class="ph"><span>🧪</span><b>竞品调研</b><span class="pj">调研</span></div>
+        <div class="pb"><div class="msg u">总结 crystl 8 条模式</div><div class="msg a">已写入 Obsidian Research/…</div></div>
+      </div>
+      <div class="pane" style="display:none" id="pane3">
+        <div class="ph"><span>☕</span><b>e2b 联调</b><span class="pj">ams 平台</span></div>
+        <div class="pb"><div class="msg u">应用 patch</div><div class="msg a">已应用，74/74 通过。</div></div>
+      </div>
+    </div>
+    <div class="acts"><span>问 Dev Agent</span><span>问 Analyst</span><span>+ 新会话</span><span class="pri">总结为工作流 ▾</span></div>
+    <div class="inp"><div class="box">说点什么…… / 命令 · @ 提及工件/代理/工作流 · 拖入图片/Excel/Word</div></div>
+  </div>
+  <div class="right" id="el-right">
+    <div class="rtabs"><span>代码</span><span class="on">产物</span><span>TODO</span><span>通知</span></div>
+    <div class="rlist">
+      <div class="ritem">项目重设计…md</div><div class="ritem">diff-on-current…</div>
+      <div class="ritem">devsw…log</div><div class="ritem">sessi…jsonl</div>
+      <div style="margin:8px;font-size:10.5px;color:var(--faint)" id="el-rscope">当前会话 · a98a4b9566</div>
+    </div>
+  </div>
+  <div class="diffcard" id="dc"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+let cur=0,playing=true;
+const STEPS=[
+ {cap:'<span class="op keep">🟢 保留</span>这就是现在的 Ginno 三栏布局——右侧演示每一处怎么改，不推翻重来',
+  run(){clear()}},
+ {cap:'<span class="op add">🔵 新增</span>品牌行下方插入项目切换器（唯一的项目入口：下拉 + 「查看所有项目 →」展开网格）',
+  run(){hl('#el-projsw');$('#el-projsw').classList.add('on');
+   dc('#el-projsw','项目切换器（新增）','侧栏 DOM 结构不变，只在 brand 与 toolbar 之间插一层：图标+名字+⚡running 计数；点击出下拉——「查看所有项目 →」让同一个 popover 原地变宽成项目网格（彩虹=running、琥珀=在等你，点卡片即切换），末项＋新建项目向导。不设独立总览页。','新增 components/shell/ProjectSwitcher.tsx')},
+  keep:['#el-projsw']},
+ {cap:'<span class="op del">🔴 移除</span>「时间/项目」二选一切换整个删掉——项目内列表固定为「置顶/今天/Earlier」时间分组',
+  run(){hl('#el-toolbar');dc('#el-toolbar','时间/项目切换：移除','项目选择交给上方切换器（一级）后，项目内会话列表固定按时间分组（置顶/今天/7天/更早，useSessionGrouping 只留时间分支）；按挂载文件夹分组的旧「项目」视图整支删除。工具条右侧的一键归档 🗄 和多选保留。','components/shell/SidebarHeader.tsx（删 groupView）· useSessionGrouping.ts（删 project 分支）')}},
+ {cap:'<span class="op del">🔴 移除</span>agent 筛选 chips 整块删掉——跨项目看智能体由「四态区」承担，@ 提及保留在输入框',
+  run(){hl('#el-chips');$('#el-chips').style.opacity='.35';$('#el-chips').style.textDecoration='line-through';
+   dc('#el-chips','Agent chips：移除','侧栏 agent 筛选 chips 整块删除（SidebarHeader 的 chips 区）。跨项目看智能体改由「智能体四态区」承担（Working/Blocked/Done/Idle 全局聚合）；会话内 @ 提及选 agent 的能力保留在输入框。','components/shell/SidebarHeader.tsx（删 chips 区）')}},
+ {cap:'<span class="op mod">🟡 改造</span>会话列表：置顶/分组/归档全保留，只是数据源过滤为当前项目',
+  run(){hl('#el-list');dc('#el-list','会话列表：只换数据源','SidebarSessionList/置顶/批量归档全部不动；useSessions 加 currentProject 过滤。去硬编码：sessions.ts createSession 的 project_slug:"default" → 当前项目。','store/useSessions.ts · lib/api/sessions.ts:213')}},
+ {cap:'<span class="op keep">🟢 保留</span>底部导航 8 个 nav-item 全部保留；只有 AgentTeam 列表按当前项目过滤',
+  run(){hl('#el-nav');dc('#el-nav','底部导航：不动','8 个 nav-item（AgentTeam/连接器/定时任务/后台任务/知识库/本能/工作流/设置，i18n shell.json nav.*）原样保留，含右侧状态点（红=错误/绿=运行中）；唯一改动：AgentTeam 页加当前项目过滤——GET /api/teams?slug= 后端已支持。','SidebarFooter.tsx · api/teams.py:310')}},
+ {cap:'<span class="op add">🔵 新增</span>会话头部右侧加布局切换器（模式档+档位）；running 面板彩虹描边',
+  run(){hl('#el-chead');const l=$('#el-laybtns');l.style.display='';l.classList.add('on');
+   $('#pane0').classList.add('rainbow');
+   dc('#el-chead','顶栏：+布局切换器 / +彩虹描边','TopBar 右侧加 按会话｜按项目 模式档 + 1×1/1×2/2×2/3×3 档位（布局按项目记忆，持久化 settings）；running 会话的窗格套 RunningRainbowBorder，等待用户输入用琥珀呼吸（优先级高于彩虹）。','components/shell/TopBar.tsx + 新 RunningRainbowBorder')},
+  keep:['#el-laybtns']},
+ {cap:'<span class="op mod">🟡 改造</span>核心一步：内容区从单个 ChatStream 变 panes 网格（双模式：按会话｜按项目）',
+  run(){hl('#panes');
+   $('#panes').className='panes g22';
+   ['pane1','pane2','pane3'].forEach(id=>$('#'+id).style.display='');
+   $('#el-pane0ph').style.display='';
+   dc('#panes','单栏 → 网格（双模式）','切换器带模式档：按会话｜按项目。「按会话」= 每格绑一个 session（可同项目可跨项目）；「按项目」= 每格一个项目，显示其最近活跃会话+格内迷你切换（3×3 迷你模式即此档）。布局/面板分配按项目记忆，切回即恢复。实现：app/page.tsx 改 LayoutContainer，ChatStream 组件化去单例假设、离屏节流。','app/page.tsx · components/chat/*（组件化改造）')}},
+ {cap:'<span class="op mod">🟡 改造</span>右栏 代码/产物/TODO/通知 跟随「聚焦面板」的 session，tab 结构不变',
+  run(){hl('#el-right');$('#el-rscope').textContent='跟随聚焦面板 · e2b 联调(ams)';
+   dc('#el-right','右栏：跟随聚焦面板','RightPanel 的 tab registry / 每 tab 宽度持久化全保留；只是数据绑定的 sessionId 从「全局唯一会话」改为「聚焦面板的会话」。点击任意面板即切换。','components/right/RightPanel.tsx（绑定改聚焦面板）')}},
+ {cap:'<span class="op mod">🟡 改造</span>新建会话：入口全保留（侧栏 ＋/⌘N、快捷条、面板头部 ＋），只是归属「当前项目」',
+  run(){hl('#el-newsess');
+   const l=$('#el-list');const nr=document.createElement('div');
+   nr.className='row cur';nr.id='newrow';nr.style.cssText='background:rgba(139,92,246,.12);border:1px dashed var(--ac);opacity:0;transition:.5s';
+   nr.innerHTML='✨ 新会话 <span class="sub">刚刚 · 归属 default</span>';
+   l.insertBefore(nr,l.children[2]);requestAnimationFrame(()=>nr.style.opacity='1');
+   dc('#el-list','新建会话：4 个入口','① 侧栏「＋」/ ⌘N → 建在当前项目；② 分屏面板头部「＋ 新会话」→ 建在该面板所属项目并直接落在该格子（原会话退到「切换会话」历史，不丢）；③ 切换器网格卡片「＋」→ 明确指定项目；④ 输入框快捷命令。改动实质：sessions.ts:213 硬编码 default → 当前项目 slug，创建即归属、不可迁移；小队成员/subagent 会话自动继承父项目。','store/useSessions.ts · lib/api/sessions.ts:213')}},
+];
+function clear(){$$('.hl').forEach(e=>e.classList.remove('hl'));$('#dc').classList.remove('on');
+ $('#el-chips').style.opacity='';$('#el-chips').style.textDecoration='';
+ ['pane1','pane2','pane3'].forEach(id=>{const p=$('#'+id);if(p)p.style.display='none'});
+ $('#panes').className='panes g1';$('#pane0').classList.remove('rainbow');
+ $('#el-pane0ph').style.display='none';$('#el-rscope').textContent='当前会话 · a98a4b9566';
+ const nr=$('#newrow');if(nr)nr.remove()}
+function hl(sel){$$('.hl').forEach(e=>e.classList.remove('hl'));const e=$(sel);if(e){e.classList.add('hl');e.scrollIntoView({block:'nearest'})}}
+function dc(anchor,title,desc,file){const d=$('#dc'),a=$(anchor);if(!a)return;
+ const r=a.getBoundingClientRect(),app=$('.app').getBoundingClientRect();
+ d.innerHTML='<h4>'+title+'</h4><div class="d">'+desc+'</div><div class="file" style="margin-top:6px">✏ '+file+'</div>';
+ d.classList.add('on');
+ let x=r.right-app.left+14;if(x+280>app.width)x=r.left-app.left-284;
+ if(x<8)x=8;let y=r.top-app.top+4;if(y+170>app.height)y=app.height-180;
+ d.style.left=x+'px';d.style.top=y+'px'}
+function go(i){cur=i;$$('.stp').forEach((b,j)=>b.classList.toggle('on',j===i));
+ clear();STEPS[i].run();$('#cap').innerHTML=STEPS[i].cap;
+ STEPS[i].keep&&STEPS[i].keep.forEach(s=>$(s).classList.add('on'))}
+$$('.stp').forEach(b=>b.onclick=()=>{pause();go(+b.dataset.i)});
+function pause(){playing=false;$('#pp').textContent='▶'}function play(){playing=true;$('#pp').textContent='⏸'}
+$('#pp').onclick=()=>playing?pause():play();
+document.addEventListener('click',e=>{const b=e.target.closest('#el-laybtns button');if(!b)return;
+ $('#el-laybtns').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+ if(b.dataset.g){$('#panes').className='panes '+b.dataset.g;
+  if(b.dataset.g==='g1'){['pane1','pane2','pane3'].forEach(id=>$('#'+id).style.display='none');$('#el-pane0ph').style.display='none'}
+  else{['pane1','pane2','pane3'].forEach(id=>$('#'+id).style.display='');$('#el-pane0ph').style.display=''}}});
+go(0);
+setInterval(()=>{if(!playing)return;go((cur+1)%STEPS.length)},5200);
+</script>
+</body>
+</html>

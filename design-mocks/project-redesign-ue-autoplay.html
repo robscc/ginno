@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ginno 项目重设计 · UE 自动演示（虚拟光标操作流）</title>
+<style>
+@property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
+:root{--base:10 10 15;--panel:14 14 21;--card:21 21 29;--card2:27 27 37;--line:38 38 50;--line2:52 52 63;--txt:233 233 240;--muted:154 154 166;--faint:98 98 110;--accent:#8b5cf6;--cyan:#22d3ee;--amber:#f59e0b;--ok:#22c55e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:rgb(var(--base));color:rgb(var(--txt));height:100vh;overflow:hidden;display:flex;flex-direction:column}
+#walk{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid rgb(var(--line));background:rgb(var(--panel));flex-shrink:0;flex-wrap:wrap;z-index:99}
+#walk .title{font-weight:600;font-size:13px;margin-right:8px}
+#walk button.step{background:rgb(var(--card));border:1px solid rgb(var(--line));color:rgb(var(--muted));padding:5px 10px;border-radius:8px;font-size:12px;cursor:pointer}
+#walk button.step.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#capbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgb(var(--card));border-bottom:1px solid rgb(var(--line));flex-shrink:0;font-size:13px;z-index:98}
+#capbar .pp{width:30px;height:30px;border-radius:9px;border:1px solid rgb(var(--line2));background:rgb(var(--card2));color:rgb(var(--txt));cursor:pointer;font-size:13px}
+#capbar .spd{font-size:11px;color:rgb(var(--muted));cursor:pointer;border:1px solid rgb(var(--line));border-radius:7px;padding:3px 8px}
+#capbar .spd.on{border-color:var(--accent);color:var(--accent)}
+#capbar .cap{flex:1;line-height:1.5}
+#prog{height:3px;background:rgb(var(--line));flex-shrink:0;position:relative;z-index:98}
+#prog i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);width:0%}
+#cursor{position:fixed;z-index:200;width:18px;height:18px;pointer-events:none;left:40px;top:40px;transition:left 1s cubic-bezier(.4,.1,.3,1),top 1s cubic-bezier(.4,.1,.3,1);display:none}
+#cursor.on{display:block}
+#cursor svg{filter:drop-shadow(0 2px 5px rgba(0,0,0,.6))}
+.clickpulse{position:fixed;z-index:199;width:12px;height:12px;border:2px solid var(--accent);border-radius:50%;pointer-events:none;animation:cp .5s ease-out forwards}
+@keyframes cp{from{transform:scale(.4);opacity:1}to{transform:scale(2.6);opacity:0}}
+.op{display:inline-flex;align-items:center;gap:6px;background:rgba(139,92,246,.15);border:1px solid var(--accent);border-radius:8px;padding:2px 9px;font-size:12px;margin-right:8px}
+.op.sys{background:rgba(34,211,238,.12);border-color:var(--cyan);color:var(--cyan)}
+.stage{flex:1;position:relative;overflow:hidden}
+.app{display:flex;height:100%;width:100%}
+.sidebar{width:288px;flex-shrink:0;background:rgb(var(--panel));border-right:1px solid rgb(var(--line));display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:8px;padding:14px 16px;font-weight:700;font-size:15px}
+.brand .duck{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:12px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:46px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid rgb(var(--line));background:rgb(var(--panel));flex-shrink:0}
+.content{flex:1;overflow:auto;position:relative}
+.projswitch{display:flex;align-items:center;gap:10px;margin:6px 12px 10px;padding:8px 10px;border-radius:10px;background:rgb(var(--card));border:1px solid rgb(var(--line));cursor:pointer;position:relative}
+.projswitch .ico{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px}
+.projswitch .nm{font-weight:600;font-size:13px}
+.projswitch .rd{font-size:11px;color:rgb(var(--faint))}
+.projswitch .chev{margin-left:auto;color:rgb(var(--faint));font-size:11px}
+.projmenu{position:absolute;top:calc(100% + 6px);left:0;right:0;background:rgb(var(--card));border:1px solid rgb(var(--line2));border-radius:12px;padding:6px;display:none;z-index:50;box-shadow:0 12px 32px rgba(0,0,0,.55)}
+.projmenu.open{display:block}
+.projmenu .pi{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;cursor:pointer;font-size:13px}
+.projmenu .pi:hover,.projmenu .pi.cur{background:rgb(var(--card2))}
+.projmenu .pi .cnt{margin-left:auto;font-size:11px;color:rgb(var(--faint))}
+.projmenu .pi.newp{border-top:1px solid rgb(var(--line));margin-top:5px;padding-top:9px;color:var(--accent);font-weight:600}
+.slist{flex:1;overflow:auto;padding:0 12px}
+.slabel{font-size:11px;color:rgb(var(--faint));margin:12px 4px 6px;text-transform:uppercase;letter-spacing:.05em}
+.srow{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;font-size:13px;color:rgb(var(--muted));cursor:pointer}
+.srow.cur{background:rgb(var(--card2));color:rgb(var(--txt))}
+.srow .dot{width:6px;height:6px;border-radius:50%;background:rgb(var(--line2));flex-shrink:0}
+.srow.running .dot{animation:pulse 1.4s infinite;background:var(--cyan)}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+.srow .live{margin-left:auto;font-size:10px;color:var(--cyan)}
+.agentsbox{border-top:1px solid rgb(var(--line));padding:10px 14px 14px}
+.agentsbox h5{font-size:11px;color:rgb(var(--faint));margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+.agrow{display:flex;align-items:center;gap:8px;font-size:12px;color:rgb(var(--muted));padding:4px 0}
+.st{margin-left:auto;font-size:10px;padding:1px 7px;border-radius:99px}
+.st.work{background:rgba(34,211,238,.15);color:var(--cyan)}
+.st.block{background:rgba(245,158,11,.15);color:var(--amber)}
+.st.done{background:rgba(34,197,94,.12);color:var(--ok)}
+.st.idle{background:rgb(var(--card2));color:rgb(var(--faint))}
+.panes{display:grid;gap:8px;padding:10px;height:100%}
+.panes.g11{grid-template-columns:1fr}
+.panes.g12{grid-template-columns:1fr 1fr}
+.panes.g22{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.pane{background:rgb(var(--panel));border:1px solid rgb(var(--line));border-radius:12px;display:flex;flex-direction:column;min-height:0;min-width:0;position:relative;overflow:hidden}
+.pane.focus{border-color:rgb(var(--line2))}
+.phead{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid rgb(var(--line));flex-shrink:0}
+.phead .pico{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px}
+.phead .pn{font-size:12px;font-weight:600}
+.phead .ps{font-size:11px;color:rgb(var(--faint))}
+.phead .swap{margin-left:auto;font-size:11px;color:rgb(var(--faint));cursor:pointer;border:1px solid rgb(var(--line));border-radius:6px;padding:2px 7px}
+.phead .unread{margin-left:6px;font-size:10px;background:var(--accent);color:#fff;border-radius:99px;padding:0 6px}
+.pbody{flex:1;overflow:auto;padding:12px 14px;font-size:13px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:78%;padding:8px 12px;border-radius:12px;line-height:1.55;font-size:13px}
+.msg.u{align-self:flex-end;background:rgb(var(--card2));border:1px solid rgb(var(--line2))}
+.msg.a{align-self:flex-start;background:rgb(var(--card));border:1px solid rgb(var(--line))}
+.typing{align-self:flex-start;display:flex;gap:4px;padding:10px 12px}
+.typing i{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:tb 1s infinite}
+.typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+@keyframes tb{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+.pinput{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgb(var(--line));flex-shrink:0}
+.pinput input{flex:1;background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:9px;padding:8px 12px;color:rgb(var(--txt));font-size:13px;outline:none}
+.pinput button{background:var(--accent);border:none;border-radius:9px;padding:0 14px;color:#fff;cursor:pointer}
+.rainbow{position:relative}
+.rainbow::before{content:"";position:absolute;inset:-2px;border-radius:14px;z-index:0;background:conic-gradient(from var(--a),#f43f5e,#f59e0b,#22c55e,#22d3ee,#8b5cf6,#f43f5e);animation:rainspin 3.5s linear infinite}
+@keyframes rainspin{to{--a:360deg}}
+.rainbow>*{position:relative;z-index:1}
+.amberwait{position:relative}
+.amberwait::before{content:"";position:absolute;inset:-2px;border-radius:14px;z-index:0;background:var(--amber);animation:breath 2s ease-in-out infinite}
+@keyframes breath{0%,100%{opacity:.25}50%{opacity:.85}}
+.amberwait>*{position:relative;z-index:1}
+.dcard{background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:14px;padding:16px;cursor:pointer}
+.dcard .top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dcard .bigico{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.dcard h3{font-size:15px}
+.dcard .last{font-size:12px;color:rgb(var(--muted));margin:6px 0 10px;line-height:1.5}
+.dcard .meta{display:flex;gap:10px;font-size:11px;color:rgb(var(--faint))}
+.badge-run{font-size:10px;padding:2px 8px;border-radius:99px;background:rgba(34,211,238,.15);color:var(--cyan)}
+.badge-wait{font-size:10px;padding:2px 8px;border-radius:99px;background:rgba(245,158,11,.15);color:var(--amber)}
+.wiz-mask{position:absolute;inset:0;background:rgba(5,5,10,.7);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:60;opacity:0;transform:scale(.94);transition:.5s}
+.wiz-mask.in{opacity:1;transform:none}
+.wiz{width:520px;background:rgb(var(--panel));border:1px solid rgb(var(--line2));border-radius:16px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.6)}
+.wiz .steps{display:flex;padding:12px 18px 0;gap:6px}
+.wiz .steps span{font-size:11px;color:rgb(var(--faint));padding:4px 10px;border-radius:99px;border:1px solid rgb(var(--line))}
+.wiz .steps span.on{color:var(--accent);border-color:var(--accent)}
+.wiz .body{padding:18px 22px 8px}
+.wiz .body h3{font-size:16px;margin-bottom:14px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:rgb(var(--muted));margin-bottom:6px}
+.field input{width:100%;background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:9px;padding:9px 12px;color:rgb(var(--txt));font-size:13px;outline:none}
+.emojirow{display:flex;gap:8px}
+.emojirow .e{width:38px;height:38px;border-radius:10px;background:rgb(var(--card));border:1px solid rgb(var(--line));display:flex;align-items:center;justify-content:center;font-size:17px;cursor:pointer}
+.emojirow .e.on{border-color:var(--accent);background:rgba(139,92,246,.15)}
+.wiz .foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 22px 18px}
+.btn{padding:8px 16px;border-radius:9px;font-size:13px;cursor:pointer;border:1px solid rgb(var(--line));background:rgb(var(--card));color:rgb(var(--muted))}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.hitl{position:absolute;right:22px;bottom:22px;width:300px;background:rgb(var(--card));border:1px solid rgb(var(--line2));border-radius:14px;padding:14px;z-index:70;box-shadow:0 16px 44px rgba(0,0,0,.6)}
+.hitl .hh{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:12px}
+.hitl .q{font-size:13px;line-height:1.55;margin-bottom:11px}
+.hitl .opts{display:flex;flex-direction:column;gap:7px}
+.hitl .opts button{text-align:left;padding:8px 11px;border-radius:9px;border:1px solid rgb(var(--line));background:rgb(var(--card2));color:rgb(var(--txt));font-size:12.5px;cursor:pointer}
+body.auto .pbody>*{opacity:0;transform:translateY(8px);transition:opacity .45s,transform .45s}
+body.auto .pbody>*.in{opacity:1;transform:none}
+.spot{outline:2px solid var(--accent)!important;outline-offset:3px;border-radius:10px;animation:spotglow 1.2s infinite}
+@keyframes spotglow{0%,100%{outline-color:rgba(139,92,246,.4)}50%{outline-color:var(--accent)}}
+.scene{display:none;height:100%}.scene.on{display:block}
+.tag{font-size:10px;color:rgb(var(--faint));border:1px solid rgb(var(--line));border-radius:5px;padding:1px 6px}
+.pgrid{position:absolute;top:calc(100% + 6px);left:0;width:430px;background:rgb(var(--card));border:1px solid rgb(var(--line2));border-radius:12px;padding:10px;display:none;z-index:60;box-shadow:0 12px 32px rgba(0,0,0,.55)}
+.pgrid.on{display:block}
+@media(prefers-reduced-motion:reduce){.rainbow::before,.amberwait::before,.srow.running .dot,.typing i,.spot{animation:none}.rainbow::before{opacity:.8}}
+</style>
+</head>
+<body class="auto">
+<div id="walk">
+  <span class="title">🧭 UE 自动演示</span>
+  <button class="step" data-s="1">① 新建项目向导</button>
+  <button class="step" data-s="2">② 切换器网格视图</button>
+  <button class="step" data-s="3">③ 项目内单栏</button>
+  <button class="step" data-s="4">④ 四宫格并行</button>
+  <button class="step" data-s="5">⑤ 浮动 HITL 卡片</button>
+  <button class="step" data-s="6">⑥ 切换项目两条动线</button>
+  <span class="hint">点按钮切场景（自动播放暂停）</span>
+</div>
+<div id="capbar">
+  <button class="pp" id="pp">⏸</button>
+  <span style="font-size:11px;color:rgb(var(--faint))">速度</span>
+  <button class="spd" data-spd="0.6">0.6×慢</button><button class="spd on" data-spd="1">1×</button><button class="spd" data-spd="1.5">1.5×</button>
+  <div class="cap" id="cap">自动演示中——虚拟光标演示每一步的用户操作</div>
+</div>
+<div id="prog"><i></i></div>
+<div id="cursor"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M4 2l16 7.5-6.8 1.8L18 20l-3 1.5-4.8-8.7L4 19z" fill="#fff" stroke="#000" stroke-width="1"/></svg></div>
+<div class="stage">
+<!-- Scene 1 -->
+<div class="scene" id="sc1">
+ <div class="app">
+  <div class="sidebar">
+    <div class="brand"><div class="duck">🦆</div>GinnoWork</div>
+    <div class="projswitch" onclick="toggleMenu(event)">
+      <div class="ico" style="background:rgba(139,92,246,.2)">📦</div>
+      <div><div class="nm">default</div><div class="rd">3 个会话</div></div>
+      <span class="chev">▾</span>
+      <div class="projmenu">
+        <div class="pi cur"><span>📦</span>default<span class="cnt">3</span></div>
+        <div class="pi newp">＋ 新建项目…</div>
+      </div>
+    </div>
+    <div class="slist">
+      <div class="slabel">今天</div>
+      <div class="srow">Ginno 构建排障</div>
+      <div class="srow running">ADES 字段核对 <span class="live">● 生成中</span></div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="tag">P1</span><span style="font-size:12px;color:rgb(var(--faint))">从切换器「＋ 新建项目」唤起 3 步向导</span></div>
+    <div class="content" style="display:flex;align-items:center;justify-content:center">
+      <div class="wiz-mask" id="sc1-wiz">
+        <div class="wiz">
+          <div class="steps"><span class="on">1 基本信息</span><span>2 工作目录</span><span>3 小队编制</span></div>
+          <div class="body">
+            <h3>新建项目</h3>
+            <div class="field"><label>项目名称</label><input value="ams 平台"></div>
+            <div class="field"><label>图标与颜色（用于分屏面板识别）</label>
+              <div class="emojirow">
+                <div class="e" style="background:rgba(139,92,246,.15)">📦</div>
+                <div class="e on" style="border-color:#22d3ee;background:rgba(34,211,238,.15)">☕</div>
+                <div class="e" style="background:rgba(245,158,11,.15)">🧾</div>
+                <div class="e" style="background:rgba(74,222,128,.15)">🧪</div>
+                <div class="e" style="background:rgba(244,63,94,.15)">🚀</div>
+              </div>
+            </div>
+            <div class="field"><label>描述（可选）</label><input placeholder="ibu-ams-core-agent-platform 本地联调…"></div>
+          </div>
+          <div class="foot"><button class="btn">取消</button><button class="btn pri">下一步：工作目录 →</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+ </div>
+</div>
+
+<!-- Scene 2 -->
+<div class="scene" id="sc2">
+ <div class="app">
+  <div class="sidebar">
+    <div class="brand"><div class="duck">🦆</div>GinnoWork</div>
+    <div class="projswitch">
+      <div class="ico" style="background:rgba(139,92,246,.2)">📦</div>
+      <div><div class="nm">default</div><div class="rd">12 个会话</div></div>
+      <span class="chev">▾</span>
+      <div class="pgrid" style="display:block">
+        <div style="font-size:11px;color:rgb(var(--faint));margin:2px 4px 8px">全部项目 · 点击切换</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="dcard rainbow" style="border:none;padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(139,92,246,.2)">📦</div><div><h3 style="font-size:12px">default</h3><span class="badge-run">⚡2</span></div></div><div class="last" style="margin:0;font-size:11px">Ginno 构建排障…</div></div>
+          <div class="dcard amberwait" style="border:none;padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(34,211,238,.2)">☕</div><div><h3 style="font-size:12px">ams 平台</h3><span class="badge-wait">⚠1</span></div></div><div class="last" style="margin:0;font-size:11px">e2b 沙箱联调…</div></div>
+          <div class="dcard" style="padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(245,158,11,.2)">🧾</div><div><h3 style="font-size:12px">agent-prd</h3></div></div><div class="last" style="margin:0;font-size:11px">PRD 校对…</div></div>
+          <div class="dcard" style="padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(74,222,128,.2)">🧪</div><div><h3 style="font-size:12px">调研</h3></div></div><div class="last" style="margin:0;font-size:11px">竞品分屏调研…</div></div>
+        </div>
+        <div style="font-size:11px;color:var(--accent);padding:8px 4px 2px;font-weight:600">＋ 新建项目…</div>
+      </div>
+    </div>
+    <div class="slist">
+      <div class="slabel">最近</div>
+      <div class="srow">Ginno 构建排障</div>
+      <div class="srow">ADES 字段核对</div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="tag">P3</span>
+      <span style="font-size:12px;color:rgb(var(--faint))">全部项目视图——不设独立页面，就是切换器下拉「查看所有项目 →」的原地扩展形态</span></div>
+    <div class="content" style="display:flex;align-items:center;justify-content:center">
+      <div style="color:rgb(var(--faint));font-size:13px;max-width:420px;text-align:center;line-height:1.7">同一个 popover 原地变宽成项目网格：<br>彩虹 = running（conic-gradient 旋转）· 琥珀呼吸 = 在等你（HITL 挂起）<br>点卡片即切换并收起</div>
+    </div>
+  </div>
+ </div>
+</div>
+
+<!-- Scene 3 -->
+<div class="scene" id="sc3">
+ <div class="app">
+  <div class="sidebar">
+    <div class="brand"><div class="duck">🦆</div>GinnoWork</div>
+    <div class="projswitch" onclick="toggleMenu(event)">
+      <div class="ico" style="background:rgba(34,211,238,.2)">☕</div>
+      <div><div class="nm">ams 平台 <span style="font-size:10px;color:var(--cyan)">⚡1</span></div><div class="rd">绑定 ~/workspace/ibu-ams</div></div>
+      <span class="chev">▾</span>
+      <div class="projmenu">
+        <div class="pi" style="font-weight:600;color:var(--accent)">查看所有项目 →</div>
+        <div class="pi"><span>📦</span>default<span class="cnt">12 · ⚡2</span></div>
+        <div class="pi cur"><span>☕</span>ams 平台<span class="cnt">5</span></div>
+        <div class="pi"><span>🧾</span>agent-prd<span class="cnt">8</span></div>
+        <div class="pi newp">＋ 新建项目…</div>
+      </div>
+    </div>
+    <div class="slist">
+      <div class="slabel">☕ ams 平台 · 会话</div>
+      <div class="srow cur"><span class="dot"></span>e2b 沙箱联调</div>
+      <div class="srow running"><span class="dot"></span>upclaw 配置排障 <span class="live">●</span></div>
+      <div class="srow"><span class="dot"></span>74 用例回归</div>
+      <div class="slabel">小队（本项目）</div>
+      <div class="srow">🏛 内阁 · 4 成员</div>
+      <div class="srow">🚚 交付 · 6 成员</div>
+    </div>
+    <div class="agentsbox">
+      <h5>智能体（全局）</h5>
+      <div class="agrow">🐍 Dev Agent <span class="st work">Working</span></div>
+      <div class="agrow">🔍 explore <span class="st block">Blocked·等你</span></div>
+      <div class="agrow">🌐 researcher <span class="st done">Done</span></div>
+      <div class="agrow">🧪 reviewer <span class="st idle">Idle</span></div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar">
+      <span class="tag">P1/P3</span>
+      <span style="font-size:12px;color:rgb(var(--faint))">侧栏 = 项目上下文：会话（绑项目）→ 小队（绑项目）→ 全局智能体四态</span>
+    </div>
+    <div class="panes g11">
+      <div class="pane focus">
+        <div class="phead"><div class="pico" style="background:rgba(34,211,238,.25)">☕</div>
+          <span class="pn">e2b 沙箱联调</span><span class="ps">ams 平台</span><span class="swap">切换会话 ▾</span></div>
+        <div class="pbody">
+          <div class="msg u">跑一下 e2b-mock 的全链路测试</div>
+          <div class="msg a">好的，74/74 用例已通过 71…REMOTE 沙箱模板 sbp-2kvm75eblnacmz7q 连接正常，剩余 3 个用例需要确认 mock 协议字段。</div>
+          <div class="typing"><i></i><i></i><i></i></div>
+        </div>
+        <div class="pinput"><input placeholder="给 ams 平台 发消息…"><button>↑</button></div>
+      </div>
+    </div>
+  </div>
+ </div>
+</div>
+<!-- Scene 4 -->
+<div class="scene" id="sc4">
+ <div class="app">
+  <div class="sidebar" style="width:200px">
+    <div class="brand" style="font-size:13px;padding:12px"><div class="duck" style="width:18px;height:18px;font-size:10px">🦆</div>GinnoWork</div>
+    <div style="padding:4px 12px;font-size:11px;color:rgb(var(--faint))">分屏模式侧栏自动收窄</div>
+    <div class="projswitch" style="margin:4px 8px;padding:6px 8px">
+      <div class="ico" style="width:20px;height:20px;font-size:11px;background:rgba(139,92,246,.2)">📦</div>
+      <div class="nm" style="font-size:12px">default <span style="font-size:9px;color:var(--cyan)">⚡2</span></div>
+    </div>
+    <div class="agentsbox" style="margin-top:auto">
+      <h5>智能体</h5>
+      <div class="agrow" style="font-size:11px">🐍 Dev <span class="st work">W</span></div>
+      <div class="agrow" style="font-size:11px">🧪 rev <span class="st work">W</span></div>
+      <div class="agrow" style="font-size:11px">🔍 exp <span class="st done">D</span></div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar">
+      <span class="tag">P2</span>
+      <span style="font-size:12px;color:rgb(var(--faint))">双模式：按会话｜按项目 · 非聚焦面板只亮徽标（离屏节流）</span>
+      <div style="display:flex;gap:4px;margin-left:auto">
+        <button class="layb" style="background:rgb(var(--card));border:1px solid rgb(var(--line));color:rgb(var(--muted));border-radius:6px;padding:3px 8px;font-size:11px">按会话</button>
+        <button class="layb on" style="border-color:var(--accent);color:var(--accent);background:rgb(var(--card));border-radius:6px;padding:3px 8px;font-size:11px">按项目</button>
+        <button class="layb" style="background:rgb(var(--card));border:1px solid rgb(var(--line));color:rgb(var(--muted));border-radius:6px;padding:3px 8px;font-size:11px">1×1</button>
+        <button class="layb on" style="border-color:var(--accent);color:var(--accent);background:rgb(var(--card));border-radius:6px;padding:3px 8px;font-size:11px">2×2</button>
+      </div>
+    </div>
+    <div class="panes g22" id="panes4">
+      <div class="pane focus rainbow" style="border:none">
+        <div class="phead"><div class="pico" style="background:rgba(139,92,246,.25)">📦</div>
+          <span class="pn">Ginno 构建排障</span><span class="ps">default</span><span class="swap">⤢ 专注</span></div>
+        <div class="pbody">
+          <div class="msg u">make app 跑一下</div>
+          <div class="msg a">构建中… web 编译完成，PyInstaller 打包 sidecar（4/6）</div>
+          <div class="typing"><i></i><i></i><i></i></div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+      <div class="pane">
+        <div class="phead"><div class="pico" style="background:rgba(34,211,238,.25)">☕</div>
+          <span class="pn">e2b 联调</span><span class="ps">ams</span><span class="swap">⤢</span><span class="unread">1</span></div>
+        <div class="pbody">
+          <div class="msg u">剩余 3 个用例怎么回事</div>
+          <div class="msg a">mock 协议的 chunk 边界处理差异，patch 已生成，待你确认后应用。</div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+      <div class="pane">
+        <div class="phead"><div class="pico" style="background:rgba(245,158,11,.25)">🧾</div>
+          <span class="pn">PRD 校对</span><span class="ps">agent-prd</span><span class="swap">⤢</span></div>
+        <div class="pbody">
+          <div class="msg u">按规则 20 做最小 diff 更新</div>
+          <div class="msg a">已以正式稿为底稿完成 13 处比对，diff 清单如下…</div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+      <div class="pane" style="opacity:.9">
+        <div class="phead"><div class="pico" style="background:rgba(74,222,128,.25)">🧪</div>
+          <span class="pn">竞品调研</span><span class="ps">调研</span><span class="swap">⤢</span></div>
+        <div class="pbody">
+          <div class="msg u">总结 crystl 的 8 条设计模式</div>
+          <div class="msg a">报告已写入 Obsidian Research/，8 条模式含来源链接。</div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+    </div>
+  </div>
+ </div>
+</div>
+
+<!-- Scene 5 -->
+<div class="scene" id="sc5">
+ <div class="app">
+  <div class="sidebar" style="width:200px">
+    <div class="brand" style="font-size:13px;padding:12px"><div class="duck" style="width:18px;height:18px;font-size:10px">🦆</div>GinnoWork</div>
+    <div class="agentsbox" style="margin-top:auto">
+      <h5>智能体</h5>
+      <div class="agrow" style="font-size:11px">🐍 Dev <span class="st work">Working</span></div>
+      <div class="agrow" style="font-size:11px">🔍 exp <span class="st block">Blocked·等你</span></div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar">
+      <span class="tag">P2.5</span>
+      <span style="font-size:12px;color:rgb(var(--faint))">ask_user / 审批 → 全局浮动卡片，按项目颜色编码，跨会话可答</span>
+    </div>
+    <div class="panes g12">
+      <div class="pane">
+        <div class="phead"><div class="pico" style="background:rgba(139,92,246,.25)">📦</div>
+          <span class="pn">Ginno 构建排障</span><span class="ps">default</span></div>
+        <div class="pbody">
+          <div class="msg u">重构 env_inject 并补测试</div>
+          <div class="msg a">改动涉及 settings 读取路径，需要你确认权限范围。</div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+      <div class="pane">
+        <div class="phead"><div class="pico" style="background:rgba(34,211,238,.25)">☕</div>
+          <span class="pn">e2b 联调</span><span class="ps">ams</span></div>
+        <div class="pbody">
+          <div class="msg u">应用那个 patch</div>
+          <div class="typing"><i></i><i></i><i></i></div>
+        </div>
+        <div class="pinput"><input placeholder="发消息…"><button>↑</button></div>
+      </div>
+    </div>
+    <div class="hitl" id="sc5-hitl" style="opacity:0;transform:translateY(26px);transition:.55s cubic-bezier(.2,.9,.3,1.2)">
+      <div class="hh"><span style="width:8px;height:8px;border-radius:99px;background:var(--amber);display:inline-block;animation:pulse 2s infinite"></span>
+        <b style="font-size:12px">Ginno 构建排障</b><span style="color:rgb(var(--faint))">· default · 3 分钟前</span></div>
+      <div class="q">env_inject 重构要写 settings.json 的 env 键，允许本会话写入该文件吗？</div>
+      <div class="opts">
+        <button>✅ 允许（本会话）</button>
+        <button>🔓 允许并记住（本项目）</button>
+        <button>❌ 拒绝，改走环境变量</button>
+      </div>
+    </div>
+  </div>
+ </div>
+</div>
+
+<!-- Scene 6 -->
+<div class="scene" id="sc6">
+ <div class="app">
+  <div class="sidebar">
+    <div class="brand"><div class="duck">🦆</div>GinnoWork</div>
+    <div class="projswitch" id="sc6-sw" onclick="toggleMenu(event)">
+      <div class="ico" id="sc6-ico" style="background:rgba(139,92,246,.2)">📦</div>
+      <div><div class="nm" id="sc6-nm">default</div><div class="rd" id="sc6-rd">绑定 ginno 仓库</div></div>
+      <span class="chev">▾</span>
+      <div class="pgrid" id="sc6-grid">
+        <div style="font-size:11px;color:rgb(var(--faint));margin:2px 4px 8px">全部项目 · 点击切换</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="dcard rainbow" style="border:none;padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(139,92,246,.2)">📦</div><div><h3 style="font-size:12px">default</h3><span class="badge-run">⚡2</span></div></div><div class="last" style="margin:0;font-size:11px">Ginno 构建排障…</div></div>
+          <div class="dcard amberwait" style="border:none;padding:10px" id="sc6-g-ams"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(34,211,238,.2)">☕</div><div><h3 style="font-size:12px">ams 平台</h3><span class="badge-wait">⚠1</span></div></div><div class="last" style="margin:0;font-size:11px">e2b 沙箱联调…</div></div>
+          <div class="dcard" style="padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(245,158,11,.2)">🧾</div><div><h3 style="font-size:12px">agent-prd</h3></div></div><div class="last" style="margin:0;font-size:11px">PRD 校对…</div></div>
+          <div class="dcard" style="padding:10px"><div class="top" style="margin-bottom:4px"><div class="bigico" style="width:26px;height:26px;font-size:13px;background:rgba(74,222,128,.2)">🧪</div><div><h3 style="font-size:12px">调研</h3></div></div><div class="last" style="margin:0;font-size:11px">竞品分屏调研…</div></div>
+        </div>
+        <div style="font-size:11px;color:var(--accent);padding:8px 4px 2px;font-weight:600">＋ 新建项目…</div>
+      </div>
+      <div class="projmenu">
+        <div class="pi" id="sc6-all" style="font-weight:600;color:var(--accent)">查看所有项目 →</div>
+        <div class="pi cur" id="sc6-i-def"><span>📦</span>default<span class="cnt">12</span></div>
+        <div class="pi" id="sc6-i-ams"><span>☕</span>ams 平台<span class="cnt">5 · ⚡1</span></div>
+        <div class="pi"><span>🧾</span>agent-prd<span class="cnt">8</span></div>
+        <div class="pi newp">＋ 新建项目…</div>
+      </div>
+    </div>
+    <div class="slist">
+      <div class="slabel" id="sc6-lab">会话</div>
+      <div class="srow cur" id="sc6-r1">Ginno 构建排障</div>
+      <div class="srow" id="sc6-r2">IBU代理通前端</div>
+      <div class="srow" id="sc6-r3">ADES 字段核对</div>
+      <div class="slabel" id="sc6-lab2">小队</div>
+      <div class="srow">🚚 交付 · 6 成员</div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="tag">动线</span>
+      <span style="font-size:12px;color:rgb(var(--faint))">A：下拉直切 ｜ B：查看所有项目 → 网格点卡片切</span></div>
+    <div class="content" style="display:flex;align-items:center;justify-content:center">
+      <div style="color:rgb(var(--faint));font-size:13px">当前项目视图（会话列表跟着项目走）</div>
+    </div>
+  </div>
+ </div>
+</div>
+</div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+function toggleMenu(e){e.stopPropagation();const m=e.currentTarget.querySelector('.projmenu');if(m)m.classList.toggle('open')}
+document.addEventListener('click',()=>$$('.projmenu').forEach(m=>m.classList.remove('open')));
+function sceneEl(n){return document.getElementById('sc'+n)}
+function showScene(n){$$('#walk button.step').forEach((x,i)=>x.classList.toggle('on',i===n-1));
+ $$('.scene').forEach(x=>x.classList.remove('on'));sceneEl(n).classList.add('on')}
+function reveal(){sceneEl(sceneNo).querySelectorAll('.pbody>*').forEach(el=>el.classList.add('in'))}
+function clearReveal(){sceneEl(sceneNo).querySelectorAll('.pbody>*').forEach(e=>e.classList.remove('in'))}
+function closeMenus(){$$('.projmenu').forEach(m=>m.classList.remove('open'));$$('.pgrid').forEach(g=>g.classList.remove('on'))}
+function spot(sel,on){const el=sceneEl(sceneNo).querySelector(sel);if(el)el.classList.toggle('spot',on)}
+function cap(html){const c=$('#cap');c.style.animation='none';void c.offsetWidth;c.style.animation='';c.innerHTML=html+'<span id="captxt"></span>'}
+function capAfter(html){const c=$('#captxt');if(c)c.innerHTML=html;else cap(html)}
+function opCursor(sel,label,sys){
+ const el=sceneEl(sceneNo).querySelector(sel);if(!el)return;
+ const c=$('#cursor');c.classList.add('on');
+ const r=el.getBoundingClientRect();
+ c.style.left=(r.left+r.width/2)+'px';c.style.top=(r.top+r.height/2)+'px';
+ setTimeout(()=>{const p=document.createElement('div');p.className='clickpulse';
+  p.style.left=(r.left+r.width/2-6)+'px';p.style.top=(r.top+r.height/2-6)+'px';
+  document.body.appendChild(p);setTimeout(()=>p.remove(),600)},1000);
+ cap((sys?'<span class="op sys">⚙ 系统</span>':'<span class="op">🖱 用户'+(label?'：'+label:'点击')+'</span>'));
+}
+const SC=[
+ {n:1,d:19,cues:[
+  [0,()=>{cap('P1 起点：桌面只有 default 项目。入口在侧栏项目切换器 →「＋ 新建项目」');resetAll();$('#cursor').classList.add('on');$('#cursor').style.left='130px';$('#cursor').style.top='140px'}],
+  [2.5,()=>opCursor('.projswitch','点击项目切换器')],
+  [4.5,()=>{closeMenus();sceneEl(1).querySelector('.projmenu').classList.add('open')}],
+  [6.5,()=>{closeMenus();sceneEl(1).querySelector('#sc1-wiz').classList.add('in');capAfter('系统弹出 <b>3 步向导</b>：①基本信息 ②工作目录 ③小队编制；未选目录=纯聊天型项目')}] ,
+  [11,()=>{opCursor('.emojirow','选图标 ☕（青色=ams）');spot('.emojirow',true);capAfter('图标+颜色之后用于分屏面板/网格识别；default 永久保留不可删')}],
+  [15.5,()=>spot('.emojirow',false)],
+ ]},
+ {n:2,d:13,cues:[
+  [0,()=>{cap('P3 · 全部项目视图——不设独立页面，就是<b>切换器下拉「查看所有项目 →」的原地扩展</b>');resetAll()}],
+  [5,()=>{spot('.pgrid',true);capAfter('彩虹=running（⚡计数）、琥珀呼吸=在等你（HITL 挂起）；点卡片即切换并收起')}],
+  [10.5,()=>spot('.pgrid',false)],
+ ]},
+ {n:3,d:20,cues:[
+  [0,()=>{cap('P1 · 进入项目后的主界面：侧栏=项目上下文');opCursor('.projswitch','项目切换器：图标+名字+⚡running 计数')},
+  ],
+  [3,()=>{sceneEl(3).querySelector('.projmenu').classList.add('open');capAfter('下拉：查看所有项目 → + 最近项目（当前项打勾）+ ＋新建')}] ,
+  [6.5,()=>{closeMenus();capAfter('上半：<b>本项目的会话</b>（创建即归属，不可迁移）；中段：<b>小队</b>（绑本项目，Multica 式常驻编制）')}] ,
+  [8.5,()=>{reveal();opCursor('.agentsbox','看底部智能体区');capAfter('底部：<b>全局智能体</b>四态 Working/Blocked/Done/Idle——智能体不绑项目，任何项目都能用')}],
+  [14,()=>spot('.agentsbox',true)],
+  [16.5,()=>spot('.agentsbox',false)],
+ ]},
+ {n:4,d:19,cues:[
+  [0,()=>{cap('P2 · 网格双模式——顶栏：按会话｜按项目 + 1×1/1×2/2×2/3×3');resetAll();reveal()}],
+  [4,()=>{opCursor('.pane.rainbow','聚焦面板');spot('.pane.rainbow',true);capAfter('「按会话」=每格一个 session（可跨项目）；「按项目」=每格一个项目显示其最近活跃会话；running 面板<b>彩虹描边</b>')}] ,
+  [10,()=>{spot('.pane.rainbow',false);opCursor('.unread','未读徽标');capAfter('非聚焦面板来消息只亮<b>未读徽标</b>不抢焦点（离屏渲染节流）；布局与面板分配<b>按项目记忆</b>')}] ,
+  [15,()=>capAfter('3×3 迷你模式=按项目模式的紧凑档（一行摘要+状态），适合多项目挂机监控')],
+ ]},
+ {n:5,d:15,cues:[
+  [0,()=>{cap('P2.5 · 浮动 HITL 卡片——解决「并行会话静默卡审批」');resetAll();reveal()}],
+  [3,()=>{opCursor('#sc5-hitl','卡片右下滑入',true);setTimeout(()=>{const h=$('#sc5-hitl');h.style.opacity=1;h.style.transform='none'},1100);capAfter('ask_user/审批 → <b>全局悬浮</b>，项目色点+会话名，不用切面板')}] ,
+  [8.5,()=>{opCursor('.hitl .opts button','点「允许（本会话）」');setTimeout(()=>{const h=$('#sc5-hitl');h.style.opacity=0;h.style.transform='translateY(26px)'},1400);capAfter('点选项即回到那个会话继续执行；多卡片堆叠，最新在上')}] ,
+ ]},
+ {n:6,d:30.6,cues:[
+  [0,()=>{cap('切换项目动线 <b>A：左上角直切</b>——最快路径，两级点击');resetSc6();$('#cursor').classList.add('on');$('#cursor').style.left='130px';$('#cursor').style.top='120px'}],
+  [2,()=>opCursor('#sc6-sw','点击项目切换器')],
+  [4,()=>{closeMenus();sceneEl(6).querySelector('.projmenu').classList.add('open');capAfter('下拉：最近项目列表（当前项打勾）+ 底部「查看所有项目 →」')}],
+  [6,()=>opCursor('#sc6-i-ams','直接点 ☕ ams 平台')],
+  [8,()=>{closeMenus();sc6Switch('ams');capAfter('✅ 一步完成：侧栏上下文整体切换——项目名/图标/会话列表/小队全部换成 ams 的')}],
+  [13,()=>{resetSc6();cap('动线 <b>B：查看所有项目</b>——还是这个切换器，菜单原地扩展成网格')}] ,
+  [15,()=>opCursor('#sc6-sw','点击项目切换器')],
+  [17,()=>{closeMenus();sceneEl(6).querySelector('.projmenu').classList.add('open')}],
+  [18.5,()=>opCursor('#sc6-all','点「查看所有项目 →」')],
+  [20.5,()=>{closeMenus();$('#sc6-grid').classList.add('on');capAfter('同一个 popover 原地变宽成项目网格：彩虹=running、琥珀=在等你，看状态挑目标')}],
+  [25,()=>{opCursor('#sc6-g-ams','点 ☕ ams 卡片');spot('#sc6-g-ams',true)}],
+  [27,()=>{spot('#sc6-g-ams',false);$('#sc6-grid').classList.remove('on');sc6Switch('ams');capAfter('✅ 点卡片即切换：网格收起，侧栏换成 ams——与动线 A 殊途同归，全程没离开过切换器')}] ,
+  [29,()=>resetSc6()],
+ ]},
+];
+function sc6Switch(pj){
+ const ic=$('#sc6-ico'),nm=$('#sc6-nm'),rd=$('#sc6-rd');
+ if(pj==='ams'){ic.textContent='☕';ic.style.background='rgba(34,211,238,.2)';nm.textContent='ams 平台 ⚡1';rd.textContent='绑定 ~/workspace/ibu-ams';
+  $('#sc6-r1').textContent='e2b 沙箱联调';$('#sc6-r2').textContent='upclaw 配置排障';$('#sc6-r3').textContent='74 用例回归';
+  $('#sc6-lab').textContent='☕ ams · 会话';$('#sc6-lab2').textContent='小队（本项目）'}
+ else{ic.textContent='📦';ic.style.background='rgba(139,92,246,.2)';nm.textContent='default ⚡2';rd.textContent='绑定 ginno 仓库';
+  $('#sc6-r1').textContent='Ginno 构建排障';$('#sc6-r2').textContent='IBU代理通前端';$('#sc6-r3').textContent='ADES 字段核对';
+  $('#sc6-lab').textContent='会话';$('#sc6-lab2').textContent='小队'}
+}
+function resetSc6(){sc6Switch('def');closeMenus()}
+function resetAll(){closeMenus();$$('.spot').forEach(e=>e.classList.remove('spot'));
+ const w=$('#sc1-wiz');if(w)w.classList.remove('in');
+ const h=$('#sc5-hitl');if(h){h.style.opacity=0;h.style.transform='translateY(26px)'}}
+let playing=true,speed=1,sceneNo=1,cueIdx=0,t=0,elapsed=0;
+const TOTAL=SC.reduce((a,s)=>a+s.d,0);
+setInterval(()=>{if(!playing)return;
+ elapsed+=0.1*speed;$('#prog i').style.width=Math.min(100,elapsed/TOTAL*100)+'%';
+ const sc=SC[sceneNo-1],base=SC.slice(0,sceneNo-1).reduce((a,s)=>a+s.d,0);
+ t=elapsed-base;
+ while(cueIdx<sc.cues.length&&t>=sc.cues[cueIdx][0]){try{sc.cues[cueIdx][1]()}catch(e){}cueIdx++}
+ if(t>=sc.d){sceneNo=sceneNo%SC.length+1;cueIdx=0;t=0;resetAll();showScene(sceneNo);setTimeout(clearReveal,50)}
+},100);
+showScene(1);
+function pause(){playing=false;$('#pp').textContent='▶'}function play(){playing=true;$('#pp').textContent='⏸'}
+$('#pp').onclick=()=>playing?pause():play();
+$$('.spd').forEach(b=>b.onclick=()=>{$$('.spd').forEach(x=>x.classList.remove('on'));b.classList.add('on');speed=+b.dataset.spd});
+$$('#walk button.step').forEach(b=>b.onclick=()=>{pause();sceneNo=+b.dataset.s;cueIdx=0;t=0;resetAll();showScene(sceneNo);setTimeout(clearReveal,50)});
+</script>
+</body>
+</html>
