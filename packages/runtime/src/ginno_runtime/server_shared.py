@@ -12,6 +12,7 @@ call sites and test references valid.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from collections import OrderedDict
 from typing import Any
@@ -781,3 +782,23 @@ def _turn_lock(session_id: str) -> asyncio.Lock:
         lk = asyncio.Lock()
         _TURN_LOCKS[session_id] = lk
     return lk
+
+
+# ---- 投递 ack 通道（teams/deliver 方案②，2026-11-18 待决策项 b）-----------
+# deliver 投递后注册 future 等待「turn 已登记」的推式通知，替代 50ms 盲轮询
+# （前置慢的 turn 会被 5s 轮询窗口误报 stalled）。runner 登记
+# ``_RUNNING_TURNS`` 后调 ``notify_turn_started``——无等待者时 no-op，
+# 对 subagent/wake-parent 路径零行为变化。放在 server_shared 是为破
+# deliver → runner 的 import 环（双方都只依赖本模块）。
+_TURN_START_ACKS: dict[str, asyncio.Future] = {}
+
+
+def notify_turn_started(session_id: str) -> None:
+    """managed turn 登记进 _RUNNING_TURNS 后的推式 ack。
+
+    set（不 await）注册中的 future；投递方若已超时离开则无人接住，
+    future 由 GC 回收——一次性语义，不重放。
+    """
+    fut = _TURN_START_ACKS.pop(session_id, None)
+    if fut is not None and not fut.done():
+        fut.set_result(time.time())

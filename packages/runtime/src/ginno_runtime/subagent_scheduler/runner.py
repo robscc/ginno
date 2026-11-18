@@ -8,6 +8,8 @@ import asyncio
 import sys
 from typing import Any
 
+from ..server_shared import notify_turn_started  # 投递 ack（2026-11-18 方案②）
+
 _NS = sys.modules[__package__]  # package namespace: all former module globals
 
 
@@ -74,6 +76,7 @@ async def _run_managed_turn(
         }
     }
     _NS._RUNNING_TURNS[session_id] = turn_id
+    notify_turn_started(session_id)  # 投递 ack（2026-11-18 方案②）：登记即推式确认
     # Mark the turn as scheduler-managed for its whole streaming lifetime: the
     # invoke busy check in ws.py can't see it via _TURN_TASKS (it never spawns
     # through a socket) and must not queue a user message on the turn lock for
@@ -150,6 +153,7 @@ async def _run_managed_turn_locked(
         }
     }
     _NS._RUNNING_TURNS[session_id] = turn_id
+    notify_turn_started(session_id)  # 投递 ack（2026-11-18 方案②）
     try:
         await _run_stream(
             None, session["graph"], config, text, session, agent_id,
