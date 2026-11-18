@@ -436,7 +436,7 @@ async def test_unknown_action_still_400(client):
     resp = await client.post("/api/connectors/a2a/action",
                              json={"action": "nope"})
     assert resp.status_code == 400
-    assert resp.json() == {"error": "unknown action: nope"}
+    assert resp.json() == {"ok": False, "error": "unknown action: nope"}
 
 
 async def test_confirm_domain_branch_unaffected(client):
