@@ -73,6 +73,16 @@ _MARKER_NAME = "_marker.json"
 
 # 每 session 的上次 WAL 写时间（节流状态，进程内）。
 _LAST_WRITE_AT: dict[str, float] = {}
+
+# 出站远程会话（A2A peer）在途 turn 的真实请求头（2026-11-18 修复）：
+# sid → {"turn_id", "user_text", "peer", "agent_tail", "last_tool"}。
+# 为什么需要它：远端 turn 进行中，本地 checkpoint **没有**当前请求
+# （run_remote_turn 只在 turn 结束时 _persist_exchange 落盘问答对），
+# snapshot_from_messages 倒序读到的恒是**上一轮**的消息——实锤：
+# dev-swap 遗言抓到过期「hi」（user_request_head='hi'、turn_id 是上一轮
+# 的），真正在途的 Linux 任务对遗言完全不可见。write_lastwords 组装后
+# 用本表按 turn_id 匹配覆盖，账本与快照才指向同一个 turn。
+_REMOTE_HEADS: dict[str, dict] = {}
 # auto 模式人工会话的「待确认续跑」注册表（2026-11-10 产品化）：
 # sid → snap + pending_at。用户点通知进会话后经 resume_pending 确认。
 _PENDING_RESUME: dict[str, dict] = {}
@@ -278,6 +288,22 @@ def write_lastwords(
                 sid, slug, msgs, reason=reason, fingerprint_old=fingerprint_old
             )
             snap["turn_id"] = turn_id
+            # 出站远程 turn 覆盖（2026-11-18）：本地 checkpoint 没有在途
+            # 请求（远端会话只在 turn 结束时落盘），快照必须取自执行器
+            # 注册表里的真实 user_text / 流式尾部，否则抓到的是上一轮。
+            reg = _REMOTE_HEADS.get(sid)
+            if reg is not None and reg.get("turn_id") == turn_id:
+                head = str(reg.get("user_text") or "").strip()
+                if head:
+                    snap["user_request_head"] = head[:HEAD_CHARS]
+                tail = str(reg.get("agent_tail") or "").strip()
+                if tail:
+                    snap["last_agent_message"] = tail[-HEAD_CHARS:]
+                snap["remote"] = True
+                if reg.get("peer"):
+                    snap["peer"] = str(reg["peer"])
+                if reg.get("last_tool"):
+                    snap["running_tools"] = [str(reg["last_tool"])]
             # 工作量信号（首跑质量修）：进程内计数随快照落盘——消费侧
             # 门槛判定需要（dev-swap/signal 遗言同样要带）。
             if sid in _EFFORT:
@@ -328,6 +354,114 @@ def _bump_effort(session_id: str, turn_id: str) -> dict:
         e = _reset_effort(session_id, turn_id)
     e["tool_calls"] = int(e.get("tool_calls") or 0) + 1
     return e
+
+
+def _write_remote_snapshot(session_id: str, reason: str) -> None:
+    """从执行器注册表拼远端 turn 快照并落盘（best-effort，绝不抛）。"""
+    reg = _REMOTE_HEADS.get(session_id) or {}
+    slug = str(reg.get("project_slug") or "") or _resolve_slug(session_id)
+    if not slug:
+        return
+    snap = {
+        "session_id": session_id,
+        "project": slug,
+        "reason": reason,
+        "fingerprint_old": "",
+        "user_request_head": str(reg.get("user_text") or "")[:HEAD_CHARS],
+        "last_agent_message": str(reg.get("agent_tail") or "")[-HEAD_CHARS:],
+        "running_tools": [str(reg["last_tool"])] if reg.get("last_tool") else [],
+        "bg_tasks": [],
+        "bg_interrupted": [],
+        "ts": int(time.time()),
+        "remote": True,
+    }
+    if reg.get("peer"):
+        snap["peer"] = str(reg["peer"])
+    snap["turn_id"] = str(reg.get("turn_id") or "")
+    if session_id in _EFFORT:
+        snap["effort"] = dict(_EFFORT[session_id])
+    _write_atomic(_path(session_id), snap)
+    _LAST_WRITE_AT[session_id] = time.monotonic()
+
+
+def note_remote_turn_start(
+    session_id: str,
+    turn_id: str,
+    project_slug: str | None,
+    user_text: str,
+    *,
+    peer: str = "",
+) -> None:
+    """出站远程 turn 启动：注册真实请求头 + 写初始 WAL 遗言（reason=running）。
+
+    与本地 ``note_turn_start`` 对位——本地版从 checkpoint 回落上一条用户
+    消息，远端版**必须**用执行器手里的 user_text：本地 checkpoint 在 turn
+    结束前没有它（见 ``_REMOTE_HEADS`` 注释）。幂等：同 turn 重复调用
+    只刷新；新 turn 直接覆盖旧注册（顺带收编残留）。
+    """
+    if not session_id or not user_text:
+        return
+    try:
+        _REMOTE_HEADS[session_id] = {
+            "turn_id": turn_id,
+            "user_text": user_text,
+            "peer": peer,
+            "agent_tail": "",
+            "last_tool": "",
+            "project_slug": project_slug,
+        }
+        snap_effort = _reset_effort(session_id, turn_id)
+        _write_remote_snapshot(session_id, REASON_RUNNING)
+        _log.info(
+            "lastwords_remote_turn_start session=%s turn=%s peer=%s effort=%s",
+            session_id, turn_id, peer, snap_effort.get("tool_calls"),
+        )
+    except Exception:  # noqa: BLE001 — 遗言绝不拖累 turn 本体
+        _log.exception("lastwords_remote_turn_start_failed session=%s", session_id)
+
+
+def note_remote_progress(
+    session_id: str,
+    turn_id: str,
+    *,
+    tool_name: str | None = None,
+    agent_tail: str | None = None,
+) -> None:
+    """远端 turn 进行中：工具边界计数 + 流式尾部累积，节流写盘。
+
+    与本地 ``note_tool_boundary`` 对位。token.delta 只更新内存尾部（零
+    IO，每帧都调）；tool 边界 bump effort 并按 ``TOOL_WRITE_MIN_INTERVAL_S``
+    节流覆盖写 WAL——计数每次都加，节流只限写盘频率。
+    """
+    reg = _REMOTE_HEADS.get(session_id)
+    if reg is None or reg.get("turn_id") != turn_id:
+        return
+    try:
+        if agent_tail is not None:
+            reg["agent_tail"] = (str(reg.get("agent_tail") or "") + str(agent_tail))[-2000:]
+        if tool_name:
+            _bump_effort(session_id, turn_id)
+            reg["last_tool"] = str(tool_name)
+            now = time.monotonic()
+            last = _LAST_WRITE_AT.get(session_id)
+            if last is None or (now - last) >= TOOL_WRITE_MIN_INTERVAL_S:
+                _write_remote_snapshot(session_id, REASON_RUNNING)
+    except Exception:  # noqa: BLE001
+        _log.exception("lastwords_remote_progress_failed session=%s", session_id)
+
+
+def note_remote_turn_end(session_id: str, turn_id: str) -> None:
+    """远端 turn 收口：注销注册表 + 走 note_turn_end 语义（删遗言）。
+
+    必须挂在执行体 finally（协程被取消也要清）；优雅关闭中不删文件
+    （``_SHUTTING_DOWN``，与本地版同款 SIGTERM 保护）。
+    """
+    reg = _REMOTE_HEADS.pop(session_id, None)
+    if reg is not None and reg.get("turn_id") != turn_id:
+        # 后继 turn 已重注册：把注册表还回去，只按身份校验跳过清理
+        _REMOTE_HEADS[session_id] = reg
+        return
+    note_turn_end(session_id, turn_id)
 
 
 def note_turn_start(session_id: str, turn_id: str, project_slug: str | None) -> None:
@@ -785,7 +919,46 @@ async def recover_lastwords() -> int:
             # 2026-11-10 产品化：人工会话的 auto 不再直接续跑——注入带 +
             # 挂起待确认（广播 runtime.lastwords_pending，用户点通知进会话
             # 后经 /api/lastwords/resume 一键续跑）；subagent 保持无感直跑。
-            if is_subagent_session(session):
+            # 2026-11-18 出站远程会话（remote_peer）：**自动续跑一律拦下**，
+            # 降级为挂起待确认。本地重启不影响远端进程——对端任务很可能
+            # 仍在跑或已完成，无脑重发用户请求 = 重复派活/并发冲突；只有
+            # 用户经 resume 显式确认后才重发（_run_lastwords_turn 对远端
+            # 会话重发最后用户请求原文，远端凭自己的 checkpoint 续跑）。
+            from .api.stream.remote_turn import remote_peer_of
+
+            is_remote = bool(remote_peer_of(session or {}))
+            if is_remote:
+                ok = await _inject_lastwords_message(session, snap)
+                how = "notify"
+                if ok:
+                    _PENDING_RESUME[sid] = {**snap, "pending_at": time.time()}
+                    try:
+                        eff = snap.get("effort") or {}
+                        await shared._push_global_event(
+                            "runtime.lastwords_pending",
+                            {
+                                "session_id": sid,
+                                "head": str(snap.get("user_request_head") or "")[:160],
+                                "user_request_head": str(
+                                    snap.get("user_request_head") or ""
+                                )[:160],
+                                "reason": reason,
+                                "remote": True,
+                                "tool_calls": eff.get("tool_calls", 0),
+                                "elapsed_s": max(
+                                    0.0,
+                                    float(snap.get("ts") or 0)
+                                    - float(eff.get("started_at") or 0),
+                                ),
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — 广播失败不拦注入
+                        _log.exception("lastwords_pending_broadcast_failed session=%s", sid)
+                    _log.info(
+                        "lastwords_remote_pending_confirm session=%s reason=%s", sid, reason
+                    )
+                    continue  # 文件保留——resume/dismiss 时才处置
+            elif is_subagent_session(session):
                 if m == "auto":
                     # subagent 本就 headless：auto 下无感直跑（reason 不限，
                     # 2026-11-07 首跑语义）。
@@ -922,7 +1095,16 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
     if not agent_id:
         _log.info("lastwords_auto_dropped_no_agent session=%s", sid)
         return False
-    text = render_continuation(snap)
+    from .api.stream.remote_turn import remote_peer_of
+
+    if remote_peer_of(session):
+        # 远程会话恢复 = **重发最后用户请求原文到远端**（run_remote_turn
+        # 经 referenceTaskIds 让对端 resume 停在 input-required 的任务）。
+        # 绝不用 lastwords 模板文本：远端没有经历「重启」，模板里的
+        # 「从中断处继续」指示对它没有上下文意义，反而误导。
+        text = str(snap.get("user_request_head") or "").strip() or render_continuation(snap)
+    else:
+        text = render_continuation(snap)
     config = {
         "configurable": {
             "thread_id": sid,
