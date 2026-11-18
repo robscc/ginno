@@ -403,6 +403,52 @@ async def test_relay_disconnect_fails_pending_and_resets_state(ginno_home, fresh
 
 
 @pytest.mark.asyncio()
+async def test_relay_supersede_replaced_frame_and_state_handover(
+        ginno_home, fresh_relay_state):
+    """新连接顶旧(2026-11-18 每秒重连风暴修复):旧连接先收 replaced 告别帧
+    再被关;relay 状态无缝移交给新连接;被顶连接的断开不得把状态打回
+    disconnected(旧 finally 有 `if _state.ws is ws` 守卫)。"""
+    from ginno_runtime.browser import relay as relay_mod
+
+    ws_a = _FakeExtWS()
+    await ws_a.incoming.put(json.dumps({
+        "method": "extensionInfo", "params": {"browserClientId": "A"}}))
+    task_a = asyncio.create_task(relay_mod.extension_endpoint(ws_a))
+    for _ in range(50):
+        if fresh_relay_state.connected:
+            break
+        await asyncio.sleep(0.02)
+    assert fresh_relay_state.browser_client_id == "A"
+
+    ws_b = _FakeExtWS()
+    await ws_b.incoming.put(json.dumps({
+        "method": "extensionInfo", "params": {"browserClientId": "B"}}))
+    task_b = asyncio.create_task(relay_mod.extension_endpoint(ws_b))
+    for _ in range(50):
+        if fresh_relay_state.browser_client_id == "B":
+            break
+        await asyncio.sleep(0.02)
+
+    # 旧连接 A:先收到 replaced 告别帧,且已被服务端关闭
+    assert any(f.get("method") == "replaced" for f in ws_a.sent), ws_a.sent
+    assert ws_a.closed is True
+    # 新连接 B:正常接管(连接即推的 tab scope configChanged 可见),状态移交
+    assert any(f.get("method") == "configChanged" for f in ws_b.sent)
+    assert fresh_relay_state.connected is True
+    assert fresh_relay_state.ws is ws_b
+
+    # A 侧断开收尾(旧版扩展不认识 replaced、静默后被关)——不得复位状态
+    await ws_a.incoming.put("__EOF__")
+    await asyncio.wait_for(task_a, 5)
+    assert fresh_relay_state.connected is True
+    assert fresh_relay_state.browser_client_id == "B"
+
+    await ws_b.incoming.put("__EOF__")
+    await asyncio.wait_for(task_b, 5)
+    assert fresh_relay_state.connected is False
+
+
+@pytest.mark.asyncio()
 async def test_relay_malformed_frames_ignored(ginno_home, fresh_relay_state):
     """坏 JSON / 未知 method 静默忽略，连接保持。"""
     from ginno_runtime.browser import relay as relay_mod

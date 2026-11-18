@@ -15,7 +15,9 @@
 const NATIVE_HOST = "app.ginno.connector";
 const DEFAULT_PORTS = [8787];
 const RECONNECT_MIN_MS = 1000;
-const RECONNECT_MAX_MS = 10000;
+const RECONNECT_MAX_MS = 60000;    // 10s→60s:互踢/服务端重启风暴下限频(2026-11-18)
+const RECONNECT_JITTER = 0.2;      // ±20% 错峰:同机多实例不同相位,减少对撞
+const STABLE_CONN_S = 30;          // 存活≥30s 才算"成功连接",断开才重置退避
 const IDLE_DETACH_MS = 10000;   // 用完即走:空闲即摘除调试器(去横幅)
 const QUEUE_CAP = 32;
 
@@ -28,6 +30,8 @@ const S = {
   stopRequested: false,
   idleTimer: null,
   activeToolCount: 0,
+  connectedAt: 0,                   // 当前 transport 成功建立的时刻(退避重置依据)
+  replacedByServer: false,          // 服务端 replaced 帧已收,断开后进入长退避让位
   attachedTabs: new Set(),          // tabIds with debugger attached
   tabEventBuffers: new Map(),       // tabId -> {console:[], network:[]}
   screenshotCtx: new Map(),         // tabId -> {vw, vh, sw, sh}
@@ -129,6 +133,16 @@ function onFrame(text) {
     S.stopRequested = true;
     return;
   }
+  if (msg.method === "replaced") {
+    // 服务端告知本连接被新连接取代(即将被关):立刻抬高档位进入长退避
+    // "让位"——否则按 1s 最小间隔重连会把对方也顶掉,形成每秒互踢死循环
+    // (2026-11-18 实锤,全天 2900+ 条重连日志)。旧版本服务端不发此帧,
+    // 行为不变。
+    log("relay replaced by a newer connection; yielding");
+    S.replacedByServer = true;
+    S.reconnectAttempt = Math.max(S.reconnectAttempt, 5);
+    return;
+  }
   if (typeof msg.id === "number" && msg.method === "tools/invoke") {
     enqueue(msg.id, msg.params || {});
   }
@@ -227,7 +241,7 @@ async function connectRelay() {
     let opened = false;
     t.ws.onopen = async () => {
       opened = true;
-      S.reconnectAttempt = 0;
+      S.connectedAt = Date.now();   // 退避重置移到 onTransportClosed(按存活时长)
       log("relay connected via websocket on port", port);
       await announce();
     };
@@ -283,10 +297,24 @@ async function announce() {
                    version: chrome.runtime.getManifest().version,
                    browserType: detectBrowser() },
   });
-  if (transportKind === "native") S.reconnectAttempt = 0;
+  if (transportKind === "native") { S.reconnectAttempt = 0; S.connectedAt = Date.now(); }
 }
 
 function onTransportClosed() {
+  // 退避重置规则(2026-11-18 每秒重连风暴修复):连接存活≥STABLE_CONN_S 才算
+  // 成功,断开时重置档位;短命连接(被顶掉/服务端重启)保留并累加档位——
+  // 旧行为是 onopen 即重置,导致被服务端"新顶旧"踢掉后永远以 1s 最小间隔
+  // 硬重试,双客户端互踢时每秒一轮、全天 2900+ 条重连。
+  // 例外:收到 replaced(被新连接取代)时,即便刚稳定干活过,也抬高档位让位,
+  // 否则两边各持 1s 重连会永久互踢。
+  const lifeMs = S.connectedAt ? Date.now() - S.connectedAt : 0;
+  if (S.replacedByServer) {
+    S.replacedByServer = false;
+    S.reconnectAttempt = Math.max(S.reconnectAttempt, 5);
+  } else if (lifeMs >= STABLE_CONN_S * 1000) {
+    S.reconnectAttempt = 0;
+  }
+  S.connectedAt = 0;
   transport = null;
   transportKind = "";
   S.ws = null;
@@ -294,9 +322,17 @@ function onTransportClosed() {
   scheduleReconnect();
 }
 
+/* 纯函数便于钉住行为(packages/extension/reconnect.test.mjs 从源码提取求值):
+ * attempt 档位 → 指数退避 1s→2s→…→60s 封顶,±20% 抖动错峰。
+ * rand 传 [0,1),生产用 Math.random()。 */
+function nextReconnectDelayMs(attempt, rand) {
+  const base = Math.min(RECONNECT_MIN_MS * Math.pow(2, attempt), RECONNECT_MAX_MS);
+  return Math.round(base * (1 + ((rand - 0.5) * 2) * RECONNECT_JITTER));
+}
+
 function scheduleReconnect() {
   if (S.reconnectTimer) return;
-  const delay = Math.min(RECONNECT_MIN_MS * Math.pow(2, S.reconnectAttempt), RECONNECT_MAX_MS);
+  const delay = nextReconnectDelayMs(S.reconnectAttempt, Math.random());
   S.reconnectAttempt++;
   S.reconnectTimer = setTimeout(() => {
     S.reconnectTimer = null;

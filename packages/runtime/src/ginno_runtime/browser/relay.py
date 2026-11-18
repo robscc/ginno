@@ -41,6 +41,11 @@ INVOKE_TIMEOUT_S = 60.0
 SCREENSHOT_TIMEOUT_S = 90.0
 PROGRESS_CAP_S = 90.0
 
+# 顶掉旧连接前发给它的告别帧(2026-11-18 每秒重连风暴):新版扩展收到后
+# 进入长退避"让位",避免与新连接互踢死循环;旧版扩展不认识未知 method、
+# 照旧被 close,行为与之前完全一致(按自身退避重连)。
+REPLACED_FRAME = {"method": "replaced", "params": {"reason": "superseded"}}
+
 
 class RelayState:
     """Everything the sidecar knows about the connected extension."""
@@ -172,6 +177,11 @@ async def extension_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     prev = _state.ws
     if prev is not None:
+        # 先打招呼再关:告诉旧连接"你被取代了"。send 失败无妨(多半已半死)。
+        try:
+            await prev.send_text(json.dumps(REPLACED_FRAME))
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await prev.close()
         except Exception:  # noqa: BLE001
