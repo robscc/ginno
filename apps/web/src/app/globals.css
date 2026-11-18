@@ -419,6 +419,24 @@ html.light .hljs-name {
   animation: ginno-wave 1.2s ease-in-out infinite;
 }
 
+/* 声呐脉冲 loading（2026-11-19 选型 05）：单核点 + 双扩散环，替代三连
+   wave dots——「仍在监听」隐喻更贴「等待下一轮」语义。环由组件内两个
+   span 挂本类，颜色/延迟走内联（多场景复用）；reduced-motion 下环静止
+   隐藏，只留核点（与彩虹边缘条同款降级纪律）。 */
+@keyframes ginno-sonar {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  80%, 100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+.ginno-sonar-ring {
+  animation: ginno-sonar 2s cubic-bezier(0, 0.55, 0.45, 1) infinite;
+}
+
 @keyframes ginno-fade-in-text {
   from {
     opacity: 0;
@@ -453,8 +471,12 @@ html.light .hljs-name {
   .animate-wave,
   .animate-fade-in,
   .animate-pulse-subtle,
+  .ginno-sonar-ring,
   .pin-bounce {
     animation: none;
+  }
+  .ginno-sonar-ring {
+    opacity: 0;
   }
   .btn-press:active {
     transform: none;
