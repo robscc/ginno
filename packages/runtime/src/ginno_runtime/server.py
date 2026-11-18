@@ -499,9 +499,24 @@ async def _unwrap_structured_http_error(request, exc: StarletteHTTPException):
     return await http_exception_handler(request, exc)
 
 
+# P0-1 (security-audit 2026-11-12): loopback origin allowlist — the previous
+# ``allow_origins=["*"]`` let ANY web page read cross-origin responses from
+# 8787. The packaged webview is same-origin (it loads http://127.0.0.1:8787
+# directly) and dev runs on :3000 — those are the only origins that ever
+# needed CORS. Everything else is blocked one layer out by
+# OriginGuardMiddleware (mounted below, outermost).
+from .origin_guard import (  # noqa: E402
+    DEFAULT_ALLOWED_ORIGINS,
+    LOOPBACK_ORIGIN_RE,
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(DEFAULT_ALLOWED_ORIGINS),
+    # dev web (:3000) and packaged e2e sidecars (bind(0) random port) fetch
+    # cross-origin from loopback hosts — same loopback-any-port rule as the
+    # guard; a browser cannot label a remote page with a loopback origin.
+    allow_origin_regex=LOOPBACK_ORIGIN_RE.pattern,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -592,6 +607,15 @@ class RequestLocaleMiddleware:
 
 
 app.add_middleware(RequestLocaleMiddleware)
+
+# P0-1 (security-audit 2026-11-12): loopback origin guard — outermost layer.
+# Blocks browser-driven requests (fetch/WS always carry a forge-proof Origin)
+# whose origin is not the app's own webview/sidecar/dev origins, while
+# non-browser local clients (curl, harness, rtk, e2e drivers — no Origin
+# header) pass. chrome-extension:// is allowed for the companion relay.
+from .origin_guard import OriginGuardMiddleware  # noqa: E402
+
+app.add_middleware(OriginGuardMiddleware)
 
 
 # ---- serve the web UI from the sidecar (same origin as the API) ----
