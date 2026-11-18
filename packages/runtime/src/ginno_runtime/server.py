@@ -857,8 +857,20 @@ from .session_meta import (  # noqa: E402, F401
 @app.get("/{full_path:path}")
 async def _serve_web(full_path: str):
     """Serve the bundled Next static export (same origin as the API)."""
-    from fastapi.responses import FileResponse, HTMLResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+    # NEW-01 (harness run-20261118): an unknown ``/api/*`` path must fall into
+    # the API error contract (404 JSON), never into the SPA fallback below —
+    # the static catch-all used to swallow it with 200 + index.html, so a
+    # frontend fetch got HTML where it expected JSON (parse error masking the
+    # real 404) and boundary probes couldn't tell broken endpoints from real
+    # pages. Registered API routes win over this catch-all by routing order,
+    # so only genuinely unknown endpoints land here.
+    if full_path == "api" or full_path.startswith("api/"):
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": f"unknown API endpoint: /{full_path}"},
+        )
     if WEB_OUT is None:
         return HTMLResponse("frontend not bundled", status_code=404)
     # HTML entry points must never be cached: they reference content-hashed
