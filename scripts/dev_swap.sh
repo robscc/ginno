@@ -334,3 +334,55 @@ report finish running "壳重启 sidecar + 指纹验证"
 log "✅ symlink 已切到 ${NEW_DIR}，state=pending。"
 log "下一步（自动）：前端收到 runtime.dev_swap_pending 事件后 invoke finish_dev_swap；"
 log "手动等价：Debug 菜单 → 完成热切换（Finish Dev Swap）。"
+
+# ---- 旁路自愈记账（2026-11-18 旅程走查 P1-1）--------------------------------
+# 断链：SIGTERM/child-exit 旁路把 sidecar 拉到新 bundle 时，会绕过壳的
+# run_finish（验指纹+写终态只活在 finish_dev_swap command 里）——state.json
+# 悬置 pending、新进程 watch_swap_finish 白等 1800s、前端确认条常亮无人记账。
+# 补一条**如实记账**通道：若 /api/health 指纹+built_at 已等于新 bundle
+# （说明新 sidecar 确实在跑——SIGTERM 旁路或用户已确认），CLI 补写 verified；
+# 老 bundle 还在跑则不碰——用户确认门（2026-11-05 决策）语义零变化。
+ASIDE_POLL_S=3
+ASIDE_BUDGET_S=90
+log "旁路自愈记账：轮询 /api/health（最多 ${ASIDE_BUDGET_S}s），新 bundle 已在跑则补记 verified …"
+ASIDE_RESULT="$(python3 - "$OVERRIDE_DIR/state.json" "$FINGERPRINT" "$BUILT_AT" "$ASIDE_POLL_S" "$ASIDE_BUDGET_S" "$PROGRESS_PORT" <<'PY'
+import json, os, sys, time, urllib.request
+
+path, want_sha, want_built, poll_s, budget_s, port = sys.argv[1:7]
+deadline = time.monotonic() + float(budget_s)
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=3
+        ) as r:
+            b = json.load(r)["build"]
+    except Exception:  # noqa: BLE001 — sidecar 重启窗口，继续等
+        time.sleep(float(poll_s))
+        continue
+    if b.get("fingerprint") == want_sha and (
+        not want_built or b.get("built_at") == want_built
+    ):
+        try:
+            st = json.loads(open(path).read()) if os.path.exists(path) else {}
+        except Exception:  # noqa: BLE001 — 写到一半：下一轮再试
+            st = {}
+        if st.get("state") == "pending":  # 用户确认路径已写终态则不碰
+            st["state"] = "verified"
+            st["finished_via"] = "cli-aside-bookkeeping"
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(st, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+            print("VERIFIED_ASIDE")
+        else:
+            print("ALREADY_" + str(st.get("state", "?")).upper())
+        sys.exit(0)
+    time.sleep(float(poll_s))
+print("NOT_YET")  # 老 bundle 仍在跑：用户确认门未走，如实不记账
+PY
+)"
+case "$ASIDE_RESULT" in
+  VERIFIED_ASIDE) log "旁路记账：新 bundle 已验证在跑，state=verified（watch_swap_finish 将上报 finish ok）。" ;;
+  NOT_YET) log "旁路记账：新 bundle 尚未上线（老 sidecar 仍在跑）——等用户确认条/Debug 菜单走正常门。" ;;
+  *) log "旁路记账：state 已是 ${ASIDE_RESULT#ALREADY_}（正常门已闭环），不重复记账。" ;;
+esac
