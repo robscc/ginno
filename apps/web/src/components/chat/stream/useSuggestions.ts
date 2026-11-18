@@ -16,6 +16,9 @@ import type { SendPayload } from "../streamCore";
 // V2 P2-1: dismissals are per (session_id, suggestion id), persisted locally.
 const SUGGEST_DISMISS_LS_KEY = "ginno-dismissed-suggestions";
 
+export { filterVisibleSuggestions } from "./suggestionFilter";
+import { filterVisibleSuggestions } from "./suggestionFilter";
+
 export function useSuggestions({
   g,
   session,
@@ -184,10 +187,9 @@ export function useSuggestions({
     }
   }
 
-  // V2 P2-1: suggestions still visible for this session after local dismissal.
-  const visibleSuggestions = session
-    ? suggestions.filter((s) => !suggDismissed[`${session.id}:${s.id}`])
-    : [];
+  // V2 P2-1: suggestions still visible for this session after local dismissal
+  // （+ 渠道只读会话隐藏 compact 卡，见 filterVisibleSuggestions）。
+  const visibleSuggestions = filterVisibleSuggestions(suggestions, session, suggDismissed);
 
   return {
     suggestBusy,
