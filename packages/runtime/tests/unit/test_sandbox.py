@@ -298,3 +298,66 @@ def test_bg_run_spawn_fails_closed(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="sandbox"):
         reg.TaskRegistry._popen(r, task)
     assert popped == []
+
+
+# ── 2026-11-18：沙盒 DNS——resolv.conf/hosts 只读绑入 ─────────────────────────
+#
+# 事故：节点沙盒最小 /etc 把 DNS 一起丢了 → bash 里 curl/git 全部
+# CURLE_COULDNT_RESOLVE_HOST（exit 6），而宿主网络正常（curl 1.1.1.1 成功）。
+# web_fetch/web_search 走主进程不受影响，唯独 shell 工具残废。
+# 修复：只读绑 /etc/resolv.conf 与 /etc/hosts 两个文件（无敏感内容）。
+
+
+class TestSandboxDns:
+    """DNS 文件只读绑入（2026-11-18 修沙盒内 curl exit 6）。"""
+
+    @pytest.fixture(autouse=True)
+    def _sandboxable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(sandbox.ENV_ROOT, str(tmp_path))
+        monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+        monkeypatch.setattr(sandbox, "_probe", lambda _: True)
+
+    def test_dns_files_bound_when_present(self):
+        argv = sandbox.wrap_argv(["/bin/true"], cwd="/tmp")
+        joined = " ".join(argv)
+        for dns_file in ("/etc/resolv.conf", "/etc/hosts"):
+            if os.path.isfile(dns_file):
+                assert f"--ro-bind {dns_file} {dns_file}" in joined, (
+                    f"{dns_file} 未绑入 → 沙盒内无法解析域名"
+                )
+
+    def test_dns_bind_is_readonly_never_writable(self):
+        """必须是 --ro-bind；绝不能出现可写的 --bind /etc/resolv.conf。"""
+        argv = sandbox.wrap_argv(["/bin/true"], cwd="/tmp")
+        joined = " ".join(argv)
+        assert "--bind /etc/resolv.conf" not in joined
+        assert "--bind /etc/hosts" not in joined
+        for i, a in enumerate(argv):
+            if a == "--ro-bind" and argv[i + 1].startswith("/etc/"):
+                assert argv[i + 1] in ("/etc/resolv.conf", "/etc/hosts"), (
+                    f"/etc 下只允许绑 DNS 文件，绑了别的: {argv[i+1]}"
+                )
+
+    def test_missing_dns_files_skipped_not_fatal(self, monkeypatch):
+        """宿主无 resolv.conf（极端容器）→ 跳过，不报错。"""
+        real = os.path.isfile
+        seen = []
+
+        def fake(p, *a, **kw):
+            seen.append(p)
+            if p in ("/etc/resolv.conf", "/etc/hosts"):
+                return False
+            return real(p, *a, **kw)
+
+        monkeypatch.setattr(sandbox.os.path, "isfile", fake)
+        argv = sandbox.wrap_argv(["/bin/true"], cwd="/tmp")
+        joined = " ".join(argv)
+        assert "--ro-bind /etc/resolv.conf /etc/resolv.conf" not in joined
+        assert any("resolv.conf" in p for p in seen)
+
+    def test_secrets_still_hidden(self):
+        """DNS 修复不得顺带暴露 /etc 其余内容（env/shadow 依旧无绑定）。"""
+        argv = sandbox.wrap_argv(["/bin/true"], cwd="/tmp")
+        joined = " ".join(argv)
+        for secret in ("ginno-node", "shadow", "passwd", "ssh"):
+            assert secret not in joined, f"不得绑定敏感路径: {secret}"

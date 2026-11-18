@@ -102,6 +102,16 @@ def wrap_argv(
     for d in _RO_BINDS:
         if os.path.isdir(d):
             out += ["--ro-bind", d, d]
+    # DNS（2026-11-18 修）：最小 /etc 把 resolv.conf/hosts 一起丢了 →
+    # 沙盒内 curl/git/pip 全部 CURLE_COULDNT_RESOLVE_HOST（exit 6），
+    # 而宿主网络与路由完全正常（真机实证：直接 curl 1.1.1.1 成功）。
+    # 只读绑这两个**文件**：内容仅 nameserver IP/主机名映射，无敏感信息；
+    # /etc 其余路径（含 /etc/ginno-node/env、/etc/shadow）依旧不可见，
+    # 写入依旧被 ro-bind 拒绝（原有逃逸回归不受影响）。宿主没有该文件
+    # 则跳过（不因缺失而 fail）。
+    for dns_file in ("/etc/resolv.conf", "/etc/hosts"):
+        if os.path.isfile(dns_file):
+            out += ["--ro-bind", dns_file, dns_file]
     # 额外只读路径（解释器/执行器）：去重且跳过已被 _RO_BINDS 覆盖的
     for d in extra_ro or []:
         d = str(d)
