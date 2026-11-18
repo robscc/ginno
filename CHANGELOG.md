@@ -7,6 +7,35 @@ versions.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-18
+
+20 commits since 0.4.0（4 feat / 10 fix / 3 perf / 2 docs / 1 test）。
+主题：性能治理（会话首屏分片挂载）、远端/沙盒可用性修复、会话级技能路径。
+
+### 性能
+- **会话切换首屏分片挂载**：压低 React mount 长任务（3c0f317），配套三处实测修正
+  —— setTimeout 切片、锚点环会话隔离、监听器闭包常新（a681202）
+- LLM 请求行默认不渲染（用户反馈「不需要这个」，8bba704）
+
+### 功能
+- **会话级技能路径与按需加载**（3ab579a）+ 修 skill_dirs 误禁静态层斜杠展开（ad420d1）
+- 远端 turn 全粒度进度转发 + LLM 请求级可观测事件（d1bd02d），远端会话禁用模型选择器
+- A2A 对端节点收进 hub 子配置页签，不再占顶层连接器卡位（76eae64）
+
+### 修复
+- **沙盒联网两连修**：只读绑入 resolv.conf/hosts 修 DNS 解析（fefc4df）；
+  绑入 CA 根证书修 https 全部 exit 77（c04f5b1）
+- **远端会话**：turn 收口本地 running 态——修「远端结束了本地还在运行」（002d587）；
+  {name} 占位符闪 slug——session 载荷真源解析 remote_peer_name（a31dd23）；notice 精简（42c0cb1）
+- **A2A**：入站权限放行面从 guard 派生——修 headless 工具永久挂起（da9a1c8）
+- **engine**：移除 llm 帧翻译分支——CI(ubuntu) runtime-tests 卡死元凶（ebed87c）
+- 渠道 admin_users 无法从 UI 配置 + 拒绝文案指路错误（63419a4）
+- 过时失败恢复横幅在新一轮对话后自动消失（cd18211）
+- 渠道只读会话隐藏「立即压缩」建议卡（49bfed0）
+
+### 文档
+- Linux 安装指南：ginno node headless 真机部署沉淀 + 模型提供方实证配置（9b20a7a / c8a5ff6）
+
 ## [0.4.0] - 2026-11-17
 
 65 commits since 0.3.3（~20 feat / ~32 fix / 3 test / 3 perf / 2 docs）。

@@ -1,6 +1,6 @@
 {
   "name": "@ginno/web",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Ginno Next.js UI (static export, served by Tauri)",
   "scripts": {

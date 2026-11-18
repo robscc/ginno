@@ -7,7 +7,7 @@
 #   · ginno_user_agent() 返回 ginno/0.1.0 —— 而网关按 UA 识别 Ginno 流量
 # 现改为**单一真源**：runtime 内所有版本展示一律 import 本模块，
 # 并有 tests/unit/test_version_single_source.py 在 CI 钉住它与 pyproject 一致。
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 def ginno_user_agent() -> str:
