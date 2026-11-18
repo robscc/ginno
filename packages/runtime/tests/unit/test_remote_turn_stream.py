@@ -892,13 +892,69 @@ class TestRemoteTurnUnregistersRunning:
         )
 
     async def test_successor_registration_not_clobbered(self, _wire, monkeypatch):
-        """身份校验：绝不删掉后继 turn 的登记。"""
+        """身份校验：绝不删掉后继 turn 的登记。
+
+        2026-11-18 生命周期重构：run_remote_turn 开头现在会覆盖式登记
+        （收编残留——非 ws 调用方此前根本不登记），「预置后缀再跑旧
+        turn」的老写法会被开头登记合法收编。等价迁移为「turn 进行中
+        后继接管」：轮询兜底期间账本被后继覆盖，旧 turn 收口时身份
+        校验必须放行后继的登记。
+        """
+        import asyncio
+
         ss, ns = _wire
-        monkeypatch.setattr(rt, "_client", lambda rec: self._client(ns, "completed"))
+        monkeypatch.setattr(rt, "_POLL_S", 0.01)
+
+        class PollingClient:
+            """建流失败 → 阻塞受理（working）→ 轮询先 working 后 completed。"""
+
+            def __init__(self):
+                self.polls = 0
+
+            async def stream_message(self, text, **kw):
+                raise A2AError("stream unsupported")
+                yield  # noqa: B901 — unreachable：使本函数成为 async
+                # generator（执行器按 gen 协议消费：async for + aclose）
+
+            async def send_message(self, text, **kw):
+                return ns(
+                    id="t1", context_id="c1",
+                    status=ns(state="working", message=ns(parts=[ns(text="")])),
+                    artifacts=[],
+                )
+
+            async def get_task(self, task_id):
+                self.polls += 1
+                state = "working" if self.polls <= 3 else "completed"
+                return ns(
+                    id=task_id, context_id="c1",
+                    status=ns(state=state, message=ns(parts=[ns(text="回复")])),
+                    artifacts=[],
+                )
+
+            async def aclose(self):
+                pass
+
+        client = PollingClient()
+        monkeypatch.setattr(rt, "_client", lambda rec: client)
         sid = "s-successor"
-        ss._RUNNING_TURNS[sid] = "tid-SUCCESSOR"  # 后继 turn 已登记
         sess = {"id": sid, "remote_peer": "vps", "graph": None}
-        await rt.run_remote_turn(sess, "干活", "tid-OLD")
+        task = asyncio.get_event_loop().create_task(
+            rt.run_remote_turn(sess, "干活", "tid-OLD")
+        )
+        try:
+            # 等轮询兜底确凿跑起（turn 进行中）
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if client.polls >= 1:
+                    break
+            assert client.polls >= 1, "turn 未进入轮询兜底，测试无效"
+            # 后继 turn 已接管账本
+            ss._RUNNING_TURNS[sid] = "tid-SUCCESSOR"
+            await asyncio.wait_for(task, timeout=5)
+        finally:
+            if not task.done():
+                task.cancel()
         assert ss._RUNNING_TURNS.get(sid) == "tid-SUCCESSOR", "误删了后继 turn 的登记"
 
     async def test_cleanup_failure_does_not_break_receipt(self, _wire, monkeypatch):
