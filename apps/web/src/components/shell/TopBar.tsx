@@ -266,7 +266,12 @@ export function TopBar({
         <SessionIdChip sessionId={session?.id} />
         {/* 远端归属徽标（remote-session-design.md R3）：会话挂 remote_peer
             时紧跟标题区，一眼看出执行方在另一台机器。 */}
-        {session?.remote_peer && <RemotePeerBadge slug={session.remote_peer} />}
+        {session?.remote_peer && (
+          <RemotePeerBadge
+            slug={session.remote_peer}
+            resolvedName={session.remote_peer_name}
+          />
+        )}
       </div>
 
       {/* 功能按钮组(§2.3):五个同宽 32px,徽标 + hover 数据 + click 面板;
