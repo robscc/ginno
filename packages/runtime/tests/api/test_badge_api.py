@@ -65,7 +65,57 @@ def test_badge_empty_home_is_zero(client):
     b = _get_badge(client)
     assert b["needs"] == 0
     assert b == {"ok": True, "needs": 0, "sessions": 0, "schedule_runs": 0,
-                 "teams": 0, "blocked": 0, "done_unread": 0}
+                 "teams": 0, "blocked": 0, "done_unread": 0, "running": 0,
+                 "pinned_sessions": []}
+
+
+# ---- running：menubar 状态（_RUNNING_TURNS 直读）------------------------------
+
+def test_badge_running_counts_streaming_turns(client):
+    """running = len(_RUNNING_TURNS)：无流式 → 0；登记后随之增长（跨 session
+    并发 >1 是正常值），且不影响 needs 等既有字段。根 conftest autouse
+    fixture 每测试前 clear()——这里只往同一 dict 里塞条目，不 setattr 替换。"""
+    from ginno_runtime import server_shared
+
+    assert _get_badge(client)["running"] == 0
+    server_shared._RUNNING_TURNS["sid-a"] = "turn-1"
+    server_shared._RUNNING_TURNS["sid-b"] = "turn-2"
+    b = _get_badge(client)
+    assert b["running"] == 2
+    assert b["needs"] == 0 and b["sessions"] == 0  # running 不进 Dock 徽标口径
+    server_shared._RUNNING_TURNS.pop("sid-a")
+    assert _get_badge(client)["running"] == 1
+    server_shared._RUNNING_TURNS.pop("sid-b")
+    assert _get_badge(client)["running"] == 0
+
+
+# ---- 置顶会话列表（menubar 托盘快速导航）---------------------------------------
+
+def test_badge_pinned_sessions_list(client):
+    """pinned_sessions 只收 pinned：未置顶/归档的不进列表，含 id+title。"""
+    _seed_session("p1", pinned=True, title="周报整理")
+    _seed_session("p2", pinned=True, title="Ginno 排障")
+    _seed_session("plain", title="普通会话")
+    _seed_session("arch", pinned=True, title="归档置顶", archived=True)
+    b = _get_badge(client)
+    ids = [s["id"] for s in b["pinned_sessions"]]
+    assert ids == ["p2", "p1"]  # updated 倒序（p2 后写 → 更新）
+    assert b["pinned_sessions"][0] == {"id": "p2", "title": "Ginno 排障"}
+
+
+def test_badge_pinned_sessions_capped_at_8(client):
+    """超过 8 条截断——托盘菜单要短，排序仍按 updated 倒序。"""
+    for i in range(10):
+        _seed_session(f"pin-{i}", pinned=True, title=f"s{i}")
+    b = _get_badge(client)
+    assert len(b["pinned_sessions"]) == 8
+    assert [s["id"] for s in b["pinned_sessions"]] == [f"pin-{i}" for i in range(9, 1, -1)]
+
+
+def test_badge_pinned_sessions_empty(client):
+    """无置顶 → 空列表（托盘菜单落「暂无置顶会话」空态行）。"""
+    _seed_session("plain", title="普通会话")
+    assert _get_badge(client)["pinned_sessions"] == []
 
 
 # ---- 会话未读收件箱语义 --------------------------------------------------------

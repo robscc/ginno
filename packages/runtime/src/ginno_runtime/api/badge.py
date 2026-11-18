@@ -7,15 +7,21 @@ macOS Dock。纪律与 /api/teams/badge 相同：零刷新直读已持久化状�
 - sessions   session_unread.unread_count()（直读各 project _index.json）
 - schedule_runs schedule_store.unseen_summary()（mtime 键控 memo）
 - teams      teams/status.rollup（roster 持久化语义态，blocked + done 未读）
+- running    len(server_shared._RUNNING_TURNS)（进程内登记表，纯内存直读）
+- pinned_sessions session_unread.pinned_sessions()（同源 _index.json 直读，
+  ≤8 条 id+title，menubar 托盘「置顶会话」快速导航区专用——见 desktop tray.rs）
 
 ``needs`` 字段名沿用 /api/teams/badge 的契约，Rust 壳的字符串 scrape 不变。
+分层纪律：Dock badge 只管 ``needs``（要人看的），``running``（正在流式的
+turn 数，主会话/subagent/team member 并发登记，>1 是正常值）只进 macOS
+menubar（badge.rs → tray set_title）——working stays inside the app。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .. import schedule_store, session_unread
+from .. import schedule_store, server_shared, session_unread
 from ..teams import status as team_status
 from ..teams import store as team_store
 
@@ -44,4 +50,9 @@ async def badge() -> dict:
         "teams": teams,
         "blocked": blocked,
         "done_unread": done_unread,
+        # 正在流式的 turn 数（跨 session 可并发）；sidecar 进程内真源，无落盘。
+        "running": len(server_shared._RUNNING_TURNS),
+        # 置顶会话（id+title ≤8 条）：托盘菜单快速导航用；老壳不认识该字段，
+        # serde 端 default 兼容。见 session_unread.pinned_sessions。
+        "pinned_sessions": session_unread.pinned_sessions(8),
     }

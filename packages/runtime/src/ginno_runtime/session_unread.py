@@ -87,3 +87,20 @@ def _iter_metas(slug: str | None):
 
 def unread_count(slug: str | None = None) -> int:
     return sum(1 for m in _iter_metas(slug) if is_unread(m))
+
+
+def pinned_sessions(limit: int = 8) -> list[dict]:
+    """Sidebar-pinned sessions (meta ``pinned: true``) for the menu-bar tray's
+    quick-nav section — same store read as the unread count above (all
+    projects' ``_index.json``, zero refresh), newest-``updated`` first to
+    mirror the sidebar grouping order, archived rows dropped. Capped at
+    ``limit``; the tray menu is the only consumer and should stay short."""
+    rows = [
+        m for m in _iter_metas(None) if m.get("pinned") and not m.get("archived")
+    ]
+    rows.sort(key=lambda m: float(m.get("updated") or 0), reverse=True)
+    return [
+        {"id": str(m["id"]), "title": str(m.get("title") or "")}
+        for m in rows[:limit]
+        if m.get("id")
+    ]
