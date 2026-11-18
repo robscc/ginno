@@ -237,11 +237,25 @@ runtime: web
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
 	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
+	  --exclude-module anthropic._vendor.httpx_aiohttp \
+	  --exclude-module aiohttp \
+	  --exclude-module yarl \
+	  --exclude-module frozenlist \
+	  --exclude-module multidict \
+	  --exclude-module aiosignal \
+	  --exclude-module setuptools \
+	  --exclude-module pkg_resources \
+	  --exclude-module pip \
+	  --exclude-module wheel \
 	  $(if $(wildcard $(TK_VOCAB)),--add-data "$(TK_VOCAB):tiktoken_cache",) \
 	  bin/ginno-runtime.py 2>&1 \
 	    | grep -vE "WARNING: (Failed to collect submodules for .(langchain_openai|langchain_anthropic)\.middleware.|Failed to collect submodules for .pandas\.plotting\._matplotlib.|Library (user32|msvcrt) required via ctypes not found)" \
 	  && echo "$$h" > $(CACHE)/runtime.stamp; \
 	fi
+	@# 2026-11-18 瘦身（零风险通道）：剥 collect_all 附带的 *.dist-info。
+	@# 例外保留 mcp（fastmcp/__init__ 顶层无兜底调用 importlib.metadata.version
+	@# "mcp"）；langchain/aiohttp 系查询均有 try/except 兜底。
+	@find $(RUNTIME)/dist/ginno-runtime/_internal -maxdepth 1 -name '*.dist-info' ! -name 'mcp-*' -exec rm -rf {} + 2>/dev/null || true
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
 ## web: build the Next.js static export (bundled into the runtime as web_out/)
