@@ -60,7 +60,10 @@
       "channelReadonly": "{channel} conversation — read-only here",
       "channelHint": "replies happen in the chat app; agent, model and folder mounts changed here still apply",
       "channelGeneric": "channel",
-      "compactingPlaceholder": "Compacting… your message will be injected into this turn once compaction finishes"
+      "compactingPlaceholder": "Compacting… your message will be injected into this turn once compaction finishes",
+      "remoteAttachTitle": "Attachments are not available for remote sessions — files never reach the remote node",
+      "remoteSlashTitle": "Slash commands and @ mentions are not available for remote sessions",
+      "remoteSteerHint": "Remote session running · input is delivered to the remote node as a new message when this turn ends"
     },
     "mods": {
       "promptBlocked": "This prompt was blocked by a mod.",
@@ -449,7 +452,8 @@
       "expand": "Expand plan",
       "collapse": "Collapse plan",
       "updateTitle": "Plan status update",
-      "dismiss": "Hide (an errored non-terminal plan is also cancelled)"
+      "dismiss": "Hide (an errored non-terminal plan is also cancelled)",
+      "remoteNote": "This session runs on remote node {name} — plans are managed there and not shown locally"
     },
     "team": {
       "replyBadge": "reply",

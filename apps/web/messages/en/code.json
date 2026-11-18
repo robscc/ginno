@@ -12,7 +12,8 @@
       "reading": "Reading…",
       "emptyTitle": "Open a file from the tree to start reading",
       "emptyHint": "Press ⌘B to expand the file tree",
-      "reloadFile": "Reload current file"
+      "reloadFile": "Reload current file",
+      "remoteNote": "{name} executes this session: files land in the remote node's workspace, not on this machine. Only locally mounted folders are shown here."
     },
     "notice": {
       "reloadDiscardConfirm": "Unsaved changes will be discarded. Reload from disk?",

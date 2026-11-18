@@ -1,8 +1,8 @@
 {
   "shell": {
     "remote-badge": "远端 · {name}",
-    "remote-badge-title": "本会话在远端节点 {name}（{endpoint}）上执行，中途不可切换执行方。",
-    "remote-badge-title-noendpoint": "本会话在远端节点 {name} 上执行，中途不可切换执行方。",
+    "remote-badge-title": "本会话在远端节点 {name}（{endpoint}）上执行，使用对端的模型与记忆体系，中途不可切换执行方。",
+    "remote-badge-title-noendpoint": "本会话在远端节点 {name} 上执行，使用对端的模型与记忆体系，中途不可切换执行方。",
     "runtimeStale": {
       "title": "运行时已更新",
       "hint": "检测到新的运行时构建。完全退出并重新打开 Ginno 后生效。",
