@@ -30,6 +30,7 @@ import uuid
 
 from langchain_core.messages import AIMessage
 
+from .. import server_shared
 from ..lang import t
 from ..server_shared import (
     _PENDING_RESUME,
@@ -553,9 +554,16 @@ async def deliver(
     # 同步占位后再 spawn：堵住「闸检查 → task 内登记 _RUNNING_TURNS」的窗口
     # （backlog P1-5：两个并发 deliver 否则可同时通过闸）。
     _reserve(team_id, instance_id)
+    # ack 通道先于 spawn 注册（方案②）：runner 登记即 notify，事件驱动确认
+    # 取代 50ms 盲轮询——慢启动 turn 不再被固定窗口误报 stalled。
+    ack_fut = asyncio.get_running_loop().create_future()
+    server_shared._TURN_START_ACKS[sid] = ack_fut
     spawn_bg(_run_member_turn(team_id, instance_id, text))
-    # 证据 = turn 确实起来了（给 spawn_bg 一点时间登记 _RUNNING_TURNS）。
-    started = await _await_turn_start(sid)
+    try:
+        started = await _await_turn_start(sid)
+    finally:
+        if server_shared._TURN_START_ACKS.get(sid) is ack_fut:
+            server_shared._TURN_START_ACKS.pop(sid, None)
     receipt = "delivered" if started else "stalled"
     _log.info(
         "team_deliver_new_turn team=%s instance=%s session=%s receipt=%s slug=%s",
@@ -565,13 +573,31 @@ async def deliver(
             "instance_id": instance_id, "session_id": sid, "channel": "turn"}
 
 
-async def _await_turn_start(session_id: str, timeout_s: float = 5.0) -> bool:
-    """等 managed turn 登记进 _RUNNING_TURNS（投递证据，纪律 3）。"""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if _is_live(session_id):
+# ack 等待超时（秒）：worker 前置（graph 构建/checkpoint IO/turn lock 排队）
+# 的合理上限——超过即按老语义回查 stalled。测试可 monkeypatch（见
+# test_team_deliver_ack.py）。
+_ACK_TIMEOUT_S = 15.0
+
+
+async def _await_turn_start(session_id: str, timeout_s: float | None = None) -> bool:
+    """等 managed turn 登记进 _RUNNING_TURNS（投递证据，纪律 3）。
+
+    方案②事件驱动（2026-11-18 待决策项 b）：优先等 ``notify_turn_started``
+    的推式 ack——登记无论多晚（graph 构建/checkpoint IO/事件循环拥堵），
+    事件一到即确认，不再被固定轮询窗口误报。fail-safe：ack 超时（默认
+    ``_ACK_TIMEOUT_S``）后回查 ``_is_live``（老语义兜底）——真死信仍报
+    stalled；ack 机制故障但 turn 真起来了时不冤枉。
+    """
+    fut = server_shared._TURN_START_ACKS.get(session_id)
+    if (fut is not None and fut.done()) or _is_live(session_id):
+        return True  # 事件已到（或 turn 早已 live）——竞态保险
+    timeout = _ACK_TIMEOUT_S if timeout_s is None else timeout_s
+    try:
+        if fut is not None:
+            await asyncio.wait_for(asyncio.shield(fut), timeout)
             return True
-        await asyncio.sleep(0.05)
+    except asyncio.TimeoutError:
+        pass
     return _is_live(session_id)
 
 
