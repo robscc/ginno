@@ -125,6 +125,44 @@ def _unwire_uvicorn_logging(fh: logging.Handler) -> None:
             pass
 
 
+_FRAME_JOURNAL_MAX = 2 * 1024 * 1024  # 单会话 2MB 截断重写（追加式事件账本）
+_FRAME_JOURNAL_EVENTS = frozenset({
+    "turn.start", "turn.end", "message.start", "message.end", "message.delta_end",
+    "turn.error", "error", "interrupt",
+})
+
+
+def _journal_frame(session_id: str, event: str, data: dict) -> None:
+    """控制帧事件账本（2026-11-18 fe0d06e 排障沉淀）。
+
+    turn 事件的**收尾帧丢失**（message.end / user.question 等）事后无法定责：
+    ws 未断、sidecar.log 只记生命周期不记每帧。这里把低频控制帧（token/thinking
+    delta 除外）追加到 ``logs/frames/<session_id>.jsonl``，超 2MB 原地截断重写。
+    只写 emit() 出口的帧（客户端可见面），足够回答「服务端到底发没发」。
+    任何异常静默——账本绝不能影响 turn 主流程。
+    """
+    if event not in _FRAME_JOURNAL_EVENTS and not event.startswith(("tool.", "user.", "llm.")):
+        return
+    try:
+        import json as _json
+        import time as _time
+
+        d = paths.home() / "logs" / "frames"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{session_id}.jsonl"
+        if f.exists() and f.stat().st_size > _FRAME_JOURNAL_MAX:
+            f.write_text("")  # 截断重开：旧账价值低，保磁盘
+        line = _json.dumps(
+            {"t": round(_time.time(), 3), "event": event,
+             "id": data.get("id"), "turn_id": data.get("turn_id")},
+            ensure_ascii=False,
+        )
+        with f.open("a") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+
+
 def _ensure_turn_log() -> None:
     """Attach a rotating file handler under the *current* paths.home()/logs.
 
