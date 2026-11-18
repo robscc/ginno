@@ -508,9 +508,7 @@ return (
               <div className="mt-1.5 flex justify-end">
                 <div className="flex items-center gap-2 px-1 py-0.5">
                 <div className="flex items-center gap-0.5">
-                  <WaveDot delay={0} color={connLost && !dsTail ? "#eab308" : hex} />
-                  <WaveDot delay={150} color={connLost && !dsTail ? "#eab308" : hex} />
-                  <WaveDot delay={300} color={connLost && !dsTail ? "#eab308" : hex} />
+                  <SonarDot color={connLost && !dsTail ? "#eab308" : hex} />
                 </div>
                 <span
                   key={tailLabel}
@@ -529,9 +527,7 @@ return (
             <div className="flex items-center gap-2">
               {/* Smaller animated wave dots */}
               <div className="flex items-center gap-0.5">
-                <WaveDot delay={0} color={hex} />
-                <WaveDot delay={150} color={hex} />
-                <WaveDot delay={300} color={hex} />
+                <SonarDot color={hex} />
               </div>
               {/* Status text with fade transition */}
               <span key={statusText} className="text-xs text-muted animate-fade-in">
@@ -573,15 +569,25 @@ return (
 );
 }
 
-export function WaveDot({ delay, color }: { delay: number; color: string }) {
+/** 声呐脉冲 loading（2026-11-19 选型 05，替代三连 WaveDot）：
+ *  单核点 + 双扩散环（错相 1s），「仍在监听」隐喻贴「等待下一轮」语义。
+ *  颜色沿用调用方动态逻辑（运行态 agent 色 / 断连琥珀）；环动画在
+ *  globals.css（ginno-sonar-ring），reduced-motion 下静止隐藏只留核点。 */
+export function SonarDot({ color }: { color: string }) {
 return (
-  <span
-    className="h-1.5 w-1.5 rounded-full animate-wave"
-    style={{
-      backgroundColor: color,
-      animationDelay: `${delay}ms`,
-      boxShadow: `0 0 6px ${color}60`
-    }}
-  />
+  <span className="relative inline-flex h-2 w-2 shrink-0" aria-hidden>
+    <span
+      className="absolute inset-[1px] rounded-full"
+      style={{ backgroundColor: color }}
+    />
+    <span
+      className="ginno-sonar-ring absolute inset-0 rounded-full border-[1.5px]"
+      style={{ borderColor: color }}
+    />
+    <span
+      className="ginno-sonar-ring absolute inset-0 rounded-full border-[1.5px]"
+      style={{ borderColor: color, animationDelay: "1000ms" }}
+    />
+  </span>
 );
 }
