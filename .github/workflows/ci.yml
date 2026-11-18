@@ -10,6 +10,10 @@ on:
   # 'workflow_dispatch' trigger；近 30 次 CI 运行零 dispatch 事件）。
   # 补上触发器，Actions 页的 Run workflow 按钮才会出现。
   workflow_dispatch:
+  # rust job 的周维护触发（2026-11-18 起非自动：macOS 分钟配额耗尽，见该
+  # job 的 if 注释）。周一 02:00 UTC 慢机档跑一轮 fmt+check 防长期漂移。
+  schedule:
+    - cron: "0 2 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -102,6 +106,16 @@ jobs:
     # macOS runner: the desktop crate pulls Tauri, whose Linux build needs
     # webkit2gtk/gtk system packages — not worth installing per-run while a
     # public repo gets macOS minutes free. mod-broker rides along.
+    #
+    # ⚠️ 2026-11-18 暂改非自动触发（同 ui-e2e 模式）：当天 PR #210 的 rust job
+    # 三连 cancelled（无编译日志、无 timeout 配置、同时段 main 同 job 1m23s
+    # success、PR 未动 Rust 文件）——最自洽归因为 GitHub Free macOS 分钟配额
+    # 耗尽（2000min/月 ÷ 10 倍率 = 200 实际分钟；当日 6 PR × rust 9-15min +
+    # 并行分支叠加烧穿；11-15 ui-e2e 的 cancelled 是 macos-14 退役、本次排除
+    # ——macos-15 当天 14:01 仍 success）。配额恢复或迁移 Linux（apt 装
+    # webkit2gtk，需先验证 desktop crate 的 #[cfg(target_os)] 覆盖面）后，
+    # 删除下行 if 恢复自动触发。
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.repository == 'robscc/ginno')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
