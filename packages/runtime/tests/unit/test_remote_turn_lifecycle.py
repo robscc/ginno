@@ -156,7 +156,7 @@ def wire(monkeypatch, isolated_home):
 
     monkeypatch.setattr(rt, "_push_session_event", fake_push)
 
-    async def fake_persist(session, user_text, reply):
+    async def fake_persist(session, user_text, reply, refs=None):
         pass
 
     monkeypatch.setattr(rt, "_persist_exchange", fake_persist)

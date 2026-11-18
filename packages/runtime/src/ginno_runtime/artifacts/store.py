@@ -49,8 +49,19 @@ def list_artifacts(slug: str, session_id: str | None = None) -> list[dict[str, A
 
 
 def add_artifact(
-    slug: str, kind: str, name: str, ref: str = "", session_id: str | None = None
+    slug: str,
+    kind: str,
+    name: str,
+    ref: str = "",
+    session_id: str | None = None,
+    origin: str = "",
 ) -> dict[str, Any]:
+    """Register an artifact; ``origin="remote"`` marks a remote-peer ref.
+
+    Remote refs (remote-session attach_ref forwarded back by the remote turn)
+    point at a path on the peer machine — it never exists locally, so prune
+    must not drop it and the UI degrades the click to a remote notice.
+    """
     items = _read(slug)
     # de-dup by (kind, ref or name)
     key = (kind, ref or name)
@@ -65,6 +76,8 @@ def add_artifact(
         "session_id": session_id,
         "created": time.time(),
     }
+    if origin:
+        item["origin"] = origin
     items.append(item)
     _write(slug, items)
     return item
@@ -111,6 +124,10 @@ def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
             dropped += 1
             continue
         if it.get("kind") in ("file", "image", "doc"):
+            # remote-origin refs live on the peer machine — missing locally by
+            # design, not a stale entry (see add_artifact origin=).
+            if it.get("origin") == "remote":
+                continue
             ref = str(it.get("ref") or "")
             if ref and _is_local_path(ref) and not os.path.exists(os.path.expanduser(ref)):
                 dropped += 1

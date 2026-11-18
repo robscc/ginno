@@ -254,7 +254,9 @@
         "saveFailed": "Failed to save",
         "noChanges": "No changes"
       },
-      "reveal": "Reveal in Finder"
+      "reveal": "Reveal in Finder",
+      "remoteNotice": "“{name}” is a remote artifact ({path}) — the file lives on the remote node and can't be opened locally",
+      "remoteBadge": "remote"
     },
     "synthesis": {
       "title": "Synthesis History",

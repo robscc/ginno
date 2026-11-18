@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 
-import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
+import { RotateCw, Link2, FileText, Workflow, Server } from "lucide-react";
 import { FileTypeIcon } from "./blocks/FileTypeIcon";
 import { useTranslations } from "next-intl";
 import { Markdown } from "./Markdown";
@@ -13,6 +13,7 @@ import { useGinno } from "@/lib/store";
 import { ensureFileRegistered } from "@/lib/api/workspace";
 import { toolsWithUi, type McpToolUiInfo } from "@/lib/runtime";
 import { openLinkExternal } from "@/lib/api/knowledge";
+import { pushNotice } from "@/lib/notice";
 import { useChatT } from "./blocks/i18n";
 import { McpAppCard } from "./McpAppCard";
 import type { Block, SteerBandFile, SteerBandImage } from "./blocks/types";
@@ -109,17 +110,47 @@ function cleanAgentText(text: string): string {
 
 /** 附件型 ref（file/doc）：点击时把 ref_id 登记进文件注册表（老会话的历史
  *  ref 从未注册过；live 转向在 ref.emit 时已注册，这里幂等命中）再走和
- *  FileChips 一致的预览。link 型 ref 直接交系统浏览器；无 ref_id 的维持纯展示。 */
-function RefChip({ refKind, name, refId }: { refKind: string; name: string; refId?: string }) {
+ *  FileChips 一致的预览。link 型 ref 直接交系统浏览器；无 ref_id 的维持纯展示。
+ *
+ *  远端会话（remote-session）降级（2026-11-18）：远端 turn 转发回来的
+ *  file/doc ref 的 ref_id 是**对端机器上的路径**，本机 ensure-registered
+ *  必然 "File not found"，旧版 `r.ok && r.file` 不成立就静默返回——点击装死。
+ *  现在远端 chip 明确标注（Server 图标 + tooltip）并点击弹远端路径提示；
+ *  「远端」判定双保险：转发帧带的 remote 标记（live）+ 会话自身挂
+ *  remote_peer（历史投影的 ref 块没有 remote 标记，靠会话归属兜底——
+ *  远端会话本地工具不注入，file/doc 引用必来自对端）。 */
+function RefChip({
+  refKind,
+  name,
+  refId,
+  remote,
+  peer,
+}: {
+  refKind: string;
+  name: string;
+  refId?: string;
+  remote?: boolean;
+  peer?: string;
+}) {
   const g = useGinno();
   const { tc } = useChatT();
   const isUrl = /^https?:\/\//i.test(refId ?? "");
+  const sess = g.sessions.find((s) => s.id === g.activeSessionId);
+  const isRemote = remote || !!sess?.remote_peer;
+  const peerName = peer || sess?.remote_peer_name || sess?.remote_peer || "";
   const openable =
     !!refId && (refKind === "link" ? isUrl : refKind === "file" || refKind === "doc");
   const onOpen = async () => {
     if (!refId) return;
     if (refKind === "link") {
       openLinkExternal(refId);
+      return;
+    }
+    if (isRemote) {
+      pushNotice("info", tc("refChip.remoteNotice", { name, path: refId, peer: peerName }), {
+        dedupeKey: `remote-ref:${refId}`,
+        inbox: false,
+      });
       return;
     }
     const sid = g.activeSessionId;
@@ -139,10 +170,19 @@ function RefChip({ refKind, name, refId }: { refKind: string; name: string; refI
       type="button"
       disabled={!openable}
       onClick={() => void onOpen()}
-      title={openable ? `${tc("refChip.clickOpen")}\n${refId}` : undefined}
-      className={`inline-flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted ${
-        openable ? "cursor-pointer hover:border-violet/50 hover:text-txt" : "cursor-default"
-      }`}
+      title={
+        openable
+          ? isRemote && refKind !== "link"
+            ? tc("refChip.remoteTitle", { peer: peerName, path: refId })
+            : `${tc("refChip.clickOpen")}\n${refId}`
+          : undefined
+      }
+      data-testid={isRemote ? "remote-ref-chip" : undefined}
+      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ${
+        isRemote && refKind !== "link"
+          ? "border-violet/40 bg-violet/5 text-violet"
+          : "border-line bg-card text-muted"
+      } ${openable ? "cursor-pointer hover:border-violet/50 hover:text-txt" : "cursor-default"}`}
     >
       {refKind === "workflow" ? (
         <Workflow className="h-3.5 w-3.5 text-violet" />
@@ -153,6 +193,12 @@ function RefChip({ refKind, name, refId }: { refKind: string; name: string; refI
       )}
       {refKind === "workflow" ? tc("refChip.workflowPrefix") : ""}
       {name}
+      {isRemote && refKind !== "link" && (
+        <span className="inline-flex items-center gap-0.5 border-l border-violet/30 pl-1.5 text-[10px] text-violet/80">
+          <Server className="h-3 w-3" />
+          {tc("refChip.remoteBadge")}
+        </span>
+      )}
     </button>
   );
 }
@@ -502,7 +548,14 @@ export function RefBlocks({ blocks }: { blocks: Block[] }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       {refs.map((r, i) => (
-        <RefChip key={i} refKind={r.refKind} name={r.name} refId={r.refId} />
+        <RefChip
+          key={i}
+          refKind={r.refKind}
+          name={r.name}
+          refId={r.refId}
+          remote={r.remote}
+          peer={r.peer}
+        />
       ))}
     </div>
   );

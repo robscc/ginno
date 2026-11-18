@@ -307,7 +307,10 @@
     },
     "refChip": {
       "workflowPrefix": "Workflow: ",
-      "clickOpen": "Click to open"
+      "clickOpen": "Click to open",
+      "remoteBadge": "remote",
+      "remoteNotice": "“{name}” lives on the remote node {peer} ({path}) — not available locally",
+      "remoteTitle": "Remote file (on {peer})\n{path}\nNot available locally; click shows the remote path"
     },
     "browserHandoff": {
       "title": "The browser is now in your hands",

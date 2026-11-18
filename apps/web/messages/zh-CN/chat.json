@@ -307,7 +307,10 @@
     },
     "refChip": {
       "workflowPrefix": "工作流：",
-      "clickOpen": "点击打开"
+      "clickOpen": "点击打开",
+      "remoteBadge": "远端",
+      "remoteNotice": "「{name}」在远端节点 {peer} 上（{path}），本机无法直接打开",
+      "remoteTitle": "远端文件（位于 {peer}）\n{path}\n本机无法直接打开，点击查看远端路径提示"
     },
     "browserHandoff": {
       "title": "浏览器现在交到你手上",

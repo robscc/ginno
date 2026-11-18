@@ -506,6 +506,9 @@ export interface Artifact {
   schema?: string; // user-corrected schema summary (prompt-injection override)
   // 来源会话标题（纯展示——跨会话条目在 @ 菜单里标注出处）
   session_title?: string;
+  // "remote"：远端会话 attach_ref 落地条目——ref 是对端机器上的路径，
+  // 本机按设计不存在；点击降级为远端提示（不静默失败）。
+  origin?: string;
 }
 
 // Metadata inspector payload for one artifact (GET /api/artifacts/{id}/metadata).

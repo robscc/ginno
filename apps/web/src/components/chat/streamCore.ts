@@ -454,7 +454,16 @@ switch (ev.event) {
   case "ref.emit":
     return [
       ...blocks,
-      { kind: "ref", refKind: ev.kind as string, name: ev.name as string, refId: ev.ref_id as string | undefined },
+      {
+        kind: "ref",
+        refKind: ev.kind as string,
+        name: ev.name as string,
+        refId: ev.ref_id as string | undefined,
+        // 远端会话转发帧带的来源标记（remote_turn.py enrich）——本机不存在
+        // 该路径，RefChip 据此降级为远端提示。
+        remote: (ev.remote as boolean) || undefined,
+        peer: (ev.peer as string) || undefined,
+      },
     ];
   case "image.emit":
     // Code-generated image (bash) surfaced inline; URL resolved from fileId.
