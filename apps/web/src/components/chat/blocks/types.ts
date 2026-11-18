@@ -15,7 +15,11 @@ export type Block =
   // SKILL.md injection; history replay folds it into this chip + user request.
   | { kind: "skill"; name: string; text?: string }
   | { kind: "widget"; widgetKind: string; data: unknown; renderId?: string }
-  | { kind: "ref"; refKind: string; name: string; refId?: string }
+  // remote/peer：远端会话（remote_peer）转发回来的 ref.emit 专属标记——
+  // refId 是对端机器上的路径，本机不存在，chip 走远端降级（提示而非装死）。
+  // 历史投影（messages_ui 标签路径）不带该标记，靠 session.remote_peer 兜底。
+  | { kind: "ref"; refKind: string; name: string; refId?: string;
+      remote?: boolean; peer?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string }
   // ask_user parked the turn on an ambiguity: the card REPLACES the pending
   // ask_user tool bubble (same tool-call id), and the tool's JSON result folds

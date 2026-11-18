@@ -358,9 +358,11 @@ def wire(monkeypatch, isolated_home):
 
     monkeypatch.setattr(rt, "_push_session_event", fake_push)
     persisted: list = []
+    persisted_refs: list = []
 
-    async def fake_persist(session, user_text, reply):
+    async def fake_persist(session, user_text, reply, refs=None):
         persisted.append(reply)
+        persisted_refs.append(refs or [])
 
     monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
     clients: list = []
@@ -371,7 +373,7 @@ def wire(monkeypatch, isolated_home):
         return client
 
     return SimpleNamespace(events=events, persisted=persisted, install=install,
-                           clients=clients)
+                           clients=clients, persisted_refs=persisted_refs)
 
 
 def _evs(events, name):
@@ -855,7 +857,7 @@ class TestRemoteTurnUnregistersRunning:
 
         monkeypatch.setattr(rt, "_push_session_event", fake_push)
 
-        async def fake_persist(s, u, r):
+        async def fake_persist(s, u, r, refs=None):
             pass
 
         monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
@@ -972,3 +974,147 @@ class TestRemoteTurnUnregistersRunning:
         sess = {"id": sid, "remote_peer": "vps", "graph": None}
         res = await rt.run_remote_turn(sess, "干活", "tid-b")
         assert res["ok"] is True, "清理异常不得让 turn 失败"
+
+
+# --------------------------------------------------------------------------- #
+# 远端 attach_ref 修复（2026-11-18）：转发标记 + 本地 artifacts 落地 + 历史标签
+# --------------------------------------------------------------------------- #
+async def test_stream_ref_emit_marked_remote_and_forwarded(wire):
+    """远端 ref.emit 转发时打上 remote/peer 标记，ref_id 原样保留。
+
+    ref_id 是对端机器上的路径——本地不存在，前端据此把 chip 降级为
+    「远端文件」提示而非装死的 ensure-registered。"""
+    frames = [
+        _status_frame("working"),
+        _turn_event_frame("ref.emit", {
+            "kind": "file", "name": "report.md", "ref_id": "/srv/w/report.md",
+        }),
+        _turn_event_frame("token.delta", {"content": "报告已生成"}),
+        _status_frame("completed", text="报告已生成"),
+    ]
+    wire.install(FakeStreamClient(frames=frames))
+    sess = {"id": "s-refmark", "remote_peer": "vps", "graph": None,
+            "project_slug": "default"}
+    res = await rt.run_remote_turn(sess, "生成报告", "tid-rm")
+    assert res["ok"] is True, res.get("error")
+    refs = _evs(wire.events, "ref.emit")
+    assert len(refs) == 1
+    r = refs[0]
+    assert r["remote"] is True, "远端 ref 必须带 remote 标记（前端降级依据）"
+    assert r["peer"], "远端 ref 必须带 peer 显示名"
+    assert r["kind"] == "file" and r["name"] == "report.md"
+    assert r["ref_id"] == "/srv/w/report.md", "对端路径原样保留（真源）"
+    assert r["frame_session"] == "s-refmark"
+
+
+async def test_stream_refs_landed_as_remote_artifacts(wire, isolated_home):
+    """远端引用落地本地 artifacts 面板：origin=remote + 对端路径 + 会话归属。"""
+    from ginno_runtime.artifacts import store as art_store_mod
+
+    frames = [
+        _status_frame("working"),
+        _turn_event_frame("ref.emit", {
+            "kind": "file", "name": "report.md", "ref_id": "/srv/w/report.md",
+        }),
+        _turn_event_frame("ref.emit", {
+            "kind": "doc", "name": "spec.md", "ref_id": "/srv/w/spec.md",
+        }),
+        _status_frame("completed", text="完成"),
+    ]
+    wire.install(FakeStreamClient(frames=frames))
+    sess = {"id": "s-land", "remote_peer": "vps", "graph": None,
+            "project_slug": "default"}
+    res = await rt.run_remote_turn(sess, "干活", "tid-land")
+    assert res["ok"] is True, res.get("error")
+    items = art_store_mod.list_artifacts("default", "s-land")
+    by_ref = {a["ref"]: a for a in items}
+    assert "/srv/w/report.md" in by_ref, f"远端 file ref 未落地: {items}"
+    assert by_ref["/srv/w/report.md"]["origin"] == "remote"
+    assert by_ref["/srv/w/report.md"]["name"] == "report.md"
+    assert "/srv/w/spec.md" in by_ref
+    # 重复 ref.emit（重放/重试）不得堆叠条目（add_artifact 按 (kind,ref) 去重 +
+    # 执行器按三元组去重，双保险）
+    assert len(items) == 2, items
+
+
+async def test_stream_refs_survive_prune(wire, isolated_home):
+    """startup prune 不清 remote 条目——对端路径本地不存在是设计而非失效。"""
+    from ginno_runtime.artifacts import store as art_store_mod
+
+    frames = [
+        _status_frame("working"),
+        _turn_event_frame("ref.emit", {
+            "kind": "file", "name": "x.md", "ref_id": "/srv/w/x.md",
+        }),
+        _status_frame("completed", text="ok"),
+    ]
+    wire.install(FakeStreamClient(frames=frames))
+    sess = {"id": "s-prune", "remote_peer": "vps", "graph": None,
+            "project_slug": "default"}
+    await rt.run_remote_turn(sess, "hi", "tid-p")
+    dropped = art_store_mod.prune_artifacts("default", {"s-prune"})
+    assert dropped == 0, f"remote 条目被 prune 误清: dropped={dropped}"
+    assert any(a["ref"] == "/srv/w/x.md" for a in art_store_mod.list_artifacts("default"))
+
+
+async def test_persist_exchange_appends_ref_tags(isolated_home):
+    """真 _persist_exchange：refs 以 <attach_ref/> 标签进 checkpoint 终稿。
+
+    远端 tool-call 形态的 attach_ref 在本地 checkpoint 无 tool_calls 记录，
+    标签是历史投影（messages_ui split_attach_tags）还原 chip 的唯一载体
+    ——重载/重启后引用不消失。wire 桩掉了 persist，这里直测真函数。"""
+    wrote: list = []
+
+    class FakeGraph:
+        async def aupdate_state(self, cfg, payload):
+            wrote.append(payload)
+
+    sess = {"id": "s-persist", "graph": FakeGraph()}
+    refs = [{"kind": "file", "name": "report.md", "ref_id": "/srv/w/report.md"}]
+    await rt._persist_exchange(sess, "生成报告", "报告已生成", refs=refs)
+    assert wrote, "必须写回 checkpoint"
+    msgs = wrote[0]["messages"]
+    ai = msgs[-1]
+    from ginno_runtime.tools.render_tools import split_attach_tags
+
+    clean, parsed = split_attach_tags(ai.content)
+    assert clean.strip() == "报告已生成", f"原文被改动: {ai.content!r}"
+    assert parsed == [{"kind": "file", "name": "report.md",
+                       "ref_id": "/srv/w/report.md"}]
+
+
+async def test_run_remote_turn_passes_refs_to_persist(wire):
+    """执行器把本轮收集的 refs 传给 _persist_exchange（接线不丢）。"""
+    frames = [
+        _status_frame("working"),
+        _turn_event_frame("ref.emit", {
+            "kind": "file", "name": "report.md", "ref_id": "/srv/w/report.md",
+        }),
+        _status_frame("completed", text="报告已生成"),
+    ]
+    wire.install(FakeStreamClient(frames=frames))
+    sess = {"id": "s-pass", "remote_peer": "vps", "graph": None}
+    res = await rt.run_remote_turn(sess, "hi", "tid-pass")
+    assert res["ok"] is True, res.get("error")
+    assert wire.persisted == ["报告已生成"]
+    assert wire.persisted_refs == [[{"kind": "file", "name": "report.md",
+                                     "ref_id": "/srv/w/report.md"}]]
+
+
+def test_append_ref_tags_dedup_and_escape():
+    """纯函数：已有同名标签不重复追加；引号转义不炸标签解析。"""
+    reply = '看 <attach_ref kind="file" name="r.md" ref_id="/srv/w/r.md"/> 完'
+    refs = [{"kind": "file", "name": "r.md", "ref_id": "/srv/w/r.md"},
+            {"kind": "doc", "name": 'spec "v2".md', "ref_id": "/srv/w/spec.md"}]
+    out = rt._append_ref_tags(reply, refs)
+    assert out.count("<attach_ref") == 2, "重复标签被追加"
+    _, parsed = split_attach_tags_for_test(out)
+    assert len(parsed) == 2
+    assert parsed[1]["ref_id"] == "/srv/w/spec.md"
+    assert rt._append_ref_tags("hi", []) == "hi"
+
+
+def split_attach_tags_for_test(text):
+    from ginno_runtime.tools.render_tools import split_attach_tags
+
+    return split_attach_tags(text)

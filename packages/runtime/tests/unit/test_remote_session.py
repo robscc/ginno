@@ -137,7 +137,7 @@ async def test_remote_turn_network_failure_reports_not_silent(monkeypatch):
     monkeypatch.setattr(rt, "_push_session_event", fake_push)
     persisted = []
 
-    async def fake_persist(session, user_text, reply):
+    async def fake_persist(session, user_text, reply, refs=None):
         persisted.append(reply)
 
     monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
@@ -270,7 +270,7 @@ class TestRemoteTurnSuccessPath:
         monkeypatch.setattr(rt, "_push_session_event", fake_push)
         persisted: list = []
 
-        async def fake_persist(session, user_text, reply):
+        async def fake_persist(session, user_text, reply, refs=None):
             persisted.append(reply)
 
         monkeypatch.setattr(rt, "_persist_exchange", fake_persist)
@@ -350,7 +350,7 @@ async def test_network_failure_error_is_not_our_own_bug(monkeypatch, isolated_ho
 
     monkeypatch.setattr(rt, "_push_session_event", fake_push)
 
-    async def fake_persist(session, user_text, reply):
+    async def fake_persist(session, user_text, reply, refs=None):
         pass
 
     monkeypatch.setattr(rt, "_persist_exchange", fake_persist)

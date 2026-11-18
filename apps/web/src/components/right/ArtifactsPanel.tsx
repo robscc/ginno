@@ -25,6 +25,7 @@ import {
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
+import { pushNotice } from "@/lib/notice";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { FILE_MISSING_EVENT } from "@/components/chat/FileViewer";
 import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
@@ -758,6 +759,16 @@ export function ArtifactsPanel() {
         // Remember the reverse mapping so FILE_MISSING_EVENT can dim this row.
         fileToArtifactRef.current.set(entry.id, a.id);
         g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind, mtime: entry.mtime });
+        return;
+      }
+      // 远端产物（远端会话 attach_ref 落地条目）：ref 是对端机器上的路径，
+      // 注册表永远查不到——旧版静默返回就是「点了没反应」。明确提示远端
+      // 来源与路径，本机打不开是事实而不是故障。
+      if (a.origin === "remote") {
+        pushNotice("info", t("remoteNotice", { name: a.name, path: a.ref }), {
+          dedupeKey: `remote-artifact:${a.id}`,
+          inbox: false,
+        });
       }
     } catch {
       /* sidecar hiccup — ignore */
@@ -858,6 +869,11 @@ export function ArtifactsPanel() {
         <Ic className="h-4 w-4 shrink-0 text-violet" />
         <span className="truncate text-txt">{a.name}</span>
         {a.ref && <span className="truncate text-xs text-faint">{a.ref}</span>}
+        {a.origin === "remote" && (
+          <span className="shrink-0 rounded-full bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet">
+            {t("remoteBadge")}
+          </span>
+        )}
         {failed && (
           <span className="shrink-0 rounded-full bg-yellow/15 px-1.5 py-0.5 text-[10px] text-yellow">
             {t("invalid")}

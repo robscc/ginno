@@ -104,11 +104,56 @@ def _sid(session: dict) -> str:
     return str(session.get("session_id") or session.get("id") or "")
 
 
-async def _persist_exchange(session: dict, user_text: str, reply: str) -> None:
+def _ref_tag(ref: dict) -> str:
+    """``(kind, name, ref_id)`` → ``<attach_ref …/>`` 标签（属性转义）。
+
+    持久化用的标准三属性形态——messages_ui 的 split_attach_tags 在历史
+    投影时把它还原成 ref chip，远端会话重载后引用不消失。
+    """
+    from xml.sax.saxutils import escape
+
+    def _attr(v: str) -> str:
+        return escape(str(v or ""), {'"': "&quot;"})
+
+    return (
+        f'<attach_ref kind="{_attr(ref.get("kind") or "file")}" '
+        f'name="{_attr(ref.get("name") or "")}" '
+        f'ref_id="{_attr(ref.get("ref_id") or "")}"/>'
+    )
+
+
+def _append_ref_tags(reply: str, refs: list[dict]) -> str:
+    """把本轮远端 attach_ref 追加为文本标签（历史投影还原 chip 用）。
+
+    远端终稿可能已含同名标签（模型以 XML 形态写引用时远端不剥
+    checkpoint 原文）——按 (kind, name, ref_id) 去重，不重复追加。
+    """
+    from ...tools.render_tools import split_attach_tags
+
+    if not refs or not reply:
+        return reply
+    _, existing = split_attach_tags(reply)
+    seen = {(r.get("kind"), r.get("name"), r.get("ref_id")) for r in existing}
+    tail = [
+        _ref_tag(r) for r in refs
+        if (r.get("kind"), r.get("name"), r.get("ref_id")) not in seen
+    ]
+    if not tail:
+        return reply
+    return reply.rstrip() + "\n" + "\n".join(tail)
+
+
+async def _persist_exchange(
+    session: dict, user_text: str, reply: str, refs: list[dict] | None = None
+) -> None:
     """把本轮问答写回本地 checkpoint，使 history 照常可读。
 
     远端会话本地不跑图，故必须显式追加消息；用 aupdate_state 走正规
     checkpoint 通道，不自己拼 jsonl（避免与切分/fold 语义打架）。
+    ref chips 也要过历史投影（重载/重启后不消失）：远端 tool-call 形态的
+    attach_ref 在本地 checkpoint 里没有对应 tool_calls 记录，唯一可投影
+    的载体是文本标签（messages_ui split_attach_tags 路径，与模型 XML
+    形态同一条路）——把本轮收集到的 refs 追加进终稿。
     """
     graph = session.get("graph")
     if graph is None or not reply:
@@ -116,9 +161,11 @@ async def _persist_exchange(session: dict, user_text: str, reply: str) -> None:
     try:
         from langchain_core.messages import AIMessage, HumanMessage
 
+        final_text = _append_ref_tags(reply, refs or [])
         cfg = {"configurable": {"thread_id": _sid(session)}}
         await graph.aupdate_state(
-            cfg, {"messages": [HumanMessage(content=user_text), AIMessage(content=reply)]}
+            cfg,
+            {"messages": [HumanMessage(content=user_text), AIMessage(content=final_text)]},
         )
     except Exception:  # noqa: BLE001 — 持久化失败不该吞掉已完成的远端结果
         _log.exception("remote_turn_persist_failed session=%s", session.get("id"))
@@ -192,6 +239,10 @@ async def run_remote_turn(
         task = None
         streamed_parts: list[str] = []  # 已流式推给前端的 token.delta 片段
         saw_token_delta = False
+        # 远端 attach_ref（ref.emit 转发时收集）：终局①落地本地 artifacts 面板
+        # ②追加进持久化终稿（历史投影还原 chip）。按 (kind, name, ref_id) 去重。
+        remote_refs: list[dict] = []
+        _seen_refs: set[tuple] = set()
         accepted = False  # 接单 notice 只发一次
         deadline = t0 + float(rec.task_timeout_s or 600)
         try:
@@ -308,6 +359,22 @@ async def run_remote_turn(
                                 # 工具边界 = 本地 note_tool_boundary 的对位点：
                                 # bump effort（恢复价值门槛）+ 节流 WAL 覆盖写。
                                 _note_progress(sid, tid, tool_name=str(payload.get("name") or ""))
+                            elif ev == "ref.emit":
+                                # 远端引用标记：ref_id 是**对端机器上的路径**，
+                                # 本机不存在。打上 remote/peer 让前端 chip 走
+                                # 「远端文件」降级（明示路径与节点，点击不装死），
+                                # 同时收集起来终局落地（artifacts 面板 + 历史标签）。
+                                payload["remote"] = True
+                                payload["peer"] = rec.name
+                                _rk = (payload.get("kind"), payload.get("name"),
+                                       payload.get("ref_id"))
+                                if _rk not in _seen_refs:
+                                    _seen_refs.add(_rk)
+                                    remote_refs.append({
+                                        "kind": str(payload.get("kind") or "file"),
+                                        "name": str(payload.get("name") or ""),
+                                        "ref_id": str(payload.get("ref_id") or ""),
+                                    })
                             await _push_session_event(sid, ev, payload, tid)
                 except A2AError as exc:
                     if task is None:
@@ -377,6 +444,26 @@ async def run_remote_turn(
         except Exception:  # noqa: BLE001
             pass
 
+        # 远端引用落地本地 artifacts 面板（origin="remote"：ref 是对端路径，
+        # 本机按设计不存在——prune 豁免、点击降级为远端提示，不静默失败）。
+        # 与引擎 _emit_attach_tags 同一 kind 集合（file/doc/workflow/link）。
+        # 注意用局部名 proj：外层 slug 是 peer slug，下方影子记账要用，
+        # 不能被 project slug 遮蔽。
+        if remote_refs:
+            from ... import artifacts as art_store
+
+            proj = str(session.get("project_slug") or "default")
+            for r in remote_refs:
+                if r["kind"] in ("file", "doc", "workflow", "link"):
+                    try:
+                        art_store.add_artifact(
+                            proj, r["kind"], r["name"], r["ref_id"], sid, origin="remote"
+                        )
+                    except Exception:  # noqa: BLE001 — 落地面板是旁路，不影响回执
+                        _log.exception(
+                            "remote_ref_landing_failed session=%s ref=%s", sid, r["ref_id"]
+                        )
+
         # 产物内容（P1-1 已实现回传）作为工具结果呈现，前端复用既有渲染
         for art in _task_artifacts(task):
             await _push_session_event(
@@ -411,7 +498,11 @@ async def run_remote_turn(
                 sid, "notice", {"message": f"远端执行失败：{err}", "kind": "error"}, tid
             )
 
-        await _persist_exchange(session, user_text, text or (f"[远端执行失败] {err}" if err else ""))
+        await _persist_exchange(
+            session, user_text,
+            text or (f"[远端执行失败] {err}" if err else ""),
+            refs=remote_refs,
+        )
         await _push_session_event(sid, "message.end", {}, tid)
         await _push_session_event(
             sid, "done", {"turn_id": tid, "remote": True, "state": state}, tid
