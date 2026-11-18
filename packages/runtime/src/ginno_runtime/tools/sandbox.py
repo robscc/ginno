@@ -112,6 +112,13 @@ def wrap_argv(
     for dns_file in ("/etc/resolv.conf", "/etc/hosts"):
         if os.path.isfile(dns_file):
             out += ["--ro-bind", dns_file, dns_file]
+    # CA 根证书（2026-11-18 第二层）：DNS 通了但 https 全部
+    # CURLE_SSL_CACERT_BADFILE（exit 77）——沙盒内没有 /etc/ssl/certs，
+    # curl/git/pip 的 TLS 验证无根可依。该目录是**公开 CA 捆绑**（内容
+    # 与发行版 ca-certificates 包一致），零敏感；/etc/ssl/private
+    # （若有私钥）不在绑定范围。真机实证：绑入后 http 301 / https 200。
+    if os.path.isdir("/etc/ssl/certs"):
+        out += ["--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"]
     # 额外只读路径（解释器/执行器）：去重且跳过已被 _RO_BINDS 覆盖的
     for d in extra_ro or []:
         d = str(d)

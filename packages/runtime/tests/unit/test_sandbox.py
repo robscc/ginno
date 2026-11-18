@@ -334,9 +334,12 @@ class TestSandboxDns:
         assert "--bind /etc/hosts" not in joined
         for i, a in enumerate(argv):
             if a == "--ro-bind" and argv[i + 1].startswith("/etc/"):
-                assert argv[i + 1] in ("/etc/resolv.conf", "/etc/hosts"), (
-                    f"/etc 下只允许绑 DNS 文件，绑了别的: {argv[i+1]}"
-                )
+                assert argv[i + 1] in (
+                    "/etc/resolv.conf", "/etc/hosts", "/etc/ssl/certs",
+                ), f"/etc 下只允许绑 DNS/CA，绑了别的: {argv[i+1]}"
+        # CA 目录也要（若宿主存在）
+        if os.path.isdir("/etc/ssl/certs"):
+            assert "--ro-bind /etc/ssl/certs /etc/ssl/certs" in joined
 
     def test_missing_dns_files_skipped_not_fatal(self, monkeypatch):
         """宿主无 resolv.conf（极端容器）→ 跳过，不报错。"""
