@@ -934,7 +934,8 @@
         "thinkingParamStyleHint": "Qwen 套 Anthropic 壳的网关（如 Magpie TestChannel）只接受 reasoning_effort，传 thinking 参数会 400。",
         "extraBodyLabel": "extra_body 透传（JSON）",
         "extraBodyPlaceholder": "{\"enable_thinking\": true}",
-        "extraBodyInvalid": "extra_body 不是合法 JSON，请检查格式"
+        "extraBodyInvalid": "extra_body 不是合法 JSON，请检查格式",
+        "switchManual": "改用手动填模型"
       },
       "collapseCard": "收起",
       "asrChip": "语音识别",

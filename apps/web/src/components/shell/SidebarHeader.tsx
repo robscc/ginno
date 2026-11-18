@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { Archive, Plus, Search } from "lucide-react";
+import { Archive, Plus, Search, X } from "lucide-react";
 import { agentHex } from "@/lib/theme";
 import type { AgentConfig } from "@/lib/types";
 import { DevBuildBadge } from "@/components/devswap/DevBuildBadge";
@@ -21,6 +21,12 @@ export interface SidebarHeaderProps {
   agents: AgentConfig[];
   agentFilter: string | null;
   onAgentFilterChange: (id: string | null) => void;
+  /** 就地过滤（2026-11-18 旅程走查 P1-3）：213 会话规模下 ⌘K 全局搜索之外，
+   * 侧栏内按标题（contains > 拼音首字母 > 子序列）快速缩小列表。 */
+  filterQuery: string;
+  onFilterQueryChange: (v: string) => void;
+  filteredCount: number;
+  totalCount: number;
   /** 会话分组/归档区等滚动内容（放在滚动视口内、主操作与筛选 chips 之后）。 */
   children: React.ReactNode;
 }
@@ -44,6 +50,10 @@ export function SidebarHeader({
   agents,
   agentFilter,
   onAgentFilterChange,
+  filterQuery,
+  onFilterQueryChange,
+  filteredCount,
+  totalCount,
   children,
 }: SidebarHeaderProps) {
   const t = useTranslations("shell");
@@ -119,6 +129,35 @@ export function SidebarHeader({
             <span className="truncate">{t("nav.searchSessions")}</span>
             <kbd className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘K</kbd>
           </button>
+          {/* 就地过滤（P1-3）：输入即过滤下方会话列表（标题/拼音首字母/子序列）。
+              有输入时右侧显示 N/M 计数与清除按钮；Escape 清空。 */}
+          <div className="nav-item cursor-text gap-1.5 !py-1">
+            <Search className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <input
+              value={filterQuery}
+              onChange={(e) => onFilterQueryChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") onFilterQueryChange("");
+              }}
+              placeholder={t("filter.filterSessions")}
+              aria-label={t("filter.filterSessions")}
+              className="w-full bg-transparent text-[13px] text-txt outline-none placeholder:text-faint"
+            />
+            {filterQuery && (
+              <>
+                <span className="shrink-0 font-mono text-[10px] text-faint">
+                  {filteredCount}/{totalCount}
+                </span>
+                <button
+                  onClick={() => onFilterQueryChange("")}
+                  aria-label={t("filter.clear")}
+                  className="shrink-0 rounded p-0.5 text-faint hover:bg-card2 hover:text-txt"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* C+ 方案③：agent 筛选 chips（样式同 composer chip 行，点击已选中的取消） */}
