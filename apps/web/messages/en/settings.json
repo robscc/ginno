@@ -128,7 +128,51 @@
       "fixWebSearchConfirm": "Opens a new session that automatically installs and configures a local SearXNG search engine to replace the fragile DuckDuckGo scraper. Requires Docker on this machine. Proceed?",
       "fixWebSearchSessionTitle": "Install SearXNG",
       "fixWebSearchNoSession": "Could not create a session: enable a model in Settings → Model API first",
-      "fixWebSearchFailed": "Failed to start the install"
+      "fixWebSearchFailed": "Failed to start the install",
+      "doctor": {
+        "title": "Config Doctor",
+        "subtitle": "Configuration health check",
+        "description": "Scans five config surfaces (MCP servers, Skills, Hooks, settings, runtime) and returns actionable fix hints. Read-only.",
+        "run": "Run check",
+        "running": "Checking…",
+        "rerun": "Re-run",
+        "ranAt": "Ran at {time}",
+        "unavailable": "Engine unavailable (runtime upgrade required) — the current runtime does not serve /api/doctor.",
+        "summaryError": "{n} error(s)",
+        "summaryWarn": "{n} warning(s)",
+        "summaryTotal": "{n} total",
+        "allPass": "✓ {n} passed",
+        "noItems": "(no details)",
+        "surfaces": {
+          "mcp": "MCP servers",
+          "skills": "Skills",
+          "hooks": "Hooks",
+          "settings": "Settings",
+          "runtime": "Runtime"
+        },
+        "levels": {
+          "error": "Error",
+          "warn": "Warning",
+          "ok": "Pass"
+        },
+        "fixes": {
+          "mcp_json_parse": "MCP config is not valid JSON: fix stray commas/quotes, then reload.",
+          "mcp_command_missing": "Command not on PATH: set env.PATH=/opt/homebrew/bin:… for the server, or use an absolute path.",
+          "mcp_empty_config": "MCP config is empty or missing the servers field: fill it in or ignore.",
+          "skills_frontmatter": "Complete the SKILL.md frontmatter (name + description).",
+          "skills_name_collision": "Multiple SKILL.md share a name: rename or remove the old one.",
+          "skills_broken_ref": "Referenced skill does not exist: drop the stale reference or restore the SKILL.md.",
+          "hooks_matcher_invalid": "Hook matcher is not a valid regex: fix the pattern and save.",
+          "hooks_script_missing": "Hook script file is missing: restore it or delete the hook.",
+          "hooks_policy_shadowed": "This hook is shadowed by a Tool Policy rule: adjust policy precedence or remove the duplicate.",
+          "settings_unknown_keys": "Unknown keys in config: remove or rename them (likely stale from an older version).",
+          "settings_permission_ignored": "Permission rule never matches: check tool name spelling and rule order.",
+          "runtime_homebrew_path": "GUI runtime lacks homebrew PATH: use absolute paths or extend env.PATH.",
+          "runtime_disk_space": "Clean up disk space or delete old backups.",
+          "runtime_writable": "Data directory is not writable: check permissions and free space.",
+          "runtime_dev_override": "Dev override is active: make sure it is cleaned up before release."
+        }
+      }
     },
     "autostart": {
       "label": "Launch at login",

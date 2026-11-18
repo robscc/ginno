@@ -40,6 +40,7 @@ import {
   forkSession,
   generateTeam,
   getDiagnostics,
+  getDoctor,
   getLinkedSessions,
   getMemberNotes,
   getSessionGoal,
@@ -406,6 +407,60 @@ describe("getDiagnostics", () => {
     const mock = stubFetch(payload);
     await expect(getDiagnostics()).resolves.toEqual(payload);
     expectGet(mock, `${API}/diagnostics`);
+  });
+});
+
+/** Doctor 专用桩：带 HTTP status（stubFetch 无 ok/status 字段，getDoctor 靠它判 404）。 */
+function stubFetchStatus(status: number, payload: unknown) {
+  const mock = vi.fn().mockImplementation(async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+  }));
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
+describe("getDoctor", () => {
+  const report = {
+    ok: true,
+    ran_at: "2026-11-19T10:00:00Z",
+    summary: { error: 1, warn: 2, total: 15 },
+    checks: [{ surface: "mcp", id: "mcp.json-parse", level: "error", items: [{ name: "mcp.json", detail: "Expecting ','" }] }],
+  };
+
+  it("GET /doctor，契约体透传为 kind:ok", async () => {
+    const mock = stubFetchStatus(200, report);
+    await expect(getDoctor()).resolves.toEqual({ kind: "ok", report });
+    expectGet(mock, `${API}/doctor`);
+  });
+
+  it("旧 runtime 404（{detail}）→ unavailable/http，不抛异常", async () => {
+    stubFetchStatus(404, { detail: "Not Found" });
+    await expect(getDoctor()).resolves.toEqual({ kind: "unavailable", reason: "http" });
+  });
+
+  it("200 但形状不对（缺 summary/checks）→ unavailable/shape", async () => {
+    stubFetchStatus(200, { ok: true });
+    await expect(getDoctor()).resolves.toEqual({ kind: "unavailable", reason: "shape" });
+  });
+
+  it("r.json() 抛错（404 返回 HTML 页）→ unavailable/shape", async () => {
+    const mock = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    }));
+    vi.stubGlobal("fetch", mock);
+    await expect(getDoctor()).resolves.toEqual({ kind: "unavailable", reason: "shape" });
+  });
+
+  it("fetch reject（引擎未起）→ unavailable/network", async () => {
+    const mock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", mock);
+    await expect(getDoctor()).resolves.toEqual({ kind: "unavailable", reason: "network" });
   });
 });
 

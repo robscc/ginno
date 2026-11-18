@@ -5,6 +5,8 @@
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
  */
 import { BASE, H, json } from "./core";
+import { currentLocale } from "../../i18n/provider";
+import { isDoctorReport, type DoctorReport } from "../doctor";
 import type { Goal, GoalStatus, SessionMeta, SessionUsage } from "../types";
 
 // ---- sessions ----
@@ -169,6 +171,28 @@ export interface DiagnosticsReport {
 /** P4-1 built-in self-check (read-only). */
 export async function getDiagnostics() {
   return json<DiagnosticsReport>(`${BASE}/diagnostics`);
+}
+
+/** Config Doctor（配置健康检查）：GET /api/doctor，五面检查（契约见 lib/doctor.ts）。
+ *  与 json() 不同——端点可能尚未部署（旧 runtime 404）或返回非契约体，这里
+ *  显式感知：status 非 2xx / 网络断 / 形状不对一律 kind:"unavailable"，组件
+ *  显示「引擎不可用（需升级 runtime）」降级文案而不是白屏。 */
+export type DoctorResult =
+  | { kind: "ok"; report: DoctorReport }
+  | { kind: "unavailable"; reason: "http" | "network" | "shape" };
+
+export async function getDoctor(): Promise<DoctorResult> {
+  try {
+    const r = await fetch(`${BASE}/doctor`, {
+      headers: { "X-Ginno-Language": currentLocale() },
+    });
+    if (!r.ok) return { kind: "unavailable", reason: "http" };
+    const v: unknown = await r.json().catch(() => null);
+    if (!isDoctorReport(v)) return { kind: "unavailable", reason: "shape" };
+    return { kind: "ok", report: v };
+  } catch {
+    return { kind: "unavailable", reason: "network" };
+  }
 }
 
 /** web_search 一键修复（2026-11-15）：前端先 newSession 建会话，再带 session_id
