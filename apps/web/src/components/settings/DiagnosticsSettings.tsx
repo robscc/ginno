@@ -18,11 +18,13 @@ import {
   Plug,
   RefreshCw,
   ShieldCheck,
+  Stethoscope,
   Terminal,
   type LucideIcon,
 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { DiagnosticsIssue, DiagnosticsReport } from "@/lib/runtime";
+import { doctorFixHintKey, groupDoctorChecks, type DoctorReport } from "@/lib/doctor";
 import { useGinno } from "@/lib/store";
 
 // 后端 issue id → 本地化文案 key。未知 id（后端新增检查项）原样显示，
@@ -222,6 +224,148 @@ function SectionCard({
   );
 }
 
+const DOCTOR_LEVEL_BADGE: Record<string, string> = {
+  error: "bg-red/15 text-red",
+  warn: "bg-yellow/15 text-yellow",
+  ok: "bg-green/15 text-green",
+};
+
+/** Config Doctor（配置健康检查）：GET /api/doctor 五面检查（mcp/skills/hooks/
+ *  settings/runtime）。与上面的体检报告相互独立——Doctor 有自己的按钮与
+ *  状态。后端尚未部署端点（旧 runtime 404 / 网络断 / 形状不对）时优雅降级
+ *  为「引擎不可用」提示，不影响页面其余部分。分组/计数纯逻辑在 lib/doctor。 */
+function DoctorPanel() {
+  const t = useTranslations("settings.diagnostics.doctor");
+  const [state, setState] = useState<
+    { s: "idle" | "loading" | "unavailable" } | { s: "ok"; report: DoctorReport }
+  >({ s: "idle" });
+
+  async function run() {
+    setState({ s: "loading" });
+    const r = await api.getDoctor();
+    setState(r.kind === "ok" ? { s: "ok", report: r.report } : { s: "unavailable" });
+  }
+
+  const report = state.s === "ok" ? state.report : null;
+  const groups = report ? groupDoctorChecks(report.checks) : [];
+  /** check id → 修复提示；未映射 id 回退显示 id 本身（前端滞后于后端发版）。 */
+  const fixHint = (id: string): string => {
+    const key = doctorFixHintKey(id);
+    return key ? t(`fixes.${key}`) : id;
+  };
+
+  return (
+    <section data-testid="doctor-panel" className="mt-4 rounded-xl border border-line bg-card/30 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Stethoscope className="h-4 w-4 text-muted" />
+        <h3 className="text-sm font-medium text-txt">{t("title")}</h3>
+        <span className="text-[11px] text-faint">{t("subtitle")}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {report && (
+            <span data-testid="doctor-ran-at" className="flex items-center gap-1 text-[11px] text-faint">
+              <Clock className="h-3 w-3" />
+              {t("ranAt", { time: new Date(report.ran_at).toLocaleString() })}
+            </span>
+          )}
+          <button
+            data-testid="doctor-run"
+            onClick={() => void run()}
+            disabled={state.s === "loading"}
+            className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          >
+            {state.s === "loading" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Stethoscope className="h-3 w-3" />}
+            {state.s === "loading" ? t("running") : report ? t("rerun") : t("run")}
+          </button>
+        </div>
+      </div>
+      <p className="mt-1 text-[11px] text-faint">{t("description")}</p>
+
+      {state.s === "loading" && !report && (
+        <div className="mt-3 flex items-center gap-2 text-xs text-faint">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {t("running")}
+        </div>
+      )}
+
+      {state.s === "unavailable" && (
+        <div
+          data-testid="doctor-unavailable"
+          className="selectable mt-3 flex items-center gap-2 rounded-lg border border-yellow/30 bg-yellow/10 px-3 py-2 text-xs text-yellow"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {t("unavailable")}
+        </div>
+      )}
+
+      {report && (
+        <div data-testid="doctor-result" className="mt-3 space-y-3">
+          {/* summary 徽标：error 红 / warn 琥珀 / total 中性，恒显示（0 也显示） */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="rounded-full bg-red/15 px-2 py-0.5 text-[11px] text-red">
+              {t("summaryError", { n: report.summary.error })}
+            </span>
+            <span className="rounded-full bg-yellow/15 px-2 py-0.5 text-[11px] text-yellow">
+              {t("summaryWarn", { n: report.summary.warn })}
+            </span>
+            <StatChip>{t("summaryTotal", { n: report.summary.total })}</StatChip>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            {groups.map((g) => (
+              <div key={g.surface} className="rounded-lg border border-line bg-base/40 p-2.5">
+                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs font-medium text-txt">{t(`surfaces.${g.surface}`)}</span>
+                  {g.error > 0 && (
+                    <span className="rounded-full bg-red/15 px-2 py-0.5 text-[10px] text-red">
+                      {t("summaryError", { n: g.error })}
+                    </span>
+                  )}
+                  {g.warn > 0 && (
+                    <span className="rounded-full bg-yellow/15 px-2 py-0.5 text-[10px] text-yellow">
+                      {t("summaryWarn", { n: g.warn })}
+                    </span>
+                  )}
+                </div>
+                {g.okCount > 0 && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-green">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {t("allPass", { n: g.okCount })}
+                  </div>
+                )}
+                {g.failing.map((c) => (
+                  <div key={c.id} className="mt-1.5 rounded-lg border border-line bg-card/40 px-2.5 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${DOCTOR_LEVEL_BADGE[c.level] ?? "bg-card2 text-muted"}`}
+                      >
+                        {t(`levels.${c.level}`)}
+                      </span>
+                      <span className="selectable min-w-0 flex-1 break-words text-xs text-txt">{fixHint(c.id)}</span>
+                    </div>
+                    {c.items.length > 0 ? (
+                      <ul className="mt-1.5 space-y-1">
+                        {c.items.map((it, i) => (
+                          <li key={`${c.id}-${i}`} className="break-words text-[11px] leading-snug">
+                            <span className="font-semibold text-txt">{it.name}</span>
+                            {it.detail && <span className="selectable text-faint"> — {it.detail}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-1 text-[11px] text-faint">{t("noItems")}</div>
+                    )}
+                    <div className="selectable mt-0.5 font-mono text-[10px] text-faint/70">{c.id}</div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function DiagnosticsSettings() {
   const t = useTranslations("settings.diagnostics");
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
@@ -368,6 +512,8 @@ export function DiagnosticsSettings() {
           </div>
         </div>
       )}
+
+      <DoctorPanel />
     </div>
   );
 }

@@ -128,7 +128,51 @@
       "fixWebSearchConfirm": "将新建一个会话，按系统指令自动安装并配置本地 SearXNG 搜索引擎，替代脆弱的 DuckDuckGo 抓取。需要本机已装 Docker。确认执行？",
       "fixWebSearchSessionTitle": "安装 SearXNG",
       "fixWebSearchNoSession": "建会话失败：请先在设置 → 模型 API 启用一个模型",
-      "fixWebSearchFailed": "触发安装失败"
+      "fixWebSearchFailed": "触发安装失败",
+      "doctor": {
+        "title": "配置健康检查",
+        "subtitle": "Config Doctor",
+        "description": "扫描 MCP 服务器、Skills、Hooks、设置与运行环境五面配置，给出可操作的修复提示。只读，不修改任何数据。",
+        "run": "运行检查",
+        "running": "检查中…",
+        "rerun": "重新检查",
+        "ranAt": "检查于 {time}",
+        "unavailable": "引擎不可用（需升级 runtime）——配置健康检查需要新版运行时，当前 runtime 未提供 /api/doctor。",
+        "summaryError": "错误 {n}",
+        "summaryWarn": "警告 {n}",
+        "summaryTotal": "共 {n} 项",
+        "allPass": "✓ {n} 项通过",
+        "noItems": "（无明细）",
+        "surfaces": {
+          "mcp": "MCP 服务器",
+          "skills": "Skills",
+          "hooks": "Hooks",
+          "settings": "设置",
+          "runtime": "运行环境"
+        },
+        "levels": {
+          "error": "错误",
+          "warn": "警告",
+          "ok": "通过"
+        },
+        "fixes": {
+          "mcp_json_parse": "MCP 配置不是合法 JSON：检查多余逗号/引号后保存重载。",
+          "mcp_command_missing": "命令不在 PATH：给 server 配置 env.PATH=/opt/homebrew/bin:… 或改绝对路径。",
+          "mcp_empty_config": "MCP 配置为空或缺少 servers 字段：补全配置或忽略。",
+          "skills_frontmatter": "补全 SKILL.md frontmatter（name+description）。",
+          "skills_name_collision": "多个 SKILL.md 同名：重命名或删除旧目录，只保留一个。",
+          "skills_broken_ref": "引用的 skill 不存在：删除失效引用或恢复对应 SKILL.md。",
+          "hooks_matcher_invalid": "hook matcher 不是合法正则：修正 pattern 后保存。",
+          "hooks_script_missing": "hook 脚本文件不存在：补回脚本或删除该 hook。",
+          "hooks_policy_shadowed": "该 hook 被 Tool Policy 规则遮蔽：调整 policy 优先级或移除重复配置。",
+          "settings_unknown_keys": "配置里存在未知字段：删除或改名（多为旧版本遗留）。",
+          "settings_permission_ignored": "权限规则永不匹配：检查工具名拼写与匹配顺序。",
+          "runtime_homebrew_path": "GUI 运行时缺 homebrew PATH：为命令配置绝对路径或补充 env.PATH。",
+          "runtime_disk_space": "清理磁盘或删除旧备份。",
+          "runtime_writable": "数据目录不可写：检查磁盘权限与剩余空间。",
+          "runtime_dev_override": "开发覆盖（override）生效中：发布前确认已清理。"
+        }
+      }
     },
     "autostart": {
       "label": "开机自启动",
