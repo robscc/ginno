@@ -84,6 +84,7 @@
     "inbound-fingerprint": "Certificate fingerprint",
     "inbound-listen": "Actual listen address",
     "inbound-save-failed": "Save failed",
+    "inbound-saved-restart": "Config saved — restart Ginno for it to take effect.",
     "outbound-title": "Outbound · Delegate to external agents",
     "outbound-subtitle": "Each external agent is a separate connector instance; trust boundaries are per agent.",
     "peer-add": "Connect external agent",

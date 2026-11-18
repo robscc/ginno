@@ -105,6 +105,25 @@ export function needsEnableConfirm(currentEnabled: boolean, next: boolean): bool
   return next && !currentEnabled;
 }
 
+/** 开关交互决策（2026-11-18 入站 toggle UX 陷阱修复）：
+ * - "blocked"：A2A 总开关（settings 页签 a2a_enabled）未开——入站开关
+ *   物理禁用（按钮 disabled + aria-disabled），点了也绝不发 PATCH。
+ *   旧版这里照样可点可保存，配置写进去了但 apply_config 无热重载
+ *   （重启 sidecar 才生效），运行时永不生效，用户还以为卡死。
+ * - "confirm"：关→开，走 §12.C-4 二次确认门。
+ * - "apply"：开→关，直接 PATCH。
+ * 按钮的 disabled 属性挡正常点击，这个门是 force-click/编程调用的兜底。 */
+export type ToggleAction = "blocked" | "confirm" | "apply";
+
+export function inboundToggleAction(
+  masterOn: boolean,
+  currentEnabled: boolean,
+  next: boolean,
+): ToggleAction {
+  if (!masterOn) return "blocked";
+  return needsEnableConfirm(currentEnabled, next) ? "confirm" : "apply";
+}
+
 /** 二次确认小状态机（开启/重置共用）：request → confirm；accept/cancel → idle。
  *  accept 后的异步动作由组件执行，状态机只管确认门。 */
 export type ConfirmState = "idle" | "confirm";
@@ -150,6 +169,9 @@ export function A2aInboundCard({
         setMsg({ kind: "error", text: r.error || t("inbound-save-failed") });
         return;
       }
+      // apply_config 无热重载（P0 设计：重启 sidecar 才生效）——保存成功
+      // 必须明说，否则用户以为服务已立即起停（2026-11-18 实测踩坑）。
+      setMsg({ kind: "ok", text: t("inbound-saved-restart") });
       await onReload();
     } catch {
       setMsg({ kind: "error", text: t("inbound-save-failed") });
@@ -160,11 +182,13 @@ export function A2aInboundCard({
 
   const onToggleClick = () => {
     const next = !view.enabled;
-    if (needsEnableConfirm(view.enabled, next)) {
+    const action = inboundToggleAction(view.masterOn, view.enabled, next);
+    if (action === "confirm") {
       setEnableConfirm((s) => confirmReducer(s, "request"));
-    } else {
+    } else if (action === "apply") {
       void applyToggle(next);
     }
+    // "blocked"：总开关未开——no-op（按钮已 disabled，这里兜底旁路点击）。
   };
 
   const doCopy = async () => {
@@ -206,11 +230,14 @@ export function A2aInboundCard({
             type="button"
             role="switch"
             aria-checked={view.enabled}
+            aria-disabled={!view.masterOn}
             aria-label={t("inbound-toggle")}
             data-testid="a2a-inbound-toggle"
+            data-master-off={view.masterOn ? undefined : "true"}
+            title={!view.masterOn ? t("inbound-master-off") : undefined}
             onClick={onToggleClick}
-            disabled={busy === "toggle"}
-            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+            disabled={busy === "toggle" || !view.masterOn}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
               view.enabled ? "bg-violet-600" : "bg-line2"
             }`}
           >
