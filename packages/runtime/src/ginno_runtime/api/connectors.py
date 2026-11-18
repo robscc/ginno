@@ -179,7 +179,7 @@ async def connector_detail(cid: str) -> Any:
     reg = conn_registry()
     conn = reg.get(cid)
     if conn is None:
-        return JSONResponse({"error": f"unknown connector: {cid}"}, status_code=404)
+        return JSONResponse({"ok": False, "error": f"unknown connector: {cid}"}, status_code=404)
     payload = reg.status_of(cid)
     defaults = conn.default_config()
     try:
@@ -207,9 +207,9 @@ async def update_connector_config(cid: str, body: dict) -> Any:
     reg = conn_registry()
     conn = reg.get(cid)
     if conn is None:
-        return JSONResponse({"error": f"unknown connector: {cid}"}, status_code=404)
+        return JSONResponse({"ok": False, "error": f"unknown connector: {cid}"}, status_code=404)
     if not isinstance(body, dict) or not body:
-        return JSONResponse({"error": "body must be a non-empty object"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "body must be a non-empty object"}, status_code=400)
     schema = conn.config_schema()
     props = (schema or {}).get("properties") or {}
     # enabled 是底座级开关(卡片/抽屉的启停按钮走这条 PATCH),对所有 kind
@@ -226,7 +226,7 @@ async def update_connector_config(cid: str, body: dict) -> Any:
     unknown = [k for k in body if k not in allowed and k != "confirmed_domains"]
     if unknown:
         return JSONResponse(
-            {"error": f"unknown config keys: {', '.join(unknown)}"}, status_code=400)
+            {"ok": False, "error": f"unknown config keys: {', '.join(unknown)}"}, status_code=400)
     clean = {k: v for k, v in body.items() if k in allowed}
     reg.write_config(cid, clean)
     applied: Any = None
@@ -294,7 +294,7 @@ async def connector_action(cid: str, body: dict) -> Any:
         # 受保护域名确认(设计 §6):加入 chrome-extension 的 confirmed_domains
         domain = (body.get("domain") or "").strip().lower()
         if not domain:
-            return JSONResponse({"error": "domain required"}, status_code=400)
+            return JSONResponse({"ok": False, "error": "domain required"}, status_code=400)
         reg.write_config("chrome-extension", {})  # ensure section exists
         settings_path = paths.settings_path()
         from ginno_runtime import jsonx as _json
@@ -358,7 +358,7 @@ async def connector_action(cid: str, body: dict) -> Any:
         from ..connectors.a2a import reset_inbound_address as _a2a_reset
 
         return _a2a_reset()
-    return JSONResponse({"error": f"unknown action: {action}"}, status_code=400)
+    return JSONResponse({"ok": False, "error": f"unknown action: {action}"}, status_code=400)
 
 
 # ---- browser handoff (设计 M3): tool 阻塞等待接管,UI 查询 + 释放 ----------
