@@ -268,6 +268,11 @@ def ensure_next_run(task: dict) -> float | None:
 # 陈年孤儿（任务上下文可能早已失效），按 interrupted 记账。
 RESUME_WINDOW_S = 24 * 3600.0
 
+# 周期对账间隔（P0-3）：运行期兜底，捕捉同进程协程泄漏/漏记账产生的孤儿
+# running 行。启动时 start() 已对账一次，这里按小时节流（tick 30s）。
+RECONCILE_EVERY_S = 3600.0
+_LAST_RECONCILE = 0.0
+
 
 def _resumable(task: dict | None, row: dict, now: float) -> bool:
     """孤儿 running 行是否值得自动续跑：任务还在且启用、中断够新、且有续跑锚点
@@ -311,8 +316,12 @@ def _spawn_resumes(pairs: list[tuple[dict, dict]]) -> int:
     spawned = 0
     for task, row in pairs:
         tid = task.get("id") or ""
-        if not tid or tid in _RUNNING:
+        if not tid:
             _record_interrupted_row(row)
+            continue
+        # 同进程执行协程仍在途（周期对账复用本函数时会走到这）：非孤儿，
+        # 跳过——把活着的 run 记成 interrupted 会伪造终态（P0-3）。
+        if tid in _RUNNING or row.get("run_id") in _RUN_TASKS:
             continue
         rid = row["run_id"]
         _RUNNING[tid] = rid
@@ -340,10 +349,13 @@ def _spawn_resumes(pairs: list[tuple[dict, dict]]) -> int:
 def reconcile_interrupted() -> int:
     """孤儿 running 行（上次崩溃/被杀）→ 窗口内自动续跑，否则 error("interrupted")。
 
-    扫窗口覆盖到的全部日文件：跨午夜存活的 running 行落在历史日文件里。
-    窗口 RESUME_WINDOW_S（24h）——UTC 00:01 时刻 now-24h-ε 的行恰好落
-    「前天」文件，只扫今天+昨天会漏（2026-11-08 CI 00:01 三用例红的
-    根因）；顺带把超窗未处理的更老孤儿也收编记 interrupted。
+    扫描范围是**全部**日文件的 dedupe 末行（P0-3，2026-11-18 harness：实锤
+    sr-da83c7f2 悬置 777h——行落在 32 天前的日文件里，旧实现只扫今天+前 3
+    天，窗口外的老孤儿永远扫不到，而 API/UI 读的恰是全量 dedupe，于是 UI
+    永久转圈）。日文件 append-only 且量小（RETENTION_DAYS 天 × 每天几 KB），
+    全量 glob 一次的启动/周期成本可忽略。
+    老窗口教训保留（2026-11-08 CI 00:01 三用例红）：UTC 00:1x 时刻孤儿行
+    可能落「前天」文件——全量扫描天然覆盖。
     按去重后的末行判断，天然不碰已有终态的 run。
     返回值仍为改记 interrupted 的行数（续跑数单看日志 resumed=）。"""
     now = time.time()
@@ -352,23 +364,24 @@ def reconcile_interrupted() -> int:
     resume_pairs: list[tuple[dict, dict]] = []
     cfg = store.load_config()
     tasks = {t.get("id"): t for t in cfg.get("tasks") or [] if t.get("id")}
-    _days = sorted({store._date_str(now - k * 86400)
-                    for k in range(int(RESUME_WINDOW_S // 86400) + 3)})
-    for day in _days:
-        for e in store.dedupe_runs(store.load_day(day)):
-            if e.get("status") != "running":
-                continue
-            rid = e.get("run_id") or ""
-            if rid in seen:
-                continue
-            seen.add(rid)
-            task = tasks.get(e.get("task_id") or "")
-            if _resumable(task, e, now):
-                resume_pairs.append((task, e))
-                continue
-            e = {**e, "status": "error", "error": "interrupted", "finished_at": now}
-            store.record_run(e)
-            healed += 1
+    for e in store._all_runs_deduped():
+        if e.get("status") != "running":
+            continue
+        rid = e.get("run_id") or ""
+        if rid in seen:
+            continue
+        seen.add(rid)
+        task = tasks.get(e.get("task_id") or "")
+        # 同进程执行协程仍在途（周期对账会走到这）：非孤儿，直接跳过——
+        # 既不续跑也不记账，更不能进 resume_pairs（那里的「未 spawn」
+        # 语义是已记 interrupted）。
+        if e.get("task_id") in _RUNNING or rid in _RUN_TASKS:
+            continue
+        if _resumable(task, e, now):
+            resume_pairs.append((task, e))
+            continue
+        _record_interrupted_row(e)
+        healed += 1
     if healed:
         _log.info("schedule_run_reconciliation interrupted=%d", healed)
     if resume_pairs:
@@ -1281,6 +1294,13 @@ async def scheduler_loop() -> None:
                     have_lease = True
                     _clear_standby()
                     await _tick()
+                    # 周期对账（P0-3）：同进程执行协程泄漏/漏记账的运行期兜底。
+                    # reconcile 幂等（终态不碰、活协程跳过），全量扫成本可忽略。
+                    global _LAST_RECONCILE
+                    now = time.time()
+                    if now - _LAST_RECONCILE >= RECONCILE_EVERY_S:
+                        _LAST_RECONCILE = now
+                        reconcile_interrupted()
                 else:
                     _mark_standby()
             except asyncio.CancelledError:

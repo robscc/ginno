@@ -832,3 +832,37 @@ def test_run_error_classification():
         got, hint = scheduler.classify_run_error(msg)
         assert got == kind, (msg, got)
         assert hint
+
+
+# ---- P0-3（2026-11-18 harness）：窗口外老孤儿 + 活协程误记 ----------------------
+def test_reconcile_interrupted_old_file_far_out_of_window(isolated_home):
+    """实锤回归：sr-da83c7f2 悬置 777h——行落在 32 天前的日文件里，旧实现
+    只扫今天+前 3 天永远收编不到，而 API/UI 读全量 dedupe → UI 永久转圈。
+    全量对账必须把任意历史文件里的孤儿 running 行改判 interrupted。"""
+    ts = time.time() - 32 * 86400
+    store.record_run({"run_id": "sr-ancient", "task_id": "st-gone", "task_name": "每日总结",
+                      "status": "running", "scheduled_at": ts, "started_at": ts})
+    assert scheduler.reconcile_interrupted() == 1
+    day = store._date_str(ts)
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(day))}
+    assert rows["sr-ancient"]["status"] == "error"
+    assert rows["sr-ancient"]["error"] == "interrupted"
+    # 收编行带用户可读文案（UI 时间线直读 summary）
+    assert rows["sr-ancient"].get("summary")
+
+
+def test_reconcile_skips_live_run_in_flight(isolated_home):
+    """周期对账复用 _spawn_resumes 时，同进程协程仍在途（_RUNNING 占位）的
+    新鲜 running 行必须跳过——把它记成 interrupted 等于伪造终态。"""
+    ts = time.time() - 60  # 新鲜：若无占位会进 resume_pairs
+    store.record_run({"run_id": "sr-live", "task_id": "st-1", "task_name": "T",
+                      "status": "running", "scheduled_at": ts, "started_at": ts,
+                      "session_id": "sess-1"})
+    store.save_config({"tasks": [_task(id="st-1", enabled=True)]})
+    scheduler._RUNNING["st-1"] = "sr-live"
+    try:
+        assert scheduler.reconcile_interrupted() == 0  # 既不续跑也不记账
+    finally:
+        scheduler._RUNNING.clear()
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-live"]["status"] == "running"  # 原行不动
