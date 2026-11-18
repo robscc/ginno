@@ -174,10 +174,11 @@ _EMPTY_REPLY_MAX_NUDGES = 3
 _RATE_LIMIT_MAX_WAITS = 5
 _RATE_LIMIT_WAIT_S = 30.0  # 30/60/120/240/480s,共 ~15 分钟
 # 流中途停顿(chunk 看门狗)重试:历史不变重发,服务端重新生成该轮;≤2 次、
-# 30/60s——比限流更克制,避免对真死连接白等三轮长退避(见 graph_models.
-# _is_stream_chunk_timeout 的 2026-10-31 实录)。
+# 60/120s 线性退避——比限流更克制,避免对真死连接白等三轮长退避(见
+# graph_models._is_stream_chunk_timeout 的 2026-10-31 实录)。首等 60s
+# 是用户决策(2026-11-18 更正:保持既有体感,不缩短),测试钉住常量。
 _STREAM_STALL_MAX_RETRIES = 2
-_STREAM_STALL_WAIT_S = 30.0
+_STREAM_STALL_WAIT_S = 60.0
 
 # T3 — LLM 请求级可观测事件（llm.request / llm.response）的字段白名单。
 # graph 层造帧、engine 层翻译下发时共用同一份清单：只允许计数与元数据，
@@ -277,14 +278,15 @@ async def _ainvoke_rate_limited(bound, msgs):
                 t0=_obs_t0, exc=exc,
             )
             if _is_stream_chunk_timeout(exc):
+                # 停顿重试（2026-11-18 去重修复）：这里曾有两个重复的
+                # `if _is_stream_chunk_timeout(exc):` 块——每次异常 stalled
+                # 被双倍 +1（0→2），首等退避变 WAIT_S×2、第 2 次停顿即触
+                # 顶 raise（名义重试 2 次实际仅 1 次）。合并为单块后恢复
+                # 「初次 + 2 次重试、线性退避 60/120s」的设计语义。
                 if stalled >= _STREAM_STALL_MAX_RETRIES:
                     raise
                 stalled += 1
                 _instinct_retry = {"kind": "stream_stall", "attempts": stalled}
-            if _is_stream_chunk_timeout(exc):
-                if stalled >= _STREAM_STALL_MAX_RETRIES:
-                    raise
-                stalled += 1
                 delay = _STREAM_STALL_WAIT_S * stalled
                 _log.warning(
                     "stream_stall_retry wait=%.0fs attempt=%d/%d err=%.200s",

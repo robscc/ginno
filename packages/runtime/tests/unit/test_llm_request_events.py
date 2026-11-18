@@ -383,3 +383,49 @@ async def _drive(frames, sid="llm-obs-engine"):
 
 
 
+
+
+# ---- 流停顿重试语义（2026-11-18 修复钉子）------------------------------
+# graph.py 曾有两个重复的 `if _is_stream_chunk_timeout(exc):` 块：每次
+# 异常 stalled 被双倍 +1（0→2），导致 ①首等退避 = WAIT_S×2 而非 ×1；
+# ②第 2 次停顿即触顶 raise——名义重试 2 次实际只执行 1 次。这里用
+# 「WAIT_S=7 + 记录 sleep 时长」把等待乘数与重试次数两个语义点都钉住。
+async def test_stream_stall_semantics_first_wait_and_two_retries(
+    llm_frames, monkeypatch,
+):
+    sleeps: list[float] = []
+
+    async def _rec_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(graph_mod, "_STREAM_STALL_WAIT_S", 7.0)
+    monkeypatch.setattr("ginno_runtime.graph.asyncio.sleep", _rec_sleep)
+    bound = _FakeBound(
+        failures=2, exc=RuntimeError("No streaming chunk received for 120s"),
+    )
+    await _ainvoke_rate_limited(bound, ["m"])
+    # 2 次停顿后第 3 次物理尝试成功；退避 = 1×WAIT、2×WAIT（线性）
+    assert bound.calls == 3
+    assert sleeps == [7.0, 14.0]
+
+
+async def test_stream_stall_semantics_gives_up_after_two_retries(
+    llm_frames, monkeypatch,
+):
+    async def _no_sleep2(_s):
+        pass
+
+    monkeypatch.setattr("ginno_runtime.graph.asyncio.sleep", _no_sleep2)
+    bound = _FakeBound(
+        failures=99, exc=RuntimeError("No streaming chunk received for 120s"),
+    )
+    # 初次 + 2 次重试 = 3 次物理尝试，第 3 次停顿必须上抛
+    with pytest.raises(RuntimeError, match="No streaming chunk"):
+        await _ainvoke_rate_limited(bound, ["m"])
+    assert bound.calls == 3
+
+
+def test_stream_stall_wait_s_constant_is_60():
+    # 用户决策（2026-11-18 更正）：首等保持 60s——去重后 delay=WAIT_S×1，
+    # 故常量本身即首等时长，钉住防回退。
+    assert graph_mod._STREAM_STALL_WAIT_S == 60.0
