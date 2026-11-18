@@ -67,6 +67,10 @@ class Connector:
     # 动态实例:随安装/卸载 register/unregister(mod 适配器)。动态 id 不能
     # 在未注册时回落到 enabled=True(设计 §8-1 的已知坑)。
     dynamic: bool = False
+    # 子配置实例(如 A2A peer):注册进 registry 供详情/配置 API 解析,但不
+    # 出现在顶层连接器列表——它们作为 hub 卡详情里的子配置管理(2026-11-18
+    # 连接器页改造)。列表过滤与 sidebar 聚合点豁免都看这个开关。
+    hide_in_list: bool = False
     # Tools whose names start with this prefix are provided by this connector
     # (设计 §8 per-agent 开关的判定依据)。双轨连接器声明同一前缀:浏览器能力
     # 只有在所有提供方都被该 agent 拒绝时才算关掉。None = 不提供工具。
@@ -240,11 +244,15 @@ class ConnectorRegistry:
         """Sidebar 聚合状态点 (§2.1): '' none / 'warn' / 'error'.
 
         Connectors whose extra["idle"] is true (按需启动的 B 轨实例未运行
-        属正常态) don't count towards the dot."""
+        属正常态) don't count towards the dot. Hidden sub-config instances
+        (hide_in_list, 如 A2A peer) are exempt too — their status is
+        surfaced inside the hub detail, not on the sidebar."""
         with self._lock:
             active = [
-                s.status for s in self._states.values()
+                s.status for cid, s in self._states.items()
                 if s.status != STATUS_DISABLED and not (s.extra or {}).get("idle")
+                and not (self._connectors.get(cid)
+                         and getattr(self._connectors[cid], "hide_in_list", False))
             ]
         if STATUS_ERROR in active:
             return "error"
@@ -352,7 +360,10 @@ class ConnectorRegistry:
 
     def list_payload(self) -> dict:
         with self._lock:
-            ids = [c.id for c in self.all()]
+            # hide_in_list 的子配置实例(a2a-* peer)不出现在顶层列表——
+            # 详情/配置 API 仍可按 id 解析(reg.get 不受此过滤影响)。
+            ids = [c.id for c in self.all()
+                   if not getattr(c, "hide_in_list", False)]
         return {"connectors": [self.status_of(i) for i in ids],
                 "aggregateDot": self.aggregate_dot()}
 

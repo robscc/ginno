@@ -11,7 +11,9 @@
 - :class:`A2APeerConnector` —— 每个出站 peer 一个动态实例
   （``id="a2a-<slug>"``，``dynamic=True``），配置存储覆盖为 PeerStore
   （``a2a/peers.json``），**不是** settings.connectors——避免一份永远过期
-  的影子配置（mod_adapter 同款坑）。
+  的影子配置（mod_adapter 同款坑）。2026-11-18 连接器页改造起 peer 不再
+  占顶层卡位（``hide_in_list=True``），在枢纽详情的「对端节点」页签
+  （kind=``a2a-peers``）作为子配置管理。
 
 信任边界按 agent 划分 → 每实例独立 ``tool_prefix``，复用
 ``registry.tool_denied`` 的 per-agent 工具闸（设计 §5）。
@@ -32,8 +34,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .. import paths
-from ..a2a.peers import PeerRecord, PeerStore, is_masked_token
+from ..a2a.peers import PeerRecord, PeerStore, PendingTaskError, is_masked_token
+from ..lang import t
 from .registry import (
+    STATUS_CONNECTED,
     STATUS_DISABLED,
     STATUS_DISCONNECTED,
     Connector,
@@ -112,6 +116,23 @@ class A2AHubConnector(Connector):
             },
         }
 
+    def detail_view(self) -> dict:
+        """基座 tabs + 「对端节点」子配置页签。
+
+        peer 不再是顶层卡(2026-11-18 连接器页改造),对端清单/子配置编辑/
+        删除/重连全部收进 hub 详情的这个自定义页签——前端 ConnectorDetail
+        按 kind="a2a-peers" 渲染 A2aPeersPane,标题取这里下发的双语值。
+        数据面不走 detailView(声明式外观),前端另拉 GET /api/a2a/peers。
+        """
+        base = super().detail_view()
+        tabs: list[dict] = base.get("tabs") or []
+        peers_tab = {"id": "peers", "kind": "a2a-peers",
+                     "title": t("Peer nodes", "对端节点")}
+        # 概览之后、设置之前:对端管理是 hub 的主要日常操作面。
+        tabs.insert(1, peers_tab)
+        base["tabs"] = tabs
+        return base
+
     async def apply_config(self, cfg: dict) -> None:
         """P0 无 listener 可重启；配置落盘由基类 write_stored_config 完成。
 
@@ -140,6 +161,9 @@ class A2APeerConnector(Connector):
     dynamic = True
     icon = "bot"
     order = 200
+    # 子配置实例:不出现在顶层连接器列表(在枢纽详情的「对端节点」页签管理),
+    # 详情/配置 API 仍可按 id 解析(reg.get 不看这个开关)。
+    hide_in_list = True
 
     def __init__(self, peer: PeerRecord, *, store: PeerStore | None = None,
                  order: int = 200) -> None:
@@ -232,9 +256,17 @@ class A2APeerConnector(Connector):
         }
 
     def read_stored_config(self) -> dict:
-        """PeerStore 当前值，token 掩码（SEC-01：GET 响应只见掩码）。"""
+        """PeerStore 当前值，token 掩码（SEC-01：GET 响应只见掩码）。
+
+        只回本连接器自己的配置键（default_config 键集）——PeerRecord 的
+        记录元数据（slug/id/name/created_at）不是用户配置覆盖，混出去会被
+        ConfigEditor 当「未知键」原样 PATCH 回来，撞上接口白名单 400。
+        """
         peer = self._store.find(self.slug)
-        return peer.to_public() if peer is not None else {}
+        if peer is None:
+            return {}
+        allowed = set(self.default_config())
+        return {k: v for k, v in peer.to_public().items() if k in allowed}
 
     def write_stored_config(self, cfg: dict) -> None:
         """合并写回 PeerStore。掩码 token 由 PeerStore.update 忽略；
@@ -270,6 +302,11 @@ class A2APeerConnector(Connector):
 
 
 # ---- sync --------------------------------------------------------------------
+
+#: 重连探针结果缓存(slug → (status, detail))。sync 上报时优先采用——否则
+#: 每次列表刷新都会把探针得到的 connected 打回 P0 默认的 disconnected。
+#: 工具层接管真实连接管理后此表可退役; peer 删除/消失时清除。
+_probe_results: dict[str, tuple[str, str]] = {}
 
 
 def sync_peer_connectors(reg: Any = None, *,
@@ -308,8 +345,10 @@ def sync_peer_connectors(reg: Any = None, *,
         if not peer.enabled:
             status, detail = STATUS_DISABLED, "Disabled"
         else:
-            # P0 骨架不做连通探测;connected/error 迁移由工具层 report。
-            status, detail = STATUS_DISCONNECTED, "Not connected"
+            # P0 骨架默认不做连通探测;重连探针(a2a_reconnect_peer)的结果
+            # 保留到下一次探测,connected/error 迁移最终由工具层接管。
+            status, detail = _probe_results.get(
+                peer.slug, (STATUS_DISCONNECTED, "Not connected"))
         reg.report(
             cid,
             status,
@@ -326,6 +365,7 @@ def sync_peer_connectors(reg: Any = None, *,
     # 消失的 peer:注销动态实例(按 kind 判定,不受内置/枢纽影响)。
     for conn in list(reg.all()):
         if getattr(conn, "kind", "") == "a2a" and conn.id not in active:
+            _probe_results.pop(getattr(conn, "slug", ""), None)
             reg.unregister(conn.id)
 
     return sorted(active)
@@ -600,6 +640,78 @@ def add_peer(payload: dict) -> dict:
         return {"ok": False, "error": _scrub(f"{type(e).__name__}: {e}", token)}
 
 
+def delete_peer(payload: dict) -> dict:
+    """action=a2a_delete_peer {slug} → {ok,removed}。
+
+    hub 详情「对端节点」页签的行删除。删除守卫在 PeerStore.remove:peer 仍有
+    未终态 task 时 raise PendingTaskError → ok:false 携带 pending 清单(409
+    语义,前端提示先取消/等终态)。删完立即 ensure_a2a_hub 同步注销动态实例。
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        slug = str(payload.get("slug") or "").strip()
+        if not slug:
+            return {"ok": False, "error": "slug required"}
+        store = PeerStore()
+        if store.find(slug) is None:
+            return {"ok": False, "error": f"unknown peer: {slug}"}
+        removed = store.remove(slug)
+        if removed:
+            _probe_results.pop(slug, None)
+            ensure_a2a_hub()  # 同步注销动态实例
+        return {"ok": True, "removed": removed}
+    except PendingTaskError as e:
+        return {"ok": False, "error": _scrub(str(e)), "pending": e.pending}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": _scrub(f"{type(e).__name__}: {e}")}
+
+
+async def reconnect_peer(payload: dict) -> dict:
+    """action=a2a_reconnect_peer {slug} → {ok,status}。
+
+    P0 连通探针:fetch_card(well-known 归一,https 端点先过 #fp 指纹校验,
+    bearer 凭据随请求)。结果写 _probe_results(sync 保留)并立即上报 registry,
+    前端行内「连接状态」随之翻转。探测失败不做 error 态——disconnect + 诊断
+    文本足够,且 sidebar 聚合点本就豁免隐藏实例。
+    """
+    from ..a2a import card as a2a_card
+    from .registry import registry as _registry_fn
+
+    payload = payload if isinstance(payload, dict) else {}
+    slug = str(payload.get("slug") or "").strip()
+    if not slug:
+        return {"ok": False, "error": "slug required"}
+    peer = PeerStore().find(slug)
+    if peer is None:
+        return {"ok": False, "error": f"unknown peer: {slug}"}
+    token = peer.token
+    # 探针只带 bearer(api_key 的头形态因对端而异,不带凭据探测可达性即可)。
+    auth = f"Bearer {token}" if token and peer.auth_scheme == "bearer" else ""
+    try:
+        verify_fp = (peer.peer_fingerprint
+                     if urlsplit(peer.endpoint).scheme == "https" else "")
+        await a2a_card.fetch_card(
+            peer.endpoint, auth=auth or None,
+            verify_fp=verify_fp or None, timeout_s=10.0, allow_private=True)
+        _probe_results[slug] = (STATUS_CONNECTED, "Connected")
+        detail, ok = "Connected", True
+        status = STATUS_CONNECTED
+    except Exception as e:  # noqa: BLE001 — 探测失败即结果,不是异常路径
+        detail = _scrub(f"{type(e).__name__}: {e}", token)
+        _probe_results[slug] = (STATUS_DISCONNECTED, detail)
+        ok, status = False, STATUS_DISCONNECTED
+    try:
+        reg = _registry_fn()
+        reg.report(peer.id, status, detail, extra={
+            "peerSlug": peer.slug, "endpoint": peer.endpoint,
+            "trust": peer.trust, "source": "a2a",
+        }, force=True)
+    except Exception:  # noqa: BLE001 — 上报失败不影响探测结果返回
+        log.exception("a2a reconnect status report failed: %s", slug)
+    return {"ok": ok, "status": status,
+            "error": None if ok else detail}
+
+
 def reset_inbound_address() -> dict:
     """action=a2a_reset_inbound_address → {ok,address}。危险操作，审计必记。
 
@@ -653,5 +765,7 @@ __all__ = [
     "report_inbound_meta",
     "preview_card",
     "add_peer",
+    "delete_peer",
+    "reconnect_peer",
     "reset_inbound_address",
 ]

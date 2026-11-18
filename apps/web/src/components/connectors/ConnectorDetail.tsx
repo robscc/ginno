@@ -2,9 +2,11 @@
 
 /* 连接器详情抽屉（mods-connector-migration-design.md §3.5）。
  *
- * 统一的是基座，不是外观：tab 列表来自 detailView.tabs，前端只按共享
- * kind（overview / settings / install / activity / permissions）渲染。
- * 内置连接器和 Claude Mod 走同一套数据契约与操作。 */
+ * 统一的是基座，不是外观：tab 列表来自 detailView.tabs，前端按共享
+ * kind（overview / settings / install / activity / permissions）渲染，
+ * 模块自定义 kind 走专属渲染器（如 A2A hub 的 kind="a2a-peers" →
+ * A2aPeersPane），标题保留后端下发值。内置连接器和 Claude Mod 走同一套
+ * 数据契约与操作。 */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -16,6 +18,7 @@ import type {
   ModCompat,
 } from "@/lib/runtime";
 import { A2aInboundCard } from "./A2aInboundCard";
+import { A2aPeersPane } from "./A2aPeersPane";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { ConfigEditor } from "./ConfigEditor";
 import { InstallWizard } from "./InstallWizard";
@@ -446,6 +449,7 @@ export function ConnectorDetail({
             <button
               key={x.id}
               type="button"
+              data-testid={`conn-tab-${x.kind}`}
               onClick={() => switchTab(x.id)}
               className={`-mb-px whitespace-nowrap border-b-2 px-2.5 py-2 text-[12px] transition-colors ${
                 x.id === tab
@@ -681,6 +685,13 @@ function DetailPane({
         </section>
       </div>
     );
+  }
+
+  if (activeTab === "a2a-peers") {
+    // A2A hub 的「对端节点」子配置页签（自定义 kind，后端声明）：对端清单 +
+    // 行内 ConfigEditor 子配置编辑 + 删除/重连/接入向导。dirty 透传给外层
+    // 守卫——切 tab/关闭未保存时同样走应用内确认模态。
+    return <A2aPeersPane onDirtyChange={onDirtyChange} onSaved={onSaved} />;
   }
 
   if (activeTab === "settings") {

@@ -148,8 +148,17 @@ async def list_a2a_peers() -> dict:
         records = PeerStore().list_all()
     except Exception:  # noqa: BLE001 — 读失败给空列表，不让选择器崩
         return {"ok": True, "peers": []}
+    reg = conn_registry()
     out = []
     for r in records:
+        # 连接状态来自 registry 同步/探针上报(hub 详情「对端节点」页签消费);
+        # 未注册实例(尚未 sync)给空串,前端按「未知」降级。
+        snap: dict = {}
+        try:
+            if reg.get(r.id) is not None:
+                snap = reg.status_of(r.id)
+        except Exception:  # noqa: BLE001 — 状态读取失败不拖垮清单
+            snap = {}
         out.append({
             "slug": r.slug,
             "id": r.id,
@@ -158,6 +167,8 @@ async def list_a2a_peers() -> dict:
             "enabled": bool(r.enabled),
             "trust": r.trust,
             "caps": list(r.caps or []),
+            "status": str(snap.get("status") or ""),
+            "statusDetail": str(snap.get("statusDetail") or ""),
         })
     return {"ok": True, "peers": out}
 
@@ -330,6 +341,17 @@ async def connector_action(cid: str, body: dict) -> Any:
         from ..connectors.a2a import add_peer as _a2a_add
 
         return _a2a_add(body or {})
+    if action == "a2a_delete_peer":
+        # hub 详情「对端节点」页签的行删除;未终态任务守卫在实现体内
+        # (PendingTaskError → ok:false + pending 清单,409 语义)。
+        from ..connectors.a2a import delete_peer as _a2a_delete
+
+        return _a2a_delete(body or {})
+    if action == "a2a_reconnect_peer":
+        # P0 连通探针(fetch_card):结果回 registry 并保留到下次 sync。
+        from ..connectors.a2a import reconnect_peer as _a2a_reconnect
+
+        return await _a2a_reconnect(body or {})
     if action == "a2a_reset_inbound_address":
         # 危险操作：轮换入站能力 token（旧地址立即失效），identity 不动，
         # 审计必记（实现体内）。
