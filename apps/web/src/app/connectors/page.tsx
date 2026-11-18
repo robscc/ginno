@@ -148,6 +148,7 @@ export default function ConnectorsPage() {
         /* noop */
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- throttledRefresh 为 useCallback([refresh]) 稳定引用；列入会在 refresh 变化时重建 WS
   }, [refresh]);
 
   const builtin = useMemo(
