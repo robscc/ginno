@@ -89,6 +89,30 @@ for (const rule of AGENT_REC_RULES) {
 return null;
 }
 
+/** 失败 turn 的恢复横幅（ErrorCard）是否仍该渲染（2026-11-18 用户反馈）。
+ *
+ * 横幅是「会话停在失败终态」的恢复入口——只在该 error 消息仍是**会话最后
+ * 一个 turn**（其后没有更新的用户/助手消息）时渲染。新一轮对话一旦开始，
+ * 旧失败横幅就是过时入口（点击会重放旧 turn，把旧输入插回历史），整体
+ * 隐藏；该 turn 已生成的 thinking/部分回复气泡（m.failed）不受影响，
+ * 历史/checkpoint 数据绝不动——纯渲染层判定。
+ *
+ * system 行（context chips / 拆分方案卡）不算 turn 内容：失败后注入的系统
+ * 块不该顶掉横幅。user 消息即使投递失败（status=failed）也算——用户已
+ * 表达新意图，恢复重心应转到那条消息自己的重发入口。边界②：新 turn 又
+ * 失败时新横幅出现、旧的消失，转录里始终至多一张。
+ */
+export function failedTurnBannerVisible(
+  messages: ReadonlyArray<Pick<ChatMsg, "role">>,
+  index: number,
+): boolean {
+  for (let i = index + 1; i < messages.length; i++) {
+    const role = messages[i].role;
+    if (role === "user" || role === "assistant") return false;
+  }
+  return true;
+}
+
 export interface PermissionPrompt {
 tool: string;
 args: unknown;

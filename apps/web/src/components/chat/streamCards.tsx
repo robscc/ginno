@@ -213,7 +213,10 @@ onRetryFromCheckpoint?: () => void;
 }) {
 const { tc } = useChatT();
 return (
-  <div className="rounded-xl border border-red/40 bg-red/10 px-4 py-3">
+  <div
+    data-testid="error-card"
+    className="rounded-xl border border-red/40 bg-red/10 px-4 py-3"
+  >
     <div className="mb-1.5 flex items-center gap-2">
       <AlertCircle className="h-4 w-4 shrink-0 text-red" />
       <span className="text-sm font-medium text-red">{tc("errorCard.title")}</span>

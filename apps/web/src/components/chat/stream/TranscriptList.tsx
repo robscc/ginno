@@ -27,7 +27,7 @@ import {
   HandoffDivider,
   TurnIdChip,
 } from "../streamCards";
-import { type ChatMsg } from "../streamCore";
+import { type ChatMsg, failedTurnBannerVisible } from "../streamCore";
 import { CopyBubbleButton } from "./CopyBubbleButton";
 import type { SessionMeta } from "@/lib/types";
 import {
@@ -583,16 +583,24 @@ export function TranscriptList({
             )}
           </div>
         ) : m.error ? (
-          <div key={m.id} data-msg-id={m.id} className="min-w-0 rounded-xl">
-            <ErrorCard
-              message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
-              turnId={m.turnId}
-              canRetry={!!m.sendPayload && m.id === lastRetryableId}
-              busy={running}
-              onRetry={() => retryError(m.id)}
-              onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
-            />
-          </div>
+          // 过时恢复横幅（2026-11-18 用户反馈）：失败 turn 之后一旦出现更新
+          // 的用户/助手消息（新一轮对话），旧横幅整体不渲染——它是「会话停在
+          // 失败终态」的恢复入口，点了会重放旧 turn。该 turn 已生成的部分
+          // 回复气泡（m.failed 分支）不受影响，历史数据/checkpoint 绝不动。
+          // 判定用全量索引（visibleOffset + skip + idx，与 handoffBefore 同款
+          // 换算），窗口化/时间分片保尾，不影响「其后无消息」语义。
+          failedTurnBannerVisible(messages, visibleOffset + skip + idx) ? (
+            <div key={m.id} data-msg-id={m.id} className="min-w-0 rounded-xl">
+              <ErrorCard
+                message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
+                turnId={m.turnId}
+                canRetry={!!m.sendPayload && m.id === lastRetryableId}
+                busy={running}
+                onRetry={() => retryError(m.id)}
+                onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
+              />
+            </div>
+          ) : null
         ) : (
           <Fragment key={m.id}>
             {handoffBefore[visibleOffset + skip + idx] && (
