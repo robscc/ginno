@@ -129,17 +129,36 @@ ls -l /etc/ginno-node /etc/ginno-node/env
 首次启动 `ginno node` 会自动生成 `/var/lib/ginno-node/settings.json` 并把
 CLI 参数合并写回。需要手工补两处：
 
-**模型 provider**——`model_configs` 里 api_key 用 env 引用（同桌面版格式）：
+**模型 provider**——`model_configs` 里 api_key 用 env 引用（同桌面版格式）。
+以 **zhipu GLM 直连**为实证样例（2026-11-18 真机核验，glm-5.3 流式可用）：
 
 ```json
 "model_configs": [
   {
-    "name": "your-model",
-    "base_url": "https://<your-gateway>",
-    "api_key": "env:GINNO_NODE_API_KEY"
+    "name": "zhipu-glm",
+    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "default_model": "glm-5.3",
+    "model": "glm-5.3",
+    "models": ["glm-5.3", "glm-5.3-flash"],
+    "api_key": "env:GINNO_ZHIPU_KEY"
   }
 ]
 ```
+
+模型提供方三个坑（2026-11-18 真机实锤，换 provider 时逐条对）：
+
+1. **zhipu 必须用 coding 端点**（`api/coding/paas/v4`）。标准端点
+   `api/paas/v4` 会报 `1113 余额不足或无可用资源包`——coding 套餐只覆盖
+   coding 端点，两套计费不通用。
+2. **模型名用裸名**（`glm-5.3`，不带 `zhipu/` 前缀）。多通道网关（如
+   magpie）的前缀写法直连官方 API 时不认。
+3. **切换 provider 后旧远端会话会带旧模型名**——节点侧会话按 contextId
+   复用，模型在会话创建时固化；provider 引用按 id 运行时解析（新端点 +
+   旧模型名 → 网关报「模型不存在」）。**换 provider 后用全新远端会话验证**，
+   旧会话的报错不代表新配置失效。
+
+另注意：若同一把 key 同时配置在本地网关（如 magpie）与节点，**轮换时两处
+都要换**。
 
 **A2A 节点策略**——`connectors.a2a` 段（真机值脱敏后照抄；`trust`/`caps`
 默认 fail-closed 为 `readonly`/`["L0"]`，按需放宽）：
