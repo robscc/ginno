@@ -246,6 +246,7 @@ class WeComConnector(Connector):
             "bot_id": "",
             "secret": "",
             "allowed_userids": [],
+            "admin_users": [],
             "default_agent_id": "",
             "session_policy": "per_user",
             "ask_timeout_s": 600,
@@ -269,6 +270,15 @@ class WeComConnector(Connector):
                     "title": "Allowed userids",
                     "description": ("Empty = everyone who can reach the bot "
                                     "can drive the agent"),
+                },
+                "admin_users": {
+                    "type": "array", "items": {"type": "string"},
+                    "title": "Admin userids",
+                    "description": ("userids allowed to run admin-only channel "
+                                    "commands (/dev-swap). Fail-closed: empty "
+                                    "list rejects everyone — find your userid "
+                                    "in the channel mappings file (user_id) "
+                                    "or sidecar inbound logs"),
                 },
                 "default_agent_id": _default_agent_field(),
                 "session_policy": {
@@ -545,6 +555,7 @@ class DingTalkConnector(Connector):
             "robot_code": "",
             "card_template_id": "",
             "allowed_staff_ids": [],
+            "admin_users": [],
             "default_agent_id": "",
             "session_policy": "per_user",
             "menus": [],
@@ -575,6 +586,15 @@ class DingTalkConnector(Connector):
                     "title": "Allowed staffIds",
                     "description": ("Empty = everyone in the app's visibility "
                                     "scope can drive the agent"),
+                },
+                "admin_users": {
+                    "type": "array", "items": {"type": "string"},
+                    "title": "Admin staffIds",
+                    "description": ("staffIds allowed to run admin-only channel "
+                                    "commands (/dev-swap). Fail-closed: empty "
+                                    "list rejects everyone — find yours in the "
+                                    "channel mappings file (user_id) or sidecar "
+                                    "inbound logs"),
                 },
                 "default_agent_id": _default_agent_field(),
                 "session_policy": {
