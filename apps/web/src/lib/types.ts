@@ -241,6 +241,10 @@ export interface SessionMeta {
    *  挂上后每轮 turn 在远端节点执行；缺省/null = 本地。后端落盘并在
    *  重启后恢复，前端只读（定案 #11：不支持中途切换执行方）。 */
   remote_peer?: string | null;
+  /** 远端执行方**显示名**（后端 PeerStore 就地解析、随 session 载荷下发；
+   *  找不到时后端回 slug）。前端模型 chip/远端徽标优先用它，避免各自
+   *  useA2aPeers 异步拉取落定前 {name} 占位符闪 slug（i18n 错位竞态）。 */
+  remote_peer_name?: string | null;
   // 影子会话所属的执行记录 run_id（§4.3）；普通会话缺省。
   schedule_run_id?: string;
   // ---- subagent (subagent-design.md §4.1；与共享契约 1 同形) ----

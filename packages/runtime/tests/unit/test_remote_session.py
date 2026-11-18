@@ -360,3 +360,73 @@ async def test_network_failure_error_is_not_our_own_bug(monkeypatch, isolated_ho
     err = str(res.get("error") or "")
     assert "TypeError" not in err, f"自身代码 bug 不得伪装成网络故障：{err}"
     assert "get_or_none" not in err, f"自身代码 bug：{err}"
+
+
+# ---- session 载荷 remote_peer_name（i18n {name} 错位修复，2026-11-18）--------
+# 前端模型 chip/远端徽标此前靠 useA2aPeers 异步拉取再按 slug 找 name，落定前
+# {name} 占位符闪 slug（test_packaged_ui_llm_events 的 model_chip 用例因此
+# flaky）。修复 = session 载荷在后端真源就地解析显示名，找不到才回 slug。
+
+
+def test_remote_peer_name_resolves_from_store(monkeypatch):
+    from ginno_runtime.a2a import peers as peers_mod
+    from ginno_runtime.api import sessions as s
+
+    rec = peers_mod.PeerRecord(
+        slug="vps", name="VPS 节点", endpoint="http://h/a2a"
+    )
+    monkeypatch.setattr(
+        peers_mod.PeerStore, "find", lambda self, slug: rec if slug == "vps" else None
+    )
+    assert s._remote_peer_name("vps") == "VPS 节点"
+    # 解析不到 → 回 slug（「归属事实不因列表缺失而消失」的既有语义，收归后端单点）
+    assert s._remote_peer_name("ghost") == "ghost"
+    # 非远端 → None（载荷不加键）
+    assert s._remote_peer_name(None) is None
+    assert s._remote_peer_name("") is None
+
+
+def test_remote_peer_name_empty_name_falls_back_to_slug(monkeypatch):
+    from ginno_runtime.a2a import peers as peers_mod
+    from ginno_runtime.api import sessions as s
+
+    rec = peers_mod.PeerRecord(slug="vps", name="", endpoint="http://h/a2a")
+    monkeypatch.setattr(peers_mod.PeerStore, "find", lambda self, slug: rec)
+    assert s._remote_peer_name("vps") == "vps"
+
+
+def test_remote_peer_name_store_error_falls_back(monkeypatch):
+    from ginno_runtime.a2a import peers as peers_mod
+    from ginno_runtime.api import sessions as s
+
+    def _boom(self, slug):
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(peers_mod.PeerStore, "find", _boom)
+    assert s._remote_peer_name("vps") == "vps"
+
+
+def test_with_remote_peer_name_payload_exits(monkeypatch):
+    from ginno_runtime.a2a import peers as peers_mod
+    from ginno_runtime.api import sessions as s
+
+    # store 钉死：存在 vps → 「VPS 节点」；不存在 ghost → 回 slug
+    rec = peers_mod.PeerRecord(slug="vps", name="VPS 节点")
+    monkeypatch.setattr(
+        peers_mod.PeerStore,
+        "find",
+        lambda self, slug: rec if slug == "vps" else None,
+    )
+    # 非远端会话：原样（浅拷贝）、绝不加 remote_peer_name 键
+    m = {"id": "s1", "remote_peer": None}
+    out = s._with_remote_peer_name(m)
+    assert out == {"id": "s1", "remote_peer": None}
+    assert "remote_peer_name" not in out
+    # 远端会话：补键且不吞其它字段（get_session/create/list 三出口共用）
+    m2 = {"id": "s2", "remote_peer": "vps", "title": "t"}
+    out2 = s._with_remote_peer_name(m2)
+    assert out2["remote_peer_name"] == "VPS 节点"
+    assert out2["title"] == "t"
+    assert m2 == {"id": "s2", "remote_peer": "vps", "title": "t"}  # 原 dict 不被改写
+    m3 = {"id": "s3", "remote_peer": "ghost"}
+    assert s._with_remote_peer_name(m3)["remote_peer_name"] == "ghost"

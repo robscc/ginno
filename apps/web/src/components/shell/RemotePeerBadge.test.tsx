@@ -24,10 +24,13 @@ describe("RemotePeerBadge", () => {
     expect(SRC).toContain('tr("remote-badge", { name })');
   });
 
-  it("peer 名从脱敏读面解析，miss 回落 slug（归属事实不丢）", () => {
+  it("peer 名三级解析：session 真源 → 脱敏读面 → slug（i18n {name} 错位修复）", () => {
     expect(SRC).toContain("useA2aPeers(true)");
     expect(SRC).toMatch(/const peer = peers\.find\(\(p\) => p\.slug === slug\)/);
-    expect(SRC).toMatch(/const name = peer\?\.name \|\| slug/);
+    // resolvedName（session 载荷自带，后端 PeerStore 真源）优先——消除
+    // useA2aPeers 异步落定前 {name} 闪 slug 的窗口（2026-11-18）。
+    expect(SRC).toMatch(/const name = resolvedName \|\| peer\?\.name \|\| slug/);
+    expect(SRC).toMatch(/resolvedName\?: string \| null/);
   });
 
   it("tooltip 带完整 endpoint；无 endpoint 用降级键（不渲染空括号）", () => {
@@ -41,9 +44,11 @@ describe("RemotePeerBadge", () => {
 });
 
 describe("TopBar 接线", () => {
-  it("仅 session.remote_peer 存在时渲染徽标（本地会话零变化）", () => {
+  it("仅 session.remote_peer 存在时渲染徽标，并把后端真源显示名传下去", () => {
     expect(TOPBAR).toContain('import { RemotePeerBadge } from "./RemotePeerBadge"');
-    expect(TOPBAR).toMatch(/\{session\?\.remote_peer && <RemotePeerBadge slug=\{session\.remote_peer\} \/>\}/);
+    expect(TOPBAR).toMatch(
+      /\{session\?\.remote_peer && \(\s*\n\s*<RemotePeerBadge\s*\n\s*slug=\{session\.remote_peer\}\s*\n\s*resolvedName=\{session\.remote_peer_name\}\s*\n\s*\/>\s*\n\s*\)\}/,
+    );
   });
 });
 

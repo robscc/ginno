@@ -893,7 +893,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
     except Exception:
         _log.exception("vibe_island_session_start_failed session=%s", session_id)
     # return the meta shape (with `id`) so the frontend SessionMeta matches
-    return {**meta, "ok": True}
+    return _with_remote_peer_name({**meta, "ok": True})
 
 
 @router.get("/api/sessions")
@@ -902,7 +902,12 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     on_disk = _session_meta_list(slug)
     if on_disk:
         # unread 装饰：服务端收件箱语义（session_unread），侧栏紫点的单一事实源
-        return [{**m, "unread": _session_is_unread(m), **_tags_fields(m)} for m in on_disk]
+        return [
+            _with_remote_peer_name(
+                {**m, "unread": _session_is_unread(m), **_tags_fields(m)}
+            )
+            for m in on_disk
+        ]
     return [
         {
             **{k: v for k, v in s.items() if k != "graph"},
@@ -987,6 +992,36 @@ async def search_sessions(
     }
 
 
+def _remote_peer_name(slug: str | None) -> str | None:
+    """远端会话执行方的**显示名**（PeerStore 就地解析；找不到回 slug）。
+
+    为什么在后端解析：前端模型 chip/远端徽标此前各自 useA2aPeers 异步拉取
+    再按 slug 找 name，拉取落定前的窗口只能回退 slug——i18n 模板
+    ``model-remote-title``/``remote-badge-title`` 的 ``{name}`` 占位符因此
+    闪现 slug（test_remote_session_model_chip_disabled flaky 的根因）。
+    session 载荷在真源就地带上解析结果，前端优先用它，竞态窗口归零；
+    「解析不到显示 slug」的回退语义收归后端单点。
+    """
+    if not slug:
+        return None
+    try:
+        from ..a2a.peers import PeerStore
+
+        rec = PeerStore().find(slug)
+        return (rec.name or slug) if rec else slug
+    except Exception:  # noqa: BLE001 — 读失败回 slug，不让会话载荷崩
+        return slug
+
+
+def _with_remote_peer_name(m: dict) -> dict:
+    """session 载荷出口统一补 remote_peer_name（非远端会话零成本短路）。"""
+    slug = m.get("remote_peer")
+    if not slug:
+        return m
+    out = {**m, "remote_peer_name": _remote_peer_name(slug)}
+    return out
+
+
 @router.get("/api/sessions/{session_id}")
 async def get_session(session_id: str) -> dict:
     m = _resolve_session_meta(session_id)
@@ -997,7 +1032,9 @@ async def get_session(session_id: str) -> dict:
         raise HTTPException(
             status_code=404, detail={"ok": False, "error": "unknown session"}
         )
-    return {k: v for k, v in m.items() if k != "graph"} | {"unread": _session_is_unread(m)} | _tags_fields(m)
+    return _with_remote_peer_name(
+        {k: v for k, v in m.items() if k != "graph"}
+    ) | {"unread": _session_is_unread(m)} | _tags_fields(m)
 
 
 # ── Session label/icon（session-label-icon-design.md §1/§2）──────────────────

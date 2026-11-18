@@ -62,8 +62,13 @@ export function ModelChipMenu({
   // useModelPick 的两个 pick 函数另有 fail-closed 守卫（纵深防御）。
   const remotePeer = session?.remote_peer || null;
   const peers = useA2aPeers(!!remotePeer);
+  // 显示名三级回退：session 载荷真源（后端 PeerStore 就地解析，无竞态窗口）
+  // → 本地 peers 查找（旧 sidecar 兼容）→ slug 本身。此前只有后两级，
+  // useA2aPeers 落定前 {name} 占位符闪 slug（i18n 错位，e2e flaky 根因）。
   const remoteName = remotePeer
-    ? peers.find((p) => p.slug === remotePeer)?.name || remotePeer
+    ? session?.remote_peer_name ||
+      peers.find((p) => p.slug === remotePeer)?.name ||
+      remotePeer
     : "";
   // 手风琴内联（2026-11-14 用户反馈「选模型还要点两次+难度要优化」）：
   // 点模型行 = 选择 + 关闭（一次完成）；行尾箭头 = 内联展开该模型的思考

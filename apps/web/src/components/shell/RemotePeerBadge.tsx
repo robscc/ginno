@@ -11,11 +11,20 @@ import { useTranslations } from "next-intl";
 import { Icon } from "@/components/icons";
 import { useA2aPeers } from "@/lib/useA2aPeers";
 
-export function RemotePeerBadge({ slug }: { slug: string }) {
+export function RemotePeerBadge({
+  slug,
+  resolvedName,
+}: {
+  slug: string;
+  /** session 载荷自带的显示名（后端 PeerStore 真源解析）——优先于本地
+   *  peers 查找，消除异步拉取落定前 {name} 闪 slug 的窗口（与
+   *  ModelChipMenu 同修，i18n 错位竞态根因见 sessions.py）。 */
+  resolvedName?: string | null;
+}) {
   const tr = useTranslations("shell");
   const peers = useA2aPeers(true);
   const peer = peers.find((p) => p.slug === slug);
-  const name = peer?.name || slug;
+  const name = resolvedName || peer?.name || slug;
   const endpoint = peer?.endpoint ?? "";
   return (
     <span

@@ -38,10 +38,15 @@ describe("ModelChipMenu：远端会话整 chip 禁用", () => {
     expect(CHIP).toContain("{open && !remotePeer && (");
   });
 
-  it("label 换 peer 名（与 RemotePeerBadge 同数据源 useA2aPeers、同 slug 回退）", () => {
+  it("label 换 peer 名——session 载荷真源优先，三级回退（i18n {name} 错位修复）", () => {
     expect(CHIP).toContain('import { useA2aPeers } from "@/lib/useA2aPeers"');
     expect(CHIP).toMatch(/const peers = useA2aPeers\(!!remotePeer\)/);
-    expect(CHIP).toMatch(/peers\.find\(\(p\) => p\.slug === remotePeer\)\?\.name \|\| remotePeer/);
+    // 三级回退：session.remote_peer_name（后端真源，无竞态）→ peers 查找
+    // （旧 sidecar 兼容）→ slug。此前只有后两级，useA2aPeers 落定前
+    // {name} 占位符闪 slug（e2e flaky 根因，2026-11-18）。
+    expect(CHIP).toMatch(
+      /session\?\.remote_peer_name \|\|\s*\n\s*peers\.find\(\(p\) => p\.slug === remotePeer\)\?\.name \|\|\s*\n\s*remotePeer/,
+    );
     expect(CHIP).toContain("{remotePeer ? remoteName : label}");
   });
 
