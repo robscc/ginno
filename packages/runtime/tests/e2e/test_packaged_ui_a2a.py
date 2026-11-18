@@ -23,6 +23,18 @@ vitest/tsc 抓不到渲染层断裂（@ 菜单全灭三天才被发现的教训�
 5. R3 边界（§11.2 / §13.1 用例 28 的 UI 侧印证）：A2A 详情页没有任何指向
    settings/mcp/skills 的入口——R3 路由根本不注册，UI 也不留入口。
 
+2026-11-18 晚用户实测踩坑补两条（入站 toggle UX 陷阱）：
+6. 总开关（settings 页签 a2a_enabled）关 → 入站 toggle 必须物理禁用
+   （disabled + aria-disabled + data-master-off），dispatch_event 合成
+   click 穿透也不许发 PATCH / 不弹确认框——旧版可点可保存但运行时
+   永不生效（apply_config 无热重载），用户以为卡死。
+7. PATCH 成功后必须出现「重启 Ginno 后生效」行内提示——服务起停实际
+   要重启 sidecar，UI 不能沉默。
+
+总开关默认关（default_config fail-closed），所以走开关流的既有用例
+（1/2/3 与新 7）先经 `_enable_master`（API PATCH + reload，确定性地
+让列表带上 a2a_enabled=true 再开抽屉）；用例 6 反向利用默认态。
+
 Skips gracefully when the binary isn't built or playwright isn't installed.
 """
 
@@ -117,6 +129,18 @@ def _api(port: int, path: str) -> dict:
         return json.loads(r.read().decode())
 
 
+def _patch_config(port: int, payload: dict) -> dict:
+    """PATCH 枢纽配置（与前端 patchConnectorConfig 同端点）。"""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/connectors/a2a/config",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PATCH",
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode())
+
+
 @pytest.fixture
 def app(tmp_path):
     """Boot packaged sidecar + Chromium，yield (page, port)。"""
@@ -202,11 +226,22 @@ def _wait_address(page, timeout: float = 25) -> str:
     raise AssertionError("接入地址未渲染（后端 extra.inboundAddress 未上报？）")
 
 
+def _enable_master(page, port: int) -> None:
+    """打开 A2A 总开关（a2a_enabled）——入站 toggle 的前置条件。
+
+    API PATCH + page.reload：连接器列表有 5s 轮询 + WS 推送，但为让
+    抽屉首开就带上 a2a_enabled=true（无竞态），直接重载页面最确定。
+    """
+    _patch_config(port, {"a2a_enabled": True})
+    page.reload(wait_until="load")
+
+
 # ---- 1. 入站开关确认流 -------------------------------------------------------
 
 
 def test_inbound_toggle_confirm_flow(app):
     page, port = app
+    _enable_master(page, port)
     _open_a2a(page)
     toggle = page.get_by_test_id("a2a-inbound-toggle")
     # §13.1 用例 14：入站默认关闭
@@ -238,11 +273,90 @@ def test_inbound_toggle_confirm_flow(app):
     assert page.get_by_test_id("a2a-inbound-enable-confirm").count() == 0
 
 
+# ---- 1b. 总开关关 → 入站 toggle 物理禁用（2026-11-18 UX 陷阱） ---------------
+
+
+def test_master_off_disables_inbound_toggle(app):
+    """总开关未开（默认态）：toggle 必须 disabled + aria-disabled，旁路点击无效。
+
+    旧版 toggle 可点可 PATCH——配置写进去了但 apply_config 无热重载、
+    运行时永不生效，黄条「A2A 总开关未开启」常驻，用户以为卡死。
+    """
+    page, port = app
+    drawer = _open_a2a(page)
+    toggle = page.get_by_test_id("a2a-inbound-toggle")
+
+    # 三重禁用信号：原生 disabled、aria-disabled、data-master-off 钩子
+    assert toggle.is_disabled(), "总开关关时入站 toggle 必须原生 disabled"
+    assert toggle.get_attribute("aria-disabled") == "true"
+    assert toggle.get_attribute("data-master-off") == "true"
+    # 因果说明仍在（黄条）：告诉用户去哪里开总开关
+    assert drawer.get_by_text("A2A 总开关未开启", exact=False).count() >= 1
+
+    # dispatch_event 直接触发 click 事件（原生 disabled 拦用户交互，但
+    # 合成事件/编程调用能穿透）——组件层 inboundToggleAction 的 blocked
+    # 门必须兜住：不许发 PATCH、不许弹确认框。
+    toggle.dispatch_event("click")
+    page.wait_for_timeout(500)
+    assert toggle.get_attribute("aria-checked") == "false"
+    assert page.get_by_test_id("a2a-inbound-enable-confirm").count() == 0
+    stored = _api(port, "/api/connectors/a2a").get("config") or {}
+    assert not stored.get("inbound_enabled"), "总开关关时旁路点击也不许写入配置"
+
+    # 总开关打开（API + reload）后 toggle 恢复可用——禁用态不许变成死锁
+    _enable_master(page, port)
+    drawer = _open_a2a(page)
+    toggle = page.get_by_test_id("a2a-inbound-toggle")
+    assert not toggle.is_disabled()
+    assert toggle.get_attribute("data-master-off") is None
+
+
+# ---- 1c. PATCH 成功 → 「重启后生效」提示（2026-11-18 UX 陷阱） ---------------
+
+
+def test_toggle_patch_shows_restart_notice(app):
+    """开关 PATCH 成功后必须明示「配置已保存，重启 Ginno 后生效」。
+
+    apply_config 无热重载（P0 设计），服务起停实际要重启 sidecar——
+    旧版 UI 只翻开关状态，用户以为已立即生效。
+    """
+    page, port = app
+    _enable_master(page, port)
+    _open_a2a(page)
+
+    # 关→开（走确认流）：成功后行内提示出现
+    page.get_by_test_id("a2a-inbound-toggle").click()
+    page.get_by_test_id("a2a-inbound-enable-confirm").click()
+    _wait_toggle(page, "true")
+    page.get_by_text("配置已保存，重启 Ginno 后生效", exact=False).wait_for(
+        timeout=10_000
+    )
+    # 提示是成功态（绿字）而非错误文案
+    eff = _api(port, "/api/connectors/a2a").get("effective") or {}
+    assert eff.get("inbound_enabled") is True
+
+    # 开→关（免确认直发）：同样要给提示——两个方向都不许沉默。
+    # expect_response 钉住这次 PATCH 往返：旧提示在 click 时已被同步清掉
+    # （applyToggle 开头 setMsg(null)），wait_for 通过的必然是新提示。
+    with page.expect_response(
+        lambda r: "/api/connectors/a2a/config" in r.url
+        and r.request.method == "PATCH"
+    ):
+        page.get_by_test_id("a2a-inbound-toggle").click()
+    _wait_toggle(page, "false")
+    page.get_by_text("配置已保存，重启 Ginno 后生效", exact=False).wait_for(
+        timeout=10_000
+    )
+    stored = _api(port, "/api/connectors/a2a").get("config") or {}
+    assert stored.get("inbound_enabled") is False
+
+
 # ---- 2. 地址明文（§12.C-2） --------------------------------------------------
 
 
 def test_inbound_address_plaintext_no_mask(app):
     page, port = app
+    _enable_master(page, port)
     _open_a2a(page)
     _enable_inbound(page)
     addr = _wait_address(page)
@@ -266,7 +380,8 @@ def test_inbound_address_plaintext_no_mask(app):
 
 
 def test_inbound_reset_confirm_rotates_token(app):
-    page, _port = app
+    page, port = app
+    _enable_master(page, port)
     _open_a2a(page)
     _enable_inbound(page)
     addr1 = _wait_address(page)

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { useTranslations } from "next-intl";
 import {
   confirmReducer,
+  inboundToggleAction,
   inboundTogglePatch,
   inboundView,
   needsEnableConfirm,
@@ -128,6 +129,44 @@ describe("开启入站二次确认门（§12.C-4）", () => {
     expect(s).toBe("confirm");
     s = confirmReducer(s, "cancel");
     expect(s).toBe("idle"); // 取消后回到 idle，重置未发生
+  });
+});
+
+describe("入站开关交互门（2026-11-18 UX 陷阱修复）", () => {
+  it("总开关关 → 一律 blocked（开/关两个方向都不许 PATCH）", () => {
+    expect(inboundToggleAction(false, false, true)).toBe("blocked");
+    expect(inboundToggleAction(false, true, false)).toBe("blocked");
+  });
+
+  it("总开关开 → 保留既有确认流：关→开 confirm，开→关 apply", () => {
+    expect(inboundToggleAction(true, false, true)).toBe("confirm");
+    expect(inboundToggleAction(true, true, false)).toBe("apply");
+  });
+
+  it("JSX 层钉住：按钮 disabled 绑定 !view.masterOn + aria-disabled（node 环境无 DOM，源码钉住防回归）", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./A2aInboundCard.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain('disabled={busy === "toggle" || !view.masterOn}');
+    expect(src).toContain("aria-disabled={!view.masterOn}");
+    expect(src).toContain("disabled:cursor-not-allowed");
+    // onToggleClick 必须走 inboundToggleAction 门（blocked 分支 no-op）
+    expect(src).toContain("const action = inboundToggleAction(view.masterOn, view.enabled, next);");
+  });
+
+  it("PATCH 成功提示「重启后生效」：key 双语齐全 + 文案语义 + 源码钉住成功路径", () => {
+    const en = a2aEn.a2a as Record<string, string>;
+    const zh = a2aZh.a2a as Record<string, string>;
+    expect(zh["inbound-saved-restart"]).toContain("已保存");
+    expect(zh["inbound-saved-restart"]).toContain("重启");
+    expect(en["inbound-saved-restart"]).toMatch(/restart/i);
+    expect(en["inbound-saved-restart"]).toContain("take effect");
+    const src = readFileSync(
+      fileURLToPath(new URL("./A2aInboundCard.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain('setMsg({ kind: "ok", text: t("inbound-saved-restart") });');
   });
 });
 

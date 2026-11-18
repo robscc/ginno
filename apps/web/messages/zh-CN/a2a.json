@@ -84,6 +84,7 @@
     "inbound-fingerprint": "证书指纹",
     "inbound-listen": "实际监听地址",
     "inbound-save-failed": "保存失败",
+    "inbound-saved-restart": "配置已保存，重启 Ginno 后生效。",
     "outbound-title": "出站 · 委托外部 Agent",
     "outbound-subtitle": "每个外部 Agent 是一个独立连接器实例，信任边界按 agent 划分。",
     "peer-add": "接入外部 Agent",
