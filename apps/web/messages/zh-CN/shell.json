@@ -50,7 +50,8 @@
     },
     "filter": {
       "clear": "清除筛选",
-      "showOnly": "只看 {name} 的会话"
+      "showOnly": "只看 {name} 的会话",
+      "filterSessions": "过滤会话（标题/拼音首字母）"
     },
     "empty": {
       "noSessions": "还没有会话。",

@@ -18,6 +18,7 @@ import {
   Link2,
   Loader2,
   Pencil,
+  Search,
   Trash2,
   Workflow,
   X,
@@ -29,6 +30,7 @@ import { pushNotice } from "@/lib/notice";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { FILE_MISSING_EVENT } from "@/components/chat/FileViewer";
 import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
+import { filterByText } from "@/lib/sessionTextFilter";
 
 export const ICON: Record<string, typeof FileText> = {
   workflow: Workflow,
@@ -687,6 +689,19 @@ export function ArtifactsPanel() {
   }, [g.projectArtifacts, g.artifacts]);
   const displayed = scope === "current" ? currentItems : allItems;
 
+  // 产物过滤（2026-11-18 旅程走查 P1-2）：1673 项/单组 493 项的规模下，
+  // 分组折叠不够用——scope 切换下方常驻轻量过滤框，标题打分（contains >
+  // 拼音首字母 > 子序列，与侧栏同款 lib），对 displayed（当前会话或全部）
+  // 生效；kind 作为次级匹配（搜 "md"/"image" 能按类型收窄）。
+  const [artifactQuery, setArtifactQuery] = useState("");
+  const visibleItems = useMemo(
+    () =>
+      artifactQuery.trim()
+        ? filterByText(displayed, artifactQuery, (a) => `${a.name} ${a.kind ?? ""}`)
+        : displayed,
+    [displayed, artifactQuery],
+  );
+
   // P3-2：展开的图片折叠条（按折叠键记忆，只在组件内，不持久化）。
   const [expandedImageGroups, setExpandedImageGroups] = useState<Set<string>>(
     () => new Set(),
@@ -706,7 +721,7 @@ export function ArtifactsPanel() {
   if (scope === "all") {
     const bySession = new Map<string, { id: string; title: string; items: Artifact[] }>();
     const ungrouped: Artifact[] = [];
-    for (const a of allItems) {
+    for (const a of visibleItems) {
       const sid = a.session_id || "";
       if (!sid) {
         ungrouped.push(a);
@@ -963,7 +978,7 @@ export function ArtifactsPanel() {
         <Boxes className="mr-2 h-4 w-4 text-muted" />
         <span className="text-sm font-semibold text-txt">{t("title")}</span>
         <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">
-          {g.ready ? displayed.length : "–"}
+          {g.ready ? visibleItems.length : "–"}
         </span>
       </div>
       {/* P3-1 视图切换：当前会话 / 全部（选择写入 localStorage） */}
@@ -994,6 +1009,34 @@ export function ArtifactsPanel() {
             {t("scope.all")}
           </button>
         </div>
+        {/* P1-2 产物过滤：标题/拼音首字母/kind 打分匹配，scope 范围内生效。 */}
+        <div className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-line bg-card/40 px-2 py-1">
+          <Search className="h-3.5 w-3.5 shrink-0 text-faint" />
+          <input
+            value={artifactQuery}
+            onChange={(e) => setArtifactQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setArtifactQuery("");
+            }}
+            placeholder={t("filterPlaceholder")}
+            aria-label={t("filterPlaceholder")}
+            className="w-full bg-transparent text-[12px] text-txt outline-none placeholder:text-faint"
+          />
+          {artifactQuery && (
+            <>
+              <span className="shrink-0 font-mono text-[10px] text-faint">
+                {visibleItems.length}/{displayed.length}
+              </span>
+              <button
+                onClick={() => setArtifactQuery("")}
+                aria-label={tc("clearFilter")}
+                className="shrink-0 rounded p-0.5 text-faint hover:bg-card2 hover:text-txt"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </>
+          )}
+        </div>
       </div>
       <div
         className="flex-1 space-y-1 overflow-y-auto px-3"
@@ -1010,12 +1053,16 @@ export function ArtifactsPanel() {
               <span className="h-3 flex-1 animate-pulse rounded bg-line2/50" />
             </div>
           ))}
-        {g.ready && displayed.length === 0 && (
+        {g.ready && visibleItems.length === 0 && (
           <div className="px-1 py-6 text-center text-xs text-faint">
-            {scope === "current" ? t("emptyCurrent") : t("empty")}
+            {artifactQuery.trim()
+              ? t("noMatch", { q: artifactQuery.trim() })
+              : scope === "current"
+                ? t("emptyCurrent")
+                : t("empty")}
           </div>
         )}
-        {g.ready && scope === "current" && foldImageRuns(currentItems).map(renderFoldedRow)}
+        {g.ready && scope === "current" && foldImageRuns(visibleItems).map(renderFoldedRow)}
         {g.ready &&
           scope === "all" &&
           groups.map((grp) => {
@@ -1052,7 +1099,7 @@ export function ArtifactsPanel() {
         // on hover — otherwise edits (rename etc.) wouldn't show until close.
         // If it was deleted while open, drop the popover.
         const live =
-          displayed.find((x) => x.id === hover.a.id) ?? g.artifacts.find((x) => x.id === hover.a.id);
+          visibleItems.find((x) => x.id === hover.a.id) ?? g.artifacts.find((x) => x.id === hover.a.id);
         if (!live) return null;
         return (
           <div onMouseEnter={cancelClose} onMouseLeave={scheduleClose}>

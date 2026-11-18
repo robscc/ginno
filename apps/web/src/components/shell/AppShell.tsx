@@ -10,6 +10,7 @@ import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { applyTheme } from "@/components/settings/GeneralSettings";
+import { filterByText } from "@/lib/sessionTextFilter";
 import { applyFontPrefs, readFontPrefs } from "@/lib/fontPrefs";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
@@ -74,6 +75,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
   // C+ 方案③：侧边栏按 agent 筛选会话（null = 全部，再点一次取消）
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  // 就地文本过滤（2026-11-18 旅程走查 P1-3）：分组前对全量会话按标题打分
+  // （contains > 拼音首字母 > 子序列），空查询 = 不过滤。⌘K 全局搜索负责跨
+  // 会话找内容，这里只管「列表里快速缩小到那个会话」。
+  const [sidebarFilter, setSidebarFilter] = useState("");
   // 子会话三档分节的折叠覆盖（2026-10-12 收纳优化）：key = "<父会话>:<桶>"。
   // 父级展开/折叠本身在 store（treeCollapsed）；节级折叠是会话内的 UI 态，
   // 刷新后回到默认（运行中/失败展开、成功收起）即可。单子会话不分节。
@@ -135,6 +140,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Usage counters are per session: pull the session's accumulated stats on
   // switch so the TopBar counter is correct immediately (live `usage` WS
   // turn events keep updating it during turns).
+
+  // hash 路由兼容（2026-11-18 旅程走查 P2-7）：Next 静态导出只认 path 路由，
+  // 外部书签/文档常写 `#/schedule` 这类 hash 形式——挂载时一次性把 #/xxx
+  // 规范化为 /xxx 并 replace（不留历史项），仅路径形 hash 生效，锚点不动。
+  useEffect(() => {
+    const h = window.location.hash;
+    const m = h && h.match(/^#(\/[\w/-]*)$/);
+    if (m && m[1] !== window.location.pathname) router.replace(m[1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -593,6 +608,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
   }, [g.ready]);
 
+  // 就地过滤派生（P1-3）：过滤在分组 hook 之前——置顶/天分组/父子/归档全部
+  // 基于过滤后的集合自然派生；无查询时零成本直通。
+  const filteredSessions = useMemo(
+    () => filterByText(g.sessions, sidebarFilter, (s) => s.title || ""),
+    [g.sessions, sidebarFilter],
+  );
+
   // 侧栏分组派生数据（天分组 / 项目分组 / 归档 / 批量候选）——纯计算，
   // 逻辑细节见 useSessionGrouping。
   const {
@@ -609,7 +631,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     archiveCandidates,
     selectedArchivedIds,
   } = useSessionGrouping({
-    sessions: g.sessions,
+    sessions: filteredSessions,
     workflowRuns: g.workflowRuns,
     agentFilter,
     folders,
@@ -889,6 +911,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <SidebarHeader
           groupView={groupView}
           onGroupViewChange={setGroupView}
+          filterQuery={sidebarFilter}
+          onFilterQueryChange={setSidebarFilter}
+          filteredCount={filteredSessions.length}
+          totalCount={g.sessions.length}
           archiveCandidatesCount={archiveCandidates.length}
           bulkBusy={bulkBusy}
           onArchiveAll={() => setArchiveAllConfirm(true)}

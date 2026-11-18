@@ -443,12 +443,32 @@ export function ModelConfigForm({
               {listMode === "chips" ? t("manualEdit") : t("listView")}
             </button>
             {!canFetchModels && (
-              <span className="text-[11px] text-faint">{t("fetchNeedKeys")}</span>
+              <span className="text-[11px] text-faint">
+                {t("fetchNeedKeys")}
+                {listMode !== "manual" && (
+                  <button
+                    type="button"
+                    onClick={() => setListMode("manual")}
+                    className="ml-1.5 underline decoration-dotted hover:text-txt"
+                  >
+                    {t("switchManual")}
+                  </button>
+                )}
+              </span>
             )}
           </div>
           {fetchError && (
-            <div className="selectable mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-              {t("fetchFailed", { error: fetchError })}
+            <div className="selectable mb-2 flex items-center gap-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+              <span className="min-w-0 flex-1">{t("fetchFailed", { error: fetchError })}</span>
+              {listMode !== "manual" && (
+                <button
+                  type="button"
+                  onClick={() => setListMode("manual")}
+                  className="shrink-0 rounded border border-yellow/50 px-1.5 py-0.5 text-[11px] transition-colors hover:bg-yellow/15"
+                >
+                  {t("switchManual")}
+                </button>
+              )}
             </div>
           )}
           {fetched && (

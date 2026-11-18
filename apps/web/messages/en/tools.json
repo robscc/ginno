@@ -934,7 +934,8 @@
         "thinkingParamStyleHint": "Qwen-on-Anthropic gateways (e.g. Magpie TestChannel) only accept reasoning_effort; thinking params 400.",
         "extraBodyLabel": "extra_body passthrough (JSON)",
         "extraBodyPlaceholder": "{\"enable_thinking\": true}",
-        "extraBodyInvalid": "extra_body is not valid JSON — check the syntax"
+        "extraBodyInvalid": "extra_body is not valid JSON — check the syntax",
+        "switchManual": "Switch to manual entry"
       },
       "collapseCard": "Collapse",
       "asrChip": "ASR",

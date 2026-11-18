@@ -50,7 +50,8 @@
     },
     "filter": {
       "clear": "Clear filter",
-      "showOnly": "Show only {name}'s sessions"
+      "showOnly": "Show only {name}'s sessions",
+      "filterSessions": "Filter sessions (title / initials)"
     },
     "empty": {
       "noSessions": "No sessions yet.",

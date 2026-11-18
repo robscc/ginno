@@ -31,7 +31,8 @@
       "relNow": "刚刚",
       "relMinutes": "{n} 分钟前",
       "relHours": "{n} 小时前",
-      "relDays": "{n} 天前"
+      "relDays": "{n} 天前",
+      "clearFilter": "清除过滤"
     },
     "dock": {
       "expand": "展开右侧面板",
@@ -256,7 +257,9 @@
       },
       "reveal": "在 Finder 中显示",
       "remoteNotice": "「{name}」是远端产物（{path}），文件在远端节点上，本机无法直接打开",
-      "remoteBadge": "远端"
+      "remoteBadge": "远端",
+      "filterPlaceholder": "过滤产物（名称/拼音/kind）",
+      "noMatch": "无匹配「{q}」的产物"
     },
     "synthesis": {
       "title": "总结历史",
