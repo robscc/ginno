@@ -220,12 +220,23 @@ class ConnectorRegistry:
         self._notify(snapshot)
 
     def report_meta(self, cid: str, **kw: Any) -> None:
-        """Update version/capabilities/extra without a status transition."""
+        """Update version/capabilities/extra without a status transition.
+
+        2026-11-18 广播守卫：GET /api/connectors 每次都经
+        ensure_builtin_connectors → ensure_a2a_hub → report_inbound_meta
+        走到这里——内容一字未变也 _notify 会与前端「收到事件即 refresh」
+        组成自激环（playwright 实证 6s 652 次请求，打满浏览器连接池）。
+        语义与 report 的同状态早退对称：无实质变化不广播。
+        """
         with self._lock:
             st = self._states.setdefault(cid, ConnectorState())
+            changed = False
             for k in ("version", "capabilities", "extra"):
-                if k in kw:
+                if k in kw and getattr(st, k, None) != kw[k]:
                     setattr(st, k, kw[k])
+                    changed = True
+            if not changed:
+                return  # 纯重复上报：不广播（防 ensure 路径自激）
             snapshot = self._snapshot_locked(cid)
         self._notify(snapshot)
 
