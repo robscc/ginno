@@ -339,14 +339,18 @@ async def run_channel_turn(
                         if not _ok:
                             from ..lang import t as _t
 
-                            _kind = channel_ctx.get("kind", "channel")
+                            # 指路要准：admin_users 实际存放在**渠道连接器配置**
+                            # （settings.json connectors.<id>.admin_users，可在
+                            # 连接器页编辑），不是 channels.<kind> 命名空间——
+                            # 旧文案指向不存在的配置路径，用户照着改无效。
                             receipt = _t(
                                 f"⛔ `/{plan.builtin_async}` is admin-only on this "
-                                "channel — your userid is not in "
-                                f"channels.{_kind}.admin_users.",
+                                "channel — your userid is not in this channel "
+                                "connector's `admin_users` config (connectors "
+                                "page).",
                                 f"⛔ `/{plan.builtin_async}` 在渠道侧仅管理员可用"
-                                "——你的 userid 不在 channels."
-                                + _kind + ".admin_users 配置中。",
+                                "——你的 userid 不在本渠道连接器配置的 `admin_"
+                                "users` 名单中（连接器页可编辑）。",
                             )
                             await tap.send_text(json.dumps(
                                 {"event": "turn.start", "turn_id": turn_id},
