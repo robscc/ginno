@@ -397,10 +397,40 @@ async def _run_stream(
     from .remote_turn import remote_peer_of, run_remote_turn
 
     if remote_peer_of(session):
+        # 附件 fail-loud（2026-11-18 远程安全网 C1-P0）：远端路径只转发纯文本
+        # user_text——images/files/mention_context/skill_name 都只在本地构图时
+        # 注入（多模态 content blocks / [turn context] / sticky skills），转发
+        # 等于**静默丢弃**（用户以为文件已带到对端，实际只发了文字）。
+        # 安全优先：整轮拒绝 + 明确 notice，绝不剥离附件继续文本。
+        _sid = session.get("session_id") or session.get("id") or ""
+        _tid = ((config or {}).get("configurable") or {}).get("turn_id")
+        _imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
+        _files = [f for f in (files or []) if isinstance(f, dict)]
+        _extras = (
+            (["附件"] if _imgs or _files else [])
+            + (["@ 引用"] if mention_context else [])
+            + ([f"skill /{skill_name}"] if skill_name else [])
+        )
+        if _extras:
+            await _push_session_event(
+                _sid, "notice",
+                {"message": t(
+                    "Remote sessions don't support attachments/@mentions/skills "
+                    "yet — this turn was cancelled. Resend as plain text.",
+                    "远端会话暂不支持附件/@引用/skill：已取消本轮，请重发纯文本。"),
+                 "i18n_key": "stream.remote_attachments_rejected",
+                 "kind": "error"},
+                _tid,
+            )
+            # 终态帧解锁 composer（同 team 广场分支的契约：notice 不解锁，
+            # 必须补 message.end，否则输入框锁死）。
+            await _push_session_event(_sid, "message.end", {}, _tid)
+            return
         await run_remote_turn(
             session, user_text,
             (config.get("configurable") or {}).get("turn_id"),
             agent_id=agent_id,
+            origin=origin,
         )
         return
 

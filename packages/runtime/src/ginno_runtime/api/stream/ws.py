@@ -1147,6 +1147,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # so a second response can arrive after the first already
                 # resumed the graph — ignore it instead of double-resuming.
                 if session_id not in _PENDING_RESUME:
+                    # 远程会话兜底（2026-11-18 远程安全网 C1-P1）：远端
+                    # permission.request 已改为说明卡（不渲染可点按钮），正常
+                    # 不再有本类响应；若仍有（旧帧缓存/自定义客户端），留痕
+                    # 而非静默 continue——远程 turn 没有本地 interrupt 可 resume。
+                    if str(session.get("remote_peer") or "").strip():
+                        _log.warning(
+                            "permission_response_dropped_remote session=%s turn=%s",
+                            session_id, _RUNNING_TURNS.get(session_id) or "",
+                        )
                     continue
                 # version.propose deliberately shares this resume channel, so
                 # accept both — but NOT a parked question, whose payload shape
