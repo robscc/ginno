@@ -909,10 +909,12 @@ def _messages_to_ui(
             if res_kw:
                 cards = _subagent_result_blocks(content_raw) or _plan_update_blocks(content_raw)
                 if cards:
-                    if acc is not None:
-                        acc.extend(cards)
-                    else:
-                        pending_bands.append(cards)
+                    # 子代理结果与下面的 task_event 一样是**新 turn 的触发器**
+                    # （回传→父会话开新 turn），先 flush 上一泡再挂 pending——
+                    # 否则新 turn 内容焊进旧气泡（2026-11-18 用户反馈：两个
+                    # turn 合并成 111 块巨无霸；live 视图本就是新气泡起步）。
+                    flush_assistant()
+                    pending_bands.append(cards)
                     continue
             # 后台任务事件注入（background-tasks-design §5/评审决策 4）：合成
             # 消息是模型侧输入——UI 只出一个极薄的 task_event 标记块，前端按
@@ -931,10 +933,13 @@ def _messages_to_ui(
                     "exit": task_kw.get("exit"),
                     "dur": str(task_kw.get("dur") or ""),
                 }
-                if acc is not None:
-                    acc.append(blk)
-                else:
-                    pending_bands.append([blk])
+                # 回执是**新 turn 的触发器**（bg 完成→新 turn），live 视图里
+                # 下一段流式在新气泡里跑——回放必须先 flush 上一泡，否则把
+                # 新 turn 的内容焊进旧气泡（2026-11-18 实锤：[task finished]
+                # 后的 PR 合并 turn 焊进上一 turn，111 块巨无霸）。flush 后
+                # pending_bands 让回执挂到新气泡头部。
+                flush_assistant()
+                pending_bands.append([blk])
                 continue
             if steer_kw:
                 group = _steer_band_blocks(content_raw, steer_kw)
