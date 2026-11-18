@@ -408,6 +408,14 @@ async def _goal_driver_loop(session_id: str) -> None:
             session = _SESSIONS.get(session_id) or _ensure_session(session_id)
             if not session:
                 return
+            # 远程会话二次守卫（2026-11-18 远程安全网 C1-P0）：API 层已拒绝
+            # 设置 goal，这里兜住一切绕过路径（goal 在挂 peer 前已设置、
+            # ws turn 收口的 _start_goal_driver 重挂、store 文件被外部写入）。
+            # remote_peer 会话的 turn 在对端执行——complete 信号落对端 store，
+            # 本地 driver 只会无限派活且无预算熔断，直接退出。
+            if str(session.get("remote_peer") or "").strip():
+                _log.warning("goal_driver_remote_blocked session=%s", session_id)
+                return
             slug = session["project_slug"]
             goal = goal_store.get_goal(slug, session_id)
             if not goal or goal.get("status") != goal_store.STATUS_ACTIVE:
@@ -552,6 +560,19 @@ def _goal_slug(session_id: str) -> str | None:
     return found[1] if found else None
 
 
+def _goal_session_remote(session_id: str) -> bool:
+    """会话是否挂 remote_peer（goal fail-closed 判定，2026-11-18 远程安全网）。
+
+    内存注册表优先；未加载的会话回落磁盘 meta——PUT goal 常发生在会话
+    尚未建图时（侧栏直接对新会话设目标）。任何一侧带 remote_peer 即真。
+    """
+    s = _SESSIONS.get(session_id)
+    if s is not None:
+        return bool(str(s.get("remote_peer") or "").strip())
+    found = _find_meta(session_id)
+    return bool(str(((found[0] if found else None) or {}).get("remote_peer") or "").strip())
+
+
 def _goal_agent(session_id: str, slug: str) -> str | None:
     s = _SESSIONS.get(session_id)
     if s:
@@ -575,10 +596,26 @@ async def set_session_goal(session_id: str, req: dict) -> dict:
     body: {objective?, status?, confirm?}
     * objective + existing UNFINISHED goal + no confirm → 409 needs_confirm.
     * status accepts only user actions: "active" (resume) | "paused".
+    * remote_peer 会话 → 一律拒绝（2026-11-18 远程安全网 C1-P0）：goal 的
+      执行与 complete 信号都在对端节点，本地 driver 只会无限向远端派活
+      且永无预算熔断。
     """
     slug = _goal_slug(session_id)
     if not slug:
         return {"ok": False, "error": "unknown session"}
+    if _goal_session_remote(session_id):
+        # API 层 fail-closed（driver 入口另有二次守卫）：语义对齐
+        # needs_confirm 的 409 形态，走 ok=False 信封 + remote 标记，前端
+        # GoalChip 按既有 error 分支展示双语原因。
+        return {
+            "ok": False,
+            "remote": True,
+            "error": t(
+                "Remote sessions don't support goals: the objective is owned by "
+                "the peer node. Use a local session for goal-driven work.",
+                "远程会话暂不支持 goal：目标由对端节点管理。目标驱动的工作请使用本地会话。",
+            ),
+        }
     objective = req.get("objective")
     status = req.get("status")
     confirm = bool(req.get("confirm"))

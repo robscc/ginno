@@ -35,7 +35,7 @@ from typing import Any
 
 from ...a2a.errors import A2AError
 from ...a2a.models import Task
-from ...server_shared import _log, _push_session_event
+from ...server_shared import _log, _push_session_event, _TURN_STOP
 
 # 远端任务轮询间隔（降级模式：对端不支持 SSE 时）
 _POLL_S = 3.0
@@ -59,6 +59,17 @@ class RemoteTurnError(RuntimeError):
 def remote_peer_of(session: dict) -> str:
     """会话是否挂远端 peer；返回 slug 或空串。"""
     return str(session.get("remote_peer") or "").strip()
+
+
+def _stop_requested(sid: str) -> bool:
+    """用户是否对本会话按了 ⏹（ws stop 置位 ``_TURN_STOP[sid]``）。
+
+    与本地 turn 的协作式停止同一信号源——远程 turn 在流式/轮询循环里逐拍
+    检查它。事件对象由 ws stop handler（或 invoke 预置）创建，这里只读，
+    缺席即「无人能停」（非 ws 发起的 turn，如 scheduler 注入）。
+    """
+    evt = _TURN_STOP.get(sid)
+    return bool(evt and evt.is_set())
 
 
 def _resolve_peer(slug: str):
@@ -188,11 +199,16 @@ async def run_remote_turn(
     turn_id: str | None = None,
     *,
     agent_id: str | None = None,
+    origin: str = "interactive",
 ) -> dict:
     """在远端 peer 上跑一轮，发兼容事件，回写本地历史。
 
     返回 ``{"ok": bool, "text": str, "state": str, "task_id": str, "error": str}``。
     **不抛**（除 peer 配置类错误）——失败也发 done，前端不会卡在 streaming。
+    用户 stop（ws ``_TURN_STOP`` 置位）在流式/轮询循环内逐拍检查：置位即
+    cancel 对端任务并以 ``turn.stopped`` 收口（不发 message.end/done，与本地
+    TurnStopped 同形）。``origin`` 标记发起者，随 message.end 下发（前端据此
+    决定 OS 通知）。
     """
     sid = _sid(session)
     slug = remote_peer_of(session)
@@ -235,6 +251,7 @@ async def run_remote_turn(
         _log.exception("remote_turn_lastwords_start_failed session=%s", sid)
 
     state, text, task_id, err = "", "", "", ""
+    stopped = False  # 用户 ⏹（P1 stop 传播）——流式/轮询循环内置位
     try:
         task = None
         streamed_parts: list[str] = []  # 已流式推给前端的 token.delta 片段
@@ -327,6 +344,9 @@ async def run_remote_turn(
                 )
                 try:
                     async for frame in gen:
+                        if _stop_requested(sid):
+                            stopped = True
+                            break
                         if time.time() > deadline:
                             err = f"远端任务超时（{rec.task_timeout_s}s 未达终态）"
                             state = "failed"
@@ -343,6 +363,30 @@ async def run_remote_turn(
                             if not ev or ev in _SUPPRESS_EVENTS:
                                 continue
                             payload = dict(fdata.get("data") or {})
+                            if ev == "permission.request":
+                                # 权限卡静默丢弃修复（2026-11-18 远程安全网
+                                # C1-P1）：原样转发会渲染**真权限卡**，但本地
+                                # 没有对应的 pending interrupt——用户点
+                                # allow/deny 后 permission_response 在 ws 收口
+                                # 处因 ``session_id not in _PENDING_RESUME``
+                                # 被 continue 丢弃，按钮纯摆设。短期改为**说明
+                                # 卡**：告诉用户对端要什么权限、回复一条消息
+                                # 即可批准/拒绝（H2 引用协议：下一条消息带
+                                # referenceTaskIds 续跑对端挂起的 task）。
+                                # 本地卡 ↔ 对端 resume 的真桥接留待后续。
+                                _ptool = str(payload.get("tool") or "")
+                                await _push_session_event(
+                                    sid, "notice",
+                                    {"message": (
+                                        f"Peer node requests permission for "
+                                        f"'{_ptool or 'tool'}' — reply with a "
+                                        f"message to approve or deny (local "
+                                        f"buttons cannot act on the remote side)"),
+                                     "i18n_key": "stream.remote_permission_hint",
+                                     "params": {"tool": _ptool},
+                                     "kind": "remote"}, tid,
+                                )
+                                continue
                             # ⚠️ 关键改写：远端引擎盖的 frame_session 是**远端
                             # 会话 id**，前端守卫会丢弃 ≠ 本地 sid 的帧。
                             # _push_session_event 的 {"frame_session": sid, **data}
@@ -410,8 +454,14 @@ async def run_remote_turn(
             # 2) 未达终态 → 轮询兜底（覆盖：阻塞回落 / 中途断流 / 对端空闲收流 /
             #    submitted 占位态）。流式正常到终态时此循环直接跳过。
             last = state
-            while task_id and not err and state not in _TERMINAL and time.time() < deadline:
+            while (
+                task_id and not err and not stopped
+                and state not in _TERMINAL and time.time() < deadline
+            ):
                 await asyncio.sleep(_POLL_S)
+                if _stop_requested(sid):
+                    stopped = True
+                    break
                 _RUNNING_TURNS_AT[sid] = time.time()  # 心跳（同流式循环）
                 task = await client.get_task(task_id)
                 state = str(task.status.state.value if hasattr(task.status.state, "value")
@@ -423,7 +473,7 @@ async def run_remote_turn(
                         {"message": f"远端状态：{state}", "kind": "remote"}, tid,
                     )
             text = _task_text(task)
-            if not err and state not in _TERMINAL:
+            if not err and not stopped and state not in _TERMINAL:
                 err = f"远端任务超时（{rec.task_timeout_s}s 未达终态）"
                 state = "failed"
         except Exception as exc:  # noqa: BLE001 — 网络/协议失败一律 fail-fast 报错
@@ -437,6 +487,20 @@ async def run_remote_turn(
                 await client.cancel_task(task_id)
             except Exception:  # noqa: BLE001 — best-effort
                 pass
+
+        # P1 stop 传播（2026-11-18 远程安全网）：用户 ⏹ 置位 _TURN_STOP 后，
+        # 流式/轮询循环已退出——cancel 对端任务并标记 canceled（收口帧在
+        # 下方 stopped 分支发）。#212 的 try/finally 已保证账本/遗言清理。
+        if stopped:
+            state = "canceled"
+            if task_id:
+                try:
+                    await client.cancel_task(task_id)
+                except Exception:  # noqa: BLE001 — best-effort；任务可能已终结
+                    _log.info(
+                        "remote_stop_cancel_failed session=%s peer=%s task=%s",
+                        sid, slug, task_id,
+                    )
 
         # M7: 释放 httpx 连接池
         try:
@@ -465,7 +529,8 @@ async def run_remote_turn(
                         )
 
         # 产物内容（P1-1 已实现回传）作为工具结果呈现，前端复用既有渲染
-        for art in _task_artifacts(task):
+        # （stop 收口跳过：abort 时刷产物卡只是噪声，历史里也不落）
+        for art in ([] if stopped else _task_artifacts(task)):
             await _push_session_event(
                 sid, "tool.start", {"name": "remote_artifact", "id": art["id"]}, tid
             )
@@ -477,6 +542,23 @@ async def run_remote_turn(
         if task_id:
             from ...a2a.contexts import _key as _ctx_key
             store.update_task_state(_ctx_key(sid, slug), task_id, state or "unknown")
+
+        # stop 收口（P1）：与本地 TurnStopped 同形——只发 turn.stopped，不发
+        # message.end/done。部分回复（已流式推过的片段）落本地镜像，空手停
+        # 则落停止标记，用户气泡不在重载后凭空消失。
+        if stopped:
+            partial = "".join(streamed_parts) or _task_text(task)
+            await _push_session_event(
+                sid, "notice",
+                {"message": "Remote task stopped (cancel sent to the peer)",
+                 "i18n_key": "stream.remote_stopped", "kind": "remote"}, tid,
+            )
+            await _persist_exchange(
+                session, user_text, partial or "[stopped] 远端任务已被手动停止"
+            )
+            await _push_session_event(sid, "turn.stopped", {}, tid)
+            return {"ok": False, "text": partial, "state": "canceled",
+                    "task_id": task_id, "error": "", "stopped": True}
 
         # 终稿文本协调：流式已推过 token.delta 就**不再重复灌全文**（会重复渲染）。
         # - 从未流式推过文本（旧节点无事件汇 / 纯工具轮）→ 照旧一次性灌全文；
@@ -497,13 +579,57 @@ async def run_remote_turn(
             await _push_session_event(
                 sid, "notice", {"message": f"远端执行失败：{err}", "kind": "error"}, tid
             )
+            # 失败持久化（2026-11-18 C1 小修③）：对齐 engine 错误路——last_error
+            # 落 session meta，重载/切会话后错误建议卡不再消失；last_finished
+            # 供未读收件箱同口径。best-effort，绝不带崩收口。
+            try:
+                from ...session_meta import _session_meta_patch
+
+                _session_meta_patch(
+                    str(session.get("project_slug") or "default"), sid,
+                    {
+                        "last_error": {
+                            "turn_id": tid,
+                            "message": f"远端执行失败：{err}",
+                            "at": time.time(),
+                        },
+                        "last_finished": time.time(),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                _log.exception("remote_turn_error_persist_failed session=%s", sid)
+
+        # LLM 标题补跑（2026-11-18 C1 小修①）：对齐 engine turn_done 完成分支
+        # ——远端完成同样要 title_assistant 写入 + spawn，否则「LLM 标题」要等
+        # 24h 后台扫描或重启才补（实锤：远程会话标题长期是截断占位）。
+        if not err and text.strip():
+            try:
+                from ...session_meta import _find_meta, _session_meta_patch
+                from ...title_gen import spawn_title_gen
+
+                _found = _find_meta(sid)
+                if _found and _found[0].get("title_llm_pending"):
+                    _session_meta_patch(
+                        str(session.get("project_slug") or "default"), sid,
+                        {"title_assistant": text[:2000]},
+                    )
+                    spawn_title_gen(sid, tid)
+            except Exception:  # noqa: BLE001 — 标题绝不带崩收口
+                _log.exception("remote_turn_title_spawn_failed session=%s", sid)
 
         await _persist_exchange(
             session, user_text,
             text or (f"[远端执行失败] {err}" if err else ""),
             refs=remote_refs,
         )
-        await _push_session_event(sid, "message.end", {}, tid)
+        # message.end 载荷（2026-11-18 C1 小修②）：补 text（回复尾段，OS 通知
+        # 正文不再退化为空）+ origin（发起者标记，非交互 turn 跳过通知），
+        # 与 engine 本地收口同形。refs= 是 #213 的重载还原锚点，二者共存。
+        await _push_session_event(
+            sid, "message.end",
+            {"text": (text or "")[:200], "origin": origin},
+            tid,
+        )
         await _push_session_event(
             sid, "done", {"turn_id": tid, "remote": True, "state": state}, tid
         )

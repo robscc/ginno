@@ -555,6 +555,16 @@ async def _compact_async_handler(
     """
     if not session:
         return t("(/compact must be used inside a session)", "（/compact 必须在会话内使用）")
+    # 远程会话 fail-loud（2026-11-18 远程安全网 C1 小修④）：远端会话的真实
+    # 历史在对端节点的 checkpoint 里，本地只是 _persist_exchange 写的问答
+    # 镜像——在这里压缩只会破坏镜像、且永远碰不到对端上下文。
+    if str(session.get("remote_peer") or "").strip():
+        return t(
+            "Compaction runs on the peer node for remote sessions; the local "
+            "side only mirrors the history — open a session on that node to "
+            "run /compact",
+            "远程会话的压缩发生在对端节点，本地仅镜像历史——请到对端节点的会话里执行 /compact",
+        )
     sid = session.get("session_id") or ""
     graph = session.get("graph")
     if graph is None or not sid:

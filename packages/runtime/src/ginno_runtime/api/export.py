@@ -55,12 +55,31 @@ def _render_markdown(slug: str, session_id: str, meta: dict) -> str:
         (tup.checkpoint.get("channel_values") or {}).get("messages") if tup else []
     ) or []
     title = str(meta.get("title") or session_id)
+    peer_slug = str(meta.get("remote_peer") or "").strip()
+    peer_label = peer_slug
+    if peer_slug:
+        # 显示名 best-effort 解析（PeerStore 就地查；失败回 slug）
+        try:
+            from ..a2a.peers import PeerStore
+
+            _rec = PeerStore().find(peer_slug)
+            if _rec and _rec.name:
+                peer_label = _rec.name
+        except Exception:  # noqa: BLE001 — 导出头绝不因 peer 解析失败而挂
+            pass
     lines = [
         f"# {title}",
         "",
         f"- 会话：`{session_id}`",
         f"- 创建：{time.strftime('%Y-%m-%d %H:%M', time.localtime(meta.get('created') or 0))}",
         f"- 模型：{meta.get('provider') or ''} / {meta.get('model') or ''}",
+        # 远程会话（2026-11-18 C1 小修⑤）：执行发生在对端节点，下方「模型」
+        # 行只是本地会话字段的镜像——头部明示，避免导出读者误判执行方。
+        *(
+            [f"- 执行：远端节点 {peer_label}（对端模型）"]
+            if peer_slug
+            else []
+        ),
         # 思考档位(thinking-effort-design §8):导出快照当前配置;auto 不单列。
         *(
             [f"- 思考强度：{meta.get('thinking_effort')}"]

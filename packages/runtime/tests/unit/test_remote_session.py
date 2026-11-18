@@ -85,8 +85,9 @@ async def test_run_stream_routes_to_remote_and_skips_graph(monkeypatch):
 
     called = {}
 
-    async def fake_remote(session, text, turn_id=None, *, agent_id=None):
+    async def fake_remote(session, text, turn_id=None, *, agent_id=None, **kw):
         called["remote"] = (session.get("session_id") or session.get("id"), text, turn_id, agent_id)
+        called["origin"] = kw.get("origin")
         return {"ok": True, "text": "远端答复", "state": "completed", "task_id": "x", "error": ""}
 
     monkeypatch.setattr(rt, "run_remote_turn", fake_remote)
@@ -99,6 +100,8 @@ async def test_run_stream_routes_to_remote_and_skips_graph(monkeypatch):
     cfg = {"configurable": {"turn_id": "tid-1", "thread_id": "s1"}}
     await turn_mod._run_stream(None, sess["graph"], cfg, "你好", sess, "agent-x")
     assert called["remote"] == ("s1", "你好", "tid-1", "agent-x")
+    # origin 透传（2026-11-18 小修②）：message.end 通知正文依赖它
+    assert called["origin"] == "interactive"
 
 
 async def test_run_stream_local_session_untouched(monkeypatch):
