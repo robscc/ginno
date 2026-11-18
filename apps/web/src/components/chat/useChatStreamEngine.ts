@@ -547,6 +547,23 @@ export function useChatStreamEngine(deps: EngineDeps) {
         if (Date.now() - (lastSeenRef.current[sid] ?? Date.now()) > 45000) {
           try { socketsRef.current[sid]?.close(); } catch { /* ignore */ }
         }
+        // 2026-11-18 卡死自愈（fe0d06e 实录）：turn 运行中若收尾帧（message.end
+        // / tool.end / user.question）丢失——ws 未断、ping 照常，上面的 45s 静默
+        // 看门狗永远不触发——前端就永远停在「pending 气泡 + 计时冻结」，只能
+        // ⌘R。本会话 believing-live/busy 时周期性重发 turn_state 探针：服务端
+        // 说还在跑 → running=true 分支 no-op（流照常续）；说不在跑 → 走既有
+        // reconcileTurnFromHistory 从 checkpoint 重建（把 answered question 卡、
+        // 终态 text 全部补齐）。sendSeq>probeSeq 守卫已存在，不会误伤刚发出的
+        // 新 turn。30s 间隔 = 卡死上限一个探针周期。
+        if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
+          const s = socketsRef.current[sid];
+          if (s?.readyState === WebSocket.OPEN) {
+            try {
+              probeSeqRef.current[sid] = ++ioSeqRef.current;
+              s.send(JSON.stringify({ type: "turn_state" }));
+            } catch { /* ignore */ }
+          }
+        }
       }, 10000);
     };
     sock.onmessage = (e) => {

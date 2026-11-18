@@ -47,6 +47,7 @@ from ...server_shared import (
     _USAGE_BY_SESSION,
     _WF_RUN_TASKS,
     _ensure_turn_log,
+    _journal_frame,
     _ev,
     _log,
     _push_global_event,
@@ -184,6 +185,7 @@ async def _stream_graph(
             # frame whose frame_session isn't the socket's own session, making a
             # cross-session render leak structurally impossible (2026-10-01).
             # Separate key from data["session_id"] (subagent payload semantics).
+            _journal_frame(session_id, event, data)
             return _ev(event, {"frame_session": session_id, **data}, ui_turn_id)
 
         _ensure_turn_log()  # (re)point the trace file handler at the active home
