@@ -351,7 +351,9 @@ export interface LinkedMember {
   id: string;
   title: string;
   type: string;
-  rel: "spawned" | "delegated" | "assigned" | "watching" | "mounted";
+  // 2026-11-19 面板改纯订阅/意图语义:rel 不再有 spawned/delegated(结构
+  // 关系只存在于级联删除/深度闸门/侧栏树,不进视野面板)。
+  rel: "assigned" | "watching" | "mounted";
   live_status: "working" | "waiting" | "idle" | "done" | "failed" | "stopped" | "unknown" | "missing";
   updated: number | null;
   terminal: boolean;

@@ -104,8 +104,6 @@ export function LinkedSessionsChip({ session }: { session: SessionMeta | null })
   };
   const relLabel = (r: LinkedMember["rel"] | "watching_me" | "assigned_me") => {
     switch (r) {
-      case "spawned": return tr("links.rel.spawned");
-      case "delegated": return tr("links.rel.delegated");
       case "assigned": return tr("links.rel.assigned");
       case "watching": return tr("links.rel.watching");
       case "mounted": return tr("links.rel.mounted");

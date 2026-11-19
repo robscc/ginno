@@ -329,7 +329,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
   // §2.2/§5.4：waiting ⛔（在等人）、渠道会话 ⛔、subagent 会话 P0 不显示、
   // 自身排除。label=会话标题（服务端按标题在 linked 集合内精确命中）。
   const relLabels: Record<string, string> = {
-    spawned: "派生", delegated: "委托", assigned: "派活", watching: "订阅", mounted: "挂载",
+    assigned: "派活", watching: "订阅", mounted: "挂载",
   };
   for (const l of src.linkedSessions ?? []) {
     if (l.id === src.sessionId) continue;

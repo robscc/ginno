@@ -3,7 +3,8 @@
 覆盖:
 * stamp_link:幂等(同 id 同 rel 刷 ts)、rel 优先级(spawned 不被 watching
   覆盖)、自链/未知会话拒绝、内存 _SESSIONS 副本同步
-* linked_report:派生(spawned/delegated parent 扫描 + assigned/watching 戳)、
+* linked_report:派生(订阅反查 + assigned/watching 戳;2026-11-19 起不含
+  parent==me 的结构孩子)、
   mounted 手动挂、hidden 只压 auto、live 投影(working 置顶)、incoming
   (subscribers → watching_me / in_links → assigned_me)、missing 目标行
 * mount/detach:linked_user 增删、linked_hidden 抑制、touch=False(不 bump
@@ -56,6 +57,18 @@ def _meta(sid: str, **kw) -> dict:
     return m
 
 
+def _put_watcher(sid: str, target: str):
+    """把 sid 记为 target 的 subscriber(模拟 watch_worker 落的 meta)。"""
+    from ginno_runtime import session_meta as sm
+    items = sm._session_meta_list(SLUG)
+    for m in items:
+        if m.get("id") == target:
+            subs = [x for x in (m.get("subscribers") or []) if isinstance(x, dict)]
+            subs.append({"session_id": sid, "want": "digest", "since": 1})
+            m["subscribers"] = subs
+    sm._write_index(SLUG, items)
+
+
 def _put(sid: str, **kw) -> dict:
     m = _meta(sid, **kw)
     _session_meta_upsert(SLUG, m)
@@ -103,7 +116,9 @@ def test_stamp_link_syncs_memory_entry():
 # ---------- linked_report ----------
 
 
-def test_report_derives_children_and_stamps():
+def test_report_subscription_only_no_parent_children():
+    """2026-11-19 面板改纯订阅/意图语义:parent==me 的孩子(spawned/
+    delegated)不再进 members——只有订阅派生与动作戳。"""
     _put("boss")
     _put("c1", type="subagent", parent_session_id="boss", subagent={"status": "done"})
     _put("d1", type="delegation", parent_session_id="boss", stop_reason="running")
@@ -115,13 +130,15 @@ def test_report_derives_children_and_stamps():
     rep = linked_report("boss")
     assert rep["ok"]
     rels = {m["id"]: m["rel"] for m in rep["members"]}
-    assert rels["c1"] == "spawned"
-    assert rels["d1"] == "delegated"
+    assert "c1" not in rels and "d1" not in rels  # 结构关系不进视野面板
     assert rels["w1"] == "assigned"
     assert rels["w2"] == "watching"
-    # 终态行带 terminal 标记
-    row_c1 = next(m for m in rep["members"] if m["id"] == "c1")
-    assert row_c1["terminal"] is True and row_c1["live_status"] == "done"
+    # 订阅派生:subscribers 含我 → watching(w2 无戳也应在,由 1) 分支兜底)
+    _put("w3")
+    _put_watcher("boss", "w3")  # boss 订阅 w3:subscribers 落在被看方 w3
+    rep2 = linked_report("boss")
+    rels2 = {m["id"]: m["rel"] for m in rep2["members"]}
+    assert rels2.get("w3") == "watching"
 
 
 def test_report_working_first_and_live_count():
