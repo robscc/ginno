@@ -15,6 +15,7 @@ import {
   SteerBand,
   SubagentBlocks,
   UserBlocks,
+  LastwordsCard,
   type Block,
 } from "@/components/chat/blocks";
 import { SubagentPlanCard } from "../subagentPlanCard";
@@ -452,6 +453,23 @@ export function TranscriptList({
               .map((b) => (
                 <SteerBand key={b.steerId ?? m.id} block={b} />
               ))}
+          </div>
+        ) : m.role === "user" &&
+          m.blocks.some((b) => b.kind === "text" && b.text.trimStart().startsWith("[lastwords]")) ? (
+          // 遗言信封（2026-11-19）：机器注入的 [lastwords] 文本——全宽系统卡，
+          // 不落右对齐用户气泡（见 blocks.LastwordsCard 注释）。
+          <div key={m.id} className="flex flex-col items-center gap-2">
+            <div className="flex w-full justify-center">
+              <LastwordsCard
+                text={
+                  m.blocks.find(
+                    (b): b is Extract<Block, { kind: "text" }> =>
+                      b.kind === "text" && b.text.trimStart().startsWith("[lastwords]"),
+                  )?.text ?? ""
+                }
+              />
+            </div>
+            <TurnIdChip turnId={m.turnId} />
           </div>
         ) : m.role === "user" ? (
           <div key={m.id} data-msg-id={m.id} className="flex flex-col items-end gap-1">

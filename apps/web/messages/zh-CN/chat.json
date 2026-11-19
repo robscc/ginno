@@ -708,6 +708,13 @@
       "missing": "→ 「{label}」已不存在",
       "noBody": "→ 「{label}」：正文为空，未投递",
       "ctxSkipped": "（其余 @ 引用未随投递）"
+    },
+    "lastwords": {
+      "badge": "自动续跑",
+      "original": "原始请求",
+      "progress": "最后进展",
+      "originalPrefix": "原始请求",
+      "progressPrefix": "最后进展"
     }
   }
 }

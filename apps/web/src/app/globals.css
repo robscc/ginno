@@ -435,6 +435,47 @@ html.light .hljs-name {
   to { background-position: 300% 0; }
 }
 
+/* ---- 方案 E running 指示（2026-11-19 用户选定）：9px 旋转彩虹核心 +
+   紫色脉冲波纹扩散。无外框按钮（TopBarFuncButton 退役此位）——指示器
+   裸放标题行。 */
+.running-indicator {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.running-indicator .core {
+  position: relative;
+  overflow: hidden;
+  border-radius: 9999px;
+  width: 10px;
+  height: 10px;
+}
+.running-indicator .core::before {
+  content: "";
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  );
+  animation: ginno-rainbow-spin 2.4s linear infinite;
+}
+.running-indicator .pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid #5856d6;
+  animation: ginno-pulse-ring 1.8s ease-out infinite;
+}
+@keyframes ginno-pulse-ring {
+  0% { transform: scale(0.55); opacity: 0; }
+  40% { opacity: 0.9; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
 /* ---- TTFT waiting indicator animations ---- */
 @keyframes ginno-wave {
   0%, 60%, 100% {
@@ -495,6 +536,12 @@ html.light .hljs-name {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .running-indicator .core::before,
+  .running-indicator .pulse {
+    animation: none;
+  }
+  .running-indicator .pulse { opacity: 0; }
+
   .running-rainbow-dot::before,
   .running-rainbow-badge {
     animation: none;

@@ -513,6 +513,51 @@ export function InnerBlocks({
 }
 
 /** User bubble content: attached images as a gallery, text kept verbatim. */
+/** 遗言信封卡（2026-11-19）：auto 续跑注入的 [lastwords] 用户消息是机器
+ * 信封，不是人话——右对齐普通气泡把它伪装成了用户输入。折成全宽系统卡：
+ * 🔄 徽标 + 头行说明 + 「原始请求/最后进展」分节。文本判定宽松（前缀
+ * [lastwords]），渲染失败回退原文行，绝不丢内容。 */
+export function LastwordsCard({ text }: { text: string }) {
+  const t = useTranslations("chat.lastwords");
+  const raw = text.replace(/^\s*\[lastwords\]\s*/, "");
+  const lines = raw.split("\n");
+  const header = lines[0] ?? "";
+  const bodyLines = lines.slice(1);
+  const isLabel = (ln: string, k: "original" | "progress") =>
+    ln.trimStart().startsWith(t(`${k}Prefix`));
+  const labelOf = (ln: string) =>
+    isLabel(ln, "original") ? t("original") : isLabel(ln, "progress") ? t("progress") : null;
+  return (
+    <div className="selectable w-full max-w-[85%] rounded-lg border border-violet/25 bg-card px-3.5 py-2.5 text-[13px] leading-relaxed">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted">
+        <span className="flex h-4 w-4 items-center justify-center rounded bg-violet/15 text-[10px]">🔄</span>
+        <span className="rounded bg-violet/15 px-1.5 py-px font-semibold text-violet">{t("badge")}</span>
+        <span className="truncate">{header}</span>
+      </div>
+      {bodyLines.map((ln, i) => {
+        const lab = labelOf(ln);
+        if (!lab) {
+          const trimmed = ln.trim();
+          if (!trimmed) return <div key={i} className="h-1" />;
+          return (
+            <div key={i} className="whitespace-pre-wrap break-words text-muted">
+              {trimmed.replace(/^(原始请求|最后进展)：\s*/, "")}
+            </div>
+          );
+        }
+        return (
+          <div key={i} className="mt-1 flex items-baseline gap-2">
+            <span className="shrink-0 rounded bg-card2 px-1.5 py-px text-[10px] font-medium text-faint">{lab}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-txt">
+              {ln.trimStart().replace(/^[^：]*：\s*/, "")}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function UserBlocks({ blocks }: { blocks: Block[] }) {
   const files = blocks.filter((b): b is Extract<Block, { kind: "file" }> => b.kind === "file");
   const skills = blocks.filter((b): b is Extract<Block, { kind: "skill" }> => b.kind === "skill");
