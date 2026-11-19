@@ -869,6 +869,13 @@ export function TodoPanel() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (!todo.done) {
+                      // 勾选瞬间闪光（候选④）：加 class 重新触发一次性动画
+                      const el = e.currentTarget;
+                      el.classList.remove("todo-done-flash");
+                      void el.offsetWidth; // reflow 重启动画
+                      el.classList.add("todo-done-flash");
+                    }
                     void g.patchTodo(todo.id, { done: !todo.done });
                   }}
                   title={todo.done ? t("markUndone") : t("markDone")}

@@ -496,6 +496,34 @@ html.light .hljs-name {
   animation: ginno-rainbow-spin 2.4s linear infinite;
 }
 
+/* ---- TODO 勾选瞬间闪光（2026-11-19 用户选定候选④）：一次性彩虹描边
+   扩散，300ms 后自然消失（forwards 到 opacity:0）。只加 class 触发；
+   reduced-motion 不播（勾选本身已有底色变化反馈）。 */
+.todo-done-flash {
+  position: relative;
+}
+.todo-done-flash::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 6px;
+  border: 1.5px solid transparent;
+  background: conic-gradient(
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  ) border-box;
+  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  animation: todo-rainbow-flash 0.55s ease-out 1 forwards;
+  pointer-events: none;
+}
+@keyframes todo-rainbow-flash {
+  0% { opacity: 0; transform: scale(0.6); }
+  25% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
 /* ---- TTFT waiting indicator animations ---- */
 @keyframes ginno-wave {
   0%, 60%, 100% {
@@ -556,6 +584,11 @@ html.light .hljs-name {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .todo-done-flash::after {
+    animation: none;
+    opacity: 0;
+  }
+
   .rainbow-mini-dot::before {
     animation: none;
   }
