@@ -3,9 +3,10 @@
 概念:像挂目录一样把**独立会话**挂进当前对话的视野——不是父子从属,
 detach 只解除视野关联。派生为主、存储最小:
 
-- **auto 派生**(运行时投影,不落新库):
-  - spawned/delegated —— 本项目索引里 ``parent_session_id == me`` 的孩子
-    (subagent/delegation 落盘时写入,同项目);
+- **auto 派生**(运行时投影,不落新库;2026-11-19 用户决策:**面板改纯订阅/
+  意图语义**——spawned/delegated 的 parent==me 扫描分支已移除,结构关系
+  只存在于级联删除/深度闸门/侧栏树,不再进入视野面板):
+  - watching/assigned —— 订阅派生 + 动作戳(见下);
   - assigned/watching —— 动作发生时在**发起方** meta 落 ``linked_auto``
     戳(assign 不在发送方留任何记录、subscribers 在目标方,反向派生需要
     跨项目全量扫,设计明确禁止);
@@ -109,7 +110,7 @@ def _member_row(tid: str, rel: str, tmeta: dict | None) -> dict:
 def linked_report(session_id: str) -> dict:
     """``GET /api/sessions/{id}/linked`` 的投影主体。
 
-    members = 派生(spawned/delegated 同项目 parent 扫描 + linked_auto 戳)
+    members = 订阅派生(subscribers 反查) + linked_auto 戳(watching/assigned)
     ∪ linked_user,减 linked_hidden(只抑制 auto 成员);incoming = 我的
     subscribers + in_links。排序:活着的(working/waiting)置顶,其余按
     updated 倒序。磁盘是 meta 字段的事实来源(_SESSIONS 副本可能不含新键)。"""
@@ -119,13 +120,10 @@ def linked_report(session_id: str) -> dict:
     meta, slug = found
 
     rels: dict[str, str] = {}
-    # 1) spawned/delegated:同项目 parent_session_id 扫描(subagent 落盘、
-    #    delegation_sessions 落盘都写这个键;跨项目孩子不存在)。
     metas = _session_meta_list(slug)
-    for m in metas:
-        if m.get("parent_session_id") == session_id and m.get("id"):
-            rels[str(m["id"])] = "delegated" if _mtype(m) == "delegation" else "spawned"
-    # 1b) 同项目订阅派生:谁的 subscribers 里有我(同一份索引,零额外 I/O)。
+    # 1) 同项目订阅派生:谁的 subscribers 里有我(同一份索引,零额外 I/O)。
+    #    (2026-11-19 起 members 不再含 spawned/delegated 的 parent==me 扫描
+    #    ——面板=「我订阅的/订阅我的+手动挂载」,结构关系不进视野。)
     #     历史 watch 没有订阅方戳(戳只在动作时落——2026-10-30 实机踩过:
     #     旧订阅的 members 空),这里兜底;新订阅已有戳,watching 优先级最
     #     低不覆盖既有 rel。跨项目历史订阅靠启动对账 backfill_linked_stamps。
