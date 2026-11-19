@@ -173,8 +173,7 @@ export function SidebarFooter({
         <span className="truncate">{t("nav.tasks")}</span>
         {tasksRunning > 0 && (
           <span
-            className="ml-auto inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold text-black"
-            style={{ background: "var(--st-running)" }}
+            className="ml-auto inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold text-black running-rainbow-badge"
             title={t("nav.tasksRunning", { n: tasksRunning })}
           >
             {tasksRunning}
