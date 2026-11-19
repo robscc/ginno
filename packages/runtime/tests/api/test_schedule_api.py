@@ -276,18 +276,18 @@ def test_runs_seen_endpoint_and_unseen_payload(client):
         })
     # GET /api/schedule 的 unseen 摘要（侧栏红点数据源）
     payload = client.get("/api/schedule").json()
-    assert payload["unseen"] == {"total": 3, "error": 1, "missed": 1}
+    assert payload["unseen"] == {"total": 3, "error": 1, "missed": 1, "running": 0}  # running 键随彩虹点入载荷
     # rows 默认带 seen=false
     rows = client.get("/api/schedule/runs").json()["rows"]
     assert all(r["seen"] is False for r in rows)
     # 标单条 → 摘要减一，seen 过滤生效
     r = client.post("/api/schedule/runs/seen", json={"run_id": "sr-2"}).json()
-    assert r["ok"] and r["unseen"] == {"total": 2, "error": 0, "missed": 1}
+    assert r["ok"] and r["unseen"] == {"total": 2, "error": 0, "missed": 1, "running": 0}
     assert client.get("/api/schedule/runs", params={"seen": "unseen"}).json()["total"] == 2
     assert client.get("/api/schedule/runs", params={"seen": "seen"}).json()["rows"][0]["run_id"] == "sr-2"
     # 一键全部已读 → 归零
     r = client.post("/api/schedule/runs/seen", json={"all": True}).json()
-    assert r["unseen"] == {"total": 0, "error": 0, "missed": 0}
+    assert r["unseen"] == {"total": 0, "error": 0, "missed": 0, "running": 0}
     assert client.get("/api/schedule").json()["unseen"]["total"] == 0
     # 空 body → 400
     assert client.post("/api/schedule/runs/seen", json={}).status_code == 400
