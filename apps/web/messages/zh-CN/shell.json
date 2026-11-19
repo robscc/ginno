@@ -32,7 +32,8 @@
       "connectorWarn": "部分连接器未连接",
       "scheduleError": "有未查看的定时任务执行结果",
       "scheduleOff": "定时任务已全局停用",
-      "teamNeeds": "团队有 {n} 项等你处理（等你回答 / 完成未读）"
+      "teamNeeds": "团队有 {n} 项等你处理（等你回答 / 完成未读）",
+      "scheduleRunning": "{n} 个定时任务执行中"
     },
     "view": {
       "time": "时间",

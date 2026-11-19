@@ -514,6 +514,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // /api/ws/schedule 的 run_finished/missed/task_updated/runs_seen 事件即时
   // 刷新；挂这一条轻量 WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
   const [scheduleDot, setScheduleDot] = useState<"" | "off" | "error">("");
+  // 定时任务执行中数（2026-11-19 侧栏彩虹点）：与 unseen 同一份 list_schedule
+  // 载荷顺带（runtime unseen_summary），60s 冷轮询 + ws 事件 tick 刷新。
+  const [scheduleRunning, setScheduleRunning] = useState(0);
   const [scheduleUnseen, setScheduleUnseen] = useState<{ total: number; error: number; missed: number }>({
     total: 0,
     error: 0,
@@ -537,6 +540,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           return;
         }
         setScheduleDot((cfg.unseen?.total ?? 0) > 0 ? "error" : "");
+        setScheduleRunning(cfg.unseen?.running ?? 0);
       } catch {
         /* sidecar 未起时静默——保持上次状态 */
       }
@@ -1002,6 +1006,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onSettings={onSettings}
           connectorDot={connectorDot}
           scheduleDot={scheduleDot}
+          scheduleRunning={scheduleRunning}
           scheduleUnseen={scheduleUnseen}
         />
       </aside>

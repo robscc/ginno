@@ -239,7 +239,7 @@ def test_unseen_summary_counts_terminal_only(isolated_home):
     _record("sr-miss", "missed", now)
     _record("sr-skip", "skipped_overlap", now)
     s = store.unseen_summary()
-    assert s == {"total": 4, "error": 1, "missed": 1}
+    assert s == {"total": 4, "error": 1, "missed": 1, "running": 1}  # running 顺带计数（彩虹点）
 
 
 def test_mark_all_seen_watermark_and_new_runs(isolated_home):
@@ -250,7 +250,7 @@ def test_mark_all_seen_watermark_and_new_runs(isolated_home):
     # 一键全部已读 → watermark=now，存量全部已读
     s = store.mark_runs_seen(None)
     assert s["total"] == 0
-    assert store.unseen_summary() == {"total": 0, "error": 0, "missed": 0}
+    assert store.unseen_summary() == {"total": 0, "error": 0, "missed": 0, "running": 0}
     # watermark 之后的新结果重新计未读
     _record("sr-c", "ok", time.time())
     assert store.unseen_summary()["total"] == 1
@@ -262,7 +262,7 @@ def test_mark_single_seen(isolated_home):
     _record("sr-b", "ok", now)
     store.mark_runs_seen(["sr-a"])
     s = store.unseen_summary()
-    assert s == {"total": 1, "error": 0, "missed": 0}  # 只剩 sr-b（ok）
+    assert s == {"total": 1, "error": 0, "missed": 0, "running": 0}  # 只剩 sr-b（ok）
 
 
 def test_query_runs_seen_filter_and_row_flag(isolated_home):

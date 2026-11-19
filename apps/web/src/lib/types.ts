@@ -976,6 +976,8 @@ export interface ScheduleUnseen {
   total: number;
   error: number;
   missed: number;
+  /** 执行中 run 数（2026-11-19 侧栏彩虹点；runtime unseen_summary 顺带产出） */
+  running?: number;
 }
 
 /** GET /api/schedule → 全局配置 + 任务列表。keep_awake 是唯一真值（§3.3）。 */

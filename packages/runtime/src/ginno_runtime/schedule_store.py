@@ -539,7 +539,7 @@ def mark_runs_seen(run_ids: list[str] | None) -> dict:
 
 
 def unseen_summary() -> dict:
-    """未读统计（侧栏红点 + 执行记录页签角标）：``{"total","error","missed"}``。
+    """未读统计（侧栏红点 + 执行记录页签角标）：``{"total","error","missed","running"}``。
     total 含全部终态（ok/error/missed/skipped_overlap），running 不算结果。
 
     mtime 键控 memo：全量重读 90 天 runs-*.jsonl 不便宜，而 Dock 徽标每 5s
@@ -550,8 +550,12 @@ def unseen_summary() -> dict:
     if cached is not None:
         return dict(cached)
     state = _load_seen()
-    out: dict = {"total": 0, "error": 0, "missed": 0}
+    out: dict = {"total": 0, "error": 0, "missed": 0, "running": 0}
     for e in _all_runs_deduped():
+        if e.get("status") == "running":
+            # 执行中（2026-11-19 侧栏彩虹点）：同一遍扫描顺带产出；running 状态
+            # 行落 runs-*.jsonl 触发 mtime 失效，memo 新鲜度随之。
+            out["running"] += 1
         if e.get("status") not in _TERMINAL_STATUSES:
             continue
         if _is_seen(e, state):

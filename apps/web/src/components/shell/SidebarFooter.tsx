@@ -30,6 +30,8 @@ export interface SidebarFooterProps {
   connectorDot: string;
   /** 定时任务状态点："" | "off" | "error"。 */
   scheduleDot: "" | "off" | "error";
+  /** 执行中 run 数（2026-11-19）：>0 时红徽标左侧显示迷你彩虹点 */
+  scheduleRunning?: number;
   scheduleUnseen: { total: number; error: number; missed: number };
 }
 
@@ -45,6 +47,7 @@ export function SidebarFooter({
   onSettings,
   connectorDot,
   scheduleDot,
+  scheduleRunning,
   scheduleUnseen,
 }: SidebarFooterProps) {
   const t = useTranslations("shell");
@@ -155,6 +158,14 @@ export function SidebarFooter({
       <Link href="/scheduled" className={`nav-item ${onScheduled ? "nav-item-active" : ""}`}>
         <AlarmClock className="h-4 w-4 shrink-0" />
         <span className="truncate">{t("nav.scheduled")}</span>
+        {(scheduleRunning ?? 0) > 0 && (
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1" title={t("navDots.scheduleRunning")}>
+            <span className="rainbow-mini-dot" aria-hidden />
+            <span className="text-[11px] font-bold" style={{ color: "var(--st-running)" }}>
+              {scheduleRunning}
+            </span>
+          </span>
+        )}
         {scheduleDot === "error" ? (
           <UnseenBadge
             n={scheduleUnseen.total}
