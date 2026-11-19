@@ -258,10 +258,12 @@ runtime: web
 	@# 2026-11-19 补救（P0 回归）：httpx2/__version__.py 在 import 顶层调
 	@# version("httpx2") 无兜底——anthropic/_types.py import 它，瘦身剥掉其
 	@# dist-info 后懒加载 import anthropic 即炸（每日总结定时任务实锤：
-	@# PackageNotFoundError: httpx2）；ginno_runtime 同理（mods/ops.py
-	@# version("ginno-runtime")）。白名单保这三个，其余照剥。
+	@# PackageNotFoundError: httpx2）；httpcore2（httpx2 传输层）与
+	@# ginno_runtime（mods/ops.py version("ginno-runtime")）同款地雷——
+	@# 三者 import 顶层查元数据且无兜底，白名单保留，其余照剥。
+	@# 防回归：tests/e2e/test_packaged_import_health.py 实测两条懒加载链。
 	@find $(RUNTIME)/dist/ginno-runtime/_internal -maxdepth 1 -name '*.dist-info' \
-	  ! -name 'mcp-*' ! -name 'httpx2-*' ! -name 'ginno_runtime-*' \
+	  ! -name 'mcp-*' ! -name 'httpx2-*' ! -name 'httpcore2-*' ! -name 'ginno_runtime-*' \
 	  -exec rm -rf {} + 2>/dev/null || true
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
