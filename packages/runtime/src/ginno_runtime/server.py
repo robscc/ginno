@@ -652,6 +652,7 @@ from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
 from .api import connectors as _connectors_api  # noqa: E402
 from .api import devswap as _devswap_api  # noqa: E402
+from .api import doctor as _doctor_api  # noqa: E402
 from .api import diagnostics as _diagnostics_api  # noqa: E402
 from .api import distill as _distill_api  # noqa: E402
 from .api import export as _export_api  # noqa: E402
@@ -677,6 +678,7 @@ from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
 app.include_router(_diagnostics_api.router)
+app.include_router(_doctor_api.router)
 app.include_router(_devswap_api.router)
 app.include_router(_search_api.router)
 app.include_router(_export_api.router)
