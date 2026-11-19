@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
@@ -937,12 +938,59 @@ async def _serve_web(full_path: str):
     return FileResponse(WEB_OUT / "index.html", headers=no_store)  # SPA fallback
 
 
+def ensure_sole_runtime(port: int, *, timeout: float = 1.5) -> None:
+    """单实例守卫（2026-11-19 启动序修复）：端口已被占 → 打印持有者并退出。
+
+    为什么必须在 main() 最早、uvicorn/app 构造之前：uvicorn 的 lifespan
+    （孤儿收编/任务收编/订阅重建等共享状态操作）先于绑定失败暴露
+    （2026-11-19 实锤三次：本地 e2e 误启第二 runtime 实例，它看不到主
+    实例内存运行态，把磁盘 meta 里 running 的子代理误判孤儿 settle 成
+    stopped，随后才 Errno 48 退出——退出前已污染共享状态，主实例子代理
+    无辜被杀）。守卫用 connect 探测：端口有监听者即打印其健康指纹并以
+    退出码 3 退出，**任何会话状态一行都不碰**；端口空闲则原样放行。
+    """
+    import json as _json
+    import socket as _socket
+    import urllib.request as _urlreq
+
+    probe = _socket.socket()
+    probe.settimeout(timeout)
+    try:
+        probe.connect(("127.0.0.1", port))
+    except OSError:
+        return  # 端口无人监听 → 本实例是唯一 runtime，正常启动
+    finally:
+        probe.close()
+    holder = ""
+    try:
+        with _urlreq.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=timeout
+        ) as r:
+            h = _json.loads(r.read())
+        b = h.get("build") or h.get("build_fingerprint") or h.get("fingerprint")
+        if isinstance(b, dict):
+            b = b.get("fingerprint") or b
+        holder = f"（build={b} version={h.get('version')}）"
+    except Exception:  # noqa: BLE001 — 拿不到持有者信息不拦退出
+        holder = "（持有者健康信息不可得）"
+    print(
+        f"[ginno-runtime] 127.0.0.1:{port} 已被另一个 Ginno runtime 占用"
+        f"{holder}，本实例直接退出、不触碰任何会话状态（单实例守卫）。",
+        file=sys.stderr,
+        flush=True,
+    )
+    raise SystemExit(3)
+
+
 def main() -> None:
     import os
 
     import uvicorn
 
     port = int(os.environ.get("GINNO_RUNTIME_PORT", "8787"))
+    # 单实例守卫先于一切（含 app/lifespan 构造——孤儿收编等共享状态操作
+    # 都在 lifespan 里，绑定失败在他们之后才暴露；详见函数 docstring）。
+    ensure_sole_runtime(port)
     # timeout_graceful_shutdown：SIGTERM 后对 in-flight 连接/任务的等待设 3s
     # 上限（uvicorn 默认无限等——2026-11-04 实锤：优雅关闭卡死在 "Waiting
     # for background tasks to complete"，壳的 SIGTERM-first 6s 预算每次等满才
