@@ -57,7 +57,6 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     color: "#a78bfa",
     tabs: [
       { id: "model-api", label: "modelApi" },
-      { id: "mcp", label: "mcp" },
       { id: "web", label: "webSearch" },
       { id: "external-agents", label: "externalAgents" },
     ],
@@ -71,6 +70,9 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       { id: "agents", label: "agents" },
       { id: "workflows", label: "workflows" },
       { id: "skills", label: "skills" },
+      // MCP 工具 tab（2026-11-19 用户需求）：从 connections 组移入智能体组、
+      // 排 skills 之后——MCP 是智能体的工具扩展，与 skills 相邻更符合心智。
+      { id: "mcp", label: "mcp" },
       { id: "memory", label: "memory" },
       { id: "instincts", label: "instincts" },
     ],
@@ -141,7 +143,7 @@ export function isValidSub(group: SettingsGroup, sub: string): boolean {
 // 且内容一致的（agents / knowledge / general）无需 redirect，故不在此列。
 export const LEGACY_REDIRECT: Record<string, string> = {
   "model-api": "/settings/connections/model-api",
-  mcp: "/settings/connections/mcp",
+  mcp: "/settings/agents/mcp",
   web: "/settings/connections/web",
   "external-agents": "/settings/connections/external-agents",
   // Mods 设置页签已并入独立连接器页（mods-connector-migration-design.md §8-7）。
@@ -165,4 +167,6 @@ export const LEGACY_REDIRECT: Record<string, string> = {
 export const LEGACY_SUB_REDIRECT: Record<string, string> = {
   // 原 Settings → Connections → Mods；现在统一到连接器页。
   "connections/mods": "/connectors",
+  // MCP 工具移入智能体组（2026-11-19）：旧连接器组路径重定向到新家。
+  "connections/mcp": "/settings/agents/mcp",
 };
