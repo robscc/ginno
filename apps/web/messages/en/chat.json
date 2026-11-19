@@ -708,6 +708,13 @@
       "missing": "→ {label} no longer exists",
       "noBody": "→ {label}: empty prompt, nothing delivered",
       "ctxSkipped": "(other @-mentions did not ride the delivery)"
+    },
+    "lastwords": {
+      "badge": "Auto-resume",
+      "original": "Request",
+      "progress": "Progress",
+      "originalPrefix": "原始请求",
+      "progressPrefix": "最后进展"
     }
   }
 }
