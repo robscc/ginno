@@ -404,6 +404,37 @@ html.light .hljs-name {
   animation: ginno-rainbow-edge 2s linear infinite;
 }
 
+/* ---- Running rainbow dot / badge（彩虹=running；TopBar 点 + 后台任务徽标，
+   与 running-rainbow-edge 同色谱。2026-11-19 补提交：PR #228 只带了 tsx
+   引用，此块 CSS 在中断中丢失导致点变空框）---- */
+.running-rainbow-dot {
+  position: relative;
+  overflow: hidden;
+}
+.running-rainbow-dot::before {
+  content: "";
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  );
+  animation: ginno-rainbow-spin 2.4s linear infinite;
+}
+@keyframes ginno-rainbow-spin {
+  to { transform: rotate(360deg); }
+}
+.running-rainbow-badge {
+  background-image: linear-gradient(
+    90deg,
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  );
+  background-size: 300% 100%;
+  animation: ginno-rainbow-flow 2.4s linear infinite;
+}
+@keyframes ginno-rainbow-flow {
+  to { background-position: 300% 0; }
+}
+
 /* ---- TTFT waiting indicator animations ---- */
 @keyframes ginno-wave {
   0%, 60%, 100% {
@@ -464,6 +495,11 @@ html.light .hljs-name {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .running-rainbow-dot::before,
+  .running-rainbow-badge {
+    animation: none;
+  }
+
   .anim-success-flash,
   .anim-shake,
   .anim-slide-in,
