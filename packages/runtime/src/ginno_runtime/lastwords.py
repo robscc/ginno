@@ -1132,6 +1132,14 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
             "user_text": text,
             # 用量归因（设计 §4）：遗言续跑在用量面板可辨识。
             "usage_source": "lastwords",
+            # echo_user（engine.py turn.start tap 同款）：调度器 wake turn 靠
+            # 这个标记让注入信封实时落输入气泡（runner.py 先例）。遗言 auto
+            # 续跑此前没设——开着会话页时用户只看到 assistant 流，「续跑」
+            # 指令文本和遗言带全靠 history 补，体感「遗言没渲染」
+            # （2026-11-19 0897eeeb 实录）。设上后 turn.start 帧带 text，
+            # live 立即出用户气泡；task_event 遗言带仍由 turn 结束后的
+            # history reconcile 折入（与 subagent wake 同口径）。
+            "echo_user": True,
         }
     }
     _RUNNING = shared._RUNNING_TURNS
