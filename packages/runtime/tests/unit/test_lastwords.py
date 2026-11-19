@@ -366,13 +366,49 @@ class TestRecover:
         assert not g.updates
         assert not lastwords._path("s-off").exists()
 
-    async def test_auto_dev_swap_pending_confirm_then_resume(
+    async def test_auto_direct_run_on_reboot(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """2026-11-10 产品化：人工会话 auto+dev-swap 不再直跑——注入带 +
-        挂起待确认（广播 lastwords_pending）；resume_pending 才 headless 续跑。"""
+        """2026-11-19 恢复语义：人工会话 mode=auto → 重启恢复**直接续跑**
+        （不挂起、不出待确认卡），headless turn 带 origin=lastwords；
+        遗言文件消费即删（exactly-once 由文件删除保证）。"""
         (isolated_home / "settings.json").write_text(
             json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
+        )
+        _write_valid("s-auto", reason="dev-swap")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+        calls: list[dict] = []
+
+        async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
+            calls.append({"config": config, "text": text, "kw": kw})
+
+        import ginno_runtime.api.stream as stream_mod
+
+        monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
+
+        n = await lastwords.recover_lastwords()
+        assert n == 1  # 1 条已恢复（auto 直跑）
+        assert len(calls) == 1
+        cfg = calls[0]["config"]["configurable"]
+        assert cfg["thread_id"] == "s-auto"
+        assert cfg["usage_source"] == "lastwords"
+        assert calls[0]["text"].startswith("[lastwords]")
+        assert calls[0]["kw"]["origin"] == "lastwords"
+        # 不挂起：没有待确认注册表条目、没有 pending 广播
+        assert "s-auto" not in lastwords._PENDING_RESUME
+        # 文件已消费删除
+        assert not lastwords._path("s-auto").exists()
+
+    async def test_notify_pending_confirm_then_resume(
+        self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """默认 notify：人工会话挂起待确认（注入带 + 广播 lastwords_pending，
+        不直跑）；resume_pending 才 headless 续跑（异步化 + exactly-once）。"""
+        (isolated_home / "settings.json").write_text(
+            json.dumps({"devswap": {"lastwords": {"mode": "notify"}}})
         )
         _write_valid("s-auto", reason="dev-swap")
         monkeypatch.setattr(
@@ -441,9 +477,10 @@ class TestRecover:
     ):
         """回归（2026-11-17「恢复失败：Load failed」）：resume_pending 必须在
         续跑 turn 完成前返回——慢 turn 绝不阻塞 HTTP 响应（否则浏览器 fetch
-        空闲超时抛 Load failed）。"""
+        空闲超时抛 Load failed）。用默认 notify 造挂起点（auto 在
+        2026-11-19 语义下 recover 即直跑，等不到 resume 环节）。"""
         (isolated_home / "settings.json").write_text(
-            json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
+            json.dumps({"devswap": {"lastwords": {"mode": "notify"}}})
         )
         _write_valid("s-slow", reason="dev-swap")
         monkeypatch.setattr(
@@ -481,12 +518,10 @@ class TestRecover:
     async def test_auto_signal_stays_notify(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """安全分级（§4）：signal/running 的人工会话**绝不自动跑 turn**。
-
-        2026-11-16 放宽：不再限于 dev-swap，任何 reason 都挂起待确认——
-        但**仍不自动续跑**（崩溃不烧 token 的约束不变）。restored 计数为 0
-        因为挂起未续跑；真正的续跑要用户经 /api/lastwords/resume 确认。
-        """
+        """2026-11-19 新语义：mode=auto 对 signal（优雅重启）的人工会话也
+        **直接续跑**——用户显式 opt-in 接受重启后自动接着干；restored=1、
+        遗言文件消费删除。挂起待确认的守卫由默认 notify 承担（见
+        test_notify_pending_confirm_then_resume）。"""
         (isolated_home / "settings.json").write_text(
             json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
         )
@@ -504,9 +539,10 @@ class TestRecover:
         import ginno_runtime.api.stream as stream_mod
 
         monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
-        assert await lastwords.recover_lastwords() == 0  # 挂起待确认，未续跑
-        assert g.updates and not stream_calls  # 注入了折叠带，**没跑 turn**
-        assert lastwords.pending_resume_snapshot("s-sig") is not None
+        assert await lastwords.recover_lastwords() == 1  # 直接续跑完成
+        assert stream_calls and not g.updates  # 跑了 turn，**没注入折叠带**
+        assert lastwords.pending_resume_snapshot("s-sig") is None
+        assert not lastwords._path("s-sig").exists()
 
     async def test_auto_signal_subagent_runs_headless_turn(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -1025,11 +1061,14 @@ class TestInterruptedBgTasks:
 
 class TestPendingForAllReasons:
     @pytest.mark.parametrize("reason", ["running", "signal", "dev-swap"])
-    @pytest.mark.parametrize("mode", ["notify", "auto"])
+    @pytest.mark.parametrize("mode", ["notify"])
     async def test_human_session_any_reason_gets_pending(
         self, isolated_home, monkeypatch, reason, mode
     ):
-        """人工会话任何 reason 都挂起待确认——但绝不自动跑 turn。"""
+        """默认 notify：人工会话任何 reason 都挂起待确认——但绝不自动跑
+        turn。（mode=auto 在 2026-11-19 语义下任何 reason 都直接续跑，
+        由 test_auto_direct_run_on_reboot / test_auto_signal_direct_run
+        覆盖，不再参数化进本组。）"""
         (isolated_home / "settings.json").write_text(
             json.dumps({"devswap": {"lastwords": {"mode": mode}}})
         )

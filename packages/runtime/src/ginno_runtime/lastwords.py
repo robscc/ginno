@@ -48,6 +48,10 @@ REASON_RUNNING = "running"
 EXPLICIT_REASONS = (REASON_DEV_SWAP, REASON_SIGNAL)
 
 # settings.json → devswap.lastwords.mode 的合法值（默认 notify）。
+# notify：人工会话挂起待确认（点「恢复」续跑）；subagent 无感直跑。
+# auto  ：人工会话**重启后也自动续跑**（2026-11-19 恢复语义，用户配置化
+#         opt-in——默认不变，选 auto 即接受自动接着干）；subagent 同。
+# off   ：不注入不复跑，仅启动扫描清过期文件。
 MODES = ("notify", "auto", "off")
 DEFAULT_MODE = "notify"
 
@@ -967,7 +971,21 @@ async def recover_lastwords() -> int:
                 else:
                     ok = await _inject_lastwords_message(session, snap)
                     how = "notify"
-            elif m in ("notify", "auto"):
+            elif m == "auto":
+                # 人工会话 auto=**真自动续跑**（2026-11-19 恢复语义，用户
+                # 配置化：settings.json → devswap.lastwords.mode="auto"，
+                # 无 UI）。2026-11-10/16 曾把人工会话的 auto 收敛为挂起
+                # 待确认（防崩溃后自动烧 token 打扰真人）；但 auto 因此与
+                # notify 完全等价成为死配置。现在恢复分级：
+                #   notify（默认）= 挂起待确认，点「恢复」才续跑；
+                #   auto = 重启/崩溃后人工会话也无感自动续跑（subagent
+                #          路径同款 _run_lastwords_turn，质量门槛/TTL/
+                #          exactly-once/remote 拦截全部沿用）。
+                # 安全边界不破：默认仍是 notify；选 auto 即用户显式接受
+                # 「重启后自动接着干烧 token」；remote 会话在上面已拦。
+                ok = await _run_lastwords_turn(session, snap)
+                how = "auto"
+            elif m == "notify":
                 # 人工会话：**任何 reason** 都挂起待确认（2026-11-16 放宽）。
                 # 原条件 `m == "auto" and reason == REASON_DEV_SWAP` 太窄：
                 # 重启/崩溃（reason=running/signal）拿不到任何交互提示，
