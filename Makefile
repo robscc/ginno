@@ -230,7 +230,6 @@ runtime: web
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
-  --copy-metadata httpx2 --copy-metadata httpcore2 \
 	  --add-data "$(WEB_OUT):web_out" \
 	  --add-data "$(RUNTIME)/build-info.json:." \
 	  --add-data "$(ROOT)/packages/extension/src:extension_src" \
@@ -256,10 +255,14 @@ runtime: web
 	@# 2026-11-18 瘦身（零风险通道）：剥 collect_all 附带的 *.dist-info。
 	@# 例外保留 mcp（fastmcp/__init__ 顶层无兜底调用 importlib.metadata.version
 	@# "mcp"）；langchain/aiohttp 系查询均有 try/except 兜底。
-	@# 2026-11-19 补例外 httpx2/httpcore2：anthropic 2.3.0 起依赖 httpx2，两者
-	@# 的 __version__ 均为无兜底模块级 version() 调用，删元数据会让 frozen
-	@# 里 import anthropic 直接 PackageNotFoundError（session WS 500）。
-	@find $(RUNTIME)/dist/ginno-runtime/_internal -maxdepth 1 -name '*.dist-info' ! -name 'mcp-*' ! -name 'httpx2-*' ! -name 'httpcore2-*' -exec rm -rf {} + 2>/dev/null || true
+	@# 2026-11-19 补救（P0 回归）：httpx2/__version__.py 在 import 顶层调
+	@# version("httpx2") 无兜底——anthropic/_types.py import 它，瘦身剥掉其
+	@# dist-info 后懒加载 import anthropic 即炸（每日总结定时任务实锤：
+	@# PackageNotFoundError: httpx2）；ginno_runtime 同理（mods/ops.py
+	@# version("ginno-runtime")）。白名单保这三个，其余照剥。
+	@find $(RUNTIME)/dist/ginno-runtime/_internal -maxdepth 1 -name '*.dist-info' \
+	  ! -name 'mcp-*' ! -name 'httpx2-*' ! -name 'ginno_runtime-*' \
+	  -exec rm -rf {} + 2>/dev/null || true
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
 ## web: build the Next.js static export (bundled into the runtime as web_out/)
