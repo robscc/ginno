@@ -173,9 +173,10 @@ export function SidebarFooter({
         <span className="truncate">{t("nav.tasks")}</span>
         {tasksRunning > 0 && (
           <span
-            className="ml-auto inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold text-black running-rainbow-badge"
+            className="ml-auto inline-flex shrink-0 items-center gap-1 text-[11px] font-bold"
+            style={{ color: "var(--st-running)" }}
             title={t("nav.tasksRunning", { n: tasksRunning })}
-          >
+          ><span className="rainbow-mini-dot" aria-hidden />
             {tasksRunning}
           </span>
         )}

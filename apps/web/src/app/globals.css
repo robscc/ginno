@@ -476,6 +476,26 @@ html.light .hljs-name {
   100% { transform: scale(1.6); opacity: 0; }
 }
 
+/* ---- 方案 C 后台任务徽标（2026-11-19 用户选定）：8px 旋转彩虹点 +
+   语义青数字（无胶囊底）。与 .running-indicator .core 同实现同色谱。 */
+.rainbow-mini-dot {
+  position: relative;
+  overflow: hidden;
+  border-radius: 9999px;
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+.rainbow-mini-dot::before {
+  content: "";
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    #ff2d55, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55
+  );
+  animation: ginno-rainbow-spin 2.4s linear infinite;
+}
+
 /* ---- TTFT waiting indicator animations ---- */
 @keyframes ginno-wave {
   0%, 60%, 100% {
@@ -536,6 +556,10 @@ html.light .hljs-name {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .rainbow-mini-dot::before {
+    animation: none;
+  }
+
   .running-indicator .core::before,
   .running-indicator .pulse {
     animation: none;
