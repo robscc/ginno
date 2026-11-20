@@ -2,37 +2,19 @@
 
 /**
  * PinStream — the floating quick-chat window's conversation view
- * (docs/floating-window-design.md §2.4 / §4 Phase 3).
+ * (docs/floating-window-design.md §2.4 / §4 Phase 3). ONE session per mount
+ * (the parent keys the component by session id).
  *
- * A deliberately lightweight sibling of ChatStream: ONE session per mount
- * (the parent keys the component by session id) and the 13-event WS subset
- * plus the AgentTeam trio (team.changed / team.reply / team.delivered,
- * backlog P2-24 — follow mode mirrors the team plaza / member workbench).
- * The wire protocol is 100% unchanged — the runtime already broadcasts every
- * turn to ALL sockets of a session, so the pin window and the main window can
- * watch (and answer permission prompts for) the same turn; `_PENDING_RESUME`
- * dedupes the responses.
+ * Refactor batch 3-4: socket lifecycle + message loop live in
+ * `usePinSessionLoop` (built on the shared `components/session/` layer);
+ * the three batch-3-1 (#240) semantics stay pinned in `pinStreamCore`
+ * (main-window streamCore.applyBlock, turn_state probe-sequence guard,
+ * believing-live periodic probe). Why not plain `useSessionTurn`: the shared
+ * applyBlock is NOT yet a superset — see usePinSessionLoop's header.
  *
- * Deliberate duplication over abstraction: the socket lifecycle mirrors
- * ChatStream's semantics (3s reconnect, 20s ping, 45s silence close,
- * post-reconnect `turn_state` probe with a 6s reconcile fallback) without
- * touching the 3400-line monolith.
- *
- * NOT duplicated (refactor batch 3-1, driven by the batch-0 duplication
- * audit): the streaming-event reducer now DIRECTLY calls the main window's
- * `streamCore.applyBlock` (via pinApplyBlock) instead of drifting as a stale
- * local copy — the pin's 6 streaming events are a strict subset of the main
- * reducer's event set, so pin users get the 2026-11-15 tool.end targeting fix
- * and the cross-block delta merge for free. The watchdog additionally gained
- * the main window's believing-live periodic `turn_state` probe (fe0d06e /
- * a1618f7): a lost final frame on a live ws can no longer freeze the pin at
- * "pending bubble + frozen timer". Both decisions live as pure functions in
- * pinStreamCore (unit-testable without DOM).
- *
- * NOT duplicated: the steer queue and the composer's attachment plumbing come
- * from the shared modules (`lib/steerQueue`, `lib/composerAttachments`) — a
- * third copy of the ack-timing-sensitive queue is exactly what we are not
- * doing (steer-queue-shared-brief §1).
+ * Stays HERE by design: the composer (IME-safe Enter, ↑/↓ input history,
+ * attachments, in-flight gates), the steer queue's display/recall path,
+ * the AgentTeam trio (P2-24), and all rendering.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -52,7 +34,6 @@ import {
 import { AlertCircle, ArrowUp, ExternalLink, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { isDesktop } from "@/lib/desktop";
-import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import type { TeamReplyMeta } from "@/lib/types";
 import { mergeHistoryWithLive } from "@/lib/historyMerge";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
@@ -68,10 +49,10 @@ import {
   ContextBlocks,
   InnerBlocks,
   UserBlocks,
-  hasPendingTool,
   type Block,
 } from "@/components/chat/blocks";
-import { pinApplyBlock, pinTurnStateAction, pinWatchdogTick } from "@/components/pin/pinStreamCore";
+import { mapHistoryToMsgs, type SessionMsg } from "@/components/session/sessionBlocks";
+import { usePinSessionLoop, type PinTurnApi } from "@/components/pin/usePinSessionLoop";
 
 export type PinStreamStatus = "idle" | "busy" | "permission";
 
@@ -89,82 +70,12 @@ export function requestComposerFocus() {
   window.dispatchEvent(new CustomEvent(PIN_FOCUS_INPUT));
 }
 
-interface PinMsg {
-  id: string;
-  // "system" = WorldState context chip rows (centered, not a bubble)
-  role: "user" | "assistant" | "system";
-  blocks: Block[];
-  turnId?: string;
-  /** Turn-error card (rendered red, with a retry button). */
-  error?: boolean;
-  /** Error cards: the originating user text, for retry. */
+interface PinMsg extends SessionMsg {
+  /** Turn-error card: the originating user text, for retry. */
   retryText?: string;
   /** P2-24：团队成员回帖（team.reply 实时帧 / history 的 teamReply 标记）。
    *  渲染为带归属徽标的回帖卡，而不是普通 assistant 气泡。 */
   teamReply?: TeamReplyMeta | null;
-}
-
-interface PermissionPrompt {
-  tool: string;
-  args: unknown;
-}
-
-let _mid = 0;
-const mid = () => `pm${++_mid}`;
-
-const newTurnId = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-function mapHistory(
-  res: {
-    messages?: Array<{
-      id?: string;
-      role: "user" | "assistant";
-      blocks: Block[];
-      turnId?: string;
-      // P2-24：历史里的成员回帖（messages_ui 序列化 teamReply）——重载 /
-      // 重连 reconcile 后回帖卡不丢，与实时 team.reply 帧同渲染。
-      teamReply?: TeamReplyMeta | null;
-    }>;
-    last_error?: {
-      message?: string; turn_id?: string;
-      i18n_key?: string; params?: Record<string, string | number>;
-    } | null;
-  },
-  // 事件契约翻译器(useEventI18nText 的返回值):last_error 带 key 时落地
-  // 翻译,与 ChatStream 的 mapHistory 同语义。缺省时英文 message 原样直显。
-  evText?: (ev: { i18n_key?: unknown; params?: unknown } | null | undefined, fallback: string) => string,
-): PinMsg[] {
-  const msgs: PinMsg[] = (res.messages ?? []).map((m) => ({
-    id: m.id ?? mid(),
-    role: m.role === "user" ? "user" : "assistant",
-    blocks: m.blocks ?? [],
-    turnId: m.turnId,
-    teamReply: m.teamReply ?? null,
-  }));
-  // Persisted turn failure: re-surface it so the retry affordance survives
-  // a window reopen (same contract as ChatStream's mapHistory).
-  if (res.last_error?.message) {
-    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
-    const text = lastUser?.blocks.find((b) => b.kind === "text");
-    msgs.push({
-      id: mid(),
-      role: "assistant",
-      error: true,
-      blocks: [
-        {
-          kind: "text",
-          text: evText
-            ? evText(res.last_error, res.last_error.message)
-            : res.last_error.message,
-        },
-      ],
-      retryText: text && "text" in text ? text.text : undefined,
-    });
-  }
-  return msgs;
 }
 
 export function PinStream({
@@ -178,19 +89,13 @@ export function PinStream({
   // 悬浮窗会话视图的 UI 文案 catalog（i18n Wave2）
   const t = useTranslations("pin.stream");
   const evText = useEventI18nText();
-  const [messages, setMessages] = useState<PinMsg[]>([]);
-  const [liveId, setLiveId] = useState<string | null>(null);
   // E3 压缩进行中（context.compacting）——live 气泡空块时 spinner 旁的
   // 「压缩中…」文案开关。
   const [compacting, setCompacting] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   // P2-24：follow 团队广场时的团队上卷态。广场主会话自己不跑 turn（消息都
   // 路由给成员），成员活动经 team.changed 的 rollup 聚合到这里驱动徽标。
   const [teamRollup, setTeamRollup] = useState<{ working: number; blocked: number } | null>(null);
-  const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [input, setInput] = useState("");
-  const [sendError, setSendError] = useState<string | null>(null);
   // Composer attachments. Images ride the turn as base64 (multimodal); docs are
   // uploaded to the sidecar first and referenced by registry id.
   const [images, setImages] = useState<ComposerImage[]>([]);
@@ -215,26 +120,11 @@ export function PinStream({
   });
   const steerItems = steer.itemsFor(sessionId);
 
-  const sockRef = useRef<WebSocket | null>(null);
   // The turn the composer is writing into; "" lets the server use its own
   // running-turn id (SteerItem.turnId contract).
   const turnIdRef = useRef("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const liveRef = useRef<string | null>(null);
-  const busyRef = useRef(false);
-  const reconnRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconcileRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSeenRef = useRef(0);
-  // 谁在这条 socket 上最后说话——turn_state 探针还是我们的 invoke？探针回答
-  // 只能描述「服务端处理探针那一刻」的会话态：此后发过新 turn（sendSeq 更
-  // 大）时，running=false 的回答不能据此 reconcile，否则把刚发出的 turn 判死
-  // （主版 engine/handle.ts 的 sendSeq>probeSeq 守卫，pinTurnStateAction 落地）。
-  const ioSeqRef = useRef(0);
-  const probeSeqRef = useRef(0);
-  const sendSeqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
@@ -245,6 +135,96 @@ export function PinStream({
   // single instance is per-session by remount; the seed comes from the loaded
   // user messages (see histFor).
   const histRef = useRef<HistoryState>(initHistory());
+
+  // ── 消息环 + socket 生命周期（批次 3-4：本地 connect/handle 骨架绞杀，
+  //    三处 #240 语义经 pinStreamCore 保留，见 usePinSessionLoop 头注释）──
+  const loop = usePinSessionLoop<PinMsg>({
+    sessionId,
+    midPrefix: "pm",
+    mapHistory: (res, mid) =>
+      mapHistoryToMsgs<PinMsg>(res, mid, {
+        // 事件契约翻译器（useEventI18nText）：last_error 带 key 时落地翻译，
+        // 与 ChatStream 的 mapHistory 同语义。缺省时英文 message 原样直显。
+        errorText: (le, fallback) => evText(le, fallback),
+        withRetryText: true,
+        // P2-24：历史里的成员回帖（messages_ui 序列化 teamReply）——重载 /
+        // 重连 reconcile 后回帖卡不丢，与实时 team.reply 帧同渲染。
+        decorate: (raw, msg) => ({
+          ...msg,
+          teamReply: (raw as { teamReply?: TeamReplyMeta | null }).teamReply ?? null,
+        }),
+      }),
+    mergeWithLive: mergeHistoryWithLive,
+    // 「压缩中…」瞬态：与主窗口同一契约——置位事件之外的任何事件都意味着
+    // 压缩已结束（压缩期间没有别的流事件）。流帧在公共 case 消化，故走
+    // onFrame（每帧钩子）而不是 onExtraEvent。
+    onFrame: (ev) => {
+      if (ev.event !== "context.compacting") setCompacting(false);
+    },
+    texts: {
+      interruptedTool: () => t("interrupted"),
+      unknownError: () => t("unknownError"),
+      compacted: (count) => t("compacted", { count }),
+    },
+    buildErrorMsg: (text, api) => ({
+      id: api.mid(),
+      role: "assistant",
+      error: true,
+      blocks: [{ kind: "text", text }],
+      retryText: lastUserTextRef.current ?? undefined,
+    }),
+    onTurnStart: (ev, liveId, api) => {
+      // The server's turn id: a queued steer rides this turn (the pin keeps
+      // no per-session turn map — one session per mount).
+      const srvTurn = ev.turn_id as string | undefined;
+      if (srvTurn) {
+        turnIdRef.current = srvTurn;
+        api.setMessages((prev) =>
+          prev.map((m) => (m.id === liveId ? { ...m, turnId: srvTurn } : m)),
+        );
+      }
+    },
+    onTurnEnd: () => {
+      // No live turn → the next steer has no turn to ride (mirrors
+      // ChatStream's liveTurnIdFor returning "").
+      turnIdRef.current = "";
+      // Still-queued entries were never absorbed: the oldest becomes the next
+      // turn (design §3.3), the rest follow on that turn's end.
+      flushSteerQueue();
+    },
+    onTurnStopped: () => {
+      // ⏹ means stop: hand anything queued for absorption back to the
+      // composer — text AND attachments — instead of discarding it. Done in
+      // the event (like ChatStream) so a stop issued from the main window
+      // recalls here too.
+      turnIdRef.current = "";
+      recallSteers();
+    },
+    onSocketReopen: () => {
+      // Re-send what is still queued (brief §3.1): a reconnect is exactly when
+      // an entry stashed into a dropped socket would otherwise be lost. The
+      // pin's own sendFrame (not the socket-layer silent one) keeps the
+      // "dead socket is reported" contract.
+      steerRef.current.onResume(sessionId, sendFrame);
+    },
+    // Pin 特有事件（steer / context.* / history.cleared / team.*）。
+    onExtraEvent: handleExtraEvent,
+  });
+  const {
+    messages,
+    setMessages: loopSetMessages,
+    liveId,
+    busy,
+    permission,
+    sendError,
+    setSendError,
+    wsStatus,
+    sendFrame: rawSendFrame,
+    postTurn,
+    stopTurn,
+    respond: loopRespond,
+    mid: loopMid,
+  } = loop;
 
   // Tool display labels come from settings (module-cached — see toolLabels).
   // 语言加载由根部 I18nProvider 负责（原 loadPromptLang 已移除）。
@@ -277,83 +257,19 @@ export function PinStream({
     onStatus?.(status);
   }, [status, onStatus]);
 
-  function ensureLive(): string {
-    if (liveRef.current) return liveRef.current;
-    const id = mid();
-    liveRef.current = id;
-    setLiveId(id);
-    setMessages((prev) => [...prev, { id, role: "assistant", blocks: [] }]);
-    return id;
-  }
-
-  function mutateLive(ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive();
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, blocks: pinApplyBlock(m.blocks, ev) } : m)),
-    );
-  }
-
-  /** Finish the in-flight bubble. finalizeTools: force-close pending tool
-   *  blocks (stop/error paths — the server never sends their tool.end). */
-  function closeLive(finalizeTools: boolean) {
-    const id = liveRef.current;
-    liveRef.current = null;
-    setLiveId(null);
-    busyRef.current = false;
-    setBusy(false);
-    // No live turn → the next steer has no turn to ride (mirrors ChatStream's
-    // liveTurnIdFor returning "").
-    turnIdRef.current = "";
-    setMessages((prev) => {
-      let next = prev;
-      if (id) {
-        // An empty live bubble (ended before the first token) would render
-        // as a confusing blank card — drop it; streamed content stays.
-        next = next.filter((m) => !(m.id === id && m.blocks.length === 0));
-        if (finalizeTools) {
-          next = next.map((m) =>
-            hasPendingTool(m.blocks)
-              ? {
-                  ...m,
-                  blocks: m.blocks.map((b) =>
-                    b.kind === "tool" && b.pending
-                      ? { ...b, pending: false, content: b.content === "…" ? t("interrupted") : b.content }
-                      : b,
-                  ),
-                }
-              : m,
-          );
-        }
-      }
-      return next;
-    });
-  }
-
-  function addSystemRow(text: string) {
-    setMessages((prev) => [
-      ...prev,
-      { id: mid(), role: "system", blocks: [{ kind: "context", text }] },
-    ]);
-  }
-
-  function reconcileFromHistory() {
-    getSessionHistory(sessionId)
-      .then((res) =>
-        // Same merge discipline as the mount-time load: the reconcile runs
-        // after live frames were rendered on this socket.
-        setMessages((prev) => mergeHistoryWithLive(mapHistory(res, evText), prev)),
-      )
-      .catch(() => {
-        /* sidecar down — the reconnect loop will retry */
-      });
+  /** Raw-frame sender handed to the shared queue — the pin's own socket
+   *  (brief §3.1: `send` is per-window). A dead socket is reported, not
+   *  swallowed: the entry stays queued and rides the next turn / reconnect. */
+  function sendFrame(frame: unknown) {
+    if (!rawSendFrame(frame)) setSendError(t("connNotReady"));
   }
 
   /** Park an absorbed steer in the live bubble as a `steer` band. The hook
    *  drops the entry from the queue when it sees `steer.absorbed`, so the entry
    *  is captured BEFORE delegating; the band itself is display, which brief
    *  §3.1 leaves to the caller (blocks.tsx already renders `kind: "steer"`). */
-  function appendSteerBand(entry: SteerItem, ev: { [k: string]: unknown }) {
-    const id = ensureLive();
+  function appendSteerBand(entry: SteerItem, ev: { [k: string]: unknown }, api: PinTurnApi<PinMsg>) {
+    const id = api.ensureLive();
     const band: Block = {
       kind: "steer",
       text: entry.text,
@@ -373,17 +289,18 @@ export function PinStream({
           }
         : {}),
     };
-    setMessages((prev) =>
+    api.setMessages((prev) =>
       prev.map((m) => (m.id === id ? { ...m, blocks: [...m.blocks, band] } : m)),
     );
   }
 
-  function handle(ev: { event: string; [k: string]: unknown }) {
-    // Every frame is fed to the shared queue: it owns the steer acks (and only
-    // those two events — it returns false for the rest). The pin deliberately
-    // does NOT early-return on its `true` ("this event is the queue's"): the
-    // hook only ever touches its own queue state, never this component's
-    // messages, so both can observe the frame.
+  /** Pin 特有事件的分发（消息环公共 case 之外的 default 分支）。
+   *  Every frame is fed to the shared queue: it owns the steer acks (and only
+   *  those two events — it returns false for the rest). The pin deliberately
+   *  does NOT early-return on its `true` ("this event is the queue's"): the
+   *  hook only ever touches its own queue state, never this component's
+   *  messages, so both can observe the frame. */
+  function handleExtraEvent(ev: { event: string; [k: string]: unknown }, api: PinTurnApi<PinMsg>) {
     // steer.absorbed: the hook drops the entry, so capture it first — the band
     // is display, which brief §3.1 leaves to the caller.
     const absorbedEntry =
@@ -391,141 +308,35 @@ export function PinStream({
         ? steerRef.current.itemsFor(sessionId).find((i) => i.steerId === ev.steer_id)
         : undefined;
     steerRef.current.handleEvent(ev, sessionId);
-    if (absorbedEntry) appendSteerBand(absorbedEntry, ev);
-
-    // 「压缩中…」瞬态：与主窗口同一契约——置位事件之外的任何事件都意味着
-    // 压缩已结束（压缩期间没有别的流事件）。
-    if (ev.event !== "context.compacting") setCompacting(false);
+    if (absorbedEntry) appendSteerBand(absorbedEntry, ev, api);
 
     switch (ev.event) {
-      case "turn.start": {
-        busyRef.current = true;
-        setBusy(true);
-        setSendError(null);
-        const id = ensureLive();
-        const srvTurn = ev.turn_id as string | undefined;
-        // The server's turn id: a queued steer rides this turn (the pin keeps
-        // no per-session turn map — one session per mount).
-        if (srvTurn) turnIdRef.current = srvTurn;
-        setMessages((prev) =>
-          prev.map((m) => (m.id === id && srvTurn ? { ...m, turnId: srvTurn } : m)),
-        );
-        break;
-      }
-      case "token.delta":
-      case "thinking.delta":
-      case "tool.start":
-      case "tool.args":
-      case "tool.end":
-      case "image.emit": {
-        busyRef.current = true;
-        setBusy(true);
-        mutateLive(ev);
-        break;
-      }
-      case "permission.request":
-        setPermission({ tool: ev.tool as string, args: ev.args });
-        break;
-      case "notice":
-        // Built-in command reply / busy-notice (e.g. follow mode: the main
-        // window already runs a turn) — rendered into the live bubble.
-        mutateLive({ event: "token.delta", content: (ev.message as string) || "" });
-        break;
       case "context.updated": {
         const changes = ((ev.changes as Array<{ section?: string; summary?: string }>) || []).filter(
           Boolean,
         );
         const visible = changes.filter((c) => c.section !== "environment");
-        for (const c of visible) addSystemRow(c.summary || "");
+        for (const c of visible) api.addSystemRow(c.summary || "");
         break;
       }
       case "context.microcompacted":
-        addSystemRow(t("clearedToolOutputs", { count: Number(ev.cleared_tool_outputs ?? 0) }));
+        api.addSystemRow(t("clearedToolOutputs", { count: Number(ev.cleared_tool_outputs ?? 0) }));
         break;
       case "context.compacting":
         // E3 总结 LLM 调用前的瞬态状态：live 气泡空块时的 spinner 旁显示
         // 「压缩中…」（见下方 streaming && blocks.length===0 渲染分支）。
         setCompacting(true);
         break;
-      case "context.compacted":
-        addSystemRow(t("compacted", { count: Number(ev.compacted_messages ?? 0) }));
-        break;
       case "history.cleared":
         // /clear 清空了 checkpoint —— 本地 transcript 整体丢弃，live 气泡
         // 状态复位（紧随其后的收据 notice 会经 ensureLive 新开气泡）。
-        liveRef.current = null;
-        setLiveId(null);
-        busyRef.current = false;
-        setBusy(false);
-        setMessages([]);
+        turnIdRef.current = "";
+        api.closeLive(false);
+        api.setMessages([]);
         break;
-      case "turn.state":
-        // Answer to the onopen / periodic watchdog probe. Decision logic lives
-        // in pinTurnStateAction (pure, unit-tested): resume → the broadcast
-        // stream continues on this socket; stale → the answer predates a send
-        // we just made (sendSeq > probeSeq) — wait for the stream instead;
-        // idle → we no longer believe a turn runs (it ended between probe and
-        // answer — nothing to reconcile); reconcile → the turn is gone while
-        // we believed it live: rebuild from the persisted history.
-        if (reconcileRef.current) {
-          clearTimeout(reconcileRef.current);
-          reconcileRef.current = null;
-        }
-        if (
-          pinTurnStateAction(
-            { running: ev.running },
-            {
-              believingLive: Boolean(liveRef.current || busyRef.current),
-              sendSeq: sendSeqRef.current,
-              probeSeq: probeSeqRef.current,
-            },
-          ) === "reconcile"
-        ) {
-          reconcileFromHistory();
-          busyRef.current = false;
-          setBusy(false);
-        }
-        break;
-      case "message.end":
-        closeLive(false);
-        // The turn is over — any parked prompt is moot (it may even have been
-        // answered from the main window; `_PENDING_RESUME` dedupes server-side).
-        setPermission(null);
-        // Still-queued entries were never absorbed: the oldest becomes the next
-        // turn (design §3.3), the rest follow on that turn's end.
-        flushSteerQueue();
-        break;
-      case "turn.stopped":
-        // ⏹ means stop: hand anything queued for absorption back to the
-        // composer — text AND attachments — instead of discarding it. Done in
-        // the event (like ChatStream) so a stop issued from the main window
-        // recalls here too.
-        recallSteers();
-        closeLive(true);
-        setPermission(null);
-        break;
-      case "error": {
-        closeLive(true);
-        setPermission(null);
-        const text = String(ev.message || "") || t("unknownError");
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: mid(),
-            role: "assistant",
-            error: true,
-            blocks: [{ kind: "text", text }],
-            retryText: lastUserTextRef.current ?? undefined,
-          },
-        ]);
-        // The turn died with entries still unacknowledged → the oldest becomes
-        // the next turn, same rule as a normal end (design §3.3).
-        flushSteerQueue();
-        break;
-      }
       // ─── P2-24：AgentTeam 联动（backlog：pin 浮窗此前 team 事件零处理）───
       // team.changed / team.reply 只广播在团队主会话（广场）socket；follow
-      // 成员会话时收不到，成员状态仍由上面的 turn 事件驱动。
+      // 成员会话时收不到，成员状态仍由 turn 事件驱动。
       case "team.changed": {
         const team = ev.team as
           | { main_session_id?: string; rollup?: { working?: number; blocked?: number } }
@@ -542,9 +353,9 @@ export function PinStream({
       case "team.reply": {
         // 成员回帖：与 handle.ts 同契约——服务端 message_id 作消息 id，
         // 实时追加与 history reload 指向同一条，不会双渲染。
-        const msgId = (ev.message_id as string) || mid();
+        const msgId = (ev.message_id as string) || api.mid();
         const text = (ev.text as string) || "";
-        setMessages((prev) => {
+        api.setMessages((prev) => {
           if (prev.some((m) => m.id === msgId)) return prev;
           return [
             ...prev,
@@ -569,20 +380,20 @@ export function PinStream({
         // （P0-1），这里防御性收口 live 气泡 + 三态回执可视化：failed 是
         // 原子拒绝（一个字都没发），必须可见，否则 pin 用户以为发出去了。
         const receipt = (ev.receipt as string) || "delivered";
-        closeLive(false);
-        setPermission(null);
+        api.closeLive(false);
+        api.setPermission(null);
         const name = (ev.display_name as string) || (ev.agent_id as string) || "";
         if (receipt === "failed") {
-          addSystemRow(
+          api.addSystemRow(
             t("deliveryFailed", {
               name,
               reason: (ev.error as string) || (ev.reason as string) || "",
             }),
           );
         } else if (receipt === "stalled") {
-          addSystemRow(t("deliveryStalled", { name }));
+          api.addSystemRow(t("deliveryStalled", { name }));
         } else {
-          addSystemRow(t("deliveryOk", { name }));
+          api.addSystemRow(t("deliveryOk", { name }));
         }
         break;
       }
@@ -593,166 +404,14 @@ export function PinStream({
     }
   }
 
-  function connect() {
-    const existing = sockRef.current;
-    if (
-      existing &&
-      (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
-    }
-    if (reconnRef.current) {
-      clearTimeout(reconnRef.current);
-      reconnRef.current = null;
-    }
-    setWsStatus("connecting");
-    const sock = openSessionSocket(sessionId);
-    sockRef.current = sock;
-    sock.onopen = () => {
-      if (sockRef.current !== sock) return;
-      setWsStatus("live");
-      setSendError(null);
-      lastSeenRef.current = Date.now();
-      // Re-send what is still queued (brief §3.1): a reconnect is exactly when
-      // an entry stashed into a dropped socket would otherwise be lost.
-      steerRef.current.onResume(sessionId, sendFrame);
-      if (liveRef.current || busyRef.current) {
-        // Remounted mid-turn: ask whether the turn still exists; if the
-        // server never answers (older runtime), reconcile from history.
-        try {
-          probeSeqRef.current = ++ioSeqRef.current;
-          sock.send(JSON.stringify({ type: "turn_state" }));
-        } catch {
-          /* ignore */
-        }
-        if (reconcileRef.current) clearTimeout(reconcileRef.current);
-        reconcileRef.current = setTimeout(() => {
-          reconcileRef.current = null;
-          reconcileFromHistory();
-        }, 6000);
-      }
-      pingRef.current = setInterval(() => {
-        if (sock.readyState === WebSocket.OPEN) {
-          try {
-            sock.send(JSON.stringify({ type: "ping" }));
-          } catch {
-            /* ignore */
-          }
-        }
-      }, 20000);
-      watchRef.current = setInterval(() => {
-        // Decision in pinWatchdogTick (pure, unit-tested): close = 45s of
-        // TOTAL silence (ping keeps the ws alive, so a silent-but-open
-        // connection still gets rotated); probe = the believing-live periodic
-        // turn_state probe (fe0d06e / a1618f7 mirror). A lost final frame
-        // (message.end / tool.end / user.question) on a live ws would
-        // otherwise freeze the pin at "pending bubble + frozen timer" forever
-        // — the probe's answer routes into the turn.state handler above,
-        // which reconciles from the checkpoint when the server says the turn
-        // is gone.
-        const { close, probe } = pinWatchdogTick({
-          now: Date.now(),
-          lastSeen: lastSeenRef.current,
-          believingLive: Boolean(liveRef.current || busyRef.current),
-          socketOpen: sock.readyState === WebSocket.OPEN,
-        });
-        if (close) {
-          try {
-            sock.close();
-          } catch {
-            /* ignore */
-          }
-        }
-        if (probe) {
-          try {
-            probeSeqRef.current = ++ioSeqRef.current;
-            sock.send(JSON.stringify({ type: "turn_state" }));
-          } catch {
-            /* ignore */
-          }
-        }
-      }, 10000);
-    };
-    sock.onmessage = (e) => {
-      if (sockRef.current !== sock) return;
-      lastSeenRef.current = Date.now();
-      try {
-        const ev = JSON.parse(e.data) as { event: string; frame_session?: string };
-        // Frame-ownership guard (2026-10-01 渲染串线报告), same as ChatStream.
-        if (ev.frame_session && sessionId && ev.frame_session !== sessionId) {
-          console.warn(
-            `[ginno] dropping cross-session frame event=${ev.event} frame_session=${ev.frame_session} socket_session=${sessionId}`,
-          );
-          return;
-        }
-        handle(ev);
-      } catch {
-        /* malformed frame — ignore */
-      }
-    };
-    sock.onerror = () => {
-      if (sockRef.current !== sock) return;
-      try {
-        sock.close();
-      } catch {
-        /* ignore */
-      }
-    };
-    sock.onclose = () => {
-      if (pingRef.current) {
-        clearInterval(pingRef.current);
-        pingRef.current = null;
-      }
-      if (watchRef.current) {
-        clearInterval(watchRef.current);
-        watchRef.current = null;
-      }
-      if (sockRef.current !== sock) return;
-      sockRef.current = null;
-      setWsStatus("reconnecting");
-      reconnRef.current = setTimeout(() => {
-        reconnRef.current = null;
-        connect();
-      }, 3000);
-    };
-  }
-
-  // Socket + history lifecycle. The parent keys PinStream by session id, so
-  // a session switch is a clean remount (socket closed in the cleanup).
-  useEffect(() => {
-    let alive = true;
-    connect();
-    getSessionHistory(sessionId)
-      .then((res) => {
-        if (alive)
-          // Issue #16: the snapshot resolved AFTER connect() — real-time frames
-          // may already be rendered. Merge (fill-what's-missing), never overwrite.
-          setMessages((prev) => mergeHistoryWithLive(mapHistory(res, evText), prev));
-      })
-      .catch(() => {
-        /* sidecar down — events will populate once it returns */
-      });
-    return () => {
-      alive = false;
-      if (reconnRef.current) clearTimeout(reconnRef.current);
-      if (pingRef.current) clearInterval(pingRef.current);
-      if (watchRef.current) clearInterval(watchRef.current);
-      if (reconcileRef.current) clearTimeout(reconcileRef.current);
+  // hint timer 的卸载清理（原挂在 socket effect cleanup，socket 生命周期
+  // 已绞杀进共享层，这里独立成 effect）。
+  useEffect(
+    () => () => {
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-      reconnRef.current = pingRef.current = watchRef.current = reconcileRef.current = null;
-      hintTimerRef.current = null;
-      const sock = sockRef.current;
-      sockRef.current = null; // detach first: onclose must not schedule a reconnect
-      if (sock) {
-        try {
-          sock.close();
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+    },
+    [],
+  );
 
   // Sticky auto-scroll: follow the stream while parked near the bottom.
   useEffect(() => {
@@ -770,22 +429,6 @@ export function PinStream({
     setHint(msg);
     if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
     hintTimerRef.current = setTimeout(() => setHint(null), 4000);
-  }
-
-  /** Raw-frame sender handed to the shared queue — the pin's own socket
-   *  (brief §3.1: `send` is per-window). A dead socket is reported, not
-   *  swallowed: the entry stays queued and rides the next turn / reconnect. */
-  function sendFrame(frame: unknown) {
-    const sock = sockRef.current;
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      setSendError(t("connNotReady"));
-      return;
-    }
-    try {
-      sock.send(JSON.stringify(frame));
-    } catch {
-      setSendError(t("sendFailed"));
-    }
   }
 
   /** ⏹ recall: put what is still queued back into THIS composer — text (in
@@ -853,7 +496,7 @@ export function PinStream({
     }
     if (!text && images.length === 0 && readyFiles.length === 0) return;
 
-    if (busyRef.current) {
+    if (busy) {
       // A turn is running → this is a mid-turn injection, not a new turn: the
       // shared queue owns the frame, the acks and the re-sends. Text AND
       // attachments ride the steer (brief §4.4); an empty-text steer is legal.
@@ -875,149 +518,94 @@ export function PinStream({
       return;
     }
 
-    postTurn(text, images, readyFiles);
+    postTurnFromComposer(text, images, readyFiles);
+  }
+
+  /** 乐观 user 气泡 blocks：file → image → text 的组合（与主 composer 同序）。 */
+  function buildUserBlocks(text: string, imgs: ComposerImage[], readyFiles: ComposerFile[]): Block[] {
+    return [
+      ...readyFiles.map((f) => ({
+        kind: "file" as const,
+        fileId: f.id,
+        name: f.name,
+        path: f.path,
+        fileKind: f.kind,
+      })),
+      ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
+      ...(text ? [{ kind: "text" as const, text }] : []),
+    ];
   }
 
   /** Post one real turn. Called by the composer AND by the queue's flush (the
    *  turn ended with an entry still unacknowledged → the OLDEST becomes the
-   *  next turn, design §3.3). The socket check lives here so both callers get
-   *  the same no-silent-loss treatment.
+   *  next turn, design §3.3). Socket gate / optimistic bubbles / rollback live
+   *  in the loop; this half owns the pin-specific payload assembly, the input
+   *  history, and the composer restore on a send race.
    *
-   *  `fromQueue`: a flushed entry has ALREADY left the queue, so a dead socket
-   *  must put it back into the composer or it is gone. The composer's own send
-   *  needs no such restore — nothing was cleared yet, and re-appending the text
-   *  on top of itself would duplicate the input. */
-  function postTurn(
+   *  `onFailRestore`: a flushed entry has ALREADY left the queue, so a dead
+   *  socket must put it back into the composer or it is gone (idempotent —
+   *  called from both the send-race path and the notReady path). */
+  function postTurnFromComposer(
     text: string,
     imgs: ComposerImage[],
     readyFiles: ComposerFile[],
-    fromQueue = false,
-  ) {
-    const sock = sockRef.current;
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      // No silent no-op: tell the user and keep the content (the reconnect loop
-      // runs in the background; they can press Enter again).
-      if (fromQueue) {
-        if (text) setInput((cur) => (cur ? `${text}\n${cur}` : text));
+    onFailRestore?: () => void,
+  ): boolean {
+    return postTurn({
+      text,
+      userBlocks: buildUserBlocks(text, imgs, readyFiles),
+      images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
+      files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
+      notReadyLabel: () => t("connNotReady"),
+      failedLabel: () => t("sendFailed"),
+      // 记入输入历史(队列 flush 会二次 append,连续去重吸收)。notReady
+      // 早退路径不记——内容还在输入框里。
+      onSent: (turnId) => {
+        // 乐观 turn id：turn.start 到达前 enqueue 的 steer 用它指向在途
+        // turn（原版 postTurn 的 turnIdRef.current = turnId）。
+        turnIdRef.current = turnId;
+        histRef.current = appendEntry(histFor(), text);
+        lastUserTextRef.current = text;
+        setInput("");
+        setImages([]);
+        setFiles([]);
+        requestAnimationFrame(() => {
+          if (textareaRef.current) textareaRef.current.style.height = "auto";
+        });
+      },
+      // Socket flipped to CLOSING between the check and the send: the loop
+      // rolled the optimistic bubbles back — hand text and attachments back,
+      // a failed send must not eat them.
+      onFailed: (failedText) => {
+        if (onFailRestore) {
+          onFailRestore();
+          return;
+        }
+        if (failedText) setInput((cur) => (cur ? `${failedText}\n${cur}` : failedText));
         if (imgs.length) setImages((a) => [...imgs, ...a]);
         if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
-      }
-      setSendError(t("connNotReady"));
-      return;
-    }
-    const turnId = newTurnId();
-    const uid = mid();
-    const lid = mid();
-    // 记入输入历史(队列 flush 会二次 append,连续去重吸收)。socket 断开的
-    // connNotReady 早退路径不记——内容还在输入框里。
-    histRef.current = appendEntry(histFor(), text);
-    lastUserTextRef.current = text;
-    turnIdRef.current = turnId;
-    busyRef.current = true;
-    setBusy(true);
-    liveRef.current = lid;
-    setLiveId(lid);
-    setSendError(null);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: uid,
-        role: "user",
-        blocks: [
-          ...readyFiles.map((f) => ({
-            kind: "file" as const,
-            fileId: f.id,
-            name: f.name,
-            path: f.path,
-            fileKind: f.kind,
-          })),
-          ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
-          ...(text ? [{ kind: "text" as const, text }] : []),
-        ],
-        turnId,
       },
-      { id: lid, role: "assistant", blocks: [] },
-    ]);
-    setInput("");
-    setImages([]);
-    setFiles([]);
-    requestAnimationFrame(() => {
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
     });
-    try {
-      sock.send(
-        JSON.stringify({
-          type: "invoke",
-          message: text,
-          agent_id: null,
-          turn_id: turnId,
-          images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
-          files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
-        }),
-      );
-      // Only a send that actually went out gets stamped — a turn.state answer
-      // to a probe we sent earlier is older than this turn and must not judge
-      // it (see probeSeqRef / pinTurnStateAction's stale branch).
-      sendSeqRef.current = ++ioSeqRef.current;
-    } catch {
-      // Socket flipped to CLOSING between the check and here: roll back.
-      busyRef.current = false;
-      setBusy(false);
-      liveRef.current = null;
-      setLiveId(null);
-      turnIdRef.current = "";
-      setMessages((prev) => prev.filter((m) => m.id !== lid && m.id !== uid));
-      // Hand text and attachments back — a failed send must not eat them.
-      if (text) setInput((cur) => (cur ? `${text}\n${cur}` : text));
-      if (imgs.length) setImages((a) => [...imgs, ...a]);
-      if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
-      setSendError(t("sendFailed"));
-    }
   }
 
   /** The turn ended (or died) with entries still unacknowledged: promote the
    *  OLDEST to the next turn — Claude Code's rule verbatim, same as ChatStream
-   *  (design §3.3). The hook pops the head; SENDING it is the caller's half
-   *  (the hook has no socket). Attachments ride it, or they would be lost. */
+   *  (design §3.3). The hook pops the head; SENDING it is this half.
+   *  Attachments ride it, or they would be lost. */
   function flushSteerQueue() {
     const head = steerRef.current.takeOldest(sessionId);
     if (!head) return;
-    postTurn(head.text, head.images, head.files, true);
-  }
-
-  function stopTurn() {
-    try {
-      sockRef.current?.send(JSON.stringify({ type: "stop" }));
-    } catch {
-      /* socket gone — reconnect reconciles via turn_state */
-    }
-  }
-
-  /** P2-24：回帖卡的「打开主窗口」——绝不把 pin webview 导航去 /team
-   *  （主窗口 TeamReplyCard 的 router.push 会把整个团队空间塞进 360×520
-   *  浮窗）。只召唤主窗口：follow 镜像团队会话时用户通常已在 /team 页。 */
-  function openMainForTeam() {
-    if (isDesktop()) {
-      invoke("pin_open_main", { sessionId: null }).catch(() => {
-        /* older shell without pin commands — no-op */
-      });
-    } else {
-      window.location.href = "/";
-    }
-  }
-
-  function respond(decision: "allow" | "deny") {
-    // Anything still queued belongs to this turn: re-send it as `steer` BEFORE
-    // the resume, so the resumed segment absorbs it (same rule as ChatStream's
-    // respond — idempotent by steer_id server-side). The pin has no
-    // change-of-mind/deny-and-steer path; only the re-send rule is mirrored.
-    steerRef.current.onResume(sessionId, sendFrame);
-    try {
-      sockRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits the prompt if still pending */
-    }
-    setPermission(null);
+    let restored = false;
+    const restore = () => {
+      if (restored) return;
+      restored = true;
+      if (head.text) setInput((cur) => (cur ? `${head.text}\n${cur}` : head.text));
+      if (head.images.length) setImages((a) => [...head.images, ...a]);
+      if (head.files.length) setFiles((a) => [...head.files, ...a]);
+    };
+    // notReady（socket 未就绪）也恢复——entry 已出队，不恢复就静默丢失
+    // （composer 直发无需：onSent 未执行，内容仍在输入框）。
+    if (!postTurnFromComposer(head.text, head.images, head.files, restore)) restore();
   }
 
   /** 懒构建历史种子:entries 仍为空时从已加载的 user 消息现拼(text/skill 块,
@@ -1085,8 +673,30 @@ export function PinStream({
     el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
   }
 
+  /** P2-24：回帖卡的「打开主窗口」——绝不把 pin webview 导航去 /team
+   *  （主窗口 TeamReplyCard 的 router.push 会把整个团队空间塞进 360×520
+   *  浮窗）。只召唤主窗口：follow 镜像团队会话时用户通常已在 /team 页。 */
+  function openMainForTeam() {
+    if (isDesktop()) {
+      invoke("pin_open_main", { sessionId: null }).catch(() => {
+        /* older shell without pin commands — no-op */
+      });
+    } else {
+      window.location.href = "/";
+    }
+  }
+
+  function respond(decision: "allow" | "deny") {
+    // Anything still queued belongs to this turn: re-send it as `steer` BEFORE
+    // the resume, so the resumed segment absorbs it (same rule as ChatStream's
+    // respond — idempotent by steer_id server-side). The pin has no
+    // change-of-mind/deny-and-steer path; only the re-send rule is mirrored.
+    steerRef.current.onResume(sessionId, sendFrame);
+    loopRespond(decision);
+  }
+
   const connecting = wsStatus !== "live";
-  // A text-less send is legal when an attachment rides along (brief §3.3).
+  // A text-less send is legal when an attachment rides along (brief §4.3).
   const canSend = !!input.trim() || images.length > 0 || files.length > 0;
 
   return (
@@ -1146,7 +756,7 @@ export function PinStream({
                   <span className="inline-flex items-center gap-1 rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] font-medium text-violet">
                     👥 {m.teamReply.display_name || t("teamMemberFallback")}
                   </span>
-                  <span className="rounded-full border border-line px-1.5 py-px text-[9px] text-faint">
+                  <span className="rounded-full border border-line px-1 py-px text-[9px] text-faint">
                     {t("teamReplyBadge")}
                   </span>
                   {m.teamReply.truncated && (
