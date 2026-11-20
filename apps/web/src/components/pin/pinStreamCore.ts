@@ -46,6 +46,9 @@ export function pinApplyBlock(
 export const PIN_SILENCE_CLOSE_MS = 45_000;
 
 /** watchdog 单 tick 决策（主版 useChatStreamEngine watchTimer 的纯函数化）。
+ *  批次 3-4 起 close 半边由共享 useSessionSocket 的 45s 巡检持有（同常数
+ *  同行为）；消费方（usePinSessionLoop）只使用 probe 半边——本函数保持
+ *  双决策导出，单测继续钉住完整语义。
  *
  * - close：静默超 45s——ping 照常但服务端一帧未发，连接视为僵死。
  * - probe：believing-live/busy 时的周期 turn_state 探针（fe0d06e / a1618f7
