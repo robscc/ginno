@@ -1,164 +1,55 @@
 "use client";
 
 /**
- * Assembles the code panel from RootBar / FileTree / EditorTabs / MonacoEditor
- * (docs/code-panel-design.md §3.3, §3.4, §4.5).
+ * CodePanel — composition root of the code tab (hooks split 批次 3-3).
  *
- * The panel has two layouts inside the one right-panel tab:
- *   - "file" (default): the tree collapses to a breadcrumb bar and the editor
- *     takes the full panel width. ⌘B slides the tree out as an overlay drawer
- *     from the left, so it never squeezes the editor.
- *   - "side": tree (260px) + editor side by side. Chosen automatically once the
- *     panel is ≥600px wide, or by the user via the layout toggle / ⌘B.
- * A user choice wins: once the mode is toggled by hand, resizing no longer
- * overrides it. Below 600px the panel is forced back to "file".
+ * Assembles RootBar / FileTree / EditorTabs / MonacoEditor and wires them to
+ * the panel/* domains (docs/code-panel-design.md §3.3/§3.4/§4.5):
+ *   useCodeRoots  S1 roots + path mapping + refresh nonce
+ *   useCodeTabs   S1/S2 tab state machine (LRU, per-tab meta, reads, jumps)
+ *   useCodeEditing S2 save / conflict bar / reload / preview-mode
+ *   useCodeDiff   S3 agent-change follow + inline diff scheduler
+ *   useGitStatus  S3 git letters + agent marks
+ *   useCodeTree   S4 file ops + tree/layout toggles (⌘B, file↔side)
+ * Subcomponents: CodePanelTopBar / CodeEditorColumn(+Content) / codePanelBits.
  *
- * Stage map (docs/code-panel-design.md §4.7) — this file is where they meet:
- *   S1  read + browse: files come from `/api/code/read`, the tree lists one level
- *       at a time, images render through `/api/code/raw` (ImagePreview).
- *   S2  write: ⌘S saves against a `base_version`; a refusal becomes a conflict
- *       bar (重新加载 / 看差异 / 强制覆盖) and NEVER an automatic overwrite.
- *   S3  agent changes + git: the socket's `code.changed` drives a clean tab to
- *       follow the file and a dirty one to the same conflict bar; git letters and
- *       agent marks come from `/api/code/git` and the pushed change map.
- *   S4  search + file ops: ⌘P / ⇧⌘F, and create/rename/move/delete through
- *       `/api/code/{mkdir,rename,move,delete}`. Delete runs the server's fence
- *       FIRST (`check_only`) and only then hands the entry to the OS trash — the
- *       Rust command cannot see mount tiers, so the server must be the gate.
+ * Layouts inside the one right-panel tab: "file" (default — tree as a ⌘B
+ * overlay drawer, editor full width) and "side" (tree 260px + editor), chosen
+ * automatically at ≥600px or by hand; a user choice wins over resizing, and
+ * below 600px the panel is forced back to "file".
+ *
+ * Stage notes (docs/code-panel-design.md §4.7): ⌘S saves against a
+ * `base_version` — a refusal becomes the conflict bar (重新加载 / 看差异 /
+ * 强制覆盖), NEVER an automatic overwrite; `code.changed` drives a clean tab to
+ * follow the file and a dirty one to the same bar; delete runs the server's
+ * fence FIRST (`check_only`) before the OS trash — the Rust command cannot see
+ * mount tiers, so the server must be the gate.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import {
-  AlertTriangle,
-  ChevronRight,
-  Columns2,
-  Eye,
-  FileCode2,
-  FolderTree,
-  Info,
-  RotateCcw,
-  Save,
-  Server,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Info, Server } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { isRemoteSession, remotePeerDisplayName } from "@/components/chat/remoteGuard";
-import {
-  CodeApiError,
-  CodeConflictError,
-  codeDelete,
-  codeFileUrl,
-  codeMkdir,
-  codeMove,
-  codeRename,
-  codeRawUrl,
-  createFolder,
-  getCodeGit,
-  listCodeRoots,
-  putSessionContext,
-  readCodeFile,
-  searchCode,
-  updateFolder,
-  writeCodeFile,
-} from "@/lib/runtime";
-import { isDesktop } from "@/lib/desktop";
-import type { CodeRead, CodeRoot } from "@/lib/codeTypes";
-import { codeDiff } from "@/lib/runtime";
-import { InlineDiffScheduler, type ScheduledChange } from "@/lib/inlineDiffScheduler";
+import { searchCode } from "@/lib/runtime";
+import type { CodeRoot } from "@/lib/codeTypes";
 import { cn } from "@/lib/utils";
 import { RootBar } from "./RootBar";
-import { reloadNeedsConfirm } from "./reloadGuard";
 import { FileTree } from "./FileTree";
-import { EditorTabs, codeTabKey, type EditorTab } from "./EditorTabs";
-import { MonacoEditor } from "./MonacoEditor";
-import { ImagePreview } from "./ImagePreview";
-import { HtmlPreview } from "./HtmlPreview";
+import { codeTabKey } from "./EditorTabs";
 import { isRenderableHtml } from "./language";
-import { ConflictDiff } from "./ConflictDiff";
-import { InlineDiffOverlay } from "./InlineDiffOverlay";
 import { ChangesPanel } from "./ChangesPanel";
 import { QuickOpen } from "./QuickOpen";
 import { SearchView, type CodeSearchFn } from "./SearchView";
-
-/** Panel width at/above which the tree+editor "side" layout is allowed. */
-const WIDE_PX = 600;
-/** Fixed tree column width in "side" mode (design §3.3: 220–300px). */
-const TREE_PX = 260;
-/** The web app is single-project; same convention as listArtifacts/listSkills. */
-const PROJECT_SLUG = "default";
-
-/** Open-tab cap (design §4.7). Eviction is LRU over CLEAN tabs only. */
-const MAX_TABS = 20;
-
-/** Message for a failed file op. Prefer the server's own Chinese wording — it
- *  names the real reason ("当前文件夹以只读方式挂载", "已存在同名条目", …), which a
- *  generic fallback would throw away. */
-function fsError(err: unknown, fallback: string): string {
-  if (err instanceof CodeApiError) return err.message || err.code;
-  return err instanceof Error ? err.message : fallback;
-}
-
-/** i18n-design.md §7 契约:Rust code_* 命令拒绝值是 {code, detail} 对象
- *  (壳不持文案)。code 是稳定标识符 → code.notice.err.<code>;detail 是
- *  OS/路径原始上下文,原样插值。旧壳的 string 错误/其它形状返回 null,
- *  由调用方走既有 fallback 路径。 */
-function codeCmdErrParts(err: unknown): { code: string; detail: string } | null {
-  if (err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string") {
-    const detail = (err as { detail?: unknown }).detail;
-    return {
-      code: (err as { code: string }).code,
-      detail: typeof detail === "string" ? detail : "",
-    };
-  }
-  return null;
-}
-
-/** Escape user text so it matches LITERALLY inside the server's regex.
- *  Content search compiles `q` as a regex while the result highlight compares
- *  literal text (SearchView.Highlighted); leaving `foo.bar` unescaped would
- *  match `fooXbar` and highlight nothing, and `foo(` would fail with
- *  `invalid-regex`. Regex stays available at the API layer for a future toggle. */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Editing state for one open tab (S2). */
-interface TabMeta {
-  /** Unsaved edits in the buffer. */
-  dirty: boolean;
-  /** A save was refused — or the agent changed the file underneath — and the
-   *  panel must not overwrite it. A 409 fills both texts; a PUSHED change
-   *  carries only a version, so `diskText` may be null and 「看差异」 fetches it
-   *  on demand (S3 brief §0). */
-  conflict: { version: string; diskText: string | null; mine: string } | null;
-  /** Bumped to REBUILD the editor's model (see the comment in the component). */
-  rev: number;
-  /** Bumped to tell Monaco "the buffer is the new clean baseline". */
-  savedNonce: number;
-  /** View mode for renderable pages (html/htm). Absent = automatic, i.e.
-   *  preview for `isRenderableHtml` paths and source for everything else;
-   *  the toggle writes an explicit value. Only the auto case is ever "true by
-   *  default", so non-HTML files never grow state. */
-  preview?: boolean;
-}
-
-const EMPTY_TAB_META: TabMeta = { dirty: false, conflict: null, rev: 0, savedNonce: 0 };
-
-interface ReadState {
-  status: "loading" | "ok" | "error";
-  data?: CodeRead;
-  error?: string;
-}
-
-/** A pending reveal: which root/path to focus in the tree and, when jumping
- *  from chat, which line to centre in Monaco. */
-interface Jump {
-  rootId: string;
-  path: string;
-  line: number | null;
-  nonce: number;
-}
+import { pickDefaultRoot, useCodeRoots } from "./panel/useCodeRoots";
+import { useGitStatus } from "./panel/useGitStatus";
+import { useCodeTabs } from "./panel/useCodeTabs";
+import { useCodeEditing } from "./panel/useCodeEditing";
+import { useCodeDiff } from "./panel/useCodeDiff";
+import { useCodeTree } from "./panel/useCodeTree";
+import { CodePanelTopBar } from "./panel/CodePanelTopBar";
+import { CodeEditorColumn } from "./panel/CodeEditorColumn";
+import { WIDE_PX, TREE_PX, PROJECT_SLUG, escapeRegExp } from "./panel/panelShared";
 
 export function CodePanel() {
   const g = useGinno();
@@ -169,17 +60,7 @@ export function CodePanel() {
     (key: string, values?: Record<string, string | number>): string;
     has(key: string): boolean;
   };
-  // 稳定引用：多个 useCallback（删除/揭示/外部打开）都会用到，单独成 memo
-  // 以便把它们按依赖补全；tr 每次 render 都是新函数时这里随之更新，行为不变。
-  const codeCmdNotice = useCallback(
-    (p: { code: string; detail: string }): string => {
-      const key = `notice.err.${p.code}`;
-      return tr.has(key)
-        ? tr(key, { detail: p.detail })
-        : tr("notice.err.unknown", { detail: p.detail || p.code });
-    },
-    [tr],
-  );
+  // codeCmdNotice（动态错误码 i18n 门控）→ panel/useCodeTree。
   const sessionId = g.activeSessionId;
   const panelWidth = g.rightPanelWidth;
   const wide = panelWidth >= WIDE_PX;
@@ -198,11 +79,70 @@ export function CodePanel() {
     applySessionPatch,
   } = g;
 
-  const [roots, setRoots] = useState<CodeRoot[]>([]);
-  const [rootsLoading, setRootsLoading] = useState(false);
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  const [readNonce, setReadNonce] = useState(0);
-  const [tabs, setTabs] = useState<EditorTab[]>([]);
+  // ---- roots domain (panel/useCodeRoots) ------------------------------------
+  // remote 守卫（displayRoots 过滤）留在本文件并被 remoteComposerGuards
+  // 字符串契约钉住，故 hook 只管加载/刷新/路径映射，displayRoots 在下方 memo。
+  const {
+    roots,
+    rootsLoading,
+    refreshNonce,
+    bumpRefresh,
+    splitRootPath,
+    absPathOf,
+    onAddFolder,
+    onMakeRootWritable,
+  } = useCodeRoots({ sessionId, sessions: g.sessions, applySessionPatch, t: tr });
+  const [notice, setNotice] = useState<string | null>(null);
+  // Panel-level overlays owned by the keyboard layer below (⌘P / ⇧⌘F).
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // ---- per-tab editing state (S2) → panel/useCodeTabs ------------------------
+  // `dirty`/`conflict`/`rev`/`savedNonce`/LRU 的语义注释随代码移入 useCodeTabs。
+  // inline-diff scheduler 桥：scheduler 归 useCodeDiff，closeTab 经此取消挂起 diff。
+  const inlineDiffCancelRef = useRef<(abs: string) => void>(() => {});
+  const cancelInlineDiffFor = useCallback(
+    (tab: { rootId: string; path: string }) => {
+      const abs = absPathOf(tab);
+      if (abs) inlineDiffCancelRef.current(abs);
+    },
+    [absPathOf],
+  );
+
+  const {
+    tabs,
+    activeKey,
+    activeTab,
+    tabMeta,
+    reads,
+    setReads,
+    jump,
+    setJump,
+    setReadNonce,
+    pendingClose,
+    showDiff,
+    setShowDiff,
+    inlineDiff,
+    setInlineDiff,
+    tabMetaRef,
+    tabsRef,
+    latestTextRef,
+    readsRef,
+    patchMeta,
+    dropRead,
+    openFile,
+    revealDir,
+    closeTab,
+    selectTab,
+  } = useCodeTabs({
+    sessionId,
+    t: tr,
+    setNotice,
+    cancelInlineDiff: cancelInlineDiffFor,
+    codeOpenRequest,
+    clearCodeOpenRequest,
+    setCodeRootId,
+  });
   // BROWSING = nothing open. The panel's job then is to show the tree: an empty
   // editor beside a collapsed tree is a dead pane, and since the default panel
   // (380px) is below WIDE_PX the auto-sizing below would otherwise open "file"
@@ -210,112 +150,11 @@ export function CodePanel() {
   // Declared here, not with `effectiveMode`, because it reads `tabs`.
   const browsing = tabs.length === 0;
   const treeVisible = browsing || (effectiveMode === "side" && g.codeTreeOpen);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [reads, setReads] = useState<Record<string, ReadState>>({});
-  const [jump, setJump] = useState<Jump | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  // Panel-level overlays owned by the keyboard layer below (⌘P / ⇧⌘F).
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const activeRead = activeKey ? reads[activeKey] : undefined;
+  const activeMeta = activeKey ? tabMeta[activeKey] : undefined;
 
-  // ---- per-tab editing state (S2) -------------------------------------------
-  // `dirty` is reported by Monaco's alternative-version compare — never a text
-  // diff, which would call an undo-to-original "still dirty" (design §4.5).
-  // `conflict` holds a REFUSED save plus everything needed to resolve it, so
-  // neither button needs another round trip.
-  // `rev` is the model revision. It is bumped ONLY when the panel deliberately
-  // replaces the buffer (reload), because remounting the editor drops the
-  // cursor and the undo history — so a successful save must NOT bump it (the
-  // buffer already equals what is on disk).
-  const [tabMeta, setTabMeta] = useState<Record<string, TabMeta>>({});
-  const [pendingClose, setPendingClose] = useState<string | null>(null);
-  const [showDiff, setShowDiff] = useState(false);
-  // Inline diff (code-panel-diff-design.md §B): a CLEAN tab the agent rewrote
-  // shows base-vs-current through InlineDiffOverlay until the user exits.
-  // Keyed to the tab key, so switching tabs away (and back) keeps the state.
-  const [inlineDiff, setInlineDiff] = useState<{
-    key: string;
-    base: string;
-    current: string;
-    baseVersion: string;
-    currentVersion: string;
-    degraded: boolean;
-  } | null>(null);
-  const tabMetaRef = useRef<Record<string, TabMeta>>({});
-  useEffect(() => {
-    tabMetaRef.current = tabMeta;
-  }, [tabMeta]);
-  // Mirror of the open-tab list: eviction inside openFile needs the current
-  // list synchronously, and reading state there would be stale.
-  const tabsRef = useRef<EditorTab[]>([]);
-  useEffect(() => {
-    tabsRef.current = tabs;
-  }, [tabs]);
-  // The live buffer per tab, mirroring what Monaco has. A ref, not state: it
-  // changes on every keystroke and nothing renders from it. 「强制覆盖」 reads it
-  // so a conflict resolved AFTER further typing writes the current text instead
-  // of the stale text from the failed attempt (silent data loss otherwise).
-  const latestTextRef = useRef<Record<string, string>>({});
-  // Most-recently-used LAST. Kept apart from `tabs` so selecting a tab never
-  // reorders the tab strip under the user's cursor.
-  const recencyRef = useRef<string[]>([]);
-
-  const patchMeta = useCallback((key: string, patch: (m: TabMeta) => Partial<TabMeta>) => {
-    setTabMeta((prev) => {
-      const cur = prev[key] ?? EMPTY_TAB_META;
-      return { ...prev, [key]: { ...cur, ...patch(cur) } };
-    });
-  }, []);
-
-  const dropRead = useCallback((key: string) => {
-    setReads((prev) => {
-      if (!(key in prev)) return prev;
-      const copy = { ...prev };
-      delete copy[key];
-      return copy;
-    });
-  }, []);
-
-  // ---- absolute ↔ rooted path mapping (S3) ----------------------------------
-  // The socket and the git endpoint speak ABSOLUTE paths; the panel addresses
-  // files as (rootId, root-relative path). Longest prefix wins, so a root
-  // nested inside another resolves to the inner one rather than the outer.
-  const splitRootPath = useCallback(
-    (abs: string): { rootId: string; rel: string } | null => {
-      let best: { rootId: string; rel: string; len: number } | null = null;
-      for (const r of roots) {
-        const base = r.path.endsWith("/") ? r.path.slice(0, -1) : r.path;
-        if (!base) continue;
-        if (abs === base || abs.startsWith(base + "/")) {
-          if (!best || base.length > best.len) {
-            best = { rootId: r.id, rel: abs.slice(base.length + 1), len: base.length };
-          }
-        }
-      }
-      return best ? { rootId: best.rootId, rel: best.rel } : null;
-    },
-    [roots],
-  );
-
-  const absPathOf = useCallback(
-    (t: EditorTab): string | null => {
-      const base = roots.find((r) => r.id === t.rootId)?.path;
-      if (!base) return null;
-      return t.path ? `${base}/${t.path}` : base;
-    },
-    [roots],
-  );
-
-  // Once the user picks a layout by hand, auto-sizing must not override it.
-  const modeTouchedRef = useRef(false);
-  // Guards a read request per tab key (StrictMode double-invokes effects).
-  const inflightRef = useRef<Set<string>>(new Set());
-  // Reads mirror for the fetch effect without making it depend on the state.
-  const readsRef = useRef(reads);
-  readsRef.current = reads;
-  const jumpNonceRef = useRef(0);
-
-  // ---- 远端会话守卫（审计 C2）------------------------------------------------
+  // ---- absolute ↔ rooted path mapping (S3)：纯逻辑在 useCodeRoots ----------
+  // （最长前缀胜。）远端会话守卫（审计 C2）留在本文件：
   // remote 会话的执行与文件落盘都在对端节点：本地「会话工作区」根恒空，
   // 列出来只会读作「文件丢了」。处理 = 说明条（主 return 顶部）解释归属 +
   // 根切换器隐藏 session 根（本地挂载的文件夹是真实本地目录，照常可浏览）。
@@ -349,81 +188,48 @@ export function CodePanel() {
     },
     [activeRoot],
   );
-  const activeTab = useMemo(
-    // 回调参数不用 `t` 命名，避免遮蔽外层 i18n 翻译函数（i18n-design.md §10.4 已知坑）。
-    () => tabs.find((tab) => codeTabKey(tab) === activeKey) ?? null,
-    [tabs, activeKey],
-  );
-  const activeRead = activeKey ? reads[activeKey] : undefined;
-  const activeMeta = activeKey ? tabMeta[activeKey] : undefined;
-  // HTML 预览模式：meta.preview 未设置 = 自动（html/htm 直接出渲染页,其余源码），
-  // 切换按钮写入显式值。渲染页读盘上字节,脏缓冲不参与（切回源码编辑,存盘后
-  // version 变化会自动刷新 iframe）。
-  const htmlPreview =
-    !!activeTab && isRenderableHtml(activeTab.path) && (activeMeta?.preview ?? true);
-  const toggleHtmlPreview = useCallback(() => {
-    if (activeKey) patchMeta(activeKey, (m) => ({ preview: !(m.preview ?? true) }));
-  }, [activeKey, patchMeta]);
 
+  // ---- 保存/冲突/重载（S2）→ panel/useCodeEditing -----------------------------
+  const {
+    htmlPreview,
+    toggleHtmlPreview,
+    acceptSave,
+    saveTab,
+    reloadTab,
+    manualReload,
+    openDiff,
+    forceOverwrite,
+  } = useCodeEditing({
+    sessionId,
+    t: tr,
+    setNotice,
+    activeKey,
+    activeTab,
+    activeMeta,
+    tabsRef,
+    tabMetaRef,
+    readsRef,
+    patchMeta,
+    dropRead,
+    latestTextRef,
+    setReads,
+    setReadNonce,
+    setShowDiff,
+    setInlineDiff,
+  });
 
-
-  // ---- git status for the active root (S3) ----------------------------------
-  const [gitStatus, setGitStatus] = useState<Record<string, string> | null>(null);
-  useEffect(() => {
-    if (!sessionId || !effectiveRootId) {
-      setGitStatus(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const st = await getCodeGit(PROJECT_SLUG, sessionId, effectiveRootId);
-        if (!cancelled) setGitStatus(st.entries);
-      } catch {
-        // Not a repo / no git / sidecar hiccup: no decorations, never an error
-        // (S3 brief §1-3). Refetched on a manual refresh and on any agent
-        // change, which is what stands in for a server-side cache.
-        if (!cancelled) setGitStatus(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, effectiveRootId, refreshNonce, g.codeLastChange]);
-
-  /** Agent marks for the ACTIVE root, keyed root-relative so a tree row can
-   *  look itself up without knowing about roots. */
-  const agentTouched = useMemo(() => {
-    if (!effectiveRootId) return null;
-    const out: Record<string, "write" | "edit"> = {};
-    for (const [abs, info] of Object.entries(g.codeTouched)) {
-      const m = splitRootPath(abs);
-      if (m && m.rootId === effectiveRootId && m.rel) out[m.rel] = info.op;
-    }
-    return out;
-  }, [g.codeTouched, effectiveRootId, splitRootPath]);
+  // ---- git status for the active root (S3) → panel/useGitStatus ------------
+  const { gitStatus, agentTouched } = useGitStatus({
+    sessionId,
+    rootId: effectiveRootId,
+    refreshNonce,
+    lastChange: g.codeLastChange,
+    codeTouched: g.codeTouched,
+    splitRootPath,
+  });
 
   // ---- roots ----------------------------------------------------------------
-  const loadRoots = useCallback(async () => {
-    if (!sessionId) {
-      setRoots([]);
-      return;
-    }
-    setRootsLoading(true);
-    try {
-      setRoots(await listCodeRoots(PROJECT_SLUG, sessionId));
-    } catch {
-      setRoots([]);
-    } finally {
-      setRootsLoading(false);
-    }
-  }, [sessionId]);
-
-  useEffect(() => {
-    void loadRoots();
-  }, [loadRoots, refreshNonce]);
-
-  // Pick a root once roots arrive (primary folder first is the server's order).
+  // 加载/刷新在 panel/useCodeRoots；默认根选择留在本文件（依赖 displayRoots）。
   useEffect(() => {
     if (codeRootId || !displayRoots.length) return;
     // Default to the SESSION WORKSPACE rather than `roots[0]`: the server orders
@@ -432,481 +238,34 @@ export function CodePanel() {
     // output lands, so it is never an empty pane. A project folder is one click
     // away in the switcher. (Remote sessions: the workspace root is filtered
     // out of `displayRoots` above, so this falls through to the first mount.)
-    const preferred = displayRoots.find((r) => r.id === "session") ?? displayRoots[0];
-    setCodeRootId(preferred.id);
+    const preferred = pickDefaultRoot(displayRoots);
+    if (preferred) setCodeRootId(preferred.id);
   }, [codeRootId, displayRoots, setCodeRootId]);
 
-  // ---- layout auto-sizing ---------------------------------------------------
-  useEffect(() => {
-    if (modeTouchedRef.current) return;
-    const next: "file" | "side" = wide ? "side" : "file";
-    setCodePanelMode(next);
-    setCodeTreeOpen(wide);
-  }, [wide, setCodePanelMode, setCodeTreeOpen]);
+  // ---- 以下域已拆至 panel/*：layout 自动切换与 ⌘B（useCodeTree）、打开/关闭/
+  // 选择 tab（useCodeTabs）、保存/冲突/重载（useCodeEditing）。 ----
+  const { exitInlineDiff, openDiffForPath } = useCodeDiff({
+    sessionId,
+    t: tr,
+    setNotice,
+    lastChange: g.codeLastChange,
+    roots,
+    absPathOf,
+    tabsRef,
+    tabMetaRef,
+    latestTextRef,
+    patchMeta,
+    setReads,
+    setInlineDiff,
+    openFile,
+    cancelRef: inlineDiffCancelRef,
+    reloadTab,
+  });
 
-  // ---- opening files --------------------------------------------------------
-  const openFile = useCallback(
-    (rootId: string, path: string, line?: number | null) => {
-      if (!rootId || !path) return;
-      const key = codeTabKey({ rootId, path });
-      recencyRef.current = [...recencyRef.current.filter((k) => k !== key), key];
-
-      // LRU eviction, computed OUTSIDE the state updater: dropRead is a second
-      // setState, and side effects inside an updater double-fire under
-      // StrictMode (see the artifactsListRef comment in store.tsx).
-      const openKeys = tabsRef.current.map(codeTabKey);
-      if (!openKeys.includes(key) && openKeys.length >= MAX_TABS) {
-        const victim = recencyRef.current.find(
-          (k) =>
-            k !== key &&
-            k !== activeKey &&
-            openKeys.includes(k) &&
-            !tabMetaRef.current[k]?.dirty,
-        );
-        if (victim) {
-          setTabs((prev) => prev.filter((tab) => codeTabKey(tab) !== victim));
-          recencyRef.current = recencyRef.current.filter((k) => k !== victim);
-          dropRead(victim);
-        }
-        // No victim means every tab is dirty: grow past the cap rather than
-        // throw away someone's unsaved edits (brief §1-6).
-      }
-
-      setTabs((prev) =>
-        prev.some((tab) => codeTabKey(tab) === key) ? prev : [...prev, { rootId, path }],
-      );
-      setActiveKey(key);
-      jumpNonceRef.current += 1;
-      setJump({ rootId, path, line: line ?? null, nonce: jumpNonceRef.current });
-      setNotice(null);
-    },
-    [activeKey, dropRead],
-  );
-
-  const revealDir = useCallback((rootId: string, path: string) => {
-    jumpNonceRef.current += 1;
-    setJump({ rootId, path, line: null, nonce: jumpNonceRef.current });
-  }, []);
-
-  const closeTab = useCallback(
-    (key: string) => {
-      // Closing a dirty tab throws edits away, so the first click only warns —
-      // the tab's own tooltip says the same thing up front (EditorTabs). Two
-      // clicks rather than a modal: an OS dialog mid-edit is worse.
-      if (tabMetaRef.current[key]?.dirty && pendingClose !== key) {
-        setPendingClose(key);
-        setNotice(t("notice.unsavedClose"));
-        return;
-      }
-      setPendingClose(null);
-      const idx = tabs.findIndex((tab) => codeTabKey(tab) === key);
-      const next = tabs.filter((tab) => codeTabKey(tab) !== key);
-      setTabs(next);
-      if (activeKey === key) {
-        const fallback = next[Math.min(idx, next.length - 1)];
-        setActiveKey(fallback ? codeTabKey(fallback) : null);
-        setJump(null);
-      }
-      dropRead(key);
-      setTabMeta((prev) => {
-        if (!(key in prev)) return prev;
-        const copy = { ...prev };
-        delete copy[key];
-        return copy;
-      });
-      recencyRef.current = recencyRef.current.filter((k) => k !== key);
-      delete latestTextRef.current[key];
-      setShowDiff(false);
-      // Closing the tab exits diff mode (design §4.1) and drops any pending
-      // debounced diff for the file.
-      setInlineDiff((cur) => (cur?.key === key ? null : cur));
-      const closedTab = tabs.find((tb) => codeTabKey(tb) === key);
-      const closedAbs = closedTab ? absPathOf(closedTab) : null;
-      if (closedAbs) inlineDiffSchedulerRef.current?.cancel(closedAbs);
-    },
-    [tabs, activeKey, pendingClose, dropRead, absPathOf, t],
-  );
-
-  const selectTab = useCallback((key: string) => {
-    setActiveKey(key);
-    // A manual tab switch must not re-run a reveal aimed at another file.
-    setJump(null);
-  }, []);
-
-  // ---- saving (S2) ----------------------------------------------------------
-  /**
-   * Shared tail of a successful save: adopt the new version as the baseline.
-   *
-   * Bumps `savedNonce`, NOT `rev`: the buffer already equals what is on disk,
-   * so rebuilding the model would only cost the cursor and the undo history.
-   */
-  const acceptSave = useCallback(
-    (key: string, version: string) => {
-      setReads((prev) => {
-        const cur = prev[key];
-        if (!cur?.data) return prev;
-        return { ...prev, [key]: { ...cur, data: { ...cur.data, version } } };
-      });
-      patchMeta(key, (m) => ({
-        ...m,
-        dirty: false,
-        conflict: null,
-        savedNonce: m.savedNonce + 1,
-      }));
-      setShowDiff(false);
-      setInlineDiff((cur) => (cur?.key === key ? null : cur));
-    },
-    [patchMeta],
-  );
-
-  /** ⌘S, surfaced by MonacoEditor. */
-  const saveTab = useCallback(
-    async (key: string, text: string) => {
-      const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
-      const read = readsRef.current[key];
-      if (!sessionId || !tab || read?.status !== "ok" || !read.data) return;
-      // Same gate the editor used to be read-only: an ro mount, a binary, an
-      // image or an over-cap file has nothing saveable.
-      if (!read.data.editable) return;
-      try {
-        const version = await writeCodeFile(PROJECT_SLUG, sessionId, tab.rootId, tab.path, {
-          content: text,
-          baseVersion: read.data.version,
-          // The encoding the file was READ with — writing a GBK file back as
-          // UTF-8 would corrupt it silently (brief §1-3).
-          encoding: read.data.encoding,
-        });
-        acceptSave(key, version);
-        setNotice(t("notice.saved", { path: tab.path }));
-      } catch (err) {
-        if (err instanceof CodeConflictError) {
-          // Announce, never overwrite (design §6). Fetch the disk copy now so
-          // 「看差异」 already has both sides when the user clicks it.
-          let diskText = "";
-          try {
-            const disk = await readCodeFile(PROJECT_SLUG, sessionId, tab.rootId, tab.path);
-            diskText = disk.text ?? "";
-          } catch {
-            /* leave it empty — the bar still explains what happened */
-          }
-          patchMeta(key, (m) => ({
-            ...m,
-            conflict: { version: err.version, diskText, mine: text },
-          }));
-        } else {
-          setNotice(err instanceof CodeApiError ? err.message || err.code : t("notice.saveFailed"));
-        }
-      }
-    },
-    [sessionId, acceptSave, patchMeta, t],
-  );
-
-  /**
-   * 「重新加载」 — drop the buffer and take what is on disk.
-   *
-   * `rev` is bumped so the editor REBUILDS its model. That is load-bearing:
-   * MonacoEditor only recreates a model when the model URI (rootId + path)
-   * changes, so without the bump the panel would refetch and still show the
-   * stale buffer.
-   */
-  const reloadTab = useCallback(
-    (key: string, notice?: string) => {
-      dropRead(key);
-      patchMeta(key, (m) => ({ ...m, dirty: false, conflict: null, rev: m.rev + 1 }));
-      setShowDiff(false);
-      setInlineDiff((cur) => (cur?.key === key ? null : cur));
-      setReadNonce((n) => n + 1);
-      setNotice(notice ?? t("notice.reloaded"));
-    },
-    [dropRead, patchMeta, t],
-  );
-
-  // 手动刷新入口的防呆（issue #8）：dirty/conflict tab 直接 reload 会静默
-  // 丢弃未保存修改（或未决冲突），先 window.confirm（与诊断修复同一确认惯例），
-  // 取消则不动缓冲区。自动重载路径（code.changed 跟随）不走这里，行为不变。
-  const manualReload = useCallback(
-    (key: string) => {
-      const m = tabMetaRef.current[key];
-      if (
-        reloadNeedsConfirm(m) &&
-        !window.confirm(t("notice.reloadDiscardConfirm"))
-      ) {
-        return;
-      }
-      reloadTab(key);
-    },
-    [reloadTab, t],
-  );
-
-  /**
-   * 「看差异」. A pushed change (agent wrote the file) carries only a version, so
-   * the disk copy may not be loaded yet — fetch it now rather than at conflict
-   * time, when the user asked for it.
-   */
-  const openDiff = useCallback(async () => {
-    const key = activeKey;
-    if (!key) return;
-    const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
-    const meta = tabMetaRef.current[key];
-    if (!tab || !meta?.conflict || !sessionId) return;
-    if (meta.conflict.diskText == null) {
-      // Refuse rather than open a MISLEADING diff: an empty "disk" side would
-      // read as "the file is empty" instead of "we could not read it".
-      let diskText: string;
-      try {
-        diskText = (await readCodeFile(PROJECT_SLUG, sessionId, tab.rootId, tab.path)).text ?? "";
-      } catch {
-        setNotice(t("notice.diffUnavailable"));
-        return;
-      }
-      patchMeta(key, (m) =>
-        m.conflict ? { ...m, conflict: { ...m.conflict, diskText } } : {},
-      );
-    }
-    setShowDiff(true);
-  }, [activeKey, sessionId, patchMeta, t]);
-
-  // ---- follow agent changes (S3) --------------------------------------------
-  // A pushed `code.changed` for an OPEN file: a CLEAN tab follows the file, a
-  // DIRTY one is announced and never overwritten (design §6). Because the event
-  // carries the post-write version, the dirty case reuses the S2 conflict bar
-  // verbatim rather than inventing a second UI (S3 brief §0).
-  const appliedCodeNonceRef = useRef(0);
-  useEffect(() => {
-    const last = g.codeLastChange;
-    if (!last || !sessionId) return;
-    // Process each event at most once. The effect also re-runs when `roots`
-    // resolve, and re-applying an old change would reload a tab for nothing.
-    if (last.nonce === appliedCodeNonceRef.current) return;
-    appliedCodeNonceRef.current = last.nonce;
-
-    const hit = tabsRef.current.find((tab) => absPathOf(tab) === last.path);
-    if (!hit) return;
-    const key = codeTabKey(hit);
-
-    if (tabMetaRef.current[key]?.dirty) {
-      // No version in the event means nothing to compare against — the save
-      // path will surface the conflict when the user presses ⌘S.
-      if (!last.version) return;
-      patchMeta(key, (m) => ({
-        ...m,
-        conflict: {
-          version: last.version,
-          diskText: m.conflict?.diskText ?? null,
-          mine: latestTextRef.current[key] ?? m.conflict?.mine ?? "",
-        },
-      }));
-      setNotice(t("notice.agentChangedDirty"));
-    } else {
-      // CLEAN tab → inline diff mode (code-panel-diff-design.md §B). The
-      // 500ms scheduler coalesces bursts; each fire fetches the session
-      // baseline diff and only THEN swaps the editor for the overlay. A file
-      // with no usable baseline (never agent-written / degraded / binary)
-      // falls back to the plain reload follow.
-      inlineDiffSchedulerRef.current?.schedule(last.path, last.version, { rootId: hit.rootId });
-    }
-  }, [g.codeLastChange, sessionId, absPathOf, patchMeta, t]);
-
-  // ---- inline diff (code-panel-diff-design.md §B) ---------------------------
-  // One scheduler per panel, created once; the handler lives in a ref so it
-  // always sees the current sessionId/roots without re-arming timers.
-  const inlineDiffSchedulerRef = useRef<InlineDiffScheduler<{ rootId: string }> | null>(null);
-  useEffect(() => {
-    inlineDiffSchedulerRef.current = new InlineDiffScheduler<{ rootId: string }>(500, (ch) =>
-      inlineDiffFireRef.current(ch),
-    );
-    return () => {
-      inlineDiffSchedulerRef.current?.dispose();
-      inlineDiffSchedulerRef.current = null;
-    };
-  }, []);
-
-  const exitInlineDiff = useCallback(() => {
-    setInlineDiff(null);
-  }, []);
-
-  const handleInlineDiffFire = useCallback(
-    async (ch: ScheduledChange<{ rootId: string }>) => {
-      if (!sessionId) return;
-      const tab = tabsRef.current.find((tb) => absPathOf(tb) === ch.path);
-      if (!tab) return;
-      const key = codeTabKey(tab);
-      // The user may have started typing inside the debounce window: a dirty
-      // tab never auto-enters diff (design §8), the conflict path owns it.
-      if (tabMetaRef.current[key]?.dirty) return;
-      try {
-        const d = await codeDiff(PROJECT_SLUG, sessionId, ch.data.rootId, tab.path);
-        if (!d.baselineExists || d.degraded || d.baseContent == null || d.currentContent == null) {
-          // No usable baseline (agent never wrote it this session / caps /
-          // binary): keep the old "reload and show a notice" follow.
-          reloadTab(key, t("notice.agentChangedReloaded"));
-          return;
-        }
-        // Adopt the current content as the tab's clean buffer BEFORE showing
-        // the overlay, so exiting the diff lands on a fresh editable editor
-        // (bumping `rev` makes Monaco rebuild its model with the new text).
-        const currentText = d.currentContent;
-        setReads((prev) => {
-          const cur = prev[key];
-          if (!cur?.data) return prev;
-          return {
-            ...prev,
-            [key]: {
-              ...cur,
-              data: { ...cur.data, text: currentText, version: d.currentVersion || cur.data.version },
-            },
-          };
-        });
-        patchMeta(key, (m) => ({ ...m, dirty: false, conflict: null, rev: m.rev + 1 }));
-        setInlineDiff({
-          key,
-          base: d.baseContent,
-          current: currentText,
-          baseVersion: d.baseVersion,
-          currentVersion: d.currentVersion,
-          degraded: d.degraded,
-        });
-      } catch {
-        reloadTab(key, t("notice.agentChangedReloaded"));
-      }
-    },
-    [sessionId, absPathOf, patchMeta, reloadTab, t],
-  );
-  const inlineDiffFireRef = useRef<(ch: ScheduledChange<{ rootId: string }>) => void>(() => {});
-  useEffect(() => {
-    inlineDiffFireRef.current = (ch) => void handleInlineDiffFire(ch);
-  }, [handleInlineDiffFire]);
-
-  /**
-   * ChangesPanel 联动（code-panel-diff-design.md §A）：点变更列表里的一行 →
-   * 打开该文件并进入 inline diff。复用 S3 的 500ms 调度器：openFile 先落地
-   * tab，500ms 后 handleInlineDiffFire 在 tabsRef 里能找到它并拉取基线 diff。
-   * 没有可用基线时该 handler 自行降级为 reload + 提示，无需此处的额外分支。
-   */
-  const openDiffForPath = useCallback(
-    (rootId: string, rel: string) => {
-      openFile(rootId, rel);
-      const base = roots.find((r) => r.id === rootId)?.path;
-      if (!base) return;
-      const abs = rel ? `${base}/${rel}` : base;
-      inlineDiffSchedulerRef.current?.schedule(abs, "0", { rootId });
-    },
-    [openFile, roots],
-  );
-
-  /**
-   * 「强制覆盖」 — re-send the buffer against the version the 409 reported.
-   *
-   * A SECOND conflict is possible (someone wrote again meanwhile). Report it
-   * and let the user choose again rather than looping.
-   */
-  const forceOverwrite = useCallback(
-    async (key: string) => {
-      const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
-      const meta = tabMetaRef.current[key];
-      const read = readsRef.current[key];
-      if (!sessionId || !tab || !meta?.conflict) return;
-      try {
-        // The LIVE buffer, not `conflict.mine`: the user may have kept typing
-        // since the refused save, and overwriting with the older text would
-        // discard those keystrokes without a word.
-        const content = latestTextRef.current[key] ?? meta.conflict.mine;
-        const version = await writeCodeFile(PROJECT_SLUG, sessionId, tab.rootId, tab.path, {
-          content,
-          baseVersion: meta.conflict.version,
-          encoding: read?.data?.encoding,
-        });
-        acceptSave(key, version);
-        setNotice(t("notice.overwrote", { path: tab.path }));
-      } catch (err) {
-        if (err instanceof CodeConflictError) {
-          patchMeta(key, (m) =>
-            m.conflict ? { ...m, conflict: { ...m.conflict, version: err.version } } : {},
-          );
-          setNotice(t("notice.conflictAgain"));
-        } else {
-          setNotice(t("notice.forceSaveFailed"));
-        }
-      }
-    },
-    [sessionId, acceptSave, patchMeta, t],
-  );
-
-  // Read the active file's contents on demand (cache per tab key).
-  useEffect(() => {
-    if (!sessionId || !activeTab) return;
-    const key = codeTabKey(activeTab);
-    if (inflightRef.current.has(key)) return;
-    const cur = readsRef.current[key];
-    if (cur && cur.status !== "error") return;
-    inflightRef.current.add(key);
-    let cancelled = false;
-    setReads((prev) => ({ ...prev, [key]: { status: "loading" } }));
-    void (async () => {
-      try {
-        const data = await readCodeFile(PROJECT_SLUG, sessionId, activeTab.rootId, activeTab.path);
-        if (!cancelled) setReads((prev) => ({ ...prev, [key]: { status: "ok", data } }));
-      } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof CodeApiError ? err.message || err.code : t("notice.readFailed");
-          setReads((prev) => ({ ...prev, [key]: { status: "error", error: message } }));
-        }
-      } finally {
-        inflightRef.current.delete(key);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, activeTab, readNonce, t]);
-
-  // Consume a jump-from-chat request (design §3.4 统一入口). An absolute path
-  // means the file is outside every workspace root — surface the §3.2 guidance
-  // instead of pretending to open it.
-  useEffect(() => {
-    const req = codeOpenRequest;
-    if (!req) return;
-    if (req.path.startsWith("/")) {
-      setNotice(t("notice.outsideRoot"));
-    } else {
-      setCodeRootId(req.rootId);
-      openFile(req.rootId, req.path, req.line ?? null);
-    }
-    clearCodeOpenRequest();
-  }, [codeOpenRequest, openFile, setCodeRootId, clearCodeOpenRequest, t]);
-
-  // ---- manual controls ------------------------------------------------------
-  const toggleTree = useCallback(() => {
-    const opening = !g.codeTreeOpen;
-    setCodeTreeOpen(opening);
-    // On a wide panel, the manual way into "side" is opening the tree.
-    if (opening && wide && effectiveMode === "file") {
-      modeTouchedRef.current = true;
-      setCodePanelMode("side");
-    }
-  }, [g.codeTreeOpen, wide, effectiveMode, setCodeTreeOpen, setCodePanelMode]);
-
-  const toggleMode = useCallback(() => {
-    modeTouchedRef.current = true;
-    const next: "file" | "side" = effectiveMode === "side" ? "file" : "side";
-    setCodePanelMode(next);
-    setCodeTreeOpen(next === "side");
-  }, [effectiveMode, setCodePanelMode, setCodeTreeOpen]);
-
-  // ⌘B toggles the tree for as long as the code tab is mounted (design §3.4).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "b" || e.key === "B")) {
-        e.preventDefault();
-        toggleTree();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [toggleTree]);
+  // 「强制覆盖」与读缓存/jump-from-chat 消费分别在 useCodeEditing / useCodeTabs。
 
   const onRefresh = useCallback(() => {
-    setRefreshNonce((n) => n + 1);
+    bumpRefresh();
     if (activeKey) {
       setReads((prev) => {
         if (!(activeKey in prev)) return prev;
@@ -916,165 +275,43 @@ export function CodePanel() {
       });
       setReadNonce((n) => n + 1);
     }
-  }, [activeKey]);
+  }, [activeKey, bumpRefresh, setReads, setReadNonce]);
 
   const selectRoot = useCallback(
     (id: string) => {
       setCodeRootId(id);
       setJump(null);
     },
-    [setCodeRootId],
+    [setCodeRootId, setJump],
   );
 
-  // ---- S4 file operations: the panel owns every request ----------------------
-  // FileTree only renders UI; each callback resolves to a Chinese error message
-  // (shown inline by the tree) or `null` on success. The tree re-lists the
-  // affected directory itself after a create / rename / move, so those paths
-  // must NOT bump `refreshNonce` — that would reset (collapse) the whole tree.
-
-  /** Create directly under `dir` (`""` = root). `name` is one component. */
-  const onTreeCreate = useCallback(
-    async (dir: string, name: string, kind: "file" | "dir"): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
-      const path = dir ? `${dir}/${name}` : name;
-      try {
-        await codeMkdir(PROJECT_SLUG, sessionId, effectiveRootId, path, kind);
-        return null;
-      } catch (err) {
-        return fsError(err, t("fs.createFailed"));
-      }
-    },
-    [sessionId, effectiveRootId, t],
-  );
-
-  /** Rename in place. FileTree hands over a BARE new name; the endpoint wants
-   *  the full root-relative `to`, so re-attach the source's parent here. */
-  const onTreeRename = useCallback(
-    async (path: string, name: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
-      const cut = path.lastIndexOf("/");
-      const to = cut < 0 ? name : `${path.slice(0, cut)}/${name}`;
-      try {
-        await codeRename(PROJECT_SLUG, sessionId, effectiveRootId, path, to);
-        return null;
-      } catch (err) {
-        return fsError(err, t("fs.renameFailed"));
-      }
-    },
-    [sessionId, effectiveRootId, t],
-  );
-
-  /** Drag & drop move. `to` is already the full root-relative destination. */
-  const onTreeMove = useCallback(
-    async (from: string, to: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
-      try {
-        await codeMove(PROJECT_SLUG, sessionId, effectiveRootId, from, to);
-        return null;
-      } catch (err) {
-        return fsError(err, t("fs.moveFailed"));
-      }
-    },
-    [sessionId, effectiveRootId, t],
-  );
-
-  /** Delete one entry.
-   *
-   *  Order is load-bearing. First the SERVER fence (`check_only`) — it is the
-   *  only component that knows about mounts, and `mount_access` is
-   *  most-specific-match, so an `ro` mount nested inside a writable root looks
-   *  writable from the root alone. The Rust `code_trash` command below only
-   *  re-checks path containment and CANNOT see that; a refusal here must stop
-   *  the flow outright (never fall through to the trash). Then, on desktop, the
-   *  OS trash via Tauri; in the browser, the server's `.trash-*` fallback. */
-  const onTreeDelete = useCallback(
-    async (path: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId || !activeRoot) return t("panel.noWorkspace");
-      let count: number;
-      try {
-        ({ count } = await codeDelete(PROJECT_SLUG, sessionId, effectiveRootId, path, {
-          checkOnly: true,
-        }));
-      } catch (err) {
-        return fsError(err, t("fs.deleteFailed")); // fence refused — do NOT continue
-      }
-      const abs = absInActiveRoot(path);
-      try {
-        if (isDesktop()) {
-          if (!abs) return t("panel.noWorkspace");
-          await invoke("code_trash", { root: activeRoot.path, path: abs });
-        } else {
-          await codeDelete(PROJECT_SLUG, sessionId, effectiveRootId, path, {
-            confirm: true,
-            confirmCount: count,
-          });
-        }
-      } catch (err) {
-        const coded = codeCmdErrParts(err);
-        return coded ? codeCmdNotice(coded) : fsError(err, t("fs.deleteFailed"));
-      }
-      setRefreshNonce((n) => n + 1);
-      return null;
-    },
-    [sessionId, effectiveRootId, activeRoot, absInActiveRoot, t, codeCmdNotice],
-  );
-
-  const onCopyPath = useCallback(
-    (path: string, absolute: boolean) => {
-      const text = absolute ? absInActiveRoot(path) ?? path : path;
-      void navigator.clipboard
-        ?.writeText(text)
-        .then(() => setNotice(t("notice.copied", { path: text })))
-        .catch(() => setNotice(t("notice.copyFailed")));
-    },
-    [absInActiveRoot, t],
-  );
-
-  // 拖树行到输入框：一律插 root-relative 路径（2026-10-12 定稿，撤销此前
-  // 「cwd 基准根之外用绝对路径」的折算——agent 知道各挂载根，树内相对路径
-  // 就够了；根目录一级文件的裸文件名是相对路径的预期形态）。
-  const onDragToComposer = useCallback((rel: string) => g.insertToComposer(rel), [g]);
-
-  // Reveal / open-external are Tauri-only; invoking them in a plain browser
-  // throws, so gate on `isDesktop()` and pass ABSOLUTE paths (the shell
-  // re-checks containment against the root it is given).
-  const onTreeReveal = useCallback(
-    (path: string) => {
-      if (!isDesktop() || !activeRoot) return;
-      const abs = absInActiveRoot(path);
-      if (!abs) return;
-      invoke("code_reveal", { root: activeRoot.path, path: abs }).catch((err) => {
-        const coded = codeCmdErrParts(err);
-        setNotice(
-          coded
-            ? codeCmdNotice(coded)
-            : typeof err === "string"
-              ? err
-              : t("notice.revealFailed"),
-        );
-      });
-    },
-    [activeRoot, absInActiveRoot, t, codeCmdNotice],
-  );
-
-  const onTreeOpenExternal = useCallback(
-    (path: string) => {
-      if (!isDesktop() || !activeRoot) return;
-      const abs = absInActiveRoot(path);
-      if (!abs) return;
-      invoke("code_open_external", { root: activeRoot.path, path: abs }).catch((err) => {
-        const coded = codeCmdErrParts(err);
-        setNotice(
-          coded
-            ? codeCmdNotice(coded)
-            : typeof err === "string"
-              ? err
-              : t("notice.openExternalFailed"),
-        );
-      });
-    },
-    [activeRoot, absInActiveRoot, t, codeCmdNotice],
-  );
+  // ---- S4 文件操作 → panel/useCodeTree（create/rename/move/delete/copy/reveal/external/drag）----
+  const {
+    toggleTree,
+    toggleMode,
+    onTreeCreate,
+    onTreeRename,
+    onTreeMove,
+    onTreeDelete,
+    onCopyPath,
+    onDragToComposer,
+    onTreeReveal,
+    onTreeOpenExternal,
+  } = useCodeTree({
+    sessionId,
+    effectiveRootId,
+    activeRoot,
+    absInActiveRoot,
+    wide,
+    effectiveMode,
+    codeTreeOpen: g.codeTreeOpen,
+    setCodeTreeOpen,
+    setCodePanelMode,
+    insertToComposer: g.insertToComposer,
+    bumpRefresh,
+    tr,
+    setNotice,
+  });
 
   // ---- search injection (⌘P / ⇧⌘F) ------------------------------------------
   const search: CodeSearchFn = useCallback(
@@ -1099,48 +336,7 @@ export function CodePanel() {
   );
 
   // ---- RootBar: register/mount a folder, flip an ro mount to rw -------------
-  const onAddFolder = useCallback(
-    async (path: string): Promise<string | null> => {
-      if (!sessionId) return t("panel.noSession");
-      try {
-        const created = await createFolder({ path, access: "rw", load_rules: true });
-        if (!created.ok || !created.folder) return created.error || t("fs.mountFailed");
-        const folderId = created.folder.id;
-        const meta = g.sessions.find((s) => s.id === sessionId);
-        const ids = meta?.context_folders ?? [];
-        const nextIds = ids.includes(folderId) ? [...ids] : [...ids, folderId];
-        // Keep the session's existing primary (may be null): adding a mount must
-        // NOT move the agent's relative-path base — that is a separate action.
-        const primary = meta?.primary_folder ?? null;
-        const r = await putSessionContext(sessionId, {
-          folder_ids: nextIds,
-          primary_id: primary,
-        });
-        if (!r.ok) return r.error || t("fs.mountFailed");
-        // Keep the store's session in step so the chip and a later add see it.
-        applySessionPatch(sessionId, {
-          context_folders: nextIds,
-          primary_folder: primary,
-        });
-        setRefreshNonce((n) => n + 1); // the new root must appear
-        return null;
-      } catch (err) {
-        return fsError(err, t("fs.mountFailed"));
-      }
-    },
-    [sessionId, g.sessions, applySessionPatch, t],
-  );
-
-  const onMakeRootWritable = useCallback(async (rootId: string): Promise<string | null> => {
-    try {
-      const r = await updateFolder(rootId, { access: "rw" });
-      if (!r.ok) return r.error || t("fs.switchFailed");
-      setRefreshNonce((n) => n + 1); // re-list roots so the badge flips
-      return null;
-    } catch (err) {
-      return fsError(err, t("fs.switchFailed"));
-    }
-  }, [t]);
+  // 回调本体在 panel/useCodeRoots（onAddFolder / onMakeRootWritable）。
 
   // ---- keyboard: ⌘P quick-open, ⇧⌘F search, Esc closes the open layer -------
   // (⌘B for the tree is bound separately above — left untouched.)
@@ -1259,64 +455,22 @@ export function CodePanel() {
           <span>{t("panel.remoteNote", { name: remotePeerDisplayName(activeSessionMeta) })}</span>
         </div>
       )}
-      {/* Top bar: breadcrumb + tree/layout toggles */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1">
-        {treeVisible ? (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-faint">{t("panel.workspace")}</span>
-        ) : (
-          <Breadcrumb crumbs={crumbs} onJump={jumpToDir} />
-        )}
-        {/* While browsing there is nothing to toggle: the tree IS the panel. */}
-        {browsing ? null : (
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            {/* HTML 页面的 预览/源码 切换（2026-10-21）：渲染页走沙箱 iframe
-                (HtmlPreview)，源码走 Monaco。只在当前 tab 是 html/htm 时出现。 */}
-            {activeTab && isRenderableHtml(activeTab.path) ? (
-              <>
-                <ToolButton
-                  title={t("preview.viewRendered")}
-                  active={htmlPreview}
-                  onClick={() => {
-                    if (!htmlPreview) toggleHtmlPreview();
-                  }}
-                >
-                  <Eye className="h-3.5 w-3.5" />
-                </ToolButton>
-                <ToolButton
-                  title={t("preview.viewSource")}
-                  active={!htmlPreview}
-                  onClick={() => {
-                    if (htmlPreview) toggleHtmlPreview();
-                  }}
-                >
-                  <FileCode2 className="h-3.5 w-3.5" />
-                </ToolButton>
-              </>
-            ) : null}
-            {/* 手动刷新当前文件（2026-10-13）：bash/脚本改文件不产生
-                code.changed（只有文件工具有结果标记），S3 自动跟随收不到
-                信号——显式重载兜底。脏/冲突 tab 先 confirm（issue #8）：
-                确认丢弃才 reload，取消则缓冲区原样保留。 */}
-            <ToolButton
-              title={t("panel.reloadFile")}
-              onClick={() => activeKey && manualReload(activeKey)}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </ToolButton>
-            <ToolButton title={t("panel.treeToggle")} active={g.codeTreeOpen} onClick={toggleTree}>
-              <FolderTree className="h-3.5 w-3.5" />
-            </ToolButton>
-            {wide && (
-              <ToolButton
-                title={effectiveMode === "side" ? t("panel.layoutFile") : t("panel.layoutSide")}
-                onClick={toggleMode}
-              >
-                <Columns2 className="h-3.5 w-3.5" />
-              </ToolButton>
-            )}
-          </div>
-        )}
-      </div>
+      {/* Top bar: breadcrumb + tree/layout toggles → panel/CodePanelTopBar */}
+      <CodePanelTopBar
+        browsing={browsing}
+        treeVisible={treeVisible}
+        crumbs={crumbs}
+        onJumpDir={jumpToDir}
+        htmlTab={!!activeTab && isRenderableHtml(activeTab.path)}
+        htmlPreview={htmlPreview}
+        onToggleHtmlPreview={toggleHtmlPreview}
+        onReload={() => activeKey && manualReload(activeKey)}
+        codeTreeOpen={g.codeTreeOpen}
+        onToggleTree={toggleTree}
+        wide={wide}
+        sideActive={effectiveMode === "side"}
+        onToggleMode={toggleMode}
+      />
 
       {notice ? (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-line bg-card px-2.5 py-1 text-[11px] text-amber">
@@ -1344,7 +498,7 @@ export function CodePanel() {
             show it would only be an empty hint, and on the default 380px panel
             that hint plus a collapsed tree IS the whole tab. */}
         <div className={cn("min-h-0 flex-1 flex-col", browsing ? "hidden" : "flex")}>
-          <EditorTabs
+          <CodeEditorColumn
             tabs={tabs.map((tab) => {
               const m = tabMeta[codeTabKey(tab)];
               // Agent M/A mark from the session change map (§5): the abs-path
@@ -1357,151 +511,33 @@ export function CodePanel() {
             activeKey={activeKey}
             onSelect={selectTab}
             onClose={closeTab}
+            conflict={activeMeta?.conflict ?? null}
+            showDiff={showDiff}
+            onToggleDiff={() => (showDiff ? setShowDiff(false) : void openDiff())}
+            onReload={() => activeKey && manualReload(activeKey)}
+            onForceOverwrite={() => activeKey && void forceOverwrite(activeKey)}
+            sessionId={sessionId ?? ""}
+            activeTab={activeTab}
+            activeRead={activeRead}
+            activeMeta={activeMeta}
+            jump={jump}
+            inlineDiff={inlineDiff}
+            htmlPreview={htmlPreview}
+            onExitInlineDiff={exitInlineDiff}
+            onDirtyChange={(key, dirty) => {
+              // Monaco compares alternative version ids, so an undo back to
+              // the saved text reports clean again (design §4.5).
+              patchMeta(key, (m) => (m.dirty === dirty ? {} : { dirty }));
+              // The user started editing → leave diff mode (design §4.1).
+              if (dirty) setInlineDiff((cur) => (cur?.key === key ? null : cur));
+            }}
+            onSave={(key, text) => void saveTab(key, text)}
+            onChangeText={(key, text) => {
+              latestTextRef.current[key] = text;
+            }}
           />
-
-          {/* Conflict bar (S2). A refused save is ANNOUNCED and resolved by a
-              human — the panel never overwrites the disk copy on its own
-              (design §6 "公告而不覆盖"). */}
-          {activeMeta?.conflict ? (
-            <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-base px-3 py-1.5 text-[11px]">
-              <AlertTriangle size={13} className="shrink-0 text-yellow" />
-              <span className="text-txt">{t("conflict.title")}</span>
-              <span className="text-faint">
-                {t("conflict.diskVersion", { version: activeMeta.conflict.version })}
-              </span>
-              <div className="ml-auto flex shrink-0 items-center gap-1">
-                <BarButton
-                  onClick={() => (showDiff ? setShowDiff(false) : void openDiff())}
-                  icon={<Columns2 size={12} />}
-                >
-                  {showDiff ? t("conflict.hideDiff") : t("conflict.viewDiff")}
-                </BarButton>
-                <BarButton
-                  onClick={() => activeKey && manualReload(activeKey)}
-                  icon={<RotateCcw size={12} />}
-                  title={t("conflict.reloadTitle")}
-                >
-                  {t("conflict.reload")}
-                </BarButton>
-                <BarButton
-                  onClick={() => activeKey && void forceOverwrite(activeKey)}
-                  icon={<Save size={12} />}
-                  title={t("conflict.forceOverwriteTitle")}
-                >
-                  {t("conflict.forceOverwrite")}
-                </BarButton>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex-1">
-            {activeTab && activeRead?.status === "ok" && activeRead.data ? (
-              inlineDiff && inlineDiff.key === codeTabKey(activeTab) ? (
-                /* Inline diff (code-panel-diff-design.md §B): session baseline
-                   vs current disk content for a CLEAN tab the agent rewrote.
-                   Takes priority — it replaces the plain editor entirely until
-                   the user exits (or edits, which clears the state above). */
-                <InlineDiffOverlay
-                  path={activeTab.path}
-                  base={inlineDiff.base}
-                  current={inlineDiff.current}
-                  baseVersion={inlineDiff.baseVersion}
-                  currentVersion={inlineDiff.currentVersion}
-                  degraded={inlineDiff.degraded}
-                  onExit={exitInlineDiff}
-                  className="h-full"
-                />
-              ) : showDiff && activeMeta?.conflict ? (
-                <ConflictDiff
-                  path={activeTab.path}
-                  mine={activeMeta.conflict.mine}
-                  /* openDiff only opens the diff once the disk copy is loaded,
-                     so this is a real string whenever the diff is reachable. */
-                  theirs={activeMeta.conflict.diskText ?? ""}
-                  className="h-full"
-                />
-              ) : activeRead.data.readonly_reason === "image" ? (
-                /* Images are binary, so there is no text for Monaco to show.
-                   The runtime flags them readonly_reason="image" and the bytes
-                   stream from /api/code/raw (see ImagePreview). */
-                <ImagePreview
-                  path={activeTab.path}
-                  url={codeRawUrl(
-                    PROJECT_SLUG,
-                    sessionId ?? "",
-                    activeTab.rootId,
-                    activeTab.path,
-                    activeRead.data.version,
-                  )}
-                  className="h-full"
-                />
-              ) : htmlPreview ? (
-                /* Rendered page for html/htm (HtmlPreview for the sandboxing
-                   story). Reads the bytes ON DISK — an unsaved buffer is not
-                   shown until saved; the version rides in the URL, so a save
-                   (or an agent rewrite followed by a reload) refreshes it. */
-                <HtmlPreview
-                  path={activeTab.path}
-                  url={codeFileUrl(
-                    PROJECT_SLUG,
-                    sessionId ?? "",
-                    activeTab.rootId,
-                    activeTab.path,
-                    activeRead.data.version,
-                  )}
-                  className="h-full"
-                />
-              ) : (
-                <MonacoEditor
-                  /* `key` carries the model revision. Bumping it is the only way
-                     to make Monaco adopt externally-changed text: its model is
-                     rebuilt only when the URI (rootId + path) changes, so a
-                     reload would otherwise refetch and keep showing the stale
-                     buffer. Never bumped on a plain save. */
-                  key={`${activeTab.rootId}/${activeTab.path}#${activeMeta?.rev ?? 0}`}
-                  rootId={activeTab.rootId}
-                  path={activeTab.path}
-                  text={activeRead.data.text}
-                  language={activeRead.data.language}
-                  encoding={activeRead.data.encoding}
-                  editable={activeRead.data.editable}
-                  readonlyReason={activeRead.data.readonly_reason}
-                  markSavedNonce={activeMeta?.savedNonce ?? 0}
-                  onDirtyChange={(dirty) => {
-                    // Monaco compares alternative version ids, so an undo back to
-                    // the saved text reports clean again (design §4.5).
-                    if (activeKey) patchMeta(activeKey, (m) => (m.dirty === dirty ? {} : { dirty }));
-                    // The user started editing → leave diff mode (design §4.1).
-                    if (dirty) setInlineDiff((cur) => (cur?.key === activeKey ? null : cur));
-                  }}
-                  onSave={(text) => {
-                    if (activeKey) void saveTab(activeKey, text);
-                  }}
-                  onChangeText={(text) => {
-                    if (activeKey) latestTextRef.current[activeKey] = text;
-                  }}
-                  revealLine={
-                    jump && jump.rootId === activeTab.rootId && jump.path === activeTab.path
-                      ? jump.line
-                      : null
-                  }
-                  revealNonce={
-                    jump && jump.rootId === activeTab.rootId && jump.path === activeTab.path
-                      ? jump.nonce
-                      : 0
-                  }
-                  className="h-full"
-                />
-              )
-            ) : activeTab && activeRead?.status === "error" ? (
-              <EmptyHint icon={<AlertTriangle size={18} />} text={activeRead.error ?? t("notice.readFailed")} />
-            ) : activeTab ? (
-              <EmptyHint text={t("panel.reading")} />
-            ) : (
-              <EmptyHint text={t("panel.emptyTitle")} hint={t("panel.emptyHint")} />
-            )}
-          </div>
         </div>
+
 
         {/* Overlay drawer: the tree's fallback when it is NOT docked — "file"
             mode with the tree switched on, so the editor keeps its width. While
@@ -1559,109 +595,6 @@ export function CodePanel() {
           onClose={() => setQuickOpen(false)}
         />
       ) : null}
-    </div>
-  );
-}
-
-function ToolButton({
-  title,
-  active = false,
-  onClick,
-  children,
-}: {
-  title: string;
-  active?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "rounded p-1 transition-colors",
-        active ? "bg-card2 text-txt" : "text-faint hover:bg-card hover:text-txt",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Breadcrumb({
-  crumbs,
-  onJump,
-}: {
-  crumbs: { label: string; path: string }[];
-  onJump: (path: string) => void;
-}) {
-  const t = useTranslations("code.panel");
-  if (!crumbs.length)
-    return <span className="min-w-0 flex-1 truncate text-[11px] text-faint">{t("noFileOpen")}</span>;
-  return (
-    <div className="flex min-w-0 flex-1 items-center overflow-hidden text-[11px]">
-      {crumbs.map((c, i) => (
-        <span key={`${c.path}-${i}`} className="flex min-w-0 items-center">
-          {i > 0 && <ChevronRight className="mx-0.5 h-3 w-3 shrink-0 text-faint" />}
-          <button
-            type="button"
-            onClick={() => onJump(c.path)}
-            title={c.path || t("breadcrumbRoot")}
-            className={cn(
-              "max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-card2 hover:text-txt",
-              i === crumbs.length - 1 ? "text-txt" : "text-muted",
-            )}
-          >
-            {c.label}
-          </button>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** Small text button, used by the conflict bar. */
-function BarButton({
-  onClick,
-  icon,
-  title,
-  children,
-}: {
-  onClick: () => void;
-  icon?: ReactNode;
-  title?: string;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:bg-card2 hover:text-txt"
-    >
-      {icon}
-      {children}
-    </button>
-  );
-}
-
-function EmptyHint({
-  icon,
-  text,
-  hint,
-}: {
-  icon?: ReactNode;
-  text: string;
-  hint?: string;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-faint">
-      {icon}
-      <span>{text}</span>
-      {hint ? <span className="text-[11px] text-faint/80">{hint}</span> : null}
     </div>
   );
 }
