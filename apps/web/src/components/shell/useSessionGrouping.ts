@@ -69,7 +69,14 @@ export function useSessionGrouping({
   // 的 subagent 父行是隐藏的影子会话，若走下面孤儿回退会漏进主侧栏。
   const hiddenIds = hiddenSessionIds(sessions);
   const visibleSessions = sessions.filter(
-    (s) => !hiddenIds.has(s.id) && (!agentFilter || s.agent_id === agentFilter),
+    (s) =>
+      !hiddenIds.has(s.id) &&
+      (!agentFilter ||
+        // peer:<name>（2026-11-21 远程 agent 过滤）：A2A 远程会话按
+        // remote_peer_name 归 chip；其余键 = 本地 agent id。
+        (agentFilter.startsWith("peer:")
+          ? s.remote_peer_name === agentFilter.slice(5)
+          : s.agent_id === agentFilter)),
   );
   // 父 id → 直属子会话（按创建时间倒序——最新的在最上，与主列表
   // updated 倒序的阅读方向一致；2026-10-12 用户定稿）。状态分节在渲染
