@@ -530,9 +530,9 @@ export function LastwordsCard({ text }: { text: string }) {
   return (
     <div className="selectable w-full max-w-[85%] rounded-lg border border-violet/25 bg-card px-3.5 py-2.5 text-[13px] leading-relaxed">
       <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted">
-        <span className="flex h-4 w-4 items-center justify-center rounded bg-violet/15 text-[10px]">🔄</span>
-        <span className="rounded bg-violet/15 px-1.5 py-px font-semibold text-violet">{t("badge")}</span>
-        <span className="truncate">{header}</span>
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-violet/15 text-[10px]">🔄</span>
+        <span className="shrink-0 whitespace-nowrap rounded bg-violet/15 px-1.5 py-px font-semibold text-violet">{t("badge")}</span>
+        <span className="min-w-0 flex-1 truncate" title={header}>{header}</span>
       </div>
       {bodyLines.map((ln, i) => {
         const lab = labelOf(ln);
