@@ -8,14 +8,20 @@
    在这里红，并要求同步更新下面的原块对照清单。
 2. **fail_policy 三态语义** — 合成表验证执行器：``abort`` 中断并
    re-raise；``continue`` 记日志后继续；``timeout_s`` 生效（超时取消
-   任务体并按 fail_policy 分流）。
+   任务体并按 fail_policy 分流；同步任务体不进 wait_for，闸为声明性
+   预算——见 test_sync_body_timeout_is_declared_only）。
 3. **表结构守卫** — phase 匹配所在表、depends_on 只指向同表更早的
    name、fail_policy 取值合法。
+
+外加 P1-2 的 **timeout 闸守卫**：全表 timeout 恰为「快照 ∪ 白名单」
+（test_real_table_timeout_gates）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
+import time
 
 import pytest
 
@@ -155,9 +161,81 @@ def test_shutdown_table_snapshot():
     assert _as_snapshot(st.SHUTDOWN_TASKS) == SHUTDOWN_SNAPSHOT
 
 
-def test_real_table_has_no_timeouts():
-    """行为零变化红线：真实表当前不启用 timeout（字段留给逐任务加闸）。"""
-    assert all(t.timeout_s is None for t in st.STARTUP_TASKS + st.SHUTDOWN_TASKS)
+#: P1-2 逐任务加闸快照：有闸任务的 name → timeout_s。改值 = 有意识的
+#: 决策，必须同步本快照（档位理由见 startup_tasks.py STARTUP_TASKS
+#: 前注释）。
+TIMEOUT_SNAPSHOT: dict[str, float] = {
+    "ensure_layout": 60.0,
+    "startup_maintenance": 60.0,
+    "search_index_build": 120.0,
+    "startup_check": 60.0,
+    "delegation_reconcile": 60.0,
+    "plan_watcher_recovery": 60.0,
+    "team_recovery": 60.0,
+    "i18n_health_check": 60.0,
+    "set_main_loop": 60.0,
+    "anyio_thread_limiter": 60.0,
+    "asyncio_default_executor": 60.0,
+    "requeue_pending_titles": 120.0,
+    "apply_system_proxy": 60.0,
+    "ensure_turn_log": 60.0,
+    "usage_cleanup": 60.0,
+    "memory_sweep": 120.0,
+    "session_files_migration": 120.0,
+    "hooks_init": 60.0,
+    "mods_classic_hooks": 60.0,
+    "todo_seed": 60.0,
+    "connector_seed": 60.0,
+    "agents_registry_seed": 60.0,
+    "web_permissions_migration": 60.0,
+    "workflows_seed": 60.0,
+    "subagent_type_seed": 60.0,
+    "subagent_reconcile": 60.0,
+    "run_reconciliation": 60.0,
+    "refresh_session_metas": 300.0,
+    "mcp_registry_init": 60.0,
+    "scheduler_start": 60.0,
+    "tasks_registry_start": 60.0,
+    "lastwords_recover": 60.0,
+}
+
+#: 明确不加闸的任务白名单：name → 理由（startup_tasks.py 同款注释）。
+UNTIMED_WHITELIST: dict[str, str] = {
+    "browser_connector_setup": (
+        "写扩展/native host 到用户目录，半安装态误杀排障成本高（best-effort）"
+    ),
+    "mcp_background_connect": (
+        "慢 MCP 连接有 per-server timeout 自身语义；任务体仅 create_task"
+    ),
+    "devswap_watch": "watchdog 型长驻 watcher，闸只会误杀；任务体仅 create_task",
+    "shell_watch": "watchdog 型长驻 watcher，闸只会误杀；任务体仅 create_task",
+    # shutdown 全表：uvicorn timeout_graceful_shutdown=3s 是真正的关闭
+    # 预算；执行器层闸要么永不触发要么抢跑优雅收尾。
+    "lastwords_mark_shutdown": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "cancel_background_tasks": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "lastwords_write_signal": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "scheduler_stop": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "run_tasks_shutdown": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "synth_tasks_shutdown": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "tasks_registry_stop": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "browser_profile_shutdown": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "mcp_close_all": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+    "mods_channel_shutdown": "shutdown 表整体不加闸（uvicorn 3s 窗口）",
+}
+
+
+def test_real_table_timeout_gates():
+    """P1-2 加闸守卫：全表 timeout 恰为「快照 ∪ 白名单」。
+
+    双断言语义（dict 相等一举覆盖）：
+    * 有闸任务的值与 TIMEOUT_SNAPSHOT 逐项一致（改值必须有意识同步）；
+    * 无闸任务恰为 UNTIMED_WHITELIST——新增任务不配闸会红（逼一次
+      归档决策：进快照还是进白名单+理由），白名单任务被偷加闸也会红。
+    """
+    actual = {t.name: t.timeout_s for t in st.STARTUP_TASKS + st.SHUTDOWN_TASKS}
+    expected = dict(TIMEOUT_SNAPSHOT)
+    expected.update({name: None for name in UNTIMED_WHITELIST})
+    assert actual == expected
 
 
 def test_table_structure_invariants():
@@ -262,6 +340,42 @@ async def test_timeout_with_abort_propagates():
     table = (_mk("slow", slow, fail_policy=FAIL_ABORT, timeout_s=0.05),)
     with pytest.raises(asyncio.TimeoutError):
         await execute_phase(table, PHASE_STARTUP, st.LifespanHandles())
+
+
+async def test_sync_body_timeout_is_declared_only():
+    """已知限制钉住：wait_for 只包 awaitable——同步任务体（真实表多数
+    形态）直接在 event loop 里跑，timeout_s 不会被触发，是声明性耗时
+    预算（任务体 async 化后闸自动生效）。本用例防止未来有人以为同步
+    任务也能被超时取消而依赖该行为。"""
+
+    ran: list[str] = []
+
+    def blocking(_h):
+        time.sleep(0.05)  # 超过 timeout_s，但同步体不经 wait_for
+        ran.append("sync-done")
+
+    table = (_mk("blocking", blocking, timeout_s=0.01),)
+    done = await execute_phase(table, PHASE_STARTUP, st.LifespanHandles())
+    assert done == ["blocking"]
+    assert ran == ["sync-done"]
+
+
+async def test_real_async_tasks_have_live_gates():
+    """真实表中 async 任务体的闸是**可真实触发**的（wait_for 真包裹）——
+    其余同步任务的 timeout_s 为声明性预算。本用例锁住「谁拥有活闸」，
+    防止 async 化/同步化静默改变闸的语义而不被察觉。"""
+    async_bodies = {
+        t.name
+        for t in st.STARTUP_TASKS
+        if inspect.iscoroutinefunction(t.run)
+    }
+    assert async_bodies == {"team_recovery", "requeue_pending_titles"}, (
+        "真实表 async 任务集变化：新 async 任务拥有可真实触发的闸，"
+        "请同步本断言并复核其 timeout 档位"
+    )
+    for name in async_bodies:
+        task = next(t for t in st.STARTUP_TASKS if t.name == name)
+        assert task.timeout_s is not None, f"{name} 是 async 体，必须有活闸"
 
 
 async def test_sync_and_async_callbacks_both_supported():

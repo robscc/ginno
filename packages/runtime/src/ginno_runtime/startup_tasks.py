@@ -12,8 +12,11 @@ server.py 的 lifespan 启动段原是约 330 行平铺块：十几个 ``try/exc
   分流（``abort`` 失败立即 re-raise 中断本阶段；``continue`` 失败记
   exception 日志后继续），``timeout_s`` 非空时用
   :func:`asyncio.wait_for` 包裹（超时取消该任务体并按 fail_policy
-  分流；真实表当前全部 None——行为与原平铺代码零差异，字段留给
-  后续逐任务加闸）。
+  分流）。P1-2 起启动表逐任务加闸（档位与白名单见 STARTUP_TASKS
+  前注释），关闭表整体不加闸（优雅关闭窗口本身只有 ~3s，外层
+  uvicorn 强杀是真正的兜底）。注意闸只对**返回 awaitable** 的任务体
+  可真实触发：同步任务体直接在 event loop 里跑（不进 wait_for），
+  其 timeout_s 是声明性耗时预算——任务体日后 async 化即自动生效。
 
 fail_policy 归类（保守，对应原代码形态）：
 
@@ -594,72 +597,109 @@ def _task_lastwords_recover(handles: LifespanHandles) -> None:
 #: 启动任务表。**表序即执行序**，与 server.py 原 lifespan 平铺块 1-36
 #: 一一对应（见各任务体「原块 N」注释）；任何插入/删除/重排都必须同步
 #: tests/unit/test_startup_tasks.py 的快照断言。
+#:
+#: timeout 档位（P1-2 逐任务加闸，值 = 预算声明 + async 任务体的真实闸）：
+#:
+#: * 60s — 纯内存/确定性瞬时（构造对象、mkdir、读单个配置/seed、
+#:   create_task 型）与轻文件系统扫描（读少量 meta、目录 glob 清理）。
+#:   实测均在亚秒级，60s ≥ 实测×5 且远高于冷盘/杀毒扫描抖动。
+#: * 120s — 重文件系统扫描：全量会话/checkpoint 级遍历或大批量文件
+#:   迁移（search_index_build 任务体只起线程、闸为预算声明；
+#:   memory_sweep / session_files_migration / requeue_pending_titles
+#:   幂等可断点续跑，超时取消安全）。
+#: * 300s — refresh_session_metas：abort 任务 + 扫全部会话 meta，宽闸
+#:   防误杀（触发即启动失败，语义从「无限卡住」变「明确报错」）。
+#:
+#: 不加闸白名单（startup 4 项 + shutdown 全表，守卫测试钉死）：
+#:
+#: * browser_connector_setup — 写扩展/native host manifest 到用户目录，
+#:   涉及外部可见状态（chrome://extensions 加载路径），误杀在半安装态
+#:   的排障成本高；best-effort 语义下慢一点也不阻塞后续。
+#: * mcp_background_connect — 慢 MCP server 连接有 per-server timeout
+#:   自身语义，且任务体只是 create_task（瞬时），闸既无意义又易误读。
+#: * devswap_watch / shell_watch — watchdog 型长驻任务（watcher 的本职
+#:   就是活着），任务体同样只是 create_task；闸只会误杀。
+#: * lastwords_recover 同为 create_task 型但无外部依赖，给了 60s 预算闸。
+#: * shutdown 全表 — uvicorn timeout_graceful_shutdown=3s 才是真正的
+#:   关闭预算；执行器层加闸要么永不触发（>3s）要么抢跑 uvicorn 的
+#:   优雅收尾（<3s，误杀正常收尾），故整体不加。
 STARTUP_TASKS: tuple[PhaseTask, ...] = (
     PhaseTask(
         name="ensure_layout",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_ensure_layout,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="startup_maintenance",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_startup_maintenance,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="search_index_build",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_search_index_build,
+        timeout_s=120.0,
     ),
     PhaseTask(
         name="startup_check",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_startup_check,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="delegation_reconcile",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_delegation_reconcile,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="plan_watcher_recovery",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_plan_watcher_recovery,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="team_recovery",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_team_recovery,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="i18n_health_check",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_i18n_health_check,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="set_main_loop",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_set_main_loop,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="anyio_thread_limiter",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_anyio_thread_limiter,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="asyncio_default_executor",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_asyncio_default_executor,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="requeue_pending_titles",
@@ -667,42 +707,49 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         depends_on=("set_main_loop",),
         run=_task_requeue_pending_titles,
+        timeout_s=120.0,
     ),
     PhaseTask(
         name="apply_system_proxy",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_apply_system_proxy,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="ensure_turn_log",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_ensure_turn_log,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="usage_cleanup",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_usage_cleanup,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="memory_sweep",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_memory_sweep,
+        timeout_s=120.0,
     ),
     PhaseTask(
         name="session_files_migration",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_session_files_migration,
+        timeout_s=120.0,
     ),
     PhaseTask(
         name="hooks_init",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_hooks_init,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="mods_classic_hooks",
@@ -710,18 +757,21 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         depends_on=("hooks_init",),
         run=_task_mods_classic_hooks,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="todo_seed",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_todo_seed,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="connector_seed",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_connector_seed,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="browser_connector_setup",
@@ -734,48 +784,56 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_agents_registry_seed,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="web_permissions_migration",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_web_permissions_migration,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="workflows_seed",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_workflows_seed,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="subagent_type_seed",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_subagent_type_seed,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="subagent_reconcile",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_subagent_reconcile,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="run_reconciliation",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_run_reconciliation,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="refresh_session_metas",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_refresh_session_metas,
+        timeout_s=300.0,
     ),
     PhaseTask(
         name="mcp_registry_init",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_mcp_registry_init,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="mcp_background_connect",
@@ -789,12 +847,14 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_scheduler_start,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="tasks_registry_start",
         phase=PHASE_STARTUP,
         fail_policy=FAIL_CONTINUE,
         run=_task_tasks_registry_start,
+        timeout_s=60.0,
     ),
     PhaseTask(
         name="devswap_watch",
@@ -813,6 +873,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         phase=PHASE_STARTUP,
         fail_policy=FAIL_ABORT,
         run=_task_lastwords_recover,
+        timeout_s=60.0,
     ),
 )
 
