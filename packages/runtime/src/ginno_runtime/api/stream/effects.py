@@ -69,7 +69,8 @@ from ..messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_w
 
 
 async def _tool_file_effects(
-    safe_send, emit, slug: str, session_id: str, name_args: tuple[str, dict] | None, content: str
+    safe_send, emit, slug: str, session_id: str, name_args: tuple[str, dict] | None, content: str,
+    ctx=None,
 ) -> None:
     """After a tool finishes, keep file previews live (docs §7.5):
 
@@ -77,12 +78,29 @@ async def _tool_file_effects(
        gets ``preview.invalidate`` for that file.
     2. Opaque tools (bash / MCP) → best-effort: any registered path appearing
        in the tool args is touched.
+    3. Registered images → ``image.emit`` so the chat renders them inline.
+
+    With ``ctx`` (the staged pipeline's StreamTurnCtx), image surfacing is
+    UNIFORM (image-emit-universal design): the bash-marker branch keeps its
+    exact legacy behavior, and a generic fallback at the tail diffs the file
+    registry against the turn-start baseline — so pictures registered by ANY
+    tool (browser screenshots / MCP image writes / write-then-register) also
+    broadcast, not just bash markers.
     """
     if not slug or not name_args:
         return
     name, args = name_args
     reg = files_mod.get_registry(slug)
     touched: list[str] = []
+
+    def _flatten_emitted(entry: dict) -> None:
+        """Post-emit bookkeeping shared by both image branches: record the id
+        and flatten the baseline mtime so the generic fallback (and a later
+        diff in this turn) never re-broadcasts the same bytes. Uses the
+        REGISTRY's float mtime — that is what the fallback compares against."""
+        if ctx is not None:
+            ctx.emitted_image_ids.add(entry["id"])
+            ctx.baseline_image_mtimes[entry["id"]] = float(entry.get("mtime") or 0)
 
     if name in ("write_file", "edit_file", "read_file", "parse_document"):
         p = (args or {}).get("path")
@@ -132,7 +150,53 @@ async def _tool_file_effects(
             await safe_send(
                 emit("image.emit", {"file_id": entry["id"], "name": entry["name"], "mtime": mtime})
             )
+            _flatten_emitted(entry)
             touched.append(norm_ref)
+
+    # ── Generic image fallback (image-emit-universal) ──────────────────────
+    # Non-bash producers (browser screenshots landing on disk, MCP image
+    # writes, any tool that writes a picture then registers it) carry no
+    # marker, so the branch above never fires for them. Diff the session's
+    # registered images against the turn-start baseline instead: an id that
+    # is new — or whose mtime moved past the snapshot (regenerated picture)
+    # — broadcasts exactly like the bash path. Bash-emitted ids were
+    # flattened into the baseline above, so they never double-fire.
+    if ctx is not None:
+        for e in reg.list_session(session_id):
+            fid = e.get("id")
+            if not fid or e.get("kind") != "image" or fid in ctx.emitted_image_ids:
+                continue
+            mtime = float(e.get("mtime") or 0.0)
+            if ctx.baseline_image_mtimes.get(fid) == mtime:
+                continue
+            try:
+                pp = Path(str(e.get("path") or ""))
+                mtime_i = int(pp.stat().st_mtime) if pp.is_file() else int(mtime)
+            except OSError:
+                mtime_i = int(mtime)
+            # Artifact backfill: producers that registered through a bare
+            # registry.register (no artifact_id) still deserve a panel entry,
+            # matching what the bash branch gives its pictures.
+            if not e.get("artifact_id"):
+                art = art_store.add_artifact(
+                    slug, "image", e.get("name") or pp.name,
+                    str(e.get("path") or ""), session_id,
+                )
+                reg.register(
+                    e.get("name") or pp.name, str(e.get("path") or ""),
+                    kind="image", session_id=session_id,
+                    artifact_id=art.get("id"),
+                )
+                await safe_send(emit("artifacts.changed", {}))
+            await safe_send(
+                emit(
+                    "image.emit",
+                    {"file_id": fid, "name": e.get("name") or pp.name, "mtime": mtime_i},
+                )
+            )
+            _flatten_emitted(e)
+            if e.get("path"):
+                touched.append(e["path"])
 
     seen: set[str] = set()
     for p in touched:

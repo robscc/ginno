@@ -123,3 +123,13 @@ class StreamTurnCtx:
     pre_turn_todos: list = field(default_factory=list)
     """turn 前 TODO 快照（原局部 ``_pre_turn_todos``：turn 后 diff 出本
     turn 创建/触碰的条目并自动关联本会话）。"""
+
+    # ── code 图片统一化（image-emit-universal）────────────────────────────
+    baseline_image_mtimes: dict = field(default_factory=dict)
+    """turn 开始时 registry 里本会话已有 image 条目的 ``{id: mtime}``
+    快照的**拷贝**（原始快照在 ``server_shared._TURN_IMAGE_BASELINE``，
+    agent_node lift 读那份——本拷贝被 stream 层在 emit 后拉平，故两者
+    必须分离）。stream 兜底 diff：新 id 或 mtime 更新 → 补播。"""
+    emitted_image_ids: set = field(default_factory=set)
+    """本 turn 已播过 ``image.emit`` 的 image id（bash marker 分支与通用
+    兜底共用，防同图双播）。"""

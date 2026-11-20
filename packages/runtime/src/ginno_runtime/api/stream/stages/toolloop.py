@@ -431,6 +431,7 @@ async def _updates_tools(ctx: StreamTurnCtx, delta) -> None:
             await eng._tool_file_effects(
                 ctx.safe_send, ctx.emit, ctx.slug, ctx.session_id,
                 ctx.tool_args_by_id.get(tc_id), raw,
+                ctx=ctx,
             )
             # Code-panel S3: agent file writes/edits →
             # ``code.changed`` (parsed from the marker

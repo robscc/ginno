@@ -405,6 +405,10 @@ async def _release_turn_registration(ctx: StreamTurnCtx) -> None:
             note_turn_end(ctx.session_id, ctx.turn_id)
         except Exception:  # noqa: BLE001
             pass
+        # 图片 turn 基线退役（image-emit-universal）：终态清除——下一 turn
+        # 重新快照。parked turn 走 else 分支保留，resume 段的 agent lift
+        # 还要 diff 停车前工具产出的图。
+        shared._TURN_IMAGE_BASELINE.pop(ctx.session_id, None)
         eng._PENDING_RESUME.discard(ctx.session_id)
         eng._PENDING_KIND.pop(ctx.session_id, None)
         # Steering entries live exactly one turn segment (steering-design

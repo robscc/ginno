@@ -66,7 +66,7 @@ from .graph_prompts import (
 )
 from .lang import response_lang_directive, t
 from .permission.policy import PermissionPolicy, is_bypass_permissions
-from .server_shared import STEER_CONTEXT_KEY, steer_drain, steer_messages
+from .server_shared import _TURN_IMAGE_BASELINE, STEER_CONTEXT_KEY, steer_drain, steer_messages
 from .state import AgentState
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
@@ -479,6 +479,29 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
         # microcompact clears old ToolMessage bodies but never additional_kwargs,
         # so the history builder can still re-emit the images on replay.
         turn_imgs = collect_turn_images(state.get("messages", []))
+        # Non-bash producers carry no marker (browser screenshots / MCP image
+        # writes / write-then-register): diff the session's registered images
+        # against the turn-start baseline (image-emit-universal) and merge the
+        # new paths into the SAME anchor, so replay surfaces them too. The
+        # baseline lives in server_shared (written by the stream layer at turn
+        # start); this is an in-memory dict read — no file IO on the graph
+        # thread (the paths are re-validated by the history builder's
+        # self-healing lookup).
+        try:
+            _img_base = _TURN_IMAGE_BASELINE.get(sid) if sid else None
+            if _img_base is not None:
+                from .files import get_registry as _get_reg
+
+                for _e in _get_reg(state.get("project_slug", "") or "default").list_session(sid):
+                    if _e.get("kind") != "image" or not _e.get("path"):
+                        continue
+                    _mt = float(_e.get("mtime") or 0.0)
+                    if _img_base.get(_e.get("id")) == _mt:
+                        continue
+                    if _e["path"] not in turn_imgs:
+                        turn_imgs.append(_e["path"])
+        except Exception:  # noqa: BLE001 — anchor 兜底绝不带崩 agent 节点
+            pass
         if turn_imgs:
             response.additional_kwargs["ginno_images"] = turn_imgs
         tool_calls = getattr(response, "tool_calls", None) or []

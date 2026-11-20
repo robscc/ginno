@@ -182,6 +182,30 @@ def _setup_stream(ctx: StreamTurnCtx) -> None:
     """legacy engine.py:280-432 — steer 回调、流建立、循环前状态。"""
     from .... import server_shared as shared
 
+    # Image-emit baseline (image-emit-universal design): snapshot the
+    # session's registered images at turn start. setdefault semantics — a
+    # resume segment (parked turn) reuses the ORIGINAL snapshot so pictures
+    # the pre-park tool steps produced still count as new for the agent-node
+    # lift; the entry is cleared at the terminal release only. The stream
+    # layer diffs its own COPY (mtime flattening after an emit must not hide
+    # the picture from the lift, which reads the shared original).
+    try:
+        base = shared._TURN_IMAGE_BASELINE.get(ctx.session_id)
+        if base is None:
+            from .... import files as files_mod
+
+            base = {
+                e.get("id"): float(e.get("mtime") or 0.0)
+                for e in files_mod.get_registry(ctx.slug).list_session(ctx.session_id)
+                if e.get("kind") == "image" and e.get("id")
+            }
+            shared._TURN_IMAGE_BASELINE[ctx.session_id] = base
+        ctx.baseline_image_mtimes = dict(base)
+        ctx.emitted_image_ids = set()
+    except Exception:  # noqa: BLE001 — 快照失败退化为空基线（多播不重播失败）
+        ctx.baseline_image_mtimes = {}
+        ctx.emitted_image_ids = set()
+
     # Steering ack, injected into config so graph.agent_node can fire it at the
     # exact moment it absorbs (docs/steering-design.md §3.2). Emitting it HERE
     # rather than waiting for the superstep's update is what puts the client's

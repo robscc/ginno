@@ -374,6 +374,25 @@ _TURN_TASKS: dict[str, Any] = {}
 # set for an idle session — a stale set event would kill the next turn.
 _TURN_STOP: dict[str, Any] = {}
 
+# Turn-start snapshot of the session's registered image entries —
+# ``{file_id: mtime}`` (image-emit-universal design). Two consumers diff
+# against it to surface code-generated pictures WITHOUT a bash marker
+# (browser screenshots / MCP image writes / any tool that writes then
+# registers a picture):
+#
+# * the stream layer's generic post-tool fallback emits ``image.emit`` for
+#   every entry that is new or has a NEWER mtime than the snapshot;
+# * ``graph.agent_node`` merges the same diff into the next AIMessage's
+#   ``additional_kwargs["ginno_images"]`` durable anchor (the bash-marker
+#   lift path), so history replay re-emits the image blocks too.
+#
+# Lifetime = ONE turn (set at turn start with setdefault semantics — a parked
+# turn's resume segment reuses the original snapshot; cleared at the terminal
+# release in stages/finalize._release_turn_registration). The stream layer
+# works on its own COPY (ctx.baseline_image_mtimes) so flattening an id after
+# an emit never hides the picture from the agent-node lift.
+_TURN_IMAGE_BASELINE: dict[str, dict[str, float]] = {}
+
 # Sessions whose E3 compaction summarizer call is currently in flight
 # (2026-11-16 P5). The turn.state reconnect probe reports it so the client
 # keeps the「压缩中…」mirror alive across a WS drop — without it, ANY event
