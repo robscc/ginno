@@ -1,0 +1,647 @@
+{
+ "_meta": {
+  "covers": "path+method+parameters+requestBody+responses(status+schema)+schema闭包",
+  "endpoints": 9,
+  "note": "OpenAPI contract snapshot — 拆分资源 Router 的验收基准，勿手改；契约有意识变更时再生成并连同本文件一起提交。",
+  "paths": 9,
+  "regenerate": "cd packages/runtime && GINNO_UPDATE_OPENAPI_SNAPSHOT=1 uv run --group test --extra docs pytest tests/api/test_openapi_contract.py -q",
+  "router": "ginno_runtime.api.code.router",
+  "source_module": "src/ginno_runtime/api/code.py",
+  "stripped_prose": "summary/description/operationId/response description"
+ },
+ "components": {
+  "schemas": {
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "paths": {
+  "/api/code/diff": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "path",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Path",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code Diff Api Code Diff Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/file/{project_slug}/{session_id}/{root_id}/{rel_path}": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "project_slug",
+      "required": true,
+      "schema": {
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "root_id",
+      "required": true,
+      "schema": {
+       "title": "Root Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "rel_path",
+      "required": true,
+      "schema": {
+       "title": "Rel Path",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/git": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "numstat",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "title": "Numstat",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code Git Api Code Git Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/list": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "path",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Path",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code List Api Code List Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/raw": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "path",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Path",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/read": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "path",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Path",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "rev",
+      "required": false,
+      "schema": {
+       "default": "worktree",
+       "title": "Rev",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code Read Api Code Read Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/roots": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code Roots Api Code Roots Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/search": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "default": "default",
+       "title": "Project Slug",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "root",
+      "required": false,
+      "schema": {
+       "default": "session",
+       "title": "Root",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "q",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Q",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "mode",
+      "required": false,
+      "schema": {
+       "default": "name",
+       "title": "Mode",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Code Search Api Code Search Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/code/write": {
+   "put": {
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "additionalProperties": true,
+        "title": "Req",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

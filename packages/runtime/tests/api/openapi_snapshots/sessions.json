@@ -1,0 +1,1661 @@
+{
+ "_meta": {
+  "covers": "path+method+parameters+requestBody+responses(status+schema)+schema闭包",
+  "endpoints": 28,
+  "note": "OpenAPI contract snapshot — 拆分资源 Router 的验收基准，勿手改；契约有意识变更时再生成并连同本文件一起提交。",
+  "paths": 21,
+  "regenerate": "cd packages/runtime && GINNO_UPDATE_OPENAPI_SNAPSHOT=1 uv run --group test --extra docs pytest tests/api/test_openapi_contract.py -q",
+  "router": "ginno_runtime.api.sessions.router",
+  "source_module": "src/ginno_runtime/api/sessions.py",
+  "stripped_prose": "summary/description/operationId/response description"
+ },
+ "components": {
+  "schemas": {
+   "BulkSessionsRequest": {
+    "properties": {
+     "action": {
+      "title": "Action",
+      "type": "string"
+     },
+     "ids": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Ids",
+      "type": "array"
+     }
+    },
+    "required": [
+     "action",
+     "ids"
+    ],
+    "title": "BulkSessionsRequest",
+    "type": "object"
+   },
+   "CreateSessionRequest": {
+    "properties": {
+     "agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Agent Id"
+     },
+     "channel": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Channel"
+     },
+     "context_folders": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Context Folders",
+      "type": "array"
+     },
+     "icon": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Icon"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "model_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Name"
+     },
+     "model_provider": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Provider"
+     },
+     "parent_session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Session Id"
+     },
+     "primary_folder": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Primary Folder"
+     },
+     "project_slug": {
+      "title": "Project Slug",
+      "type": "string"
+     },
+     "provider": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider"
+     },
+     "remote_peer": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Remote Peer"
+     },
+     "restrict_tools": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Restrict Tools",
+      "type": "array"
+     },
+     "skill_paths": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Skill Paths",
+      "type": "array"
+     },
+     "subagent": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subagent"
+     },
+     "thinking_effort": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Thinking Effort"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Title"
+     },
+     "type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Type"
+     },
+     "workflow_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Workflow Id"
+     },
+     "workspace": {
+      "title": "Workspace",
+      "type": "string"
+     }
+    },
+    "required": [
+     "project_slug",
+     "workspace"
+    ],
+    "title": "CreateSessionRequest",
+    "type": "object"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "MountLinkedRequest": {
+    "properties": {
+     "target": {
+      "title": "Target",
+      "type": "string"
+     }
+    },
+    "required": [
+     "target"
+    ],
+    "title": "MountLinkedRequest",
+    "type": "object"
+   },
+   "PatchSessionRequest": {
+    "properties": {
+     "agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Agent Id"
+     },
+     "icon": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Icon"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "pinned": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned"
+     },
+     "provider": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider"
+     },
+     "thinking_effort": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Thinking Effort"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Title"
+     },
+     "worker": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Worker"
+     },
+     "workflow_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Workflow Id"
+     }
+    },
+    "title": "PatchSessionRequest",
+    "type": "object"
+   },
+   "PutSessionContextRequest": {
+    "properties": {
+     "folder_ids": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Folder Ids",
+      "type": "array"
+     },
+     "primary_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Primary Id"
+     }
+    },
+    "title": "PutSessionContextRequest",
+    "type": "object"
+   },
+   "ToolPolicyBody": {
+    "properties": {
+     "mcp_disabled": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Mcp Disabled",
+      "type": "array"
+     },
+     "mcp_tools_disabled": {
+      "additionalProperties": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "default": {},
+      "title": "Mcp Tools Disabled",
+      "type": "object"
+     },
+     "mode": {
+      "default": "all",
+      "title": "Mode",
+      "type": "string"
+     },
+     "skills_disabled": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Skills Disabled",
+      "type": "array"
+     }
+    },
+    "title": "ToolPolicyBody",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "paths": {
+  "/api/delegations/{delegation_id}/stop": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "delegation_id",
+      "required": true,
+      "schema": {
+       "title": "Delegation Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Stop Delegation Api Delegations  Delegation Id  Stop Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/external-agents": {
+   "get": {
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "additionalProperties": true,
+          "type": "object"
+         },
+         "title": "Response List External Agents Api External Agents Get",
+         "type": "array"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Project Slug"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "additionalProperties": true,
+          "type": "object"
+         },
+         "title": "Response List Sessions Api Sessions Get",
+         "type": "array"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CreateSessionRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Create Session Api Sessions Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/bulk": {
+   "post": {
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BulkSessionsRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Bulk Sessions Api Sessions Bulk Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/page": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "offset",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "title": "Offset",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Project Slug"
+      }
+     },
+     {
+      "in": "query",
+      "name": "include_archived",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Include Archived",
+       "type": "boolean"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Page Sessions Api Sessions Page Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/search": {
+   "get": {
+    "parameters": [
+     {
+      "in": "query",
+      "name": "q",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Q",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 20,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "offset",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "title": "Offset",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "project_slug",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Project Slug"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Search Sessions Api Sessions Search Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}": {
+   "delete": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "cascade",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Cascade",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "force",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Force",
+       "type": "boolean"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Delete Session Api Sessions  Session Id  Delete",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Session Api Sessions  Session Id  Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PatchSessionRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Patch Session Api Sessions  Session Id  Patch",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/context": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Session Context Api Sessions  Session Id  Context Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PutSessionContextRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Put Session Context Api Sessions  Session Id  Context Put",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/context_breakdown": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Context Breakdown Api Sessions  Session Id  Context Breakdown Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/fork": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Fork Session Endpoint Api Sessions  Session Id  Fork Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/goal": {
+   "delete": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Clear Session Goal Api Sessions  Session Id  Goal Delete",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Session Goal Api Sessions  Session Id  Goal Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "additionalProperties": true,
+        "title": "Req",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Set Session Goal Api Sessions  Session Id  Goal Put",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/history": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Session History Api Sessions  Session Id  History Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/linked": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Linked Sessions Api Sessions  Session Id  Linked Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MountLinkedRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Mount Linked Session Api Sessions  Session Id  Linked Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/linked/{target}": {
+   "delete": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "target",
+      "required": true,
+      "schema": {
+       "title": "Target",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Detach Linked Session Api Sessions  Session Id  Linked  Target  Delete",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/seen": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Mark Session Seen Endpoint Api Sessions  Session Id  Seen Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/state": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Session State Api Sessions  Session Id  State Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/stop": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Stop Session Api Sessions  Session Id  Stop Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/suggestions": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Session Suggestions Api Sessions  Session Id  Suggestions Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/tags": {
+   "put": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "additionalProperties": true,
+        "title": "Req",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Set Session Tags Api Sessions  Session Id  Tags Put",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/tool_policy": {
+   "put": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ToolPolicyBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Set Tool Policy Api Sessions  Session Id  Tool Policy Put",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/unread": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Mark Session Unread Endpoint Api Sessions  Session Id  Unread Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}
