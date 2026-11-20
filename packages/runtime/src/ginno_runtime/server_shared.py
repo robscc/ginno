@@ -441,7 +441,9 @@ def steer_enqueue(session_id: str, entry: dict) -> None:
     _STEER_STASH[session_id] = lst
 
 
-def steer_merge_pending(session_id: str, text: str, turn_id: str) -> str | None:
+def steer_merge_pending(
+    session_id: str, text: str, turn_id: str, steer_id: str = ""
+) -> str | None:
     """把新注入文本并入同 turn 尚未吸收的上一条用户注入（2026-11-05）。
 
     用户连发修正型注入（如先 issue 后 pr）会弹两条「运行中注入」带、落两条
@@ -449,7 +451,11 @@ def steer_merge_pending(session_id: str, text: str, turn_id: str) -> str | None:
     源 + 无附件 + 非系统 recursion-warn」的最新一条，文本以空行拼接、
     content_blocks 追加文本块，返回被并入条目的 steer_id——调用方对新
     steer_id 照常 ack（前端队列条目要收），但不再入队，因此只产生一条带、
-    一条消息。带附件的注入不合并（payload 语义不清，宁多勿错）。"""
+    一条消息。带附件的注入不合并（payload 语义不清，宁多勿错）。
+
+    同 steer_id 重发（断线重连 exactly-once，2026-11-20）：直接认领已有
+    条目并返回其 steer_id——不拼文本、不追加 blocks。否则相似度自比恒为
+    1.0，同一条注入会被拼成两份（"X\\n\\nX"）且模型收到双份。"""
     if not session_id or not text:
         return None
     from difflib import SequenceMatcher
@@ -458,6 +464,13 @@ def steer_merge_pending(session_id: str, text: str, turn_id: str) -> str | None:
     if not lst:
         return None
     e = lst[-1]  # 只看最后一条：合并的是"刚才那条的修正"，不是历史批次
+    if (
+        steer_id
+        and e.get("steer_id") == steer_id
+        and e.get("turn_id") == turn_id
+    ):
+        # 同 id 同 turn 的重发：幂等认领，队列条目原样。
+        return str(e.get("steer_id"))
     prev = e.get("text") or ""
     a, b = prev.strip(), text.strip()
     # 短文本公共子串比例天然虚高（"第一件事"/"第二件事"=0.75）：长度门槛 +
