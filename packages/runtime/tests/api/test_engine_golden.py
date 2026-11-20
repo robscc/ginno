@@ -269,15 +269,15 @@ def _drive_turn(session_id: str, text: str) -> list[tuple[str, dict]]:
 
 # --------------------------------------------------------------------------- #
 # 三个 golden 场景（批次 5-2 起双路参数化：legacy = engine._stream_graph 原函数；
-# staged = stages/ 四阶段实现，GINNO_STREAM_ENGINE=staged 分流）。
+# staged = stages/ 四阶段实现。两路都**显式** setenv——批次 5-3 默认翻转后
+# 「未设 env」= staged，legacy 路不能再依赖默认值）。
 # 两路断言**同一快照段** —— staged 与 legacy 的外发帧序逐字节一致是本套
-# 快照对复制式迁移的硬验收。
+# 快照对复制式迁移的硬验收，也是 legacy 回退路可用的持续证明。
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("engine", ["legacy", "staged"])
 def test_golden_plain_text_turn(client, create_session, monkeypatch, engine):
     """场景 1:纯文本单轮 —— turn.start → token.delta → message.end。"""
-    if engine == "staged":
-        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
+    monkeypatch.setenv("GINNO_STREAM_ENGINE", engine)
     _allow_all_and_no_coalesce(monkeypatch)
     sid = create_session([script(text="你好,Ginno!这是一条纯文本回复。")])
     frames = _drive_turn(sid, "打个招呼")
@@ -287,8 +287,7 @@ def test_golden_plain_text_turn(client, create_session, monkeypatch, engine):
 @pytest.mark.parametrize("engine", ["legacy", "staged"])
 def test_golden_tool_call_turn(client, create_session, monkeypatch, engine):
     """场景 2:一次 bash 工具调用轮 —— tool.start/args/input/end + 收尾文本。"""
-    if engine == "staged":
-        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
+    monkeypatch.setenv("GINNO_STREAM_ENGINE", engine)
     _allow_all_and_no_coalesce(monkeypatch)
     sid = create_session(
         [
@@ -307,8 +306,7 @@ def test_golden_tool_call_turn(client, create_session, monkeypatch, engine):
 @pytest.mark.parametrize("engine", ["legacy", "staged"])
 def test_golden_multi_chunk_stream_turn(client, create_session, monkeypatch, engine):
     """场景 3:多片流式轮 —— 3 个 LLM chunk ↔ 3 帧 token.delta(1:1)。"""
-    if engine == "staged":
-        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
+    monkeypatch.setenv("GINNO_STREAM_ENGINE", engine)
     _allow_all_and_no_coalesce(monkeypatch)
     model = MultiChunkScripted(pieces=["Golden ", "chunk ", "stream!"])
     sid = create_session(model)

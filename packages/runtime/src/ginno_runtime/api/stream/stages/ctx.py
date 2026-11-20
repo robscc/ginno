@@ -116,6 +116,10 @@ class StreamTurnCtx:
         self._cfg_conf = config.get("configurable") or {}
         self.turn_id = self._cfg_conf.get("turn_id") or ""
         self.ui_turn_id = self.turn_id
+        # legacy 300（try 内）首个赋值、except 段（closeout.handle_turn_error
+        # 的 steer-continue 判定）会读——异常落在 _setup_stream 之前时它必须
+        # 已存在（预初始化防线，同 saw_interrupt/seg_text 一类）。
+        self._steer_user_arrived = False
         # legacy 165 行的占位 Event（"a fresh one simply reads as no stop
         # requested"）：try 体内 setdefault 之前若抛异常，finally 的
         # ``stop_evt.is_set()`` 读到的是它——预初始化保证 finally 永不

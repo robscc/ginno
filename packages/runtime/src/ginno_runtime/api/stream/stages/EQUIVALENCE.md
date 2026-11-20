@@ -1,9 +1,14 @@
-# _stream_graph → stages/ 四阶段迁移等价性核对清单（批次 5-2）
+# _stream_graph → stages/ 四阶段迁移等价性核对清单（批次 5-2，5-3 栈化修订）
 
 基线：main @ be1e4e8 的 `engine._stream_graph`（engine.py:119-1769，1650 行）。
 铁律：复制式对齐，非改写。旧 `_stream_graph` 一行未动（`git diff engine.py`
 为空）；分流入口是 turn.py 的 import 行（`from .stages import
-dispatch_stream_graph as _stream_graph`），默认路径与 legacy 引用同一函数对象。
+dispatch_stream_graph as _stream_graph`）。
+
+**批次 5-3 起：默认路径 = staged**（`GINNO_STREAM_ENGINE=legacy` 显式回退
+legacy 原函数；`staged_enabled()` 见 `__init__.py`）。**finally 清理段栈化**：
+逐 turn 资源全走 `AsyncExitStack`（run.py 入口 `async with` 进入），压栈序
+E1→E6、弹出序 = legacy finally 逐行清理序（见第六节）。
 
 ## 一、机械变换规则（仅此两类，全量适用）
 
@@ -50,7 +55,7 @@ dispatch_stream_graph as _stream_graph`），默认路径与 legacy 引用同一
 | 1441-1467 | except TurnStopped（heal + turn.stopped） | closeout.py `handle_turn_stopped` |
 | 1468-1600 | except Exception 前半（steer-continue/auto-retry） | closeout.py `handle_turn_error` |
 | 1600-1744 | except Exception 后半（error 卡 + mods） | closeout.py `handle_turn_error` |
-| 1745-1769 | finally（coal/ka/stop_waiter/注册表②④/steer/team/ws_closed） | finalize.py `finalize` |
+| 1745-1769 | finally（coal/ka/stop_waiter/注册表②④/steer/team/ws_closed） | 栈条目 E1-E6（run.py 登记，finalize.py 释放函数；5-3） |
 
 ## 三、全局注册表写入点对照（脚本验证，代码点数一致）
 
@@ -63,7 +68,8 @@ dispatch_stream_graph as _stream_graph`），默认路径与 legacy 引用同一
 
 时序注释：② 在 `_user_stopped` 捕获**之后**（major-B 顺序）；④ 与 steer
 keep/clear、team settled、lastwords note_turn_end 的相对顺序逐行对应
-（finalize.py 内行序 = legacy finally 行序）。
+（finalize.py `_release_turn_registration` 内行序 = legacy finally 行序；
+5-3 起由栈 LIFO 弹出，E3 → E2 的弹出序保证 ② 先于 ④——同 legacy）。
 
 ## 四、 knowingly 机械差异清单（无语义差异）
 
@@ -85,9 +91,19 @@ keep/clear、team settled、lastwords note_turn_end 的相对顺序逐行对应
    在 slug 未绑定时 NameError）→ staged 为同位置 AttributeError，同样
    传播出编排器（finally 先跑）——失败模式等价。
 8. **`_coal`/`_ka` 未初始化的 finally 防线**：legacy 依赖
-   `except Exception: pass` 吞 NameError；staged 同结构吞 AttributeError
-   （ctx 属性缺失时）——等价。`stop_evt` 占位 Event 两边同构
+   `except Exception: pass` 吞 NameError；staged 栈化后登记点即获取点，
+   未获取不登记（结构性消除该防线需求）；`stop_evt` 占位 Event 两边同构
    （ctx.__init__，对应 legacy 165）。
+9. **（5-3）finally 段间异常隔离**：legacy finally 内某段抛出（如未包
+   try 的 `steer_keep_channel`）会跳过其后清理；栈化后 AsyncExitStack
+   保证每个条目独立执行、互不阻断——**清理完整性增强**（非回归）。
+10. **（5-3）ask_budget 显式 reset**：legacy 从不 reset（靠 task context
+    死亡）；栈条目 E1 在同 context LIFO reset，嵌套递归段 token 链逐层
+    回滚——**防御增强**（begin/reset 同模块配对）。
+11. **（5-3）`ctx._steer_user_arrived` 预初始化**：legacy 该变量在 try 内
+    首赋值、except 段读——早窗口异常两边都会 UnboundLocalError/
+    AttributeError；staged 在 ctx.__init__ 补预初始化 False（防线增强，
+    正常路径 `_setup_stream` 仍重赋，无行为差异）。
 
 ## 五、验证证据
 
@@ -102,3 +118,28 @@ keep/clear、team settled、lastwords note_turn_end 的相对顺序逐行对应
 | ruff check stages/ + turn.py + golden 测试 | All checks passed |
 | 性能 smoke（交替 6 轮 × 3 turn，两步工具轮墙钟） | legacy 中位 56.3ms / staged 58.5ms = 1.039x（同数量级） |
 | 全量 pytest（GINNO_STREAM_ENGINE=staged 全局） | 见提交信息/批次报告 |
+
+## 六、（5-3）AsyncExitStack 栈条目清单
+
+栈在 `run.py stream_graph_staged` 入口 `async with AsyncExitStack()` 进入；
+压栈序 = 资源获取序（acquire 后紧邻登记），弹出序（LIFO）= legacy finally
+逐行清理序：
+
+| 弹出序 | 条目 | 释放内容 | legacy engine.py | 登记点 |
+|---|---|---|---|---|
+| E6 | `_close_coalescer` | 合帧器 flush + 定时器取消 | 1746-1749 | run.py `_setup_io` |
+| E5 | `_cancel_keepalive` | keepalive task 取消 | 1658-1661 | run.py `_setup_io` |
+| E4 | `_cancel_stop_waiter` | stop 等待任务取消 | 1662-1663 | run.py 主函数（stop_waiter 后） |
+| E3 | `_release_stop_entry` | `_TURN_STOP.pop` | 1666-1668 | run.py `_setup_identity` |
+| E2 | `_release_turn_registration` | 条件收尾组（注册表④ + note_turn_end + team/subagent/steer 钩子 + ws_closed 日志） | 1669-1760 | run.py `_setup_identity`（写入点①紧邻行） |
+| E1 | `reset_ask_budget(tok)` | ask_budget contextvar 还原 | 121-126（legacy 不 reset） | run.py 主函数入口 |
+
+结构收益：资源 acquire 与 release 登记钉在同一行邻域（新增资源不再依赖
+「记得去 finally 补配对」的纪律）；任一条目抛异常不阻断其余条目。异常路径
+验收：`tests/api/test_stages_exit_stack.py`（stub graph 中途爆 → 注册表
+全清 + 预算还原；`_setup_stream` 抛出窗口同验）。
+
+event sink 与 checkpoint WAL 说明：engine/stages 路内对 sink 仅消费
+（`get_sink`），注册/注销属调用方（a2a/inbound_exec.py，legacy/staged 共享，
+自带 try/finally 配对）；checkpointer 无 WAL 打开点（grep 零命中，遗言 WAL
+的 start/end 配对已含在写入点①邻近与 E2 组内）——两项均无引擎侧登记点。

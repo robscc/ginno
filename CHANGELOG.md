@@ -7,6 +7,18 @@ versions.
 
 ## [Unreleased]
 
+### 变更
+- **流引擎默认切换 staged 四阶段实现**（批次 5-3）：`GINNO_STREAM_ENGINE`
+  默认值翻转为 `staged`（原 legacy），`GINNO_STREAM_ENGINE=legacy` 显式回退
+  旧 `engine._stream_graph`（原函数保留未动）；golden 双路终验逐字节一致。
+- **staged 引擎逐 turn 资源全走 AsyncExitStack**（批次 5-3）：注册表
+  （`_RUNNING_TURNS`/`_RUNNING_TURNS_AT`/`_TURN_STOP`/`_PENDING_KIND`）、
+  ask_budget、合帧器、keepalive、stop_waiter 共 6 类栈条目（E1-E6），压栈序
+  = 获取序、弹出序 = legacy finally 逐行清理序——资源 acquire 与 release
+  登记钉在同一行邻域，异常路径清理由栈保证（任一条目抛异常不阻断其余），
+  根治「新增资源忘记配对清理」的结构病；配套异常路径验收测试
+  `tests/api/test_stages_exit_stack.py`。
+
 ## [0.4.1] - 2026-11-18
 
 20 commits since 0.4.0（4 feat / 10 fix / 3 perf / 2 docs / 1 test）。
