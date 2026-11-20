@@ -149,8 +149,12 @@ fn apply_tray_running(app: &tauri::AppHandle, running: i64) -> tauri::Result<()>
         if let Some(tray) = app.tray_by_id("ginno-tray") {
             if running > 0 {
                 tray.set_title(Some(format!("▶{running}")))?;
+                // 彩虹描边流光（2026-11-21 方案 2）：有 turn 在跑即启动。
+                // start 幂等（世代计数），stop 由 running 归零分支触发。
+                crate::tray_anim::start(app);
             } else {
                 tray.set_title(None::<&str>)?;
+                crate::tray_anim::stop(app);
             }
         }
     }
