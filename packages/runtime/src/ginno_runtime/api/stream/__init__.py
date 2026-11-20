@@ -8,7 +8,8 @@ the session.
 This used to be one module (``api/stream.py``); it is now a package split
 along its coupling seams, with **zero behavior change**:
 
-- :mod:`.ws` — the WebSocket endpoint (``session_ws``) + session title touch.
+- :mod:`.ws` — the WebSocket endpoint package (``session_ws``): handshake /
+  receive loop / invoke & steer handlers / disconnect teardown.
 - :mod:`.turn` — turn preparation: steer payload / attached files / MCP graph
   refresh / ``_run_stream`` / ``_run_resume``.
 - :mod:`.engine` — the streaming engine: ``_stream_graph``, the chunked

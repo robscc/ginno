@@ -32,9 +32,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _MESSAGES_DIR = _REPO_ROOT / "apps" / "web" / "messages"
 
 # (file, keys the stream layer must emit literals for)
+_WS_DIR = Path("packages/runtime/src/ginno_runtime/api/stream/ws")
 _STREAM_SOURCES = (
-    Path("packages/runtime/src/ginno_runtime/api/stream/ws.py"),
     Path("packages/runtime/src/ginno_runtime/api/stream/engine.py"),
+    *sorted(_WS_DIR.glob("*.py")),  # ws.py -> ws/ package (batch 4-2 split)
 )
 
 _KEY_RE = re.compile(r'"i18n_key":\s*"([a-z0-9_.]+)"')
