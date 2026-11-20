@@ -26,6 +26,7 @@ import { PRIORITY_HEX, categoryStyle } from "@/lib/theme";
 import { AgentIcon, Icon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { ArtifactMetaCard, ICON, KIND_LABEL, type Rect } from "./ArtifactsPanel";
+import { fireCelebrationFrom } from "@/lib/fireworks";
 import type { Artifact, Priority, SessionMeta, Todo, TodoProvider, TodoSyncEntry } from "@/lib/types";
 
 type Filter = "all" | Priority;
@@ -875,6 +876,8 @@ export function TodoPanel() {
                       el.classList.remove("todo-done-flash");
                       void el.offsetWidth; // reflow 重启动画
                       el.classList.add("todo-done-flash");
+                      // 大礼花（候选⑦）：在任务卡片上方六发齐放
+                      fireCelebrationFrom(el.parentElement);
                     }
                     void g.patchTodo(todo.id, { done: !todo.done });
                   }}
