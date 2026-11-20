@@ -7,19 +7,61 @@ versions.
 
 ## [Unreleased]
 
-### 变更
+## [0.5.0] - 2026-11-21
 
-- 删除 legacy 引擎路径：`_stream_graph_legacy`（约 1650 行）与 `GINNO_STREAM_ENGINE` 开关移除，stages/ 四阶段成为唯一引擎路径（golden 契约断言不变，快照即原基线）。
-- **流引擎默认切换 staged 四阶段实现**（批次 5-3）：`GINNO_STREAM_ENGINE`
-  默认值翻转为 `staged`（原 legacy），`GINNO_STREAM_ENGINE=legacy` 显式回退
-  旧 `engine._stream_graph`（原函数保留未动）；golden 双路终验逐字节一致。
-- **staged 引擎逐 turn 资源全走 AsyncExitStack**（批次 5-3）：注册表
-  （`_RUNNING_TURNS`/`_RUNNING_TURNS_AT`/`_TURN_STOP`/`_PENDING_KIND`）、
-  ask_budget、合帧器、keepalive、stop_waiter 共 6 类栈条目（E1-E6），压栈序
-  = 获取序、弹出序 = legacy finally 逐行清理序——资源 acquire 与 release
-  登记钉在同一行邻域，异常路径清理由栈保证（任一条目抛异常不阻断其余），
-  根治「新增资源忘记配对清理」的结构病；配套异常路径验收测试
-  `tests/api/test_stages_exit_stack.py`。
+66 commits since 0.4.1。主题：**安全加固（环回守卫）、流引擎架构化（staged 唯一路径）、
+可维护性重构 7 批次收官、menubar 状态导航、远端/连接器可用性系列修复**。
+
+### 安全
+- **环回 Origin 守卫 + CORS 白名单化**（5c812e5）：斩断任意网页驱动本地 API——
+  非白名单 Origin 的浏览器请求被拒（P0-1）；未知 /api/* 路径 404 JSON 契约恢复
+  （17d7b29），connectors 路由 6 处裸 {error} 补 ok:false 包封（7e70a28）。
+
+### 流引擎（架构化）
+- **staged 四阶段成为唯一引擎路径**：`_stream_graph` 复制式迁移为 stages/
+  （permission/toolloop/streamio/finalize，批次 5-2），golden 帧序契约与旧路
+  逐字节一致；逐 turn 六类资源全走 **AsyncExitStack**（批次 5-3，异常路径
+  同清，根治三次泄漏事故的结构病）；legacy 路径与 `GINNO_STREAM_ENGINE`
+  开关已删除（68854ff）。
+- **流停顿重试修复**（8e7b4bf）：首等 60s 保持、停顿重试去重——名义 2 次
+  实际只跑 1 次的缺陷消除。
+- 直播 turn 收尾帧丢失卡死：周期 turn_state 探针自愈 + 控制帧事件账本（a1618f7）。
+
+### 重构（7 批次绞杀者收官，19 PR）
+- 1500+ 行产品文件清零：ws.py 1575→8 模块（session_ws 1417→13 行，消息泵
+  单一所有权）、handle.ts 2217→40 行（15 事件组注册表 + CODEMAP 77 事件
+  盘点）、sessions/code/commands/mod-broker/CodePanel/PinStream/server.py
+  全部拆解；lifespan 启动任务表化（36+10 项声明表，fail_policy 三态）。
+- 五套契约快照留库（golden/事件分发 93 用例/命令表/OpenAPI/ws 命门），
+  顺带真修复 7 个 bug：coalesce 死设、Dev 丢图、Pin 三连、steer 同 id 重发
+  拼双份（19d7cd0）、`_steer_user_arrived` 早崩窗口、薄壳名字漂移、
+  event_contract glob 静默空。
+- 启动任务 timeout 闸（b5b9590）：32/36 任务三档加闸（60s/120s/300s），
+  白名单 4 任务 + shutdown 全表；守卫「快照∪白名单」双断言。
+- 共享层 applyBlock 超集化（c4d2cc2）：Pin/Dev/主窗口三端单实现，Dev 抽屉
+  白得主版 9 项能力；fake_model 多 tool_call chunk index 修正（b219fd0）。
+
+### 功能
+- **menubar 状态与置顶会话导航**（e1378c8）：running ▶N + 下拉快速切换置顶会话。
+- 遗言 mode=auto 真自动恢复（0398ff1）+ 信封实时渲染（ea07c95）+ 卡头行不换行（d282375）。
+- 配置健康检查引擎 + /api/doctor + 诊断页 Config Doctor（9df9b03/5309aa8）。
+- MCP 工具 tab 移入智能体组（2a34eea）；定时任务执行中彩虹点（e2ce738）；
+  彩虹=running 语义四处统一（90cfc15/d78b952/2ddb986/b5c036e）；loading 声呐
+  脉冲（bafa4cf）；用户旅程批次：侧栏/产物过滤 + 模型空态引导（a6db707）。
+
+### 修复
+- **连接器页请求风暴**（6dd5f2f）：report_meta 广播守卫 + 前端节流双修；入站
+  toggle 总开关守卫（3530604）；relay 双客户端互踢风暴（cc1b139）。
+- 远端/沙盒系列：远程会话 runtime 安全网（eb83c39）、attach_ref 点击装死
+  （c74d80a）、turn 生命周期账本（8104e73）、前端守卫（9cafd14）；AgentTeam
+  投递竞态改事件驱动 ack（2427ae6）。
+- **dist-info 瘦身连环雷**（132cadc/be1e4e8/028c46a）：httpx2/httpcore2 白名单
+  + frozen import 健康探针 e2e——定时任务 PackageNotFoundError 根治；
+  runtime bundle 瘦身 161→157.7MB（c7c29a6）。
+- 调度孤儿 running 行收编只扫近 4 天（942295f，777h 悬挂实锤）；sidecar 启动
+  单实例守卫（10edd0b）；dev-swap 旁路自愈记账（93caaaf）；回放分泡新 turn
+  焊进旧气泡（74fd5ee）；composer 拖拽上限 1/3（5405b09）；关联面板纯订阅
+  语义（979799e）。
 
 ## [0.4.1] - 2026-11-18
 
@@ -448,5 +490,8 @@ First public release 🎉 (~2.5 months, 220+ commits, daily dogfooding).
 - **Channels**: DingTalk connector (Stream mode), WeCom.
 - Platforms: macOS (Apple Silicon).
 
-[Unreleased]: https://github.com/robscc/ginno/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/robscc/ginno/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/robscc/ginno/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/robscc/ginno/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/robscc/ginno/compare/v0.3.3...v0.4.0
 [0.1.0]: https://github.com/robscc/ginno/releases/tag/v0.1.0
