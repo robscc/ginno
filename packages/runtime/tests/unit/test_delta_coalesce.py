@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from ginno_runtime.api.stream.delta_coalesce import DeltaCoalescer
+from ginno_runtime.api.stream.delta_coalesce import DeltaCoalescer, coalesce_window_s
 
 
 def _emit(event: str, data: dict) -> str:
@@ -150,3 +150,38 @@ async def test_empty_text_ignored():
     await coal.feed("token.delta", "")
     await coal.close()
     assert rec.frames == []
+
+
+# ---------------------------------------------------------------------------
+# coalesce_window_s() 设置读取（2026-11-20 import 层级修复的回归钉）
+# 修复前：``from ..paths`` 在 api/stream/ 包层级解析到不存在的
+# ginno_runtime.api.paths，ImportError 被静默吞 → 设置死设，恒返回 0.033。
+# ---------------------------------------------------------------------------
+
+
+def _write_settings(tmp, data: dict) -> None:
+    (tmp / "settings.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_coalesce_window_reads_settings_0(monkeypatch, tmp_path):
+    """settings.stream.coalesce_ms=0 → 0.0（禁用合帧）。修复前恒 0.033。"""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    _write_settings(tmp_path, {"stream": {"coalesce_ms": 0}})
+    assert coalesce_window_s() == 0.0
+
+
+def test_coalesce_window_reads_settings_500(monkeypatch, tmp_path):
+    """settings.stream.coalesce_ms=500 → 0.5s 窗口。修复前恒 0.033。"""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    _write_settings(tmp_path, {"stream": {"coalesce_ms": 500}})
+    assert coalesce_window_s() == 0.5
+
+
+def test_coalesce_window_defaults(monkeypatch, tmp_path):
+    """无文件 / 坏 JSON / 负值 → 默认 33ms 回退，且绝不抛异常。"""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    assert coalesce_window_s() == pytest.approx(0.033)  # 无 settings.json
+    (tmp_path / "settings.json").write_text("{broken json", encoding="utf-8")
+    assert coalesce_window_s() == pytest.approx(0.033)  # 坏 JSON
+    _write_settings(tmp_path, {"stream": {"coalesce_ms": -5}})
+    assert coalesce_window_s() == pytest.approx(0.033)  # 负值

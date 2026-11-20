@@ -32,7 +32,10 @@ def coalesce_window_s() -> float:
     try:
         import json
 
-        from ..paths import settings_path
+        # 三级上溯到根包：本文件在 api/stream/ 子包，`..paths` 会解析到
+        # 不存在的 ginno_runtime.api.paths → ImportError 被 except 吞 →
+        # 恒回退 33ms（2026-11-20 修复，settings.stream.coalesce_ms 曾死设）。
+        from ...paths import settings_path
 
         p = settings_path()
         if not p.exists():
