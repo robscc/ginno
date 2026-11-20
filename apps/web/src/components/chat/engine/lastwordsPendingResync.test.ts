@@ -58,7 +58,7 @@ describe("lastwords pending 拉取式兜底", () => {
   });
 
   it("handler 侧 dedupeKey 保证真实帧与拉取帧不双弹", () => {
-    const h = read("src/components/chat/engine/handle.ts");
+    const h = read("src/components/chat/engine/handlers/07-runtime-events.ts");
     expect(h).toContain("lastwords-pending:${lpSid}");
   });
 });

@@ -3,17 +3,27 @@
 // 契约；reducer 的真实行为由 streamCoreLlmCall.test.ts 覆盖，渲染真实性由
 // packaged UI e2e（test_packaged_ui_llm_events.py）覆盖。
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import enChat from "../../../../messages/en/chat.json";
 import zhChat from "../../../../messages/zh-CN/chat.json";
 
-const HANDLE = readFileSync(
-  fileURLToPath(new URL("./handle.ts", import.meta.url)),
-  "utf8",
-);
+// 批次 6-2 拆分后 case 体迁入 handlers/ 分组模块：HANDLE 覆盖薄入口 +
+// 全部 handler 模块（按文件名排序拼接），静态契约不随文件移动而失效。
+const HANDLE = [
+  readFileSync(
+    fileURLToPath(new URL("./handle.ts", import.meta.url)),
+    "utf8",
+  ),
+  ...readdirSync(fileURLToPath(new URL("./handlers", import.meta.url)))
+    .filter((f) => f.endsWith(".ts") && f !== "types.ts")
+    .sort()
+    .map((f) =>
+      readFileSync(fileURLToPath(new URL(`./handlers/${f}`, import.meta.url)), "utf8"),
+    ),
+].join("\n");
 const BLOCKS = readFileSync(
   fileURLToPath(new URL("../blocks.tsx", import.meta.url)),
   "utf8",
@@ -23,9 +33,12 @@ const LINE = readFileSync(
   "utf8",
 );
 
-describe("handle.ts：llm.* 事件分发（独立 case 体，不进 5 事件共享体）", () => {
+describe("handlers：llm.* 事件分发（独立注册，不进 delta 前置共享体）", () => {
   it("llm.request / llm.response 走 adoptOrphanStream + mutateLive（tool 帧同范式）", () => {
-    expect(HANDLE).toMatch(/case "llm\.request":\s*\n\s*case "llm\.response":\s*\n\s*adoptOrphanStream\(ctx, sid\);\s*\n\s*mutateLive\(ctx, sid, ev\);\s*\n\s*break;/);
+    // 注册形状（批次 6-2 注册表化）：相邻注册、共享 stream.onStreamFrame——
+    // 不是 stream.onDelta（delta 专属副作用 stripFromLive 前置进不来）。
+    expect(HANDLE).toMatch(/\["llm\.request", stream\.onStreamFrame\],\s*\n\s*\["llm\.response", stream\.onStreamFrame\],/);
+    expect(HANDLE).toMatch(/export function onStreamFrame\(ctx: EngineCtx, sid: string, ev: ServerEvent\) \{\s*\n\s*adoptOrphanStream\(ctx, sid\);\s*\n\s*mutateLive\(ctx, sid, ev\);\s*\n\}/);
   });
 
   it("turn.stopped 收口闸门覆盖 pending llm_call（停在模型调用中途也要定格）", () => {
