@@ -59,9 +59,11 @@ from .effects import (  # noqa: F401  (re-export of the historical namespace)
 # keeps seeing them.
 from .engine import (  # noqa: F401  (re-export of the historical namespace)  # noqa: F401  (re-export of the historical namespace)
     CHUNK_TIMEOUT_S,
+    _STREAM_ENGINE,
     _find_meta,
     _session_meta_patch,
     _stream_graph,
+    _stream_graph_legacy,
     add_usage,
     agents_reg,
     art_store,
