@@ -14,6 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
+import { NoticeBell } from "@/components/notice/NoticeBell";
 import { BASE, listTasks, TASK_TERMINAL, type TaskRecord } from "@/lib/runtime";
 import { notifyTaskTransitions } from "@/lib/store/notifications";
 
@@ -214,7 +215,12 @@ export function SidebarFooter({
         <span className="truncate">{t("nav.settings")}</span>
       </Link>
 
-      <div className="px-2.5 pt-2 text-[10px] text-faint">© 2026 GinnoWork</div>
+      {/* 通知中心（2026-11-21 从 session TopBar 迁入——全局功能住应用级
+          位置；原 TopBar 入口按用户要求移除）。 */}
+      <div className="flex items-center justify-between px-2.5 pt-2">
+        <span className="text-[10px] text-faint">© 2026 GinnoWork</span>
+        <NoticeBell />
+      </div>
 
     </div>
   );
