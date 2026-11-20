@@ -1,7 +1,9 @@
-// pinStreamCore — PinStream 接入层单测（重构批次 3-1）。
+// pinStreamCore — PinStream 接入层单测（重构批次 3-1；P1-4 起流帧归约
+// 断言改钉共享层）。
 //
-// 钉住的是「pin 用户现在拿到的行为」——pinApplyBlock 直调主版
-// streamCore.applyBlock 后，pin 视角的三个修复点：
+// 钉住的是「pin 用户现在拿到的行为」——P1-4 共享层超集化后 pinApplyBlock
+// 包装已删，applyBlock 别名自 sessionBlocks（re-export 主版真源）。
+// pin 视角的三个修复点：
 //   ① tool.end 2026-11-15 定位算法（同名块不再误删/错位/静默丢结果）；
 //   ② appendStreamDelta 交叉增量合并（thinking/text 交叉流不再碎块）；
 //   ③ watchdog believing-live 周期探针 + turn.state 回答的 stale 守卫。
@@ -9,11 +11,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  pinApplyBlock,
   pinTurnStateAction,
   pinWatchdogTick,
   PIN_SILENCE_CLOSE_MS,
 } from "./pinStreamCore";
+import { applyBlock as pinApplyBlock } from "@/components/session/sessionBlocks";
 import type { Block } from "@/components/chat/blocks";
 
 const tool = (id: string | undefined, name: string, content: string, pending: boolean): Block => ({

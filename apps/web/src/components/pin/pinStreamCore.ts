@@ -1,46 +1,19 @@
-// pinStreamCore — PinStream 的流事件/看门狗接入层（重构批次 3-1）。
+// pinStreamCore — PinStream 的看门狗/探针决策层（重构批次 3-1，P1-4 收窄）。
 //
-// 背景：PinStream.tsx 曾按 floating-window-design.md 维护一份 applyBlock 的
-// 「刻意副本」，但三处落后于主窗口（批次 0 重复度测量 P0——pin 用户仍在踩
-// 主窗口已修的坑）：
-//   ① tool.end 定位停在 2026-11-15 之前的旧算法：name 兜底不要求 pending、
-//     map 从头扫取最早同名块（结果错位），name-only 空结果走 filter 全删
-//     （一个 turn 内同名工具块被一次删光）；
-//   ② delta 合块只在「末尾同 kind」才合并，thinking 与正文交叉流式时实时
-//     视图碎成夹在正文中的独立小卡片（主版 2026-10-01 已修，见
-//     streamCore.appendStreamDelta）；
-//   ③ watchdog 只有 45s 静默关连接 + onopen 单次 probe，缺主版 fe0d06e
-//     （a1618f7）的 believing-live 周期 turn_state 探针——收尾帧在 ws 未断
-//     时丢失会永远卡在直播态。
+// 历史：PinStream.tsx 曾按 floating-window-design.md 维护一份 applyBlock 的
+// 「刻意副本」，批次 3-1（#240）修复为直调主版 streamCore.applyBlock；
+// P1-4 把共享层 sessionBlocks.applyBlock 升级为主版超集（re-export 同一
+// 真源）后，pinApplyBlock 包装层删除——usePinSessionLoop 直接用共享层
+// applyBlock，Pin/Dev/主窗口三端单实现。applyBlock 的事件白名单论证
+// （为什么 pin 路径不会产出主版新块类型）随实现搬去了 sessionBlocks.ts
+// 的 re-export 注释。
 //
-// 修复方式 = 直调主版 streamCore.applyBlock + 把 watchdog / 探针回答决策抽成
-// 本文件的纯函数（node 环境可单测，组件文件不再藏不可测的闭包逻辑）。
-//
-// 兼容性论证（为什么接入处**不需要**过滤主版可能产生的新块类型）：PinStream
-// 的 handle() switch 只把 6 种流事件（token.delta / thinking.delta /
-// tool.start / tool.args / tool.end / image.emit——主版事件集的严格子集）喂进
-// pinApplyBlock；主版 reducer 会为其建块的 user.question / widget.emit /
-// workflow.emit / ref.emit / llm.request / llm.response 在 pin 侧一律走
-// default 分支丢弃（floating-window-design.md §2.4 刻意忽略），这些分支在 pin
-// 路径上不可达。因此主版在这 6 事件上可能产出的块类型只有
-// text / thinking / tool / image——InnerBlocks 均已渲染，无兼容缺口。
-// （tool.end 的 foldQuestion 前置检查同理：pin 的 blocks 里永无 question 块，
-//  qi 恒为 -1。）
-
-import { applyBlock } from "@/components/chat/streamCore";
-import type { Block } from "@/components/chat/blocks";
-
-/** Pin 侧唯一的流事件 → block-list 归约入口（主版 applyBlock 直调）。
- *  直调即继承主版全部语义：2026-11-15 的 tool.end 定位（id 精确匹配不限
- *  pending 保重连重放幂等；无 id 只认 pending 且从后往前取最近同名）、
- *  空结果只删目标块、无配对块时 append 兜底不静默丢结果、以及
- *  appendStreamDelta 的交叉增量合并。 */
-export function pinApplyBlock(
-  blocks: Block[],
-  ev: { event: string; [k: string]: unknown },
-): Block[] {
-  return applyBlock(blocks, ev);
-}
+// 本文件保留的是 watchdog / 探针回答决策的纯函数（node 环境可单测，
+// 组件文件不藏不可测的闭包逻辑）：
+//   ② turn_state 探针回答的 stale 守卫（pinTurnStateAction）；
+//   ③ believing-live 周期 turn_state 探针（pinWatchdogTick，fe0d06e/
+//      a1618f7 镜像）。
+// （① 流帧归约已在 P1-4 消除——见 usePinSessionLoop 头注释的三处差异。）
 
 /** 45s 无任何入站帧 → 主动断线换新连接（重连循环走 reconcile）。 */
 export const PIN_SILENCE_CLOSE_MS = 45_000;
