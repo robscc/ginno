@@ -8,6 +8,8 @@ versions.
 ## [Unreleased]
 
 ### 变更
+
+- 删除 legacy 引擎路径：`_stream_graph_legacy`（约 1650 行）与 `GINNO_STREAM_ENGINE` 开关移除，stages/ 四阶段成为唯一引擎路径（golden 契约断言不变，快照即原基线）。
 - **流引擎默认切换 staged 四阶段实现**（批次 5-3）：`GINNO_STREAM_ENGINE`
   默认值翻转为 `staged`（原 legacy），`GINNO_STREAM_ENGINE=legacy` 显式回退
   旧 `engine._stream_graph`（原函数保留未动）；golden 双路终验逐字节一致。
