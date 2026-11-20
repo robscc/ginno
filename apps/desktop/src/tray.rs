@@ -1,6 +1,9 @@
-//! Menu-bar tray (decision Q4: tray icon + Dock stays). Left click toggles
-//! the pin window; the menu offers explicit entries + quit. Between "Open
-//! Main Window" and "Quit" sits the pinned-sessions quick-nav section:
+//! Menu-bar tray (decision Q4: tray icon + Dock stays). Left click opens
+//! the dropdown menu (user request 2026-11-21: was right-click-only with
+//! left toggling the pin window; the pin toggle stays reachable as the
+//! menu's first item, so nothing is lost); the menu offers explicit
+//! entries + quit. Between "Open Main Window" and "Quit" sits the
+//! pinned-sessions quick-nav section:
 //! every sidebar-pinned session (≤8, from /api/badge via badge.rs's 5s poll)
 //! gets a menu item that shows+focuses the main window and makes the webview
 //! switch to that session — same `__ginnoOpenSession` eval bridge as
@@ -9,7 +12,7 @@
 //! (pin/unpin/rename/title touch land within one 5s poll).
 
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
 use crate::badge::PinnedSession;
@@ -112,7 +115,9 @@ pub(crate) fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let mut tray = TrayIconBuilder::with_id("ginno-tray")
         .tooltip("Ginno")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // 左键直接弹菜单（2026-11-21 用户需求）；macOS 上设 true 后左键点击
+        // 由系统消费弹菜单，不再派发 Click 事件——悬浮窗开关保留为菜单第一项。
+        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if let Some(sid) = id.strip_prefix(SESS_PREFIX) {
@@ -139,16 +144,6 @@ pub(crate) fn install_tray(app: &tauri::App) -> tauri::Result<()> {
                 // the sidecar) — same path as ⌘Q.
                 "tray-quit" => app.exit(0),
                 _ => {}
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                toggle_pin(tray.app_handle());
             }
         });
     if let Some(icon) = app.default_window_icon() {
