@@ -13,10 +13,21 @@
  * watch (and answer permission prompts for) the same turn; `_PENDING_RESUME`
  * dedupes the responses.
  *
- * Deliberate duplication over abstraction: applyBlock / socket lifecycle
- * mirror ChatStream's semantics (3s reconnect, 20s ping, 45s silence close,
+ * Deliberate duplication over abstraction: the socket lifecycle mirrors
+ * ChatStream's semantics (3s reconnect, 20s ping, 45s silence close,
  * post-reconnect `turn_state` probe with a 6s reconcile fallback) without
  * touching the 3400-line monolith.
+ *
+ * NOT duplicated (refactor batch 3-1, driven by the batch-0 duplication
+ * audit): the streaming-event reducer now DIRECTLY calls the main window's
+ * `streamCore.applyBlock` (via pinApplyBlock) instead of drifting as a stale
+ * local copy — the pin's 6 streaming events are a strict subset of the main
+ * reducer's event set, so pin users get the 2026-11-15 tool.end targeting fix
+ * and the cross-block delta merge for free. The watchdog additionally gained
+ * the main window's believing-live periodic `turn_state` probe (fe0d06e /
+ * a1618f7): a lost final frame on a live ws can no longer freeze the pin at
+ * "pending bubble + frozen timer". Both decisions live as pure functions in
+ * pinStreamCore (unit-testable without DOM).
  *
  * NOT duplicated: the steer queue and the composer's attachment plumbing come
  * from the shared modules (`lib/steerQueue`, `lib/composerAttachments`) — a
@@ -60,6 +71,7 @@ import {
   hasPendingTool,
   type Block,
 } from "@/components/chat/blocks";
+import { pinApplyBlock, pinTurnStateAction, pinWatchdogTick } from "@/components/pin/pinStreamCore";
 
 export type PinStreamStatus = "idle" | "busy" | "permission";
 
@@ -104,96 +116,6 @@ const newTurnId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-// Patterns that indicate a tool returned "no results" — hide these blocks
-// (mirror of ChatStream's noise filter).
-const EMPTY_TOOL_RESULT_RE =
-  /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched|no matches found|no files found|\(nothing found\))\s*$/i;
-
-/** Streaming-event → block-list reducer (subset of ChatStream.applyBlock). */
-function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
-  const last = blocks[blocks.length - 1];
-  switch (ev.event) {
-    case "token.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "text") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "text", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "text", text: t }];
-    }
-    case "thinking.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "thinking") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "thinking", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "thinking", text: t }];
-    }
-    case "tool.start":
-      return [
-        ...blocks,
-        {
-          kind: "tool",
-          id: ev.id as string | undefined,
-          name: ev.name as string,
-          content: "…",
-          pending: true,
-          argsPreview: (ev.preview as string) || undefined,
-        },
-      ];
-    case "tool.args": {
-      const id = ev.id as string | undefined;
-      const preview = ev.preview as string;
-      if (!id || !preview) return blocks;
-      let matched = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        if (!matched && b.id === id) {
-          matched = true;
-          return { ...b, argsPreview: preview };
-        }
-        return b;
-      });
-    }
-    case "tool.end": {
-      const id = ev.id as string | undefined;
-      const name = ev.name as string | undefined;
-      const content = ev.content as string;
-      if (EMPTY_TOOL_RESULT_RE.test(content)) {
-        return blocks.filter((b) => {
-          if (b.kind !== "tool") return true;
-          const matches = id ? b.id === id : name ? b.name === name : b.pending;
-          return !matches;
-        });
-      }
-      let found = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
-        if (matches) {
-          found = true;
-          return { ...b, content, pending: false };
-        }
-        return b;
-      });
-    }
-    case "image.emit":
-      return [
-        ...blocks,
-        {
-          kind: "image",
-          fileId: ev.file_id as string,
-          name: ev.name as string | undefined,
-          mtime: ev.mtime as number | undefined,
-        },
-      ];
-    default:
-      return blocks;
-  }
-}
 
 function mapHistory(
   res: {
@@ -306,6 +228,13 @@ export function PinStream({
   const watchRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconcileRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSeenRef = useRef(0);
+  // 谁在这条 socket 上最后说话——turn_state 探针还是我们的 invoke？探针回答
+  // 只能描述「服务端处理探针那一刻」的会话态：此后发过新 turn（sendSeq 更
+  // 大）时，running=false 的回答不能据此 reconcile，否则把刚发出的 turn 判死
+  // （主版 engine/handle.ts 的 sendSeq>probeSeq 守卫，pinTurnStateAction 落地）。
+  const ioSeqRef = useRef(0);
+  const probeSeqRef = useRef(0);
+  const sendSeqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
@@ -360,7 +289,7 @@ export function PinStream({
   function mutateLive(ev: { event: string; [k: string]: unknown }) {
     const id = ensureLive();
     setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, blocks: applyBlock(m.blocks, ev) } : m)),
+      prev.map((m) => (m.id === id ? { ...m, blocks: pinApplyBlock(m.blocks, ev) } : m)),
     );
   }
 
@@ -531,16 +460,31 @@ export function PinStream({
         setMessages([]);
         break;
       case "turn.state":
-        // Answer to the post-reconnect probe: no turn running → whatever we
-        // held as live is stale; rebuild from the persisted history.
+        // Answer to the onopen / periodic watchdog probe. Decision logic lives
+        // in pinTurnStateAction (pure, unit-tested): resume → the broadcast
+        // stream continues on this socket; stale → the answer predates a send
+        // we just made (sendSeq > probeSeq) — wait for the stream instead;
+        // idle → we no longer believe a turn runs (it ended between probe and
+        // answer — nothing to reconcile); reconcile → the turn is gone while
+        // we believed it live: rebuild from the persisted history.
         if (reconcileRef.current) {
           clearTimeout(reconcileRef.current);
           reconcileRef.current = null;
         }
-        if (ev.running) break; // the broadcast stream resumes on this socket
-        reconcileFromHistory();
-        busyRef.current = false;
-        setBusy(false);
+        if (
+          pinTurnStateAction(
+            { running: ev.running },
+            {
+              believingLive: Boolean(liveRef.current || busyRef.current),
+              sendSeq: sendSeqRef.current,
+              probeSeq: probeSeqRef.current,
+            },
+          ) === "reconcile"
+        ) {
+          reconcileFromHistory();
+          busyRef.current = false;
+          setBusy(false);
+        }
         break;
       case "message.end":
         closeLive(false);
@@ -676,6 +620,7 @@ export function PinStream({
         // Remounted mid-turn: ask whether the turn still exists; if the
         // server never answers (older runtime), reconcile from history.
         try {
+          probeSeqRef.current = ++ioSeqRef.current;
           sock.send(JSON.stringify({ type: "turn_state" }));
         } catch {
           /* ignore */
@@ -696,9 +641,32 @@ export function PinStream({
         }
       }, 20000);
       watchRef.current = setInterval(() => {
-        if (Date.now() - lastSeenRef.current > 45000) {
+        // Decision in pinWatchdogTick (pure, unit-tested): close = 45s of
+        // TOTAL silence (ping keeps the ws alive, so a silent-but-open
+        // connection still gets rotated); probe = the believing-live periodic
+        // turn_state probe (fe0d06e / a1618f7 mirror). A lost final frame
+        // (message.end / tool.end / user.question) on a live ws would
+        // otherwise freeze the pin at "pending bubble + frozen timer" forever
+        // — the probe's answer routes into the turn.state handler above,
+        // which reconciles from the checkpoint when the server says the turn
+        // is gone.
+        const { close, probe } = pinWatchdogTick({
+          now: Date.now(),
+          lastSeen: lastSeenRef.current,
+          believingLive: Boolean(liveRef.current || busyRef.current),
+          socketOpen: sock.readyState === WebSocket.OPEN,
+        });
+        if (close) {
           try {
             sock.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        if (probe) {
+          try {
+            probeSeqRef.current = ++ioSeqRef.current;
+            sock.send(JSON.stringify({ type: "turn_state" }));
           } catch {
             /* ignore */
           }
@@ -987,6 +955,10 @@ export function PinStream({
           files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
         }),
       );
+      // Only a send that actually went out gets stamped — a turn.state answer
+      // to a probe we sent earlier is older than this turn and must not judge
+      // it (see probeSeqRef / pinTurnStateAction's stale branch).
+      sendSeqRef.current = ++ioSeqRef.current;
     } catch {
       // Socket flipped to CLOSING between the check and here: roll back.
       busyRef.current = false;
