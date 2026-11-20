@@ -1,21 +1,96 @@
-"""阶段 1/4：段入口武装与 interrupt 应答（批次 5-1 空壳）。
+"""permission 阶段 — interrupt 停车：permission_request / version_propose /
+user_question（批次 5-2）。
 
-迁移目标（5-2 从 ``engine._stream_graph_legacy`` 复制式搬入）：
-- ``begin_ask_budget()`` 段武装（每段独立 task context，不跨段泄漏）；
-- turn_id / ui_turn_id 派生与 ``_cfg_conf`` 回写、``_ensure_turn_log``；
-- ``_RUNNING_TURNS`` 登记 + ``_RUNNING_TURNS_AT`` 心跳戳（turn_gate_busy
-  的过期自愈锚点）；
-- lastwords WAL ``note_turn_start``、``_TURN_STOP.setdefault`` 停止信号；
-- graph interrupt 的 permission ask 事件与 ``Command(resume=...)`` 段重入
-  的接续准备。
+复制自 legacy ``engine._stream_graph`` 的 ``__interrupt__`` 分支
+（legacy engine.py:1119-1152）。ask_user 预算（begin_ask_budget）在编排器
+入口武装（run.py，对应 legacy 函数第一行）；permission_response 的恢复由
+ws 层走 ``_run_resume`` → ``Command(resume=...)`` 再入本引擎，与 legacy
+同一入口。
+
+**注册表写入点③**：``_PENDING_RESUME.add`` / ``_PENDING_KIND[...] = ...``
+三种 interrupt 各一处，与 legacy 同行序（saw_interrupt 置位 → 登记 →
+log → 事件帧）。
 """
 
 from __future__ import annotations
 
-from .context import StreamTurnCtx
+from .. import engine as eng
+from .ctx import StreamTurnCtx
 
 
-async def run(ctx: StreamTurnCtx) -> None:
-    raise NotImplementedError(
-        "stages.permission.run — 批次 5-2 迁移目标（jt5-stages-base 仅骨架）"
-    )
+async def handle_interrupt(ctx: StreamTurnCtx, delta) -> None:
+    """legacy engine.py:1119-1152 的 ``__interrupt__`` 分支。"""
+    items = delta if isinstance(delta, (list, tuple)) else [delta]
+    for intr in items:
+        value = getattr(intr, "value", None) or intr
+        if (
+            isinstance(value, dict)
+            and value.get("kind") == "permission_request"
+        ):
+            ctx.saw_interrupt = True
+            eng._PENDING_RESUME.add(ctx.session_id)
+            eng._PENDING_KIND[ctx.session_id] = "permission_request"
+            eng._log.info(
+                "turn_interrupt session=%s turn=%s kind=%s",
+                ctx.session_id, ctx.turn_id, value.get("kind"),
+            )
+            await ctx.safe_send(
+                ctx.emit(
+                    "permission.request",
+                    {
+                        "tool": value.get("tool"),
+                        "args": value.get("args"),
+                    },
+                )
+            )
+        elif isinstance(value, dict) and value.get("kind") == "version_propose":
+            # P5: workflow edit awaiting diff confirmation.
+            # Independent of the permission system; resumed via
+            # the same permission_response WS message.
+            ctx.saw_interrupt = True
+            eng._PENDING_RESUME.add(ctx.session_id)
+            eng._PENDING_KIND[ctx.session_id] = "version_propose"
+            eng._log.info(
+                "turn_interrupt session=%s turn=%s kind=%s",
+                ctx.session_id, ctx.turn_id, value.get("kind"),
+            )
+            await ctx.safe_send(
+                ctx.emit(
+                    "version.propose",
+                    {
+                        "workflow_id": value.get("workflow_id"),
+                        "from_version": value.get("from_version"),
+                        "diff": value.get("diff", ""),
+                        "rationale": value.get("rationale", ""),
+                    },
+                )
+            )
+        elif isinstance(value, dict) and value.get("kind") == "user_question":
+            # ask_user parked the turn on an ambiguity. The
+            # card is a transcript block (not a ref like the
+            # permission prompt), so this event carries the
+            # tool_call id the client merges on.
+            ctx.saw_interrupt = True
+            eng._PENDING_RESUME.add(ctx.session_id)
+            eng._PENDING_KIND[ctx.session_id] = "user_question"
+            eng._log.info(
+                "turn_interrupt session=%s turn=%s kind=%s set_id=%d",
+                ctx.session_id, ctx.turn_id, value.get("kind"),
+                id(eng._PENDING_RESUME),
+            )
+            await ctx.safe_send(
+                ctx.emit(
+                    "user.question",
+                    {
+                        "id": value.get("id"),
+                        "question": value.get("question", ""),
+                        "header": value.get("header", ""),
+                        "options": value.get("options") or [],
+                        "allow_free_text": value.get("allow_free_text", True),
+                        # 多问题（契约 v2，ask_tools questions 参数）：
+                        # 逐题字段原样透传，前端一张卡渲染全部子题。
+                        "multi": bool(value.get("multi")),
+                        "questions": value.get("questions") or [],
+                    },
+                )
+            )

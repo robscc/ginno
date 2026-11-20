@@ -1,68 +1,50 @@
-"""四阶段 turn 流水线（staged 引擎，批次 5-1 骨架 / 批次 5-2 迁移目标）。
+"""stages/ — ``_stream_graph`` 的四阶段 staged 实现（批次 5-2）。
 
-这是 ``engine._stream_graph_legacy``（约 1650 行巨函数）的**复制式迁移
-目标**：把它按耦合缝切成四个顺序阶段，每阶段一个 ``async def run(ctx)``,
-共享 :class:`~ginno_runtime.api.stream.stages.context.StreamTurnCtx`。
+结构（各文件职责见各 docstring）：
 
-开关语义（env ``GINNO_STREAM_ENGINE``，进程启动读一次缓存于
-``engine._STREAM_ENGINE``，与 ``tools/code_mode_tools.py`` 的
-``GINNO_CODE_MODE`` 同范式）：
-- 缺省 / ``legacy`` / 任何无法识别的值 → 走 ``_stream_graph_legacy``，
-  行为与拆分前**逐字节一致**（golden 快照 ``tests/goldens/engine_turn.txt``
-  钉住，任何 diff = 契约漂移）；
-- ``staged`` → 本包 ``run_staged_stream``。批次 5-2 迁移完成前各阶段
-  ``raise NotImplementedError``——**fail-loud，绝不静默回落 legacy**，
-  防止「以为在测新管道、实际跑旧路径」的假绿灯。
+- ``ctx.py``       — ``StreamTurnCtx``：跨阶段唯一状态载体；
+- ``streamio.py``  — 帧出口/合帧/token.delta 文本流/看门狗；
+- ``toolloop.py``  — 工具调用帧/args 流/工具结果与错误路径；
+- ``permission.py``— ``__interrupt__`` 停车（ask_user/permission/version）；
+- ``finalize.py``  — 段末收尾/parked 退出/异常路径/finally 清理；
+- ``run.py``       — 编排器（legacy 函数骨架）+ 分段对照表。
 
-回退方式：桌面环境 unset ``GINNO_STREAM_ENGINE``（或显式 ``=legacy``）
-并完全退出重开 Ginno 即回原引擎；开发热切换（``make dev-swap``）同理。
-验收纪律（批次 5-2 起）：``tests/api/test_engine_golden.py`` 的 staged
-参数路全绿 = 契约达成；legacy 路与快照的零漂移是**每一步迁移的前置
-门槛**，不迁移完一个阶段绝不切默认值。
-
-阶段切分（职责预划，5-2 按此逐段搬代码）：
-1. :mod:`.permission` —— 段入口武装与 interrupt 应答：``begin_ask_budget``
-   / permission ask 事件 / ``Command(resume=...)` 段重入的接续准备。
-2. :mod:`.toolloop` —— agent 超步循环：tool_call 执行与事件、steer 吸收
-   （含 ack 时序）、递归预算、瞬态错误 auto-retry / steer-continue 段重入。
-3. :mod:`.streamio` —— 流出口：chunked stream、stall watchdog
-   （``CHUNK_TIMEOUT_S``）、token/thinking delta 合帧、keepalive、
-   ``safe_send`` 广播。
-4. :mod:`.finalize` —— 收尾：interrupt/completed/error 三态出口、
-   ``message.end`` + turn 用量、todos 关联、citations、auto-distill、
-   finally 清理（``_RUNNING_TURNS`` pop / WAL / 停车修复）。
+开关：``GINNO_STREAM_ENGINE=staged`` 环境变量（每次调用读取，进程内可
+monkeypatch）。默认（未设置/其它值）走 legacy ``engine._stream_graph``
+（一行未动）——``dispatch_stream_graph`` 是 turn.py 的唯一分流入口。
 """
 
 from __future__ import annotations
 
-from langgraph.types import Command
+import os
 
-from .context import StreamTurnCtx
-from . import finalize, permission, streamio, toolloop  # noqa: F401  (阶段模块)
+from ..engine import _stream_graph as _legacy_stream_graph
+from .run import stream_graph_staged
 
-__all__ = ["StreamTurnCtx", "run_staged_stream"]
+ENV_KEY = "GINNO_STREAM_ENGINE"
+ENV_STAGED = "staged"
 
 
-async def run_staged_stream(
+def staged_enabled() -> bool:
+    """GINNO_STREAM_ENGINE=staged（大小写/空白宽容，每次现读 env）。"""
+    return os.environ.get(ENV_KEY, "").strip().lower() == ENV_STAGED
+
+
+def dispatch_stream_graph(
     graph,
     config: dict,
     input_state: dict | None = None,
-    command: Command | None = None,
-) -> None:
-    """staged 引擎入口：构造 ctx 后依序驱动四阶段（签名对齐 _stream_graph）。
+    command=None,
+):
+    """turn.py 的唯一入口：按 ``GINNO_STREAM_ENGINE`` 分流。
 
-    批次 5-1：四阶段均为 NotImplementedError 占位——首个阶段即抛出，
-    供 golden 双路参数化的 staged 断言钉住接线（开关 → 分叉 → 本入口
-    → 阶段占位）。批次 5-2 起逐阶段填真身，staged 参数路的断言同步
-    升级为与 legacy 相同的逐帧比对，绿灯即契约达成。
+    legacy 路持 engine._stream_graph 的原引用（与拆分前 turn.py 的
+    ``from .engine import _stream_graph`` 同一值，patch 面不变）。
     """
-    ctx = StreamTurnCtx(
-        graph=graph,
-        config=config,
-        input_state=input_state,
-        command=command,
+    if staged_enabled():
+        return stream_graph_staged(
+            graph, config, input_state=input_state, command=command
+        )
+    return _legacy_stream_graph(
+        graph, config, input_state=input_state, command=command
     )
-    await permission.run(ctx)
-    await toolloop.run(ctx)
-    await streamio.run(ctx)
-    await finalize.run(ctx)
