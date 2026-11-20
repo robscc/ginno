@@ -3,31 +3,31 @@
 /**
  * DevSessionDrawer — 方案B 阶段5 屏4: edit a workflow's DSL through
  * conversation WITHOUT leaving the Studio. A right-side drawer hosting the
- * workflow-dev session's live stream (PinStream architecture: ONE session per
- * mount, own WebSocket, own message loop on top of the blocks.tsx renderers —
- * ChatStream is a singleton in AppShell and cannot be mounted twice).
+ * workflow-dev session's live stream (ONE session per mount, own WebSocket,
+ * own message loop on top of the blocks.tsx renderers — ChatStream is a
+ * singleton in AppShell and cannot be mounted twice).
  *
  * The point of the drawer is the version.propose card: the dev agent proposes
  * a DSL edit, the user applies/rejects inline, the server writes v(N+1) and
  * the Studio canvas refreshes via reloadWorkflows.
+ *
+ * 批次 3-2（绞杀者）：WS 生命周期 / 消息环 / 事件 reducer 已抽到
+ * `components/session/`（useSessionSocket + useSessionTurn + sessionBlocks，
+ * 与 PinStream 同骨架）；本组件只保留抽屉的差异层——version.propose 卡、
+ * run 活动条、抽屉 chrome 与 composer。
  */
 
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowUp, FileEdit, Loader2, MessagesSquare, Square, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { WorkflowDef } from "@/lib/types";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
 import { useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { DiffView } from "@/components/workflow/DiffView";
-import {
-  ContextBlocks,
-  InnerBlocks,
-  UserBlocks,
-  hasPendingTool,
-  type Block,
-} from "@/components/chat/blocks";
+import { ContextBlocks, InnerBlocks, UserBlocks, type Block } from "@/components/chat/blocks";
+import { mapHistoryToMsgs, type SessionMsg } from "@/components/session/sessionBlocks";
+import { useSessionTurn } from "@/components/session/useSessionTurn";
 
 interface VersionPropose {
   workflow_id: string;
@@ -36,129 +36,8 @@ interface VersionPropose {
   rationale: string;
 }
 
-interface DrawerMsg {
-  id: string;
-  // "system" = context/compaction notice rows (centered, not a bubble)
-  role: "user" | "assistant" | "system";
-  blocks: Block[];
-  turnId?: string;
-  error?: boolean;
-}
-
-interface PermissionPrompt {
-  tool: string;
-  args: unknown;
-}
-
-let _mid = 0;
-const mid = () => `dm${++_mid}`;
-
-const newTurnId = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-const EMPTY_TOOL_RESULT_RE =
-  /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched|no matches found|no files found|\(nothing found\))\s*$/i;
-
-/** Streaming-event → block-list reducer (mirror of PinStream's subset). */
-function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
-  const last = blocks[blocks.length - 1];
-  switch (ev.event) {
-    case "token.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "text") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "text", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "text", text: t }];
-    }
-    case "thinking.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "thinking") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "thinking", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "thinking", text: t }];
-    }
-    case "tool.start":
-      return [
-        ...blocks,
-        {
-          kind: "tool",
-          id: ev.id as string | undefined,
-          name: ev.name as string,
-          content: "…",
-          pending: true,
-          argsPreview: (ev.preview as string) || undefined,
-        },
-      ];
-    case "tool.args": {
-      const id = ev.id as string | undefined;
-      const preview = ev.preview as string;
-      if (!id || !preview) return blocks;
-      let matched = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        if (!matched && b.id === id) {
-          matched = true;
-          return { ...b, argsPreview: preview };
-        }
-        return b;
-      });
-    }
-    case "tool.end": {
-      const id = ev.id as string | undefined;
-      const name = ev.name as string | undefined;
-      const content = ev.content as string;
-      if (EMPTY_TOOL_RESULT_RE.test(content)) {
-        return blocks.filter((b) => {
-          if (b.kind !== "tool") return true;
-          const matches = id ? b.id === id : name ? b.name === name : b.pending;
-          return !matches;
-        });
-      }
-      let found = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
-        if (matches) {
-          found = true;
-          return { ...b, content, pending: false };
-        }
-        return b;
-      });
-    }
-    default:
-      return blocks;
-  }
-}
-
-/** /history → bubbles. History blocks arrive pre-mapped (server-side
- *  messages_ui); widgets/refs that InnerBlocks skips render as nothing —
- *  acceptable for a DSL-editing drawer. */
-function mapHistory(res: {
-  messages?: Array<{ id?: string; role: "user" | "assistant"; blocks: Block[]; turnId?: string }>;
-  last_error?: { message?: string; turn_id?: string } | null;
-}): DrawerMsg[] {
-  const msgs: DrawerMsg[] = (res.messages ?? []).map((m) => ({
-    id: m.id ?? mid(),
-    role: m.role === "user" ? "user" : "assistant",
-    blocks: m.blocks ?? [],
-    turnId: m.turnId,
-  }));
-  if (res.last_error?.message) {
-    msgs.push({
-      id: mid(),
-      role: "assistant",
-      error: true,
-      blocks: [{ kind: "text", text: res.last_error.message }],
-    });
-  }
-  return msgs;
-}
+/** 抽屉消息 = 共享基座（无 pin 的 teamReply/retryText 扩展）。 */
+type DrawerMsg = SessionMsg;
 
 /**
  * Outer shell: session resolution (reuse the bound workflow-dev session or
@@ -246,10 +125,9 @@ export function DevSessionDrawer({ wf, onClose }: { wf: WorkflowDef; onClose: ()
   );
 }
 
-/** The session stream: socket lifecycle + message loop mirror PinStream's
- *  semantics (3s reconnect, 20s ping, 45s silence close, post-reconnect
- *  turn_state probe) plus the two drawer-specific renders: the version.propose
- *  diff card and the subtle run-activity strip. */
+/** The session stream: shared socket/message loop (useSessionTurn) plus the
+ *  two drawer-specific renders: the version.propose diff card and the subtle
+ *  run-activity strip. */
 function DrawerStream({
   sessionId,
   onApplied,
@@ -257,27 +135,13 @@ function DrawerStream({
   sessionId: string;
   onApplied: () => void;
 }) {
-  const [messages, setMessages] = useState<DrawerMsg[]>([]);
-  const [liveId, setLiveId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [propose, setPropose] = useState<VersionPropose | null>(null);
   const [proposeResult, setProposeResult] = useState<{ decision: "allow" | "deny"; fromVersion: number } | null>(null);
   const [runLines, setRunLines] = useState<Record<string, string>>({});
-  const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [input, setInput] = useState("");
-  const [sendError, setSendError] = useState<string | null>(null);
   const t = useTranslations("wf.dev");
   const statusLabel = useRunStatusLabel();
 
-  const sockRef = useRef<WebSocket | null>(null);
-  const liveRef = useRef<string | null>(null);
-  const busyRef = useRef(false);
-  const reconnRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconcileRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSeenRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
@@ -288,269 +152,50 @@ function DrawerStream({
     loadToolLabels();
   }, []);
 
-  function ensureLive(): string {
-    if (liveRef.current) return liveRef.current;
-    const id = mid();
-    liveRef.current = id;
-    setLiveId(id);
-    setMessages((prev) => [...prev, { id, role: "assistant", blocks: [] }]);
-    return id;
-  }
-
-  function mutateLive(ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive();
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, blocks: applyBlock(m.blocks, ev) } : m)),
-    );
-  }
-
-  function closeLive(finalizeTools: boolean) {
-    const id = liveRef.current;
-    liveRef.current = null;
-    setLiveId(null);
-    busyRef.current = false;
-    setBusy(false);
-    setMessages((prev) => {
-      let next = prev;
-      if (id) {
-        next = next.filter((m) => !(m.id === id && m.blocks.length === 0));
-        if (finalizeTools) {
-          next = next.map((m) =>
-            hasPendingTool(m.blocks)
-              ? {
-                  ...m,
-                  blocks: m.blocks.map((b) =>
-                    b.kind === "tool" && b.pending
-                      ? { ...b, pending: false, content: b.content === "…" ? t("interruptedTool") : b.content }
-                      : b,
-                  ),
-                }
-              : m,
-          );
-        }
-      }
-      return next;
-    });
-  }
-
-  function addSystemRow(text: string) {
-    setMessages((prev) => [
-      ...prev,
-      { id: mid(), role: "system", blocks: [{ kind: "context", text }] },
-    ]);
-  }
-
-  function reconcileFromHistory() {
-    getSessionHistory(sessionId)
-      .then((res) => setMessages(mapHistory(res)))
-      .catch(() => {
-        /* sidecar down — the reconnect loop will retry */
-      });
-  }
-
-  function handle(ev: { event: string; [k: string]: unknown }) {
-    switch (ev.event) {
-      case "turn.start": {
-        busyRef.current = true;
-        setBusy(true);
-        setSendError(null);
-        ensureLive();
-        break;
-      }
-      case "token.delta":
-      case "thinking.delta":
-      case "tool.start":
-      case "tool.args":
-      case "tool.end": {
-        busyRef.current = true;
-        setBusy(true);
-        mutateLive(ev);
-        break;
-      }
-      case "permission.request":
-        setPermission({ tool: ev.tool as string, args: ev.args });
-        break;
-      case "version.propose":
-        // The whole point of the drawer: the dev agent's DSL edit proposal.
-        setPropose({
-          workflow_id: ev.workflow_id as string,
-          from_version: (ev.from_version as number) ?? 0,
-          diff: (ev.diff as string) ?? "",
-          rationale: (ev.rationale as string) ?? "",
-        });
-        break;
-      case "run.bind":
-      case "run.status": {
-        // MINIMAL: the Studio observer shows full detail — the drawer only
-        // surfaces a subtle "run #xxxx · 状态" strip for runs the dev agent
-        // triggered (or that were presented into this session).
-        const rid = ev.run_id as string;
-        if (rid) {
-          const st = (ev.status as string) || "bound";
-          setRunLines((prev) => ({ ...prev, [rid]: st }));
-        }
-        break;
-      }
-      case "workflows.changed":
-        // A propose was applied (here or elsewhere) — the shell's explicit
-        // onApplied covers the local decision; this catches remote edits.
-        onApplied();
-        break;
-      case "notice":
-        mutateLive({ event: "token.delta", content: (ev.message as string) || "" });
-        break;
-      case "context.compacted":
-        addSystemRow(t("compaction", { count: Number(ev.compacted_messages ?? 0) }));
-        break;
-      case "turn.state":
-        if (reconcileRef.current) {
-          clearTimeout(reconcileRef.current);
-          reconcileRef.current = null;
-        }
-        if (ev.running) break;
-        reconcileFromHistory();
-        busyRef.current = false;
-        setBusy(false);
-        break;
-      case "message.end":
-        closeLive(false);
-        setPermission(null);
-        break;
-      case "turn.stopped":
-        closeLive(true);
-        setPermission(null);
-        break;
-      case "error": {
-        closeLive(true);
-        setPermission(null);
-        const text = String(ev.message || "") || t("unknownError");
-        setMessages((prev) => [
-          ...prev,
-          { id: mid(), role: "assistant", error: true, blocks: [{ kind: "text", text }] },
-        ]);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  function connect() {
-    const existing = sockRef.current;
-    if (
-      existing &&
-      (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
-    }
-    if (reconnRef.current) {
-      clearTimeout(reconnRef.current);
-      reconnRef.current = null;
-    }
-    setWsStatus("connecting");
-    const sock = openSessionSocket(sessionId);
-    sockRef.current = sock;
-    sock.onopen = () => {
-      if (sockRef.current !== sock) return;
-      setWsStatus("live");
-      setSendError(null);
-      lastSeenRef.current = Date.now();
-      if (liveRef.current || busyRef.current) {
-        try {
-          sock.send(JSON.stringify({ type: "turn_state" }));
-        } catch {
-          /* ignore */
-        }
-        if (reconcileRef.current) clearTimeout(reconcileRef.current);
-        reconcileRef.current = setTimeout(() => {
-          reconcileRef.current = null;
-          reconcileFromHistory();
-        }, 6000);
-      }
-      pingRef.current = setInterval(() => {
-        if (sock.readyState === WebSocket.OPEN) {
-          try {
-            sock.send(JSON.stringify({ type: "ping" }));
-          } catch {
-            /* ignore */
+  const s = useSessionTurn<DrawerMsg>({
+    sessionId,
+    midPrefix: "dm",
+    mapHistory: (res, mid) => mapHistoryToMsgs<DrawerMsg>(res, mid),
+    texts: {
+      interruptedTool: () => t("interruptedTool"),
+      unknownError: () => t("unknownError"),
+      compacted: (count) => t("compaction", { count }),
+    },
+    // 抽屉专属事件：提案卡 / run 活动条 / 远端 DSL 变更联动。
+    onExtraEvent: (ev) => {
+      switch (ev.event) {
+        case "version.propose":
+          // The whole point of the drawer: the dev agent's DSL edit proposal.
+          setPropose({
+            workflow_id: ev.workflow_id as string,
+            from_version: (ev.from_version as number) ?? 0,
+            diff: (ev.diff as string) ?? "",
+            rationale: (ev.rationale as string) ?? "",
+          });
+          break;
+        case "run.bind":
+        case "run.status": {
+          // MINIMAL: the Studio observer shows full detail — the drawer only
+          // surfaces a subtle "run #xxxx · 状态" strip for runs the dev agent
+          // triggered (or that were presented into this session).
+          const rid = ev.run_id as string;
+          if (rid) {
+            const st = (ev.status as string) || "bound";
+            setRunLines((prev) => ({ ...prev, [rid]: st }));
           }
+          break;
         }
-      }, 20000);
-      watchRef.current = setInterval(() => {
-        if (Date.now() - lastSeenRef.current > 45000) {
-          try {
-            sock.close();
-          } catch {
-            /* ignore */
-          }
-        }
-      }, 10000);
-    };
-    sock.onmessage = (e) => {
-      if (sockRef.current !== sock) return;
-      lastSeenRef.current = Date.now();
-      try {
-        handle(JSON.parse(e.data));
-      } catch {
-        /* malformed frame — ignore */
+        case "workflows.changed":
+          // A propose was applied (here or elsewhere) — the shell's explicit
+          // onApplied covers the local decision; this catches remote edits.
+          onApplied();
+          break;
+        default:
+          break;
       }
-    };
-    sock.onerror = () => {
-      if (sockRef.current !== sock) return;
-      try {
-        sock.close();
-      } catch {
-        /* ignore */
-      }
-    };
-    sock.onclose = () => {
-      if (pingRef.current) {
-        clearInterval(pingRef.current);
-        pingRef.current = null;
-      }
-      if (watchRef.current) {
-        clearInterval(watchRef.current);
-        watchRef.current = null;
-      }
-      if (sockRef.current !== sock) return;
-      sockRef.current = null;
-      setWsStatus("reconnecting");
-      reconnRef.current = setTimeout(() => {
-        reconnRef.current = null;
-        connect();
-      }, 3000);
-    };
-  }
-
-  useEffect(() => {
-    let alive = true;
-    connect();
-    getSessionHistory(sessionId)
-      .then((res) => {
-        if (alive) setMessages(mapHistory(res));
-      })
-      .catch(() => {
-        /* sidecar down — events will populate once it returns */
-      });
-    return () => {
-      alive = false;
-      if (reconnRef.current) clearTimeout(reconnRef.current);
-      if (pingRef.current) clearInterval(pingRef.current);
-      if (watchRef.current) clearInterval(watchRef.current);
-      if (reconcileRef.current) clearTimeout(reconcileRef.current);
-      reconnRef.current = pingRef.current = watchRef.current = reconcileRef.current = null;
-      const sock = sockRef.current;
-      sockRef.current = null;
-      if (sock) {
-        try {
-          sock.close();
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+    },
+  });
+  const { messages, liveId, busy, permission, sendError, wsStatus, postTurn, stopTurn, respond } = s;
 
   useEffect(() => {
     if (stickRef.current) bottomRef.current?.scrollIntoView({ block: "end" });
@@ -564,68 +209,27 @@ function DrawerStream({
 
   function sendText(raw: string) {
     const text = raw.trim();
-    if (!text || busyRef.current) return;
-    const sock = sockRef.current;
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      setSendError(t("notReady"));
-      return;
-    }
-    const turnId = newTurnId();
-    const uid = mid();
-    const lid = mid();
-    busyRef.current = true;
-    setBusy(true);
-    liveRef.current = lid;
-    setLiveId(lid);
-    setSendError(null);
-    setMessages((prev) => [
-      ...prev,
-      { id: uid, role: "user", blocks: [{ kind: "text", text }], turnId },
-      { id: lid, role: "assistant", blocks: [] },
-    ]);
-    setInput("");
-    requestAnimationFrame(() => {
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (!text) return;
+    postTurn({
+      text,
+      userBlocks: [{ kind: "text", text }],
+      notReadyLabel: () => t("notReady"),
+      failedLabel: () => t("sendFailed"),
+      onSent: () => {
+        setInput("");
+        requestAnimationFrame(() => {
+          if (textareaRef.current) textareaRef.current.style.height = "auto";
+        });
+      },
+      onFailed: (failed) => setInput(failed),
     });
-    try {
-      sock.send(
-        JSON.stringify({
-          type: "invoke",
-          message: text,
-          agent_id: null,
-          turn_id: turnId,
-          images: [],
-          files: [],
-        }),
-      );
-    } catch {
-      busyRef.current = false;
-      setBusy(false);
-      liveRef.current = null;
-      setLiveId(null);
-      setMessages((prev) => prev.filter((m) => m.id !== lid && m.id !== uid));
-      setInput(text);
-      setSendError(t("sendFailed"));
-    }
-  }
-
-  function stopTurn() {
-    try {
-      sockRef.current?.send(JSON.stringify({ type: "stop" }));
-    } catch {
-      /* socket gone — reconnect reconciles via turn_state */
-    }
   }
 
   /** Exact ChatStream wire format (ChatStream.tsx respondPropose): the plain
    *  permission_response channel with no propose_id — the server tracks the
    *  pending proposal interrupt per session and resumes it with {decision}. */
   function respondPropose(decision: "allow" | "deny") {
-    try {
-      sockRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits version.propose if still pending */
-    }
+    respond(decision);
     const p = propose;
     setPropose(null);
     if (p) {
@@ -633,15 +237,6 @@ function DrawerStream({
       if (decision === "allow") onApplied();
       window.setTimeout(() => setProposeResult(null), 4000);
     }
-  }
-
-  function respond(decision: "allow" | "deny") {
-    try {
-      sockRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits the prompt if still pending */
-    }
-    setPermission(null);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
