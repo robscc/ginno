@@ -619,6 +619,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [g.sessions, sidebarFilter],
   );
 
+  // 远程 peer chips（2026-11-21 用户需求）：A2A 远程会话按 remote_peer_name
+  // 聚合，侧栏 agent 筛选区追加「vpsnode」等 peer chip（过滤键 peer:<name>，
+  // 消费在 useSessionGrouping）。去重 + 稳定排序（出现次数降序，同数按名）。
+  const sidebarPeers = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of g.sessions) {
+      if (s.remote_peer_name) counts.set(s.remote_peer_name, (counts.get(s.remote_peer_name) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name);
+  }, [g.sessions]);
+
   // 侧栏分组派生数据（天分组 / 项目分组 / 归档 / 批量候选）——纯计算，
   // 逻辑细节见 useSessionGrouping。
   const {
@@ -936,6 +947,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onNewSession={onNewSession}
           onSearch={() => setSearchOpen(true)}
           agents={g.agents}
+          peers={sidebarPeers}
           agentFilter={agentFilter}
           onAgentFilterChange={setAgentFilter}
         >

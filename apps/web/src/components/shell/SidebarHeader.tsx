@@ -19,6 +19,9 @@ export interface SidebarHeaderProps {
   onNewSession: () => void;
   onSearch: () => void;
   agents: AgentConfig[];
+  /** A2A 远程 peer 名（2026-11-21）：远程会话聚合出的 peer chips，过滤键
+   * peer:<name>，与本地 agent chips 同一 agentFilter 通道。 */
+  peers: string[];
   agentFilter: string | null;
   onAgentFilterChange: (id: string | null) => void;
   /** 就地过滤（2026-11-18 旅程走查 P1-3）：213 会话规模下 ⌘K 全局搜索之外，
@@ -48,6 +51,7 @@ export function SidebarHeader({
   onNewSession,
   onSearch,
   agents,
+  peers,
   agentFilter,
   onAgentFilterChange,
   filterQuery,
@@ -160,7 +164,10 @@ export function SidebarHeader({
           </div>
         </div>
 
-        {/* C+ 方案③：agent 筛选 chips（样式同 composer chip 行，点击已选中的取消） */}
+        {/* C+ 方案③：agent 筛选 chips（样式同 composer chip 行，点击已选中的取消）。
+            2026-11-21：长名按最大宽度截断（max-w + truncate），全名走零延迟
+            自定义 tooltip（原生 title 延迟 ~1s 太慢——用户要求 hover 快出或
+            直接展示）；追加 A2A 远程 peer chips（peer:<name> 过滤键）。 */}
         <div className="flex flex-wrap gap-1 px-1 pb-2 pt-1.5">
           {agents.map((a) => {
             const sel = agentFilter === a.id;
@@ -170,13 +177,38 @@ export function SidebarHeader({
                 key={a.id}
                 onClick={() => onAgentFilterChange(sel ? null : a.id)}
                 title={sel ? t("filter.clear") : t("filter.showOnly", { name: a.name })}
-                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                className={`group relative flex max-w-[11ch] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
                   sel ? "" : "border-line bg-card text-muted hover:border-line2 hover:text-txt"
                 }`}
                 style={sel ? { borderColor: hex, background: hex + "1a", color: hex } : undefined}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
-                {a.name}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: hex }} />
+                <span className="truncate">{a.name}</span>
+                <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/85 px-2 py-0.5 text-[11px] text-white opacity-0 transition-opacity duration-75 group-hover:opacity-100">
+                  {a.name}
+                </span>
+              </button>
+            );
+          })}
+          {peers.map((name) => {
+            const id = `peer:${name}`;
+            const sel = agentFilter === id;
+            const hex = "#0891b2"; // cyan-600：远程 peer 专用色，与本地 agent 色板区分
+            return (
+              <button
+                key={id}
+                onClick={() => onAgentFilterChange(sel ? null : id)}
+                title={sel ? t("filter.clear") : t("filter.showOnly", { name })}
+                className={`group relative flex max-w-[11ch] items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                  sel ? "" : "border-line bg-card text-muted hover:border-line2 hover:text-txt"
+                }`}
+                style={sel ? { borderColor: hex, background: hex + "1a", color: hex } : undefined}
+              >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: hex }} />
+                <span className="truncate">{name}</span>
+                <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-black/85 px-2 py-0.5 text-[11px] text-white opacity-0 transition-opacity duration-75 group-hover:opacity-100">
+                  {name}
+                </span>
               </button>
             );
           })}
