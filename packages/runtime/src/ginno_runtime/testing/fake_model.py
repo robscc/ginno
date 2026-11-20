@@ -206,7 +206,7 @@ class ScriptedChatModel(BaseChatModel):
                         content="",
                         id=cid,
                         tool_call_chunks=[
-                            {"name": tc["name"], "id": tc.get("id"), "args": "", "index": 0}
+                            {"name": tc["name"], "id": tc.get("id"), "args": "", "index": i}
                         ],
                     )
                 )
@@ -216,7 +216,7 @@ class ScriptedChatModel(BaseChatModel):
                         content="",
                         id=cid,
                         tool_call_chunks=[
-                            {"name": None, "id": None, "args": json.dumps(tc.get("args") or {}), "index": 0}
+                            {"name": None, "id": None, "args": json.dumps(tc.get("args") or {}), "index": i}
                         ],
                         **({"usage_metadata": usage} if i == last and usage else {}),
                     )
