@@ -1,4 +1,4 @@
-"""Engine 事件序列 golden test(重构批次 0 契约冻结;5-1 起双路参数化)。
+"""Engine 事件序列 golden test(重构批次 0 契约冻结)。
 
 被测对象:``api/stream/engine.py`` 的 ``_stream_graph()``(经 ``_run_stream``
 直驱,``ws=None``,无 socket——帧由可选事件汇 ``event_sink`` 逐帧捕获)。
@@ -6,14 +6,6 @@
 用途:engine.py(约 1769 行)后续阶段化拆分为 ``stages/`` 时的**验收基准**。
 拆分属于纯结构移动,本测试保证每帧「事件类型 + 关键字段 + 帧序」不变;
 diff 快照即可看到任何行为漂移。
-
-双路参数化(批次 5-1,jt5-stages-base):
-- ``legacy``(默认开关路径)——全量真实断言,快照零漂移是硬门槛;
-- ``staged``——monkeypatch ``engine._STREAM_ENGINE="staged"`` 切流,
-  断言 ``pytest.raises(NotImplementedError)`` 占位:绿灯 = 接线正确
-  (开关 → engine 分叉入口 → stages.run_staged_stream → 阶段占位)。
-  批次 5-2 迁移完成后,staged 路断言升级为与 legacy 相同的逐帧比对,
-  **staged 全绿即契约达成**——本参数化就是那次验收的现成跑道。
 
 三个场景:
 1. ``plain_text``     —— 纯文本单轮(无工具)。
@@ -276,50 +268,28 @@ def _drive_turn(session_id: str, text: str) -> list[tuple[str, dict]]:
 
 
 # --------------------------------------------------------------------------- #
-# 双路参数化基建(批次 5-1):legacy 真实断言 / staged NotImplementedError 占位
+# 三个 golden 场景（批次 5-2 起双路参数化：legacy = engine._stream_graph 原函数；
+# staged = stages/ 四阶段实现，GINNO_STREAM_ENGINE=staged 分流）。
+# 两路断言**同一快照段** —— staged 与 legacy 的外发帧序逐字节一致是本套
+# 快照对复制式迁移的硬验收。
 # --------------------------------------------------------------------------- #
-_ENGINE_MODES = ["legacy", "staged"]
-
-
-def _set_engine_mode(monkeypatch, engine_mode: str) -> None:
-    """切换 engine 分叉:staged 用 monkeypatch 改模块级开关(不动 env——
-    env 是进程启动读一次缓存的,运行时改无效;模块全局才是运行时判据)。"""
-    if engine_mode == "staged":
-        from ginno_runtime.api.stream import engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "_STREAM_ENGINE", "staged")
-    else:
-        assert engine_mode == "legacy"
-
-
-def _assert_staged_placeholder(sid: str, text: str) -> None:
-    """staged 占位断言:批次 5-2 前 staged 管道逐阶段 NotImplementedError。
-    绿灯 = 开关→engine 分叉→stages 入口→阶段占位的接线全通。"""
-    with pytest.raises(NotImplementedError):
-        _drive_turn(sid, text)
-
-
-# --------------------------------------------------------------------------- #
-# 三个 golden 场景
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("engine_mode", _ENGINE_MODES)
-def test_golden_plain_text_turn(client, create_session, monkeypatch, engine_mode):
+@pytest.mark.parametrize("engine", ["legacy", "staged"])
+def test_golden_plain_text_turn(client, create_session, monkeypatch, engine):
     """场景 1:纯文本单轮 —— turn.start → token.delta → message.end。"""
+    if engine == "staged":
+        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
     _allow_all_and_no_coalesce(monkeypatch)
-    _set_engine_mode(monkeypatch, engine_mode)
     sid = create_session([script(text="你好,Ginno!这是一条纯文本回复。")])
-    if engine_mode == "staged":
-        _assert_staged_placeholder(sid, "打个招呼")
-        return
     frames = _drive_turn(sid, "打个招呼")
     _assert_scenario("plain_text", _golden_lines(frames))
 
 
-@pytest.mark.parametrize("engine_mode", _ENGINE_MODES)
-def test_golden_tool_call_turn(client, create_session, monkeypatch, engine_mode):
+@pytest.mark.parametrize("engine", ["legacy", "staged"])
+def test_golden_tool_call_turn(client, create_session, monkeypatch, engine):
     """场景 2:一次 bash 工具调用轮 —— tool.start/args/input/end + 收尾文本。"""
+    if engine == "staged":
+        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
     _allow_all_and_no_coalesce(monkeypatch)
-    _set_engine_mode(monkeypatch, engine_mode)
     sid = create_session(
         [
             script(
@@ -330,22 +300,17 @@ def test_golden_tool_call_turn(client, create_session, monkeypatch, engine_mode)
             script(text="命令已执行,输出如上。"),
         ]
     )
-    if engine_mode == "staged":
-        _assert_staged_placeholder(sid, "运行 echo 并解读输出")
-        return
     frames = _drive_turn(sid, "运行 echo 并解读输出")
     _assert_scenario("tool_call_bash", _golden_lines(frames))
 
 
-@pytest.mark.parametrize("engine_mode", _ENGINE_MODES)
-def test_golden_multi_chunk_stream_turn(client, create_session, monkeypatch, engine_mode):
+@pytest.mark.parametrize("engine", ["legacy", "staged"])
+def test_golden_multi_chunk_stream_turn(client, create_session, monkeypatch, engine):
     """场景 3:多片流式轮 —— 3 个 LLM chunk ↔ 3 帧 token.delta(1:1)。"""
+    if engine == "staged":
+        monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
     _allow_all_and_no_coalesce(monkeypatch)
-    _set_engine_mode(monkeypatch, engine_mode)
     model = MultiChunkScripted(pieces=["Golden ", "chunk ", "stream!"])
     sid = create_session(model)
-    if engine_mode == "staged":
-        _assert_staged_placeholder(sid, "流式回复一段话")
-        return
     frames = _drive_turn(sid, "流式回复一段话")
     _assert_scenario("multi_chunk", _golden_lines(frames))
