@@ -224,8 +224,14 @@ afterEach(() => {
 });
 
 // ── ① 事件类型全集枚举快照 ────────────────────────────────────────────────
-const SRC = readFileSync(fileURLToPath(new URL("./handle.ts", import.meta.url)), "utf8");
-const EXTRACTED_CASES = [...SRC.matchAll(/^[ \t]*case "([^"]+)":/gm)].map((m) => m[1]);
+// 批次 6-2 注册表化后，case 清单的权威源是 handlers/index.ts 的注册表
+// （["event", handler] 条目顺序 = 原 switch case 顺序）。
+const SRC = readFileSync(fileURLToPath(new URL("./handlers/index.ts", import.meta.url)), "utf8");
+const STREAM_SRC = readFileSync(
+  fileURLToPath(new URL("./handlers/01-stream.ts", import.meta.url)),
+  "utf8",
+);
+const EXTRACTED_CASES = [...SRC.matchAll(/^\s*\["([^"]+)",/gm)].map((m) => m[1]);
 
 /** 人工钉住的 handle() switch case 全集（源码顺序）。重构迁移注册表时此表
  *  就是验收清单：迁移后必须每个键都还能路由到等价处理。 */
@@ -278,11 +284,15 @@ describe("① handle() 事件类型全集枚举快照（防拆分丢 case）", (
     expect(new Set(EXTRACTED_CASES).size).toBe(EXTRACTED_CASES.length);
   });
 
-  it("流帧共享体结构：5 事件相邻共享，user.question 独立 case 体（P0-1 结构防线）", () => {
+  it("流帧共享体结构：5 事件相邻共享，user.question 独立 handler（P0-1 结构防线）", () => {
     // 2026-11-14 通知风暴的结构载体：delta/tool 共享体顺序 + ask 通知必须在
-    // user.question 自己的 case 里。拆 case / 改 fall-through 都会红。
+    // user.question 自己的 handler 里。拆注册 / 换共享函数都会红。
     expect(SRC).toMatch(
-      /case "token\.delta":\s*\n\s*case "thinking\.delta":[\s\S]*?case "tool\.start":\s*\n\s*case "tool\.args":\s*\n\s*case "tool\.end":[\s\S]*?case "user\.question": \{\s*\n\s*maybeNotifyAskUser\(ctx, sid, ev\);/,
+      /\["token\.delta", stream\.onDelta\],\s*\n\s*\["thinking\.delta", stream\.onDelta\],\s*\n\s*\["tool\.start", stream\.onStreamFrame\],\s*\n\s*\["tool\.args", stream\.onStreamFrame\],\s*\n\s*\["tool\.end", stream\.onStreamFrame\],\s*\n\s*\["user\.question", stream\.onQuestion\],/,
+    );
+    // ask 通知仍是 user.question handler 的专属首副作用（不进共享函数）。
+    expect(STREAM_SRC).toMatch(
+      /export function onQuestion\(ctx: EngineCtx, sid: string, ev: ServerEvent\) \{\s*\n\s*maybeNotifyAskUser\(ctx, sid, ev\);/,
     );
   });
 });
