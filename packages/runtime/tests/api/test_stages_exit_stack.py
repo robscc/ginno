@@ -8,7 +8,7 @@
    必须全部回空、ask_budget 的 contextvar 必须还原——清理由栈的 LIFO
    弹出保证，不依赖 finally 段的执行完整性。
 2. **默认 staged + 显式回退**：未设 env 走 staged（stages/ 四阶段），
-   ``GINNO_STREAM_ENGINE=legacy`` 走 legacy ``engine._stream_graph``
+   staged 四阶段管道（legacy 路已删除，golden 契约即原基线）
    原函数（回退路持续可用）。
 
 栈条目清单（E1-E6，登记点与释放函数见 stages/finalize.py 文件头表）：
@@ -27,7 +27,6 @@ from ginno_runtime import server, server_shared
 from ginno_runtime.api.stream import engine
 from ginno_runtime.api.stream.stages import (
     dispatch_stream_graph,
-    staged_enabled,
     stream_graph_staged,
 )
 from ginno_runtime.testing.fake_model import script
@@ -74,27 +73,13 @@ def _assert_registries_empty(session_id: str) -> None:
     assert session_id not in server_shared._PENDING_KIND
 
 
-def test_staged_default_and_legacy_fallback(monkeypatch):
-    """默认翻转：未设 env = staged；=legacy 回退 legacy；=staged 仍 staged。"""
-    monkeypatch.delenv("GINNO_STREAM_ENGINE", raising=False)
-    assert staged_enabled() is True
-    monkeypatch.setenv("GINNO_STREAM_ENGINE", "legacy")
-    assert staged_enabled() is False
-    monkeypatch.setenv("GINNO_STREAM_ENGINE", "staged")
-    assert staged_enabled() is True
-    # 大小写/空白宽容
-    monkeypatch.setenv("GINNO_STREAM_ENGINE", "  LEGACY ")
-    assert staged_enabled() is False
-
-
-def test_dispatch_routes_to_staged_by_default(monkeypatch):
-    """分流点：未设 env 时 dispatch 返回 staged 协程对象（非 legacy 函数）。"""
-    monkeypatch.delenv("GINNO_STREAM_ENGINE", raising=False)
+def test_dispatch_routes_to_staged_only(monkeypatch):
+    """legacy 路删除后：dispatch 唯一进入 staged 管道（patch 面仍在）。"""
 
     async def _noop():
         return None
 
-    class _G:  # dispatch 只做分流不消费 graph
+    class _G:  # dispatch 只做转发不消费 graph
         pass
 
     calls = []
@@ -103,19 +88,11 @@ def test_dispatch_routes_to_staged_by_default(monkeypatch):
         calls.append("staged")
         return _noop()
 
-    def _fake_legacy(graph, config, input_state=None, command=None):
-        calls.append("legacy")
-        return _noop()
-
     import ginno_runtime.api.stream.stages as stages_pkg
 
     monkeypatch.setattr(stages_pkg, "stream_graph_staged", _fake_staged)
-    monkeypatch.setattr(stages_pkg, "_legacy_stream_graph", _fake_legacy)
     asyncio.run(dispatch_stream_graph(_G(), {}, input_state=None, command=None))
     assert calls == ["staged"]
-    monkeypatch.setenv("GINNO_STREAM_ENGINE", "legacy")
-    asyncio.run(dispatch_stream_graph(_G(), {}, input_state=None, command=None))
-    assert calls == ["staged", "legacy"]
 
 
 def test_exit_stack_clears_all_turn_resources_on_error(
@@ -127,7 +104,6 @@ def test_exit_stack_clears_all_turn_resources_on_error(
     try 的调用抛出），其后的注册表清理会被跳过；栈化后每条目独立执行，
     互不阻断。
     """
-    monkeypatch.delenv("GINNO_STREAM_ENGINE", raising=False)
     # 防止 handle_turn_error 把 RuntimeError 判成 transient 触发 auto-retry
     from ginno_runtime.api.stream import engine as eng_mod
 
@@ -152,7 +128,6 @@ def test_exit_stack_clears_all_turn_resources_on_error(
 
 def test_exit_stack_releases_when_setup_stream_raises(client, create_session, monkeypatch):
     """更早的异常窗口：_setup_stream 抛出（coal/ka 已登记、主循环未进）。"""
-    monkeypatch.delenv("GINNO_STREAM_ENGINE", raising=False)
     from ginno_runtime.api.stream import engine as eng_mod
     from ginno_runtime.api.stream.stages import run as run_mod
 
@@ -185,7 +160,6 @@ def test_exit_stack_keeps_registration_when_parked(client, create_session, monke
     E2 条件收尾组内 ``not saw_interrupt`` 分支语义的护栏——栈化不得把
     parked turn 的注册表也弹掉（resume 段会重新登记并在其 E2 里清理）。
     """
-    monkeypatch.delenv("GINNO_STREAM_ENGINE", raising=False)
     sid = create_session([script(text="x")])
 
     from ginno_runtime.api.stream.stages.ctx import StreamTurnCtx
@@ -209,13 +183,3 @@ def test_exit_stack_keeps_registration_when_parked(client, create_session, monke
     # 清场（本测试直接驱动了条件组，不经过完整栈）
     server_shared._RUNNING_TURNS.pop(sid, None)
     server_shared._RUNNING_TURNS_AT.pop(sid, None)
-
-
-def test_legacy_engine_function_untouched():
-    """旧路原函数仍在：engine._stream_graph 一行未动（删旧路是独立后续 PR）。"""
-    import inspect
-
-    src = inspect.getsource(engine._stream_graph)
-    # 栈化只发生在 stages/；legacy 函数体内不得出现 AsyncExitStack
-    assert "AsyncExitStack" not in src
-    assert "stream_graph_staged" not in src
