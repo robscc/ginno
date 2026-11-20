@@ -33,8 +33,8 @@ from ...world_state import (
     sync_world_state,
 )
 from ..files import _compact_schema, _heal_workspace_ref
-# 批次 5-2：分流入口 —— GINNO_STREAM_ENGINE=staged 走 stages/ 四阶段实现，
-# 默认（含未设置）走 legacy engine._stream_graph（一行未动，同引用同 patch 面）。
+# 批次 5-2：分流入口；批次 5-3 起默认 staged —— GINNO_STREAM_ENGINE=legacy
+# 显式回退 legacy engine._stream_graph（原函数保留未动，同引用同 patch 面）。
 from .stages import dispatch_stream_graph as _stream_graph
 
 # Default intent for an attachment-only send (no text typed): the picture or

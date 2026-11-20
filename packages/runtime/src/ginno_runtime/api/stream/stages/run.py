@@ -45,19 +45,30 @@ legacy 行号       内容                          本文位置
 注册表写入点对照（见各处行内注释）：
 
 - ① ``_RUNNING_TURNS``/``_RUNNING_TURNS_AT`` 写入 — _setup_identity（legacy 207-212）
-- ② ``_TURN_STOP.pop`` — finalize.finalize（legacy 1767）
+- ② ``_TURN_STOP.pop`` — 栈条目 E3 = finalize._release_stop_entry（legacy 1767）
 - ③ ``_PENDING_RESUME``/``_PENDING_KIND`` 写入 — permission.handle_interrupt（legacy ×3）
-- ④ ``_RUNNING_TURNS`` 等 pop/``_PENDING_*`` 清 — finalize.finalize（legacy 1772-1800）
+- ④ ``_RUNNING_TURNS`` 等 pop/``_PENDING_*`` 清 — 栈条目 E2 =
+  finalize._release_turn_registration（legacy 1772-1800；批次 5-3 起由
+  AsyncExitStack LIFO 弹出，登记点在写入点①的紧邻行——异常路径同清）
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 
+from ....tools.ask_tools import reset_ask_budget
 from .. import engine as eng
 from . import closeout
 from . import finalize as finalize_mod
 from .ctx import StreamTurnCtx
+from .finalize import (
+    _cancel_keepalive,
+    _cancel_stop_waiter,
+    _close_coalescer,
+    _release_stop_entry,
+    _release_turn_registration,
+)
 from .streamio import (
     chunked_stream,
     handle_custom,
@@ -70,8 +81,12 @@ from .streamio import (
 from .toolloop import handle_messages_tool_chunks, handle_updates
 
 
-def _setup_identity(ctx: StreamTurnCtx) -> None:
-    """legacy engine.py:168-224 — turn 标识解析、注册表①、遗言、stop 事件。"""
+def _setup_identity(ctx: StreamTurnCtx, stack: AsyncExitStack) -> None:
+    """legacy engine.py:168-224 — turn 标识解析、注册表①、遗言、stop 事件。
+
+    批次 5-3：注册表①写入后**立即**在获取点登记栈条目（E2/E3）——
+    acquire 与 release 钉在同一函数邻域，异常路径的清理由栈保证。
+    """
     # Per-turn trace id (from invoke, or fresh on a bare resume). `emit`
     # wraps _ev so EVERY event of this turn carries it — the frontend shows
     # it on the bubble and we log it, so a user-supplied UUID greps the logs.
@@ -103,6 +118,10 @@ def _setup_identity(ctx: StreamTurnCtx) -> None:
     # Heartbeat stamp for turn_gate_busy's staleness self-heal (see
     # server_shared): every turn execution re-arms here.
     eng._RUNNING_TURNS_AT[ctx.session_id] = eng.time.time()
+    # 【栈条目 E2】条件收尾组（RUNNING/AT pop + PENDING_* 清 + 终态钩子），
+    # 压栈后由 LIFO 在 E3(_TURN_STOP pop) 之后弹出——与 legacy finally 的
+    # 段序逐行一致。登记即配对：此后本函数抛异常，注册表也必然回滚。
+    stack.push_async_callback(_release_turn_registration, ctx)
     # 遗言 WAL 护体（docs/lastwords-design.md P2）：turn 启动即写初始
     # 遗言（reason=running）——此刻 checkpoint 还没有本 turn 的请求
     # （快照回落上一条用户消息），工具边界写会立刻覆盖补全；SIGKILL
@@ -116,6 +135,9 @@ def _setup_identity(ctx: StreamTurnCtx) -> None:
     # Cooperative stop signal: setdefault so an event pre-armed by the WS
     # loop (created before this task spawned) is never clobbered.
     ctx.stop_evt = eng._TURN_STOP.setdefault(ctx.session_id, asyncio.Event())
+    # 【栈条目 E3】_TURN_STOP 弹出（finally 中段；parked turn 由 WS stop
+    # handler 直接 heal，不需要事件）。后于 E2 压栈 → 先于 E2 弹出。
+    stack.callback(_release_stop_entry, ctx)
 
     # The client (app webview / browser tab) can close the socket mid-turn
     # (refresh, navigate, sleep). Turn events therefore broadcast to EVERY
@@ -130,8 +152,13 @@ def _setup_identity(ctx: StreamTurnCtx) -> None:
     ctx.ws_closed = False
 
 
-def _setup_io(ctx: StreamTurnCtx) -> None:
-    """legacy engine.py:225-274 — safe_send、合帧器、keepalive、TODO 快照。"""
+def _setup_io(ctx: StreamTurnCtx, stack: AsyncExitStack) -> None:
+    """legacy engine.py:225-274 — safe_send、合帧器、keepalive、TODO 快照。
+
+    批次 5-3 栈登记顺序契约：E5(keepalive) 先压、E6(合帧器) 后压——
+    LIFO 弹出序 coal.close → _ka.cancel 与 legacy finally 首两句对位
+    （获取序 coal→ka 与清理序相反，故两条登记集中在获取完成后成对写）。
+    """
     ctx.safe_send = make_safe_send(ctx)
     # token.delta/thinking.delta 合帧（delta_coalesce.py）：33ms 窗口
     # ≈30fps，N 路并发时 WS send/json.dumps/前端 setState 同比例降频。
@@ -140,6 +167,10 @@ def _setup_io(ctx: StreamTurnCtx) -> None:
 
     ctx._coal = DeltaCoalescer(ctx.safe_send, ctx.emit)
     ctx._ka = asyncio.create_task(keepalive(ctx))
+    # 【栈条目 E5/E6】见 docstring 顺序契约：ka 先压（后弹）、coal 后压
+    # （先弹）→ 弹出序 = coal.close → ka.cancel = legacy finally 序。
+    stack.callback(_cancel_keepalive, ctx)
+    stack.push_async_callback(_close_coalescer, ctx)
 
     # Snapshot the global TODO list before the turn: afterwards we diff it
     # to find the items the agent created/touched, and auto-link THIS
@@ -309,79 +340,112 @@ async def stream_graph_staged(
     input_state: dict | None = None,
     command=None,
 ) -> None:
-    """staged 版 ``_stream_graph`` — 语义复制，骨架见模块 docstring 对照表。"""
+    """staged 版 ``_stream_graph`` — 语义复制，骨架见模块 docstring 对照表。
+
+    批次 5-3：逐 turn 资源全走 ``AsyncExitStack``（入口 async with 进入）。
+    压栈序 E1→E6，LIFO 弹出序 = legacy finally 的逐行清理序：
+
+    =========  =============================  ==========================
+    弹出序     条目                           legacy engine.py 行号
+    =========  =============================  ==========================
+    E6         coal.close（合帧器 flush）      1746-1749
+    E5         _ka.cancel（keepalive）         1658-1661
+    E4         stop_waiter.cancel              1662-1663
+    E3         _TURN_STOP.pop                  1666-1668
+    E2         条件收尾组（注册表④+终态钩子）  1669-1760
+    E1         ask_budget token reset          121-126（legacy 不显式
+                                               reset，靠 task 死亡；栈化
+                                               后同 context LIFO reset，
+                                               递归接管段的 token 链正确）
+    =========  =============================  ==========================
+
+    结构收益（根治三次泄漏事故的结构病）：每个资源的 acquire 与 release
+    登记钉在同一行邻域（新增资源不再依赖「记得去 finally 补配对」），且
+    AsyncExitStack 保证任一条目抛异常时其余条目仍执行——legacy finally
+    里 steer_keep_channel 等未包 try 的调用一旦抛出会跳过其后全部清理。
+    """
     # Arm the ask_user budget for this turn segment. Every segment (the invoke
     # and each resume) funnels through here, and each runs in its own asyncio
-    # task whose context dies with it — so no reset is needed and a budget
-    # never leaks into an unrelated turn.
-    eng.begin_ask_budget()
-    ctx = StreamTurnCtx(graph, config, input_state, command)
-    try:
-        _setup_identity(ctx)
-        _setup_io(ctx)
-        _setup_stream(ctx)
-        await _emit_turn_start(ctx)
+    # task whose context dies with it — a leaked budget used to rely on that
+    # death; 批次 5-3 起同 context 显式 LIFO reset（栈条目 E1），嵌套的
+    # steer-continue/auto-retry 递归段 token 链逐层正确回滚。
+    async with AsyncExitStack() as stack:
+        _ask_tok = eng.begin_ask_budget()
+        # 【栈条目 E1】最先压 → 最后弹：预算贯穿整个收尾段（finalize 里
+        # 若有人 ask_user 仍可用），全部资源清完才还。
+        stack.callback(reset_ask_budget, _ask_tok)
+        ctx = StreamTurnCtx(graph, config, input_state, command)
+        try:
+            _setup_identity(ctx, stack)
+            _setup_io(ctx, stack)
+            _setup_stream(ctx)
+            await _emit_turn_start(ctx)
 
-        # Wall-clock stall watchdog: the SDK httpx read-timeout only covers
-        # *network* reads, NOT a stall inside the model generator or graph (the
-        # 7m49s "stuck at 'now creating doc'" case). Wrap the stream iterator so
-        # any chunk that takes longer than CHUNK_TIMEOUT_S ends the stream ->
-        # the except below surfaces a fast `error` event instead of hanging.
-        # A legitimately long tool call is fine because its tool-result
-        # `updates` chunk resets the per-chunk clock.
-        # NOTE: asyncio.wait_for is NOT used here — cancellation of the stuck
-        # __anext__ can be swallowed by retry layers (they catch CancelledError
-        # and keep retrying), which makes wait_for wait forever and the
-        # watchdog never fires. Instead await with asyncio.wait and ABANDON the
-        # stuck task on timeout (fire-and-forget cancel); at most one stuck
-        # task leaks per stall, and the turn still errors out fast.
-        # One waiter per turn on the cooperative stop signal (armed by the WS
-        # `stop` handler); cancelled in the finally block. Sharing the
-        # per-chunk asyncio.wait below means a stop lands promptly even while
-        # a long tool/LLM step holds __anext__ — no task.cancel() needed.
-        ctx.stop_waiter = asyncio.ensure_future(ctx.stop_evt.wait())
+            # Wall-clock stall watchdog: the SDK httpx read-timeout only covers
+            # *network* reads, NOT a stall inside the model generator or graph (the
+            # 7m49s "stuck at 'now creating doc'" case). Wrap the stream iterator so
+            # any chunk that takes longer than CHUNK_TIMEOUT_S ends the stream ->
+            # the except below surfaces a fast `error` event instead of hanging.
+            # A legitimately long tool call is fine because its tool-result
+            # `updates` chunk resets the per-chunk clock.
+            # NOTE: asyncio.wait_for is NOT used here — cancellation of the stuck
+            # __anext__ can be swallowed by retry layers (they catch CancelledError
+            # and keep retrying), which makes wait_for wait forever and the
+            # watchdog never fires. Instead await with asyncio.wait and ABANDON the
+            # stuck task on timeout (fire-and-forget cancel); at most one stuck
+            # task leaks per stall, and the turn still errors out fast.
+            # One waiter per turn on the cooperative stop signal (armed by the WS
+            # `stop` handler); cancelled by 栈条目 E4（批次 5-3 起，原 finally
+            # 第三句）。Sharing the
+            # per-chunk asyncio.wait below means a stop lands promptly even while
+            # a long tool/LLM step holds __anext__ — no task.cancel() needed.
+            ctx.stop_waiter = asyncio.ensure_future(ctx.stop_evt.wait())
+            # 【栈条目 E4】stop 等待任务取消（finally 第三句）。E3 之前压栈
+            # → E3 之后弹出；one-waiter-per-turn，登记即配对。
+            stack.callback(_cancel_stop_waiter, ctx)
 
-        async for mode, payload in chunked_stream(ctx):
-            if mode == "messages":
-                chunk, msg_meta = payload
-                # Only AI message chunks carry streaming text / thinking /
-                # tool-call chunks. ToolMessage chunks (the result emitted by
-                # the tools node, type "tool") must NOT be streamed as
-                # token.delta — that would leak the tool output into the
-                # assistant's text bubble (and into the memory-capture buffer).
-                # Tool results reach the UI via the `updates` mode -> tool.end.
-                # Streamed AI chunks report type "AIMessageChunk"; a final
-                # non-streamed AIMessage reports "ai" — allow both.
-                if getattr(chunk, "type", None) not in ("ai", "AIMessageChunk"):
+            async for mode, payload in chunked_stream(ctx):
+                if mode == "messages":
+                    chunk, msg_meta = payload
+                    # Only AI message chunks carry streaming text / thinking /
+                    # tool-call chunks. ToolMessage chunks (the result emitted by
+                    # the tools node, type "tool") must NOT be streamed as
+                    # token.delta — that would leak the tool output into the
+                    # assistant's text bubble (and into the memory-capture buffer).
+                    # Tool results reach the UI via the `updates` mode -> tool.end.
+                    # Streamed AI chunks report type "AIMessageChunk"; a final
+                    # non-streamed AIMessage reports "ai" — allow both.
+                    if getattr(chunk, "type", None) not in ("ai", "AIMessageChunk"):
+                        continue
+                    await handle_messages_text(ctx, chunk)
+                    await handle_messages_tool_chunks(ctx, chunk)
+                elif mode == "custom":
+                    # 工具心跳（graph.TOOL_HEARTBEAT_S）：chunked_stream 收到任何
+                    # chunk 都会重置 stall 看门狗——custom 帧到这一步使命已完成，
+                    # 不下发前端（前端对工具运行态已有 tool.start/end 表达）。
+                    # 例外：模型退避透传（graph._ainvoke_rate_limited）——provider
+                    # 的原始错误全文必须到前端（2026-10-27 e48be8a3：静默退避
+                    # 把「套餐无权限」伪装成卡死），用户看着它决定 ⏹ 与否。
+                    await handle_custom(ctx, payload)
                     continue
-                await handle_messages_text(ctx, chunk)
-                await handle_messages_tool_chunks(ctx, chunk)
-            elif mode == "custom":
-                # 工具心跳（graph.TOOL_HEARTBEAT_S）：chunked_stream 收到任何
-                # chunk 都会重置 stall 看门狗——custom 帧到这一步使命已完成，
-                # 不下发前端（前端对工具运行态已有 tool.start/end 表达）。
-                # 例外：模型退避透传（graph._ainvoke_rate_limited）——provider
-                # 的原始错误全文必须到前端（2026-10-27 e48be8a3：静默退避
-                # 把「套餐无权限」伪装成卡死），用户看着它决定 ⏹ 与否。
-                await handle_custom(ctx, payload)
-                continue
-            elif mode == "updates":
-                await handle_updates(ctx, payload)
+                elif mode == "updates":
+                    await handle_updates(ctx, payload)
 
-        await finalize_mod.post_stream_flush(ctx)
-        if not ctx.saw_interrupt:
-            await finalize_mod.finalize_completed(ctx)
-        else:
-            eng._log.info(
-                "turn_done session=%s turn=%s status=paused_at_interrupt",
-                ctx.session_id, ctx.turn_id,
-            )
-    except eng.TurnStopped:
-        await closeout.handle_turn_stopped(ctx)
-    except Exception as e:
-        if await closeout.handle_turn_error(ctx, e):
-            # steer-continue / auto-retry 分支已递归接管（legacy 的
-            # except 内 return）；finally 仍照常执行。
-            return
-    finally:
-        await finalize_mod.finalize(ctx)
+            await finalize_mod.post_stream_flush(ctx)
+            if not ctx.saw_interrupt:
+                await finalize_mod.finalize_completed(ctx)
+            else:
+                eng._log.info(
+                    "turn_done session=%s turn=%s status=paused_at_interrupt",
+                    ctx.session_id, ctx.turn_id,
+                )
+        except eng.TurnStopped:
+            await closeout.handle_turn_stopped(ctx)
+        except Exception as e:
+            if await closeout.handle_turn_error(ctx, e):
+                # steer-continue / auto-retry 分支已递归接管（legacy 的
+                # except 内 return）；finally 仍照常执行。
+                return
+        # 批次 5-3：legacy 的 finally 清理段整体栈化（E1-E6，弹出序=
+        # 原逐行清理序，见 stream_graph_staged docstring 表）——async with
+        # 退出即全部弹出，except 分支 return 前亦然（Python 语义）。

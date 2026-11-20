@@ -1,11 +1,27 @@
-"""finalize 阶段 — 段末收尾、parked 退出、final 消息落盘、异常路径、
-finally 清理（批次 5-2）。
+"""finalize 阶段 — 段末收尾、parked 退出、final 消息落盘、异常路径（批次 5-2）。
 
 复制自 legacy ``engine._stream_graph`` 的对应段（原行号见各函数 docstring）。
 
 ``handle_turn_error`` 返回 ``True`` 表示 steer-continue / auto-retry 分支
 已递归接管本轮（legacy 在 except 块内 ``return``——编排器据此 return，
 其后 finally 照常执行，与 legacy 的 Python 语义一致）。
+
+finally 清理的栈化（批次 5-3）：legacy 的 finally 块拆成 6 个
+``AsyncExitStack`` 条目（E1-E6，见 run.py 入口）。压栈序 = 资源获取序，
+弹出序（LIFO）= legacy finally 的逐行清理序——登记与获取钉在同一行
+邻域，新增资源不再依赖「记得去 finally 补配对」的纪律（三次泄漏事故
+的结构病根治点）。本模块只保留各条目的**释放函数**：
+
+============  ==========================  ===========================
+条目          释放内容                    legacy engine.py 行号
+============  ==========================  ===========================
+E6 _close_coalescer            coal.close    1746-1749
+E5 _cancel_keepalive           _ka.cancel    1658-1661
+E4 _cancel_stop_waiter         waiter.cancel 1662-1663
+E3 _release_stop_entry         TURN_STOP.pop 1666-1668
+E2 _release_turn_registration  条件收尾组    1669-1760
+E1 ask_budget token reset（编排器内联登记，run.py）            121-126
+============  ==========================  ===========================
 """
 
 from __future__ import annotations
@@ -301,35 +317,71 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
             pass  # 推送失败不影响本会话收口
 
 
-async def finalize(ctx: StreamTurnCtx) -> None:
-    """legacy engine.py:1745-1769 — finally 清理(顺序逐行对应)。"""
-    from .... import server_shared as shared
 
-    # 合帧器收尾：flush 残留 + 取消定时器（幂等；异常路径也清）。
+# --------------------------------------------------------------------------- #
+# 栈条目释放函数（E2-E6）—— 登记点见 run.py/_setup_identity/_setup_io。
+# 顺序契约：弹出序（LIFO）= legacy finally 逐行清理序；AsyncExitStack 保证
+# 任一条目抛异常不阻断其余条目——比 legacy finally 的段间依赖更健壮。
+# --------------------------------------------------------------------------- #
+
+
+async def _close_coalescer(ctx: StreamTurnCtx) -> None:
+    """【栈条目 E6】legacy engine.py:1746-1749 — 合帧器收尾（finally 首位）。
+
+    flush 残留 + 取消定时器（幂等；异常路径也清）。最后压栈 → 最先弹出，
+    与 legacy finally 的第一句对位。
+    """
     try:
         await ctx._coal.close()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _cancel_keepalive(ctx: StreamTurnCtx) -> None:
+    """【栈条目 E5】legacy engine.py:1658-1661 — keepalive 任务取消。"""
     try:
         ctx._ka.cancel()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
+
+
+def _cancel_stop_waiter(ctx: StreamTurnCtx) -> None:
+    """【栈条目 E4】legacy engine.py:1662-1663 — stop 等待任务取消。"""
     if ctx.stop_waiter is not None and not ctx.stop_waiter.done():
         ctx.stop_waiter.cancel()
-    # major-B: capture BEFORE the pop — a set event here means the USER
-    # stopped this turn (the TurnStopped unwind, or a stop landing during
-    # retry backoff). The reconcile below must not spawn result-redelivery
-    # wakes ahead of the stopped finalize on such a turn.
-    _user_stopped = ctx.stop_evt.is_set()
-    # A parked-at-interrupt turn no longer needs the stop event either —
-    # the WS `stop` handler heals parked turns directly (no live stream).
-    # 【注册表写入点②】_TURN_STOP pop(legacy finally 第一处注册表操作)。
+
+
+def _release_stop_entry(ctx: StreamTurnCtx) -> None:
+    """【栈条目 E3】legacy engine.py:1666-1668 — _TURN_STOP 弹出。
+
+    A parked-at-interrupt turn no longer needs the stop event either —
+    the WS `stop` handler heals parked turns directly (no live stream).
+    【注册表写入点②】_TURN_STOP pop(legacy finally 第一处注册表操作)。
+    """
     eng._TURN_STOP.pop(ctx.session_id, None)
-    # Ended or errored (not paused at an interrupt): unregister so a client
-    # `turn_state` query reports "not running". A turn parked at a
-    # permission/version-propose/ask_user interrupt stays registered — its
-    # resume hasn't happened yet.
-    # 【注册表写入点④】_RUNNING_TURNS/_RUNNING_TURNS_AT pop + _PENDING_* 清。
+
+
+async def _release_turn_registration(ctx: StreamTurnCtx) -> None:
+    """【栈条目 E2】legacy engine.py:1669-1760 — 条件收尾组（整段保序平移）。
+
+    Ended or errored (not paused at an interrupt): unregister so a client
+    `turn_state` query reports "not running". A turn parked at a
+    permission/version-propose/ask_user interrupt stays registered — its
+    resume hasn't happened yet.
+    【注册表写入点④】_RUNNING_TURNS/_RUNNING_TURNS_AT pop + _PENDING_* 清。
+
+    栈化注意：major-B 的 `_user_stopped` 在 legacy 是 TURN_STOP.pop **之前**
+    捕获；栈弹出序 E3 → E2，本函数执行时 dict 条目已移除——但 ctx.stop_evt
+    仍持同一 Event 对象，is_set() 读值不变（pop 只动 dict 不动事件），语义
+    等价。
+    """
+    from .... import server_shared as shared
+
+    # major-B: a set event here means the USER stopped this turn (the
+    # TurnStopped unwind, or a stop landing during retry backoff). The
+    # reconcile below must not spawn result-redelivery wakes ahead of the
+    # stopped finalize on such a turn.
+    _user_stopped = ctx.stop_evt.is_set()
     if not ctx.saw_interrupt:
         eng._RUNNING_TURNS.pop(ctx.session_id, None)
         eng._RUNNING_TURNS_AT.pop(ctx.session_id, None)
