@@ -274,7 +274,7 @@ async def handle_steer(conn: WsConn, msg: dict) -> None:
     _merged_into = None
     if not _steer_imgs and not _steer_files and not _payload.get("context_text"):
         _merged_into = shared.steer_merge_pending(
-            session_id, steer_text or "", _steer_turn
+            session_id, steer_text or "", _steer_turn, steer_id
         )
     if _merged_into:
         _log.info(

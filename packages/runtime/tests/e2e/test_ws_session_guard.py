@@ -191,14 +191,12 @@ def test_steer_resend_after_reconnect_is_absorbed_once(client, create_session, w
     steer_id, the resend still earns an ack, and exactly ONE absorption
     happens.
 
-    KNOWN DEFECT FROZEN HERE (reported, product code untouched per batch 4-1
-    constraints): ``server_shared.steer_merge_pending`` matches on
-    text-similarity WITHOUT comparing steer_id, so a same-id resend hits the
-    merge path and the queued entry's text becomes the two copies joined by
-    a blank line ("X\\n\\nX"). The band/model text assertions below pin that
-    current output on purpose — batch 4-2 must not make it WORSE (no second
-    band, no second absorption, no unbounded copies); fixing the merge
-    (dedup on steer_id) will need this test updated alongside."""
+    KNOWN DEFECT — FIXED HERE (2026-11-20, fix/steer-merge-id):
+    ``server_shared.steer_merge_pending`` used to match on text-similarity
+    WITHOUT comparing steer_id, so a same-id resend hit the merge path and
+    the queued entry's text became two copies joined by a blank line. The
+    fix claims the existing entry idempotently (no text concat), so the
+    assertions below now pin the CORRECT single-copy behavior."""
     model = RecordingScriptedChatModel(
         scripts=[
             script(tool_calls=[script_tool_call("bash", {"command": "sleep 0.8; echo MARK"})]),
@@ -234,14 +232,13 @@ def test_steer_resend_after_reconnect_is_absorbed_once(client, create_session, w
     # the resend still earns its ack (the client's queue entry closes)
     assert events_of(rest, "steer.accepted"), rest
     # the steered text reaches the model inside the same turn (not a
-    # next-turn queue) — currently as the merged (duplicated) text, see the
-    # frozen-defect note above
+    # next-turn queue) — exactly one copy (same-id resend is idempotent)
     assert _calls_containing(model, "断线前的注入") == 1, model.seen
     # transcript: exactly ONE band (no second band from the resend); its text
-    # is the current merged output — frozen, see the note above
+    # is the single copy — the idempotent claim fixed the double-text defect
     bands = _steer_bands(client, sid)
     assert [b["steerId"] for b in bands] == ["steer-r"], bands
-    assert bands[0]["text"] == "断线前的注入\n\n断线前的注入", bands[0]["text"]
+    assert bands[0]["text"] == "断线前的注入", bands[0]["text"]
 
 
 # --------------------------------------------------------------------------- #

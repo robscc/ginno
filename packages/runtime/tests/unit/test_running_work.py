@@ -145,6 +145,16 @@ def test_steer_merge_pending() -> None:
         assert ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 pr", "t-1") == "st-1"
         e = ss._STEER_STASH["s-merge"][0]
         assert "这个 pr" in e["text"] and len(ss._STEER_STASH["s-merge"]) == 1
+        # 同 steer_id 重发（断线重连 exactly-once，2026-11-20）→ 幂等认领：
+        # 不拼文本，text 保持合并后的原样
+        before = e["text"]
+        assert (
+            ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 pr", "t-1", "st-1")
+            == "st-1"
+        )
+        assert ss._STEER_STASH["s-merge"][0]["text"] == before
+        # 同 id 但不同 turn → 不认领（不是重发场景）
+        assert ss.steer_merge_pending("s-merge", "审计一下 PR#4 这个 issue pr", "t-9", "st-1") is None
         # 完全不同意图 → 不合并
         assert ss.steer_merge_pending("s-merge", "顺便看下 CI 日志", "t-1") is None
         # 不同 turn → 不合并
