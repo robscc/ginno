@@ -1,0 +1,458 @@
+# Ginno 内置斜杠命令注册表契约快照（commands/registry.py 重构批次 0 验收基准）。
+# 目的：拆包期间命令清单与文案零漂移——本文件被测试逐字节断言，
+# 任何 diff 都必须是有意变更并进 PR 审阅。
+# 再生成（会覆盖本文件；生成后逐行审阅 git diff）：
+#   cd packages/runtime && GINNO_UPDATE_SNAPSHOT=1 uv run --group test --extra docs pytest -q tests/unit/test_commands_registry_contract.py
+# 生成环境：根 conftest isolated_home autouse fixture（GINNO_HOME=临时目录），
+# /help 的 skills 段只含包内 builtin skills，与开发机/CI 的机器状态无关。
+
+command_count: 21
+
+== /help 输出 ==
+
+locale.en: |
+  **Available commands**
+
+  Built-in commands:
+  - `/clear` — Clear this session's conversation history and start fresh (files, mounts and settings are kept)
+  - `/compact` — Manually compact session context (LLM-summarizes old messages to free tokens)
+  - `/dev-swap` — Developer hot-swap: rebuild the runtime bundle and restart onto it (tests → build → preflight → swap → verify, auto-rollback on failure)
+  - `/fork` — Copy this IM (DingTalk/WeCom) conversation into a fresh desktop session (history carried over, this chat untouched)
+  - `/goal` — Set or show a long-running goal for this session (advances autonomously)
+  - `/help` — List available commands and skills
+  - `/mount` — Mount a local folder as session context (/mount <path> [ro|rw])
+  - `/mounts` — Show this session's mounted context folders
+  - `/plan` — Task plans (/plan list; /plan confirm|cancel <id>)
+  - `/primary` — Set the primary working directory (bash cwd); /primary clear to unset
+  - `/subagent` — Create a subagent (/subagent <goal> direct; /subagent split <task> to decompose first)
+  - `/subagent-split` — Split a task into multiple subagents (/subagent-split <task>, alias of /subagent split)
+  - `/think` — Set or show this session's thinking effort (/think <off|low|medium|high|auto>)
+  - `/umount` — Unmount a context folder (/umount <name|path>)
+  - `/workflow-cancel` — Cancel the latest (or a given) workflow run
+  - `/workflow-delete` — Delete a workflow definition (/workflow-delete <name|id>; run history is kept)
+  - `/workflow-list` — List workflow definitions (name · version · steps · last run)
+  - `/workflow-pause` — Pause the latest (or a given) running workflow run
+  - `/workflow-resume` — Resume a paused workflow run (human answers still go via the Workflows page)
+  - `/workflow-run` — Start a workflow run (/workflow-run <name|id>, fuzzy name match)
+  - `/workflow-status` — Show the status of the latest (or a given) workflow run
+
+  Skills (invoke with `/skill-name [prompt]`):
+  - `/browser` — 操作用户的 Chrome 浏览器（打开/切换标签页、点击、输入、截图、读页面、跑 JS、抓网络请求）。Use when the user asks to browse/open/scrape/automate a web page.
+  - `/todo` — 快速管理用户的每日 TODO 清单（增删改查、完成、关联产物）。Use when the user wants to add/list/edit/complete/delete TODO items.
+
+locale.zh-CN: |
+  **可用命令**
+
+  内置命令：
+  - `/clear` — 清空本会话的对话上下文，重新开始（会话文件、挂载与设置保留）
+  - `/compact` — 手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）
+  - `/dev-swap` — 开发热切换：重建 runtime bundle 并热重启到新版本（单测 → 构建 → 预检 → 切换 → 验证，失败自动回滚）
+  - `/fork` — 把本 IM（钉钉/企微）对话复制为桌面普通对话（历史带走，本对话保持不变）
+  - `/goal` — 设定或查看本会话的长程目标（自主推进）
+  - `/help` — 列出可用命令与技能
+  - `/mount` — 挂载本地目录为本会话上下文（/mount <路径> [ro|rw]）
+  - `/mounts` — 查看本会话挂载的上下文目录
+  - `/plan` — 任务清单（/plan 列出；/plan confirm|cancel <id> 确认/取消）
+  - `/primary` — 设置主工作目录（bash cwd）；/primary clear 取消
+  - `/subagent` — 创建 subagent（/subagent <goal> 直接启动；/subagent 拆分 <任务> 先 LLM 拆分再确认）
+  - `/subagent-split` — 拆分任务为多个 subagent（/subagent-split <任务>，同 /subagent 拆分）
+  - `/think` — 设置或查看本会话思考强度（/think <off|low|medium|high|auto>）
+  - `/umount` — 卸载一个上下文目录（/umount <名称|路径>）
+  - `/workflow-cancel` — 取消最近（或指定）一次工作流运行
+  - `/workflow-delete` — 删除工作流定义（/workflow-delete <名称|id>；历史运行保留）
+  - `/workflow-list` — 列出工作流定义（名称 · 版本 · 步骤数 · 最近运行）
+  - `/workflow-pause` — 暂停最近（或指定）正在运行的工作流
+  - `/workflow-resume` — 恢复已暂停的工作流运行（人工回答仍走 Workflows 页）
+  - `/workflow-run` — 运行一个工作流（/workflow-run <名称|id>，名称模糊匹配）
+  - `/workflow-status` — 查看最近一次（或指定）工作流运行的状态
+
+  技能（用 `/技能名 [提示]` 调用）：
+  - `/browser` — 操作用户的 Chrome 浏览器（打开/切换标签页、点击、输入、截图、读页面、跑 JS、抓网络请求）。Use when the user asks to browse/open/scrape/automate a web page.
+  - `/todo` — 快速管理用户的每日 TODO 清单（增删改查、完成、关联产物）。Use when the user wants to add/list/edit/complete/delete TODO items.
+
+== 命令清单（按名称排序）==
+
+[/clear]
+channel_policy: all
+sync_handler: _clear_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _clear_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Clear this session's conversation history and start fresh (files, mounts and settings are kept)
+description.zh-CN: 清空本会话的对话上下文，重新开始（会话文件、挂载与设置保留）
+no_args_reply.en: |
+  Run /clear through the async entry point (WS invoke)
+no_args_reply.zh-CN: |
+  请通过异步入口（WS invoke）运行 /clear
+
+[/compact]
+channel_policy: all
+sync_handler: _compact_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _compact_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Manually compact session context (LLM-summarizes old messages to free tokens)
+description.zh-CN: 手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）
+no_args_reply.en: |
+  Run /compact through the async entry point (WS invoke)
+no_args_reply.zh-CN: |
+  请通过异步入口（WS invoke）运行 /compact
+
+[/dev-swap]
+channel_policy: admin
+sync_handler: <lambda>
+sync_signature: (*a, **k)
+async_handler: _dev_swap_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Developer hot-swap: rebuild the runtime bundle and restart onto it (tests → build → preflight → swap → verify, auto-rollback on failure)
+description.zh-CN: 开发热切换：重建 runtime bundle 并热重启到新版本（单测 → 构建 → 预检 → 切换 → 验证，失败自动回滚）
+no_args_reply.en: |
+  (/dev-swap runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/dev-swap 异步执行——直接发送即可）
+
+[/fork]
+channel_policy: all
+sync_handler: _fork_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _fork_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Copy this IM (DingTalk/WeCom) conversation into a fresh desktop session (history carried over, this chat untouched)
+description.zh-CN: 把本 IM（钉钉/企微）对话复制为桌面普通对话（历史带走，本对话保持不变）
+no_args_reply.en: |
+  Run /fork through the async entry point (WS invoke)
+no_args_reply.zh-CN: |
+  请通过异步入口（WS invoke）运行 /fork
+
+[/goal]
+channel_policy: all
+sync_handler: _goal_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: Set or show a long-running goal for this session (advances autonomously)
+description.zh-CN: 设定或查看本会话的长程目标（自主推进）
+no_args_reply.en: |
+  **Goal usage**
+  - `/goal <objective>` — set a long-running goal for this session (the agent advances autonomously)
+  - `/goal` — show the current goal
+  - `/goal pause` / `/goal resume` — pause / resume
+  - `/goal clear` — clear the goal
+  - `/goal edit` — points to the goal chip at the top for editing
+no_args_reply.zh-CN: |
+  **/goal 用法**
+  - `/goal <目标>` — 为本会话设定长程目标（agent 自主推进）
+  - `/goal` — 查看当前目标
+  - `/goal pause` / `/goal resume` — 暂停 / 恢复
+  - `/goal clear` — 清除目标
+  - `/goal edit` — 指向顶部目标芯片进行编辑
+
+[/help]
+channel_policy: all
+sync_handler: _help_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: List available commands and skills
+description.zh-CN: 列出可用命令与技能
+no_args_reply.en: |
+  **Available commands**
+
+  Built-in commands:
+  - `/clear` — Clear this session's conversation history and start fresh (files, mounts and settings are kept)
+  - `/compact` — Manually compact session context (LLM-summarizes old messages to free tokens)
+  - `/dev-swap` — Developer hot-swap: rebuild the runtime bundle and restart onto it (tests → build → preflight → swap → verify, auto-rollback on failure)
+  - `/fork` — Copy this IM (DingTalk/WeCom) conversation into a fresh desktop session (history carried over, this chat untouched)
+  - `/goal` — Set or show a long-running goal for this session (advances autonomously)
+  - `/help` — List available commands and skills
+  - `/mount` — Mount a local folder as session context (/mount <path> [ro|rw])
+  - `/mounts` — Show this session's mounted context folders
+  - `/plan` — Task plans (/plan list; /plan confirm|cancel <id>)
+  - `/primary` — Set the primary working directory (bash cwd); /primary clear to unset
+  - `/subagent` — Create a subagent (/subagent <goal> direct; /subagent split <task> to decompose first)
+  - `/subagent-split` — Split a task into multiple subagents (/subagent-split <task>, alias of /subagent split)
+  - `/think` — Set or show this session's thinking effort (/think <off|low|medium|high|auto>)
+  - `/umount` — Unmount a context folder (/umount <name|path>)
+  - `/workflow-cancel` — Cancel the latest (or a given) workflow run
+  - `/workflow-delete` — Delete a workflow definition (/workflow-delete <name|id>; run history is kept)
+  - `/workflow-list` — List workflow definitions (name · version · steps · last run)
+  - `/workflow-pause` — Pause the latest (or a given) running workflow run
+  - `/workflow-resume` — Resume a paused workflow run (human answers still go via the Workflows page)
+  - `/workflow-run` — Start a workflow run (/workflow-run <name|id>, fuzzy name match)
+  - `/workflow-status` — Show the status of the latest (or a given) workflow run
+
+  Skills (invoke with `/skill-name [prompt]`):
+  - `/browser` — 操作用户的 Chrome 浏览器（打开/切换标签页、点击、输入、截图、读页面、跑 JS、抓网络请求）。Use when the user asks to browse/open/scrape/automate a web page.
+  - `/todo` — 快速管理用户的每日 TODO 清单（增删改查、完成、关联产物）。Use when the user wants to add/list/edit/complete/delete TODO items.
+no_args_reply.zh-CN: |
+  **可用命令**
+
+  内置命令：
+  - `/clear` — 清空本会话的对话上下文，重新开始（会话文件、挂载与设置保留）
+  - `/compact` — 手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）
+  - `/dev-swap` — 开发热切换：重建 runtime bundle 并热重启到新版本（单测 → 构建 → 预检 → 切换 → 验证，失败自动回滚）
+  - `/fork` — 把本 IM（钉钉/企微）对话复制为桌面普通对话（历史带走，本对话保持不变）
+  - `/goal` — 设定或查看本会话的长程目标（自主推进）
+  - `/help` — 列出可用命令与技能
+  - `/mount` — 挂载本地目录为本会话上下文（/mount <路径> [ro|rw]）
+  - `/mounts` — 查看本会话挂载的上下文目录
+  - `/plan` — 任务清单（/plan 列出；/plan confirm|cancel <id> 确认/取消）
+  - `/primary` — 设置主工作目录（bash cwd）；/primary clear 取消
+  - `/subagent` — 创建 subagent（/subagent <goal> 直接启动；/subagent 拆分 <任务> 先 LLM 拆分再确认）
+  - `/subagent-split` — 拆分任务为多个 subagent（/subagent-split <任务>，同 /subagent 拆分）
+  - `/think` — 设置或查看本会话思考强度（/think <off|low|medium|high|auto>）
+  - `/umount` — 卸载一个上下文目录（/umount <名称|路径>）
+  - `/workflow-cancel` — 取消最近（或指定）一次工作流运行
+  - `/workflow-delete` — 删除工作流定义（/workflow-delete <名称|id>；历史运行保留）
+  - `/workflow-list` — 列出工作流定义（名称 · 版本 · 步骤数 · 最近运行）
+  - `/workflow-pause` — 暂停最近（或指定）正在运行的工作流
+  - `/workflow-resume` — 恢复已暂停的工作流运行（人工回答仍走 Workflows 页）
+  - `/workflow-run` — 运行一个工作流（/workflow-run <名称|id>，名称模糊匹配）
+  - `/workflow-status` — 查看最近一次（或指定）工作流运行的状态
+
+  技能（用 `/技能名 [提示]` 调用）：
+  - `/browser` — 操作用户的 Chrome 浏览器（打开/切换标签页、点击、输入、截图、读页面、跑 JS、抓网络请求）。Use when the user asks to browse/open/scrape/automate a web page.
+  - `/todo` — 快速管理用户的每日 TODO 清单（增删改查、完成、关联产物）。Use when the user wants to add/list/edit/complete/delete TODO items.
+
+[/mount]
+channel_policy: all
+sync_handler: _mount_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: Mount a local folder as session context (/mount <path> [ro|rw])
+description.zh-CN: 挂载本地目录为本会话上下文（/mount <路径> [ro|rw]）
+no_args_reply.en: |
+  **Context folder usage**
+  - `/mount <path> [ro|rw]` — mount a folder (registered in the folder library; rw by default)
+  - `/mount` / `/mounts` — show current mounts
+  - `/umount <name|path>` — unmount
+  - `/primary <name|path>` — set the primary working directory (bash cwd)
+  - `/primary clear` — clear the primary working directory
+  The folder library and access tiers can also be managed in Settings → Context Folders.
+no_args_reply.zh-CN: |
+  **上下文目录用法**
+  - `/mount <路径> [ro|rw]` — 挂载目录（登记进目录库；默认 rw）
+  - `/mount` / `/mounts` — 查看当前挂载
+  - `/umount <名称|路径>` — 卸载
+  - `/primary <名称|路径>` — 设置主工作目录（bash cwd）
+  - `/primary clear` — 清除主工作目录
+  目录库与访问级别也可在 设置 → 上下文目录 中管理。
+
+[/mounts]
+channel_policy: all
+sync_handler: _mounts_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: Show this session's mounted context folders
+description.zh-CN: 查看本会话挂载的上下文目录
+no_args_reply.en: |
+  **Context folder usage**
+  - `/mount <path> [ro|rw]` — mount a folder (registered in the folder library; rw by default)
+  - `/mount` / `/mounts` — show current mounts
+  - `/umount <name|path>` — unmount
+  - `/primary <name|path>` — set the primary working directory (bash cwd)
+  - `/primary clear` — clear the primary working directory
+  The folder library and access tiers can also be managed in Settings → Context Folders.
+no_args_reply.zh-CN: |
+  **上下文目录用法**
+  - `/mount <路径> [ro|rw]` — 挂载目录（登记进目录库；默认 rw）
+  - `/mount` / `/mounts` — 查看当前挂载
+  - `/umount <名称|路径>` — 卸载
+  - `/primary <名称|路径>` — 设置主工作目录（bash cwd）
+  - `/primary clear` — 清除主工作目录
+  目录库与访问级别也可在 设置 → 上下文目录 中管理。
+
+[/plan]
+channel_policy: all
+sync_handler: _plan_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _plan_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Task plans (/plan list; /plan confirm|cancel <id>)
+description.zh-CN: 任务清单（/plan 列出；/plan confirm|cancel <id> 确认/取消）
+no_args_reply.en: |
+  Usage: `/plan`
+no_args_reply.zh-CN: |
+  用法：`/plan`
+
+[/primary]
+channel_policy: all
+sync_handler: _primary_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: Set the primary working directory (bash cwd); /primary clear to unset
+description.zh-CN: 设置主工作目录（bash cwd）；/primary clear 取消
+no_args_reply.en: |
+  **Context folder usage**
+  - `/mount <path> [ro|rw]` — mount a folder (registered in the folder library; rw by default)
+  - `/mount` / `/mounts` — show current mounts
+  - `/umount <name|path>` — unmount
+  - `/primary <name|path>` — set the primary working directory (bash cwd)
+  - `/primary clear` — clear the primary working directory
+  The folder library and access tiers can also be managed in Settings → Context Folders.
+no_args_reply.zh-CN: |
+  **上下文目录用法**
+  - `/mount <路径> [ro|rw]` — 挂载目录（登记进目录库；默认 rw）
+  - `/mount` / `/mounts` — 查看当前挂载
+  - `/umount <名称|路径>` — 卸载
+  - `/primary <名称|路径>` — 设置主工作目录（bash cwd）
+  - `/primary clear` — 清除主工作目录
+  目录库与访问级别也可在 设置 → 上下文目录 中管理。
+
+[/subagent]
+channel_policy: all
+sync_handler: _subagent_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _subagent_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Create a subagent (/subagent <goal> direct; /subagent split <task> to decompose first)
+description.zh-CN: 创建 subagent（/subagent <goal> 直接启动；/subagent 拆分 <任务> 先 LLM 拆分再确认）
+no_args_reply.en: |
+  Run /subagent through the async entry point (WS invoke)
+no_args_reply.zh-CN: |
+  请通过异步入口（WS invoke）运行 /subagent
+
+[/subagent-split]
+channel_policy: all
+sync_handler: _subagent_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _subagent_split_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Split a task into multiple subagents (/subagent-split <task>, alias of /subagent split)
+description.zh-CN: 拆分任务为多个 subagent（/subagent-split <任务>，同 /subagent 拆分）
+no_args_reply.en: |
+  Run /subagent through the async entry point (WS invoke)
+no_args_reply.zh-CN: |
+  请通过异步入口（WS invoke）运行 /subagent
+
+[/think]
+channel_policy: all
+sync_handler: _think_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _think_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Set or show this session's thinking effort (/think <off|low|medium|high|auto>)
+description.zh-CN: 设置或查看本会话思考强度（/think <off|low|medium|high|auto>）
+no_args_reply.en: |
+  **Thinking effort usage**
+  - `/think <off|low|medium|high>` — set this session's thinking effort
+  - `/think auto` — follow the provider config (default)
+  - `/think` — show the current effort
+no_args_reply.zh-CN: |
+  **/think 用法**
+  - `/think <off|low|medium|high>` — 设置本会话思考强度
+  - `/think auto` — 跟随 provider 配置（缺省）
+  - `/think` — 查看当前强度
+
+[/umount]
+channel_policy: all
+sync_handler: _umount_handler
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: -
+description.en: Unmount a context folder (/umount <name|path>)
+description.zh-CN: 卸载一个上下文目录（/umount <名称|路径>）
+no_args_reply.en: |
+  **Context folder usage**
+  - `/mount <path> [ro|rw]` — mount a folder (registered in the folder library; rw by default)
+  - `/mount` / `/mounts` — show current mounts
+  - `/umount <name|path>` — unmount
+  - `/primary <name|path>` — set the primary working directory (bash cwd)
+  - `/primary clear` — clear the primary working directory
+  The folder library and access tiers can also be managed in Settings → Context Folders.
+no_args_reply.zh-CN: |
+  **上下文目录用法**
+  - `/mount <路径> [ro|rw]` — 挂载目录（登记进目录库；默认 rw）
+  - `/mount` / `/mounts` — 查看当前挂载
+  - `/umount <名称|路径>` — 卸载
+  - `/primary <名称|路径>` — 设置主工作目录（bash cwd）
+  - `/primary clear` — 清除主工作目录
+  目录库与访问级别也可在 设置 → 上下文目录 中管理。
+
+[/workflow-cancel]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_cancel_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Cancel the latest (or a given) workflow run
+description.zh-CN: 取消最近（或指定）一次工作流运行
+no_args_reply.en: |
+  (/workflow-cancel runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-cancel 异步执行——直接发送即可）
+
+[/workflow-delete]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_delete_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Delete a workflow definition (/workflow-delete <name|id>; run history is kept)
+description.zh-CN: 删除工作流定义（/workflow-delete <名称|id>；历史运行保留）
+no_args_reply.en: |
+  (/workflow-delete runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-delete 异步执行——直接发送即可）
+
+[/workflow-list]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_list_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: List workflow definitions (name · version · steps · last run)
+description.zh-CN: 列出工作流定义（名称 · 版本 · 步骤数 · 最近运行）
+no_args_reply.en: |
+  (/workflow-list runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-list 异步执行——直接发送即可）
+
+[/workflow-pause]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_pause_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Pause the latest (or a given) running workflow run
+description.zh-CN: 暂停最近（或指定）正在运行的工作流
+no_args_reply.en: |
+  (/workflow-pause runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-pause 异步执行——直接发送即可）
+
+[/workflow-resume]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_resume_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Resume a paused workflow run (human answers still go via the Workflows page)
+description.zh-CN: 恢复已暂停的工作流运行（人工回答仍走 Workflows 页）
+no_args_reply.en: |
+  (/workflow-resume runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-resume 异步执行——直接发送即可）
+
+[/workflow-run]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_run_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Start a workflow run (/workflow-run <name|id>, fuzzy name match)
+description.zh-CN: 运行一个工作流（/workflow-run <名称|id>，名称模糊匹配）
+no_args_reply.en: |
+  (/workflow-run runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-run 异步执行——直接发送即可）
+
+[/workflow-status]
+channel_policy: all
+sync_handler: _wf_async_only_hint.<locals>._hint
+sync_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+async_handler: _workflow_status_async_handler
+async_signature: (project_slug: 'str | None' = None, session=None, args=None) -> 'str'
+description.en: Show the status of the latest (or a given) workflow run
+description.zh-CN: 查看最近一次（或指定）工作流运行的状态
+no_args_reply.en: |
+  (/workflow-status runs asynchronously — just send it plain)
+no_args_reply.zh-CN: |
+  （/workflow-status 异步执行——直接发送即可）

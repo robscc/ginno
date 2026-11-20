@@ -1,0 +1,45 @@
+# Ginno engine golden — _stream_graph 外发事件帧序列契约快照(批次 0)
+#
+# 生成命令:
+#   cd packages/runtime && GOLDEN_UPDATE=1 \
+#     uv run --group test --extra docs pytest tests/api/test_engine_golden.py -q
+#
+# 归一规范(详见 tests/api/test_engine_golden.py 模块 docstring):
+#   - 每行一条帧:EVENT <json>(键序 sort_keys);
+#   - <id#n> = 非确定性标识占位(uuid/call id/fake msg id),同值同占位;
+#   - <n>    = 时间/用量数值占位(ts/elapsed_s/*_tokens);
+#   - 帧信封键 turn_id / frame_session 剥离;keepalive 不入快照。
+# 任何 diff = turn 事件契约漂移 —— 结构性拆分必须保持本文件逐字节不变。
+
+=== scenario: multi_chunk ===
+turn.start {"agent_id":"dev","name":"Dev Agent"}
+token.delta {"content":"Golden "}
+token.delta {"content":"chunk "}
+token.delta {"content":"stream!"}
+todos.changed {}
+workflows.changed {}
+artifacts.changed {}
+skills.changed {}
+message.end {"meta":{"elapsed_s":"<n>","input_tokens":"<n>","message_id":"fake_golden_stream","output_tokens":"<n>","ts":"<n>"},"origin":"deliver","text":"Golden chunk stream!"}
+
+=== scenario: plain_text ===
+turn.start {"agent_id":"dev","name":"Dev Agent"}
+token.delta {"content":"你好,Ginno!这是一条纯文本回复。"}
+todos.changed {}
+workflows.changed {}
+artifacts.changed {}
+skills.changed {}
+message.end {"meta":{"elapsed_s":"<n>","input_tokens":"<n>","message_id":"<id1>","output_tokens":"<n>","ts":"<n>"},"origin":"deliver","text":"你好,Ginno!这是一条纯文本回复。"}
+
+=== scenario: tool_call_bash ===
+turn.start {"agent_id":"dev","name":"Dev Agent"}
+tool.start {"id":"<id1>","name":"bash"}
+tool.args {"id":"<id1>","preview":"echo hello-golden"}
+tool.input {"id":"<id1>","input":{"command":"echo hello-golden"}}
+tool.end {"content":"[exit 0]\nhello-golden\n\n--- stderr ---\n","id":"<id1>"}
+token.delta {"content":"命令已执行,输出如上。"}
+todos.changed {}
+workflows.changed {}
+artifacts.changed {}
+skills.changed {}
+message.end {"meta":{"elapsed_s":"<n>","input_tokens":"<n>","message_id":"<id2>","output_tokens":"<n>","ts":"<n>"},"origin":"deliver","text":"命令已执行,输出如上。"}
