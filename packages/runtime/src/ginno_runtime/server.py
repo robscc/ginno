@@ -13,8 +13,6 @@ live in ``session_meta``. The many re-exports at the bottom keep historical
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
 import sys
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
@@ -25,458 +23,46 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import agents as agents_reg
-from . import lang, paths, usage_store
-from . import server_shared as shared
-from . import workflows as wf_store
+from . import lang, paths
+from . import startup_tasks
 from ._version import __version__
-from .hooks.dispatcher import HookDispatcher
-from .mcp.registry import MCPRegistry
-from .todos import store as todo_store
 
-
-async def _watch_shell_pid(poll_s: float = 2.0, fire=None) -> None:
-    """壳 pid 看守（反孤儿化，2026-11-04）：壳硬死（崩溃/强退/kill -9）时
-    sidecar 不随之消亡——孤儿 sidecar 占着 8787、后台命令全体陪跑（当日
-    PID 60637 事故）。轮询 env GINNO_SHELL_PID（壳 spawn 时注入，prod/dev
-    两分支都有；无 env = 人肉看管的裸 dev 服务，不启用），壳 pid 消失或本
-    进程被过继（ppid 变化）即自请退出：给自己发 SIGTERM → uvicorn 优雅
-    关闭（timeout_graceful_shutdown 兜底）→ lifespan finally 的 stop_all
-    等一起收尾。``fire`` 参数仅测试注入。
-    """
-    raw = os.environ.get("GINNO_SHELL_PID", "")
-    if not raw.isdigit() or int(raw) <= 1:
-        return
-    shell_pid = int(raw)
-    ppid0 = os.getppid()
-    while True:
-        await asyncio.sleep(poll_s)
-        gone = os.getppid() != ppid0  # 被过继 = 直接父（壳/uv wrapper）没了
-        if not gone:
-            try:
-                os.kill(shell_pid, 0)
-            except ProcessLookupError:
-                gone = True
-            except OSError:
-                pass  # PermissionError 等：pid 复用为他户进程，保守视作活着
-        if gone:
-            _log.info("shell_gone_self_terminating shell_pid=%s", shell_pid)
-            (fire or (lambda: os.kill(os.getpid(), signal.SIGTERM)))()
-            return
+# 壳 pid 看守 / 后台 MCP 连接两个纯 lifespan 辅助已随启动任务表迁至
+# startup_tasks.py（2026-11 批次 7 表化）；re-export 保住历史
+# ``server.<name>`` 引用（tests/unit/test_shell_watchdog.py 等）。
+from .startup_tasks import (  # noqa: F401
+    _connect_mcp_background,
+    _watch_shell_pid,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # _ensure_turn_log / _log / _refresh_session_metas / _reconcile_orphan_runs /
-    # _shutdown_run_tasks resolve at call time from the module-level (facade)
-    # imports below — the app cannot start before this module fully imports.
-    paths.ensure_layout()
-    # 数据卫生（app-iter-harness 04_ginno_ux 工单批，maintenance.py）：孤儿
-    # artifact、失效 workspace、无 agent 的历史会话、陈旧 last_error、重复标题。
-    # 幂等 + best-effort —— 任何一步失败都不阻止启动。
-    try:
-        from .maintenance import run_startup_maintenance
+    """Startup/shutdown 任务表驱动（批次 7 表化，见 startup_tasks.py）。
 
-        run_startup_maintenance()
-    except Exception:  # noqa: BLE001 — 启动绝不因清理失败而中断
-        _log.exception("startup_maintenance_failed (continuing)")
-    # P0-1 消息索引：后台增量构建，搜索在它完成前只匹配标题。
-    try:
-        import threading as _threading
+    启动/关闭的每个步骤（原约 330 行平铺 try 块 + create_task）现在住在
+    :data:`startup_tasks.STARTUP_TASKS` / :data:`startup_tasks.SHUTDOWN_TASKS`
+    声明表里，由 :func:`startup_tasks.execute_phase` 按表序执行、按
+    fail_policy 分流。表序即原平铺顺序（逐块一一对应，守卫测试钉死）；
+    本函数只是装载表 + 执行器调用的薄壳。
 
-        from . import search_index as _search_index
-
-        _threading.Thread(
-            target=_search_index.build_index, name="search-index", daemon=True
-        ).start()
-    except Exception:  # noqa: BLE001
-        _log.exception("search index start failed (continuing)")
-    # P4-2 启动自检：轻量（不读 checkpoint、不发 HTTP），结果经 /api/health 暴露。
-    try:
-        from . import diagnostics
-
-        diagnostics.startup_check()
-    except Exception:  # noqa: BLE001
-        _log.exception("startup_check_failed (continuing)")
-    # 委托子会话启动对账：上个进程的后台委托随重启消亡，running 态存量
-    # 一律改判 error，避免侧栏出现永远转圈的委托行（2026-10-05）。
-    try:
-        from .delegation_sessions import reconcile_running_delegations
-
-        reconcile_running_delegations()
-        # type 主动标注的一次性迁移（2026-10-29）：历史 main 会话 type 缺省
-        # 补写 "main"——worker 协议的可派活白名单不再靠缺省反推。幂等，
-        # 收敛后每次启动零写入。
-        try:
-            from .session_meta import backfill_session_types
-
-            n = backfill_session_types()
-            if n:
-                _log.info("session_type_backfill stamped=%d", n)
-        except Exception:
-            _log.exception("session_type_backfill_failed (continuing)")
-        # Worker 协议订阅对账（worker-protocol-design §6.2）：崩溃在终态
-        # 翻转与回传之间错过的订阅，启动时补发 + 重建 _WATCHED 快查表。
-        try:
-            from .worker_bus import reconcile_subscriptions
-
-            reconcile_subscriptions()
-        except Exception:
-            _log.exception("worker_reconcile_failed (continuing)")
-        # 关联会话戳对账（topbar-unification §3.2）：历史 watch 订阅在订阅方
-        # 没有 linked_auto 戳（戳只在新动作落）——补上,旧订阅才能进面板。
-        try:
-            from .session_links import backfill_linked_stamps
-
-            n = backfill_linked_stamps()
-            if n:
-                _log.info("linked_stamps_backfilled=%d", n)
-        except Exception:
-            _log.exception("linked_stamps_backfill_failed (continuing)")
-    except Exception:  # noqa: BLE001 — 启动绝不因对账失败而中断
-        pass
-    # 清单 watcher 恢复（subagent-plan-orchestration-design.md §6）：扫
-    # 全部 open 清单——active 的会话起 watcher 接着跑（running 条目靠 tick
-    # 对账自动校准）；pending_confirm 等用户，不起。会话已删除的跳过。
-    # plan_resume_on_restart=False（§6 开关）时改为取消恢复的 active 清单
-    # ——不无人值守地续跑。
-    try:
-        from .plans import store as _plan_store
-        from .plans import watcher as _plan_watcher
-        from .world_state import plan_resume_on_restart
-
-        _resume = plan_resume_on_restart()
-        for _slug, _sid, _plan in _plan_store.all_active_plans():
-            _meta, _ = _find_meta(_sid) or ({}, None)
-            if not _meta or _plan.get("status") != _plan_store.PLAN_ACTIVE:
-                continue
-            if _resume:
-                _plan_watcher.ensure_watcher(_sid)
-            else:
-                _plan_store.cancel_plan(_slug, _sid, _plan["plan_id"])
-                _log.info(
-                    "plan_resume_disabled_cancelled session=%s plan=%s",
-                    _sid, _plan["plan_id"],
-                )
-    except Exception:  # noqa: BLE001 — 启动绝不因恢复失败而中断
-        _log.exception("plan watcher recovery failed (continuing)")
-    # AgentTeam 恢复（2026-10-14）：存量领队回填 + 孤儿团队会话清理。
-    try:
-        from .api.teams import recover_teams
-        await recover_teams()
-    except Exception:  # noqa: BLE001
-        _log.exception("team recovery failed (continuing)")
-    # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/
-    # placeholder parity. A frozen-app packaging gap (the JSONs missing from
-    # the bundle) must surface HERE, not on first use — same lesson as the
-    # zlib TOC incident. Log-only: degraded copy beats a startup crash.
-    try:
-        from .i18n import i18n_health_check
-
-        _i18n_problems = i18n_health_check()
-        if _i18n_problems:
-            _log.error("i18n_bundle invalid: %s", "; ".join(_i18n_problems))
-    except Exception:
-        _log.exception("i18n health check failed (continuing)")
-    # Record the main loop so sync (threadpool) REST handlers can schedule WS
-    # broadcasts via run_coroutine_threadsafe (spawn_bg) instead of failing with
-    # "no running event loop".
-    from . import server_shared as _shared
-
-    _shared.set_main_loop(asyncio.get_running_loop())
-    # 2026-11-15 内存基线治理：线程池右 sizing。anyio worker 池默认上限 40
-    # （sync 端点 + 静态 FileResponse 走 run_in_threadpool，空闲不自退）+
-    # asyncio 默认 executor min(32, cpu+4)=12 → 实测 43 线程。收敛到 12+8，
-    # 栈虚拟内存减半、调度/诊断噪声下降；sync 端点并发上限显式化。
-    #
-    # ⚠️ 2026-11-15 修复：原写法 `anyio.current_default_thread_limiter()` 在
-    # anyio 4.x 下**顶层不存在该属性**（实测 4.14.2：顶层 False、
-    # anyio.to_thread 下 True），每次启动都抛 AttributeError 被下面的
-    # except 吞掉，只留一行 "right-sizing failed (continuing)"。
-    # 后果不止 limiter 没改：**同一个 try 块里后一行的 set_default_executor
-    # 也一起没执行**，两项优化全部落空，且不挡启动所以一直没被发现。
-    # 故①改用正确路径 anyio.to_thread；②两项拆成独立 try，一项失败不连带另一项。
-    try:
-        import anyio.to_thread
-
-        anyio.to_thread.current_default_thread_limiter().total_tokens = 12
-    except Exception:  # noqa: BLE001 — sizing 失败不挡启动
-        _log.exception("anyio thread limiter right-sizing failed (continuing)")
-    try:
-        from concurrent.futures import ThreadPoolExecutor
-
-        asyncio.get_running_loop().set_default_executor(
-            ThreadPoolExecutor(max_workers=8, thread_name_prefix="ginno-io")
-        )
-    except Exception:  # noqa: BLE001 — sizing 失败不挡启动
-        _log.exception("asyncio default executor right-sizing failed (continuing)")
-    # UX-03：标题生成是后台任务，进程重启会丢掉失败的 job——启动时把
-    # 「待生成且超过 24h」的会话重新入队（assistant 文本从 checkpoint 回填）。
-    # 放在 set_main_loop 之后：生成任务经 spawn_bg 调度。
-    try:
-        from .maintenance import requeue_pending_titles
-
-        await requeue_pending_titles()
-    except Exception:  # noqa: BLE001
-        _log.exception("title requeue failed (continuing)")
-    # Apply the user's system-proxy switch (Settings → 模型 API) before any
-    # LLM client exists: verify / sessions / probes all ride httpx, whose
-    # clients freeze their proxy map at init. Default honours OS proxies.
-    try:
-        from . import providers as _prov
-
-        _prov.apply_system_proxy(_prov.use_system_proxy())
-    except Exception:
-        _log.exception("system proxy apply failed (continuing)")
-    # Attach the trace-file handler up front so pre-turn lifecycle lines
-    # (session_create / ws_open / ws_close) land in the log, not just turn lines.
-    _ensure_turn_log()
-    # Drop usage logs past the retention window (usage-stats-design.md §4.3).
-    # Best-effort and cheap (a directory glob); never blocks startup on failure.
-    try:
-        usage_store.cleanup()
-    except Exception:
-        _log.exception("usage cleanup failed (continuing)")
-    # Memory pipeline hygiene (docs/dream-mode-design.md §4.5): fold the legacy
-    # single-slot draft into the queue, expire drafts nobody reviewed, and trim
-    # the run log. A stalled draft used to block every later distillation
-    # forever (2026-10-01 → 10-25); the TTL makes that impossible.
-    try:
-        from .memory import expire_stale_drafts, migrate_legacy_draft, trim_runs
-
-        migrate_legacy_draft()
-        expire_stale_drafts()
-        trim_runs()
-    except Exception:
-        _log.exception("memory sweep failed (continuing)")
-    # Best-effort, idempotent move of legacy session files into their per-session
-    # dirs. Runs before `yield`, so nothing (uploads/previews/watchers) can race
-    # it. Must never block startup on failure.
-    try:
-        from . import migration as _migration
-
-        _migration.migrate_session_files()
-    except Exception:
-        _log.exception("session-files migration failed (continuing)")
-    shared._hooks = HookDispatcher.from_settings()
-    # Mods classic hooks bridging (claude-code-mods-design.md §10): register
-    # every installed mod's classic-shape hooks.json into the dispatcher (the
-    # JS "modules" shape rides the broker instead). Best-effort.
-    try:
-        from .mods.bridge_utils import register_classic_plugin_hooks
-
-        register_classic_plugin_hooks(shared._hooks)
-    except Exception:
-        _log.exception("mods classic hooks registration failed (continuing)")
-    todo_store.ensure_seeded()
-    # Connector registry (connector-module-design.md): seed the built-in
-    # connectors so /api/connectors answers from the very first request.
-    try:
-        from .connectors import ensure_builtin_connectors as _seed_connectors
-
-        _seed_connectors()
-    except Exception:
-        _log.exception("connector seed failed (continuing)")
-    # Browser connector setup (browser-companion design §7.3): materialize the
-    # companion extension into ~/.ginno/browser-extension (the folder the user
-    # loads via chrome://extensions), install the native-messaging host
-    # manifests, and publish the relay port for the host script. Best-effort.
-    try:
-        from .browser.native_host import (
-            install_host,
-            materialize_extension,
-            write_port_file,
-        )
-
-        materialize_extension()
-        install_host()
-        write_port_file(int(os.environ.get("GINNO_RUNTIME_PORT", "8787")))
-    except Exception:
-        _log.exception("browser connector setup failed (continuing)")
-    agents_reg.ensure_todo_tools()
-    agents_reg.ensure_research_discipline()
-    agents_reg.ensure_goal_tools()
-    agents_reg.ensure_web_tools()
-    agents_reg.ensure_workflow_dev_tools()
-    agents_reg.ensure_workflow_dev()
-    agents_reg.ensure_workflow_dev_discipline()
-    # Upgraded installs never got the web tools in permissions.allow (defaults
-    # seed only fresh homes) — migrate so they don't fall through to `ask`.
-    try:
-        from .permission.policy import ensure_browser_permissions, ensure_web_permissions
-
-        ensure_web_permissions()
-        ensure_browser_permissions()
-    except Exception:
-        _log.exception("web permissions migration failed (continuing)")
-    wf_store.ensure_seeded()
-    # Subagent type registry seed (P3): an empty registry is "no types defined",
-    # not a load failure — ship the default set so agent_type works out of the
-    # box (same convention as the agents registry seeds).
-    try:
-        from . import subagent_types
-
-        subagent_types.ensure_seeded()
-    except Exception:
-        _log.exception("subagent type seed failed (continuing)")
-    # Reconcile subagent metas left live (running/waiting) by the previous
-    # process (subagent-design.md §5.7): their turn/wake/settle tasks all died
-    # with it, and a ghost "running" meta would consume a concurrency slot
-    # forever. Best-effort; never blocks startup.
-    try:
-        from .subagent_scheduler import reconcile_orphan_subagents
-
-        reconcile_orphan_subagents()
-    except Exception:
-        _log.exception("subagent_reconciliation_failed")
-    # Reconcile workflow runs left "running" by a previous crash/quit: at this
-    # point no background task can be alive, so every "running" run is an orphan
-    # that would otherwise stay stuck forever. Best-effort; never blocks startup.
-    try:
-        _reconcile_orphan_runs()
-    except Exception:
-        _log.exception("run_reconciliation_failed")
-    # Heal session metas frozen with a provider/model by older builds (or a
-    # config edited outside the UI) so topbar + rebuilt graphs use current config.
-    _refresh_session_metas()
-    shared._mcp = MCPRegistry()
-    shared._mcp.load()
-    # Do NOT block port bind on MCP connections. A slow/hung MCP server can
-    # take up to its per-server timeout, and the HTTP/WS server (and thus the
-    # UI) must come up regardless. Connect in the background; a session created
-    # before connections finish simply starts without those tools (the
-    # /api/mcp/reload endpoint or a new session picks them up once ready).
-    mcp_connect_task = asyncio.create_task(_connect_mcp_background())
-    # 定时任务调度器（scheduled-tasks-design.md §3.7）：启动对账（孤儿 running 行
-    # → error("interrupted")）+ 单例 30s tick 循环，随 lifespan cancel。
-    scheduler_task = None
-    try:
-        from . import schedule_store as _sched_store
-        from . import scheduler as _scheduler
-
-        try:
-            _sched_store.cleanup()
-        except Exception:
-            _log.exception("schedule cleanup failed (continuing)")
-        scheduler_task = _scheduler.start()
-    except Exception:
-        _log.exception("scheduler start failed (continuing)")
-    # 后台任务注册表（background-tasks-design.md §7）：重启对账（running →
-    # interrupted / detached 认领）+ 保留策略清理 + reaper 循环。
-    tasks_registry_started = False
-    try:
-        from .tasks import get_registry as _get_tasks_registry
-        from .tasks import store as _task_store
-
-        _task_store.cleanup_expired(_task_store.read_index())
-        _get_tasks_registry().start()
-        tasks_registry_started = True
-    except Exception:
-        _log.exception("tasks registry start failed (continuing)")
-    # dev-swap 壳收尾终态 watcher（api/devswap.py）：重启后的新进程盯
-    # dev-override/state.json 的 pending → verified/rolled_back 跳变，补报
-    # finish 终态（旧进程已被换掉，报不了这一笔）。
-    devswap_watch_task = asyncio.create_task(_devswap_api.watch_swap_finish())
-    # 壳 pid 看守（反孤儿化，见 _watch_shell_pid docstring）：壳硬死时自退。
-    shell_watch_task = asyncio.create_task(_watch_shell_pid())
-    # 遗言恢复（docs/lastwords-design.md §1）：上个进程留下的 lastwords/
-    # 快照按 mode 注入回原 session（notify 折叠带 / auto headless 续跑）。
-    # 后台 task + 全 try 包裹——恢复失败绝不炸启动；延时 2s 让 MCP/会话
-    # 装配先行（注入要 _ensure_session 就绪）。
-    async def _lastwords_recover_task() -> None:
-        await asyncio.sleep(2.0)
-        try:
-            from .lastwords import recover_lastwords
-
-            await recover_lastwords()
-        except Exception:  # noqa: BLE001
-            _log.exception("lastwords recovery failed (continuing)")
-
-    lastwords_recover_task = asyncio.create_task(_lastwords_recover_task())
+    语义要点（与原平铺代码一致）：startup 段任一 abort 任务失败 → 异常
+    向上传播，``yield`` 不执行、下方 finally（shutdown 表）**不运行**
+    （try 尚未进入）；shutdown 段仅在 yield 之后运行，abort 任务失败在
+    finally 内抛出。任务间句柄（MCP connect / scheduler / devswap /
+    shell watch / lastwords recover）经 :class:`startup_tasks.LifespanHandles`
+    跨两阶段传递。
+    """
+    handles = startup_tasks.LifespanHandles()
+    await startup_tasks.execute_phase(
+        startup_tasks.STARTUP_TASKS, startup_tasks.PHASE_STARTUP, handles
+    )
     try:
         yield
     finally:
-        # 遗言保护（lastwords.py SIGTERM 诊断 1a）：置位关闭旗——此后
-        # asyncio loop teardown 取消残余 turn 协程触发的 note_turn_end
-        # 不得删掉 write_lastwords(signal) 刚落盘的遗言。
-        try:
-            from . import lastwords as _lastwords
-
-            _lastwords.mark_shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        if not mcp_connect_task.done():
-            mcp_connect_task.cancel()
-        devswap_watch_task.cancel()
-        shell_watch_task.cancel()
-        lastwords_recover_task.cancel()
-        # 遗言落盘（docs/lastwords-design.md §1 SIGTERM 兜底）：prepare API
-        # 漏调（人肉 kill / 壳直接重启）时这里是最后一道。同步快速 IO——
-        # 遍历活跃 turn 读 checkpoint + 落盘，预算 <2s（uvicorn 优雅关闭
-        # 窗口 timeout_graceful_shutdown=3s）；复杂逻辑一律放 prepare API。
-        try:
-            from . import lastwords as _lastwords
-
-            _lastwords.write_lastwords(_lastwords.REASON_SIGNAL)
-        except Exception:  # noqa: BLE001 — 兜底本身绝不拖垮其余收尾
-            _log.exception("lastwords signal write failed")
-        # 取消调度循环 + 在途执行协程（契约同 Goal driver / _connect_mcp_background）。
-        if scheduler_task is not None:
-            try:
-                from . import scheduler as _scheduler
-
-                await _scheduler.stop()
-            except Exception:
-                _log.exception("scheduler_shutdown_failed")
-        # Cancel live workflow-run tasks and mark any still-running run
-        # interrupted so a clean quit never strands a "running" run. A hard
-        # kill -9 skips this; startup reconciliation is the backstop.
-        try:
-            await _shutdown_run_tasks()
-        except Exception:
-            _log.exception("run_shutdown_failed")
-        # Cancel live synthesis tasks (their cases stay without output.json and
-        # render 未完成 after the restart — intentional, no reconciliation).
-        try:
-            await _shutdown_synth_tasks()
-        except Exception:
-            _log.exception("synthesis_shutdown_failed")
-        # 后台任务收尾（D4）：子进程随 sidecar 退出——SIGTERM 全体、宽限后
-        # SIGKILL，重启对账负责把它们标成 interrupted。
-        if tasks_registry_started:
-            try:
-                from .tasks import get_registry as _get_tasks_registry
-
-                await _get_tasks_registry().stop_all()
-            except Exception:
-                _log.exception("tasks registry shutdown failed")
-        # B-track profile Chrome 随 sidecar 退（2026-11-03 进程泄露盘点）：此前
-        # shutdown() 只挂在连接器页的「停止」按钮上，sidecar 退出（无论优雅
-        # 与否）都不收——桌面退出改 SIGTERM-first 后这条路径真正可达了。
-        # 单例构造不 spawn；从未启动过时 conn/proc 均为 None，安全 no-op。
-        try:
-            from .browser.executor import get_profile_backend as _gpb
-
-            await _gpb().shutdown()
-        except Exception:
-            _log.exception("browser_profile_shutdown_failed")
-        if shared._mcp:
-            await shared._mcp.close_all()
-        # Mods bus teardown (§5.2): stop the channel and any dev-spawned
-        # broker child. Best-effort; never masks the shutdowns above.
-        try:
-            from .mods.channel import shutdown_channel
-
-            await shutdown_channel()
-        except Exception:
-            _log.exception("mods channel shutdown failed")
-
-
-async def _connect_mcp_background() -> None:
-    try:
-        await shared._mcp.connect_all()
-    except Exception:
-        _log.exception("background MCP connect_all failed")
+        await startup_tasks.execute_phase(
+            startup_tasks.SHUTDOWN_TASKS, startup_tasks.PHASE_SHUTDOWN, handles
+        )
 
 
 app = FastAPI(title="Ginno Runtime", version=__version__, lifespan=lifespan)
