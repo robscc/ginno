@@ -50,6 +50,7 @@ mod quit_check;
 mod shell_ui;
 mod sidecar;
 mod tray;
+mod tray_anim;
 
 #[cfg(not(debug_assertions))]
 use std::net::{SocketAddr, TcpStream};
