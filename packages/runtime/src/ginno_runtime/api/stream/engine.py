@@ -116,7 +116,52 @@ from .narration import (
 CHUNK_TIMEOUT_S = float(os.environ.get("GINNO_CHUNK_TIMEOUT_S", "180"))
 
 
+# ── 流引擎特征开关（批次 5-1，jt5-stages-base）─────────────────────────────
+# GINNO_STREAM_ENGINE=staged → turn 走 api/stream/stages/ 四阶段管道
+# （批次 5-2 复制式迁移目标）；缺省及任何其它值 → legacy，即下方
+# ``_stream_graph_legacy`` 原路径，行为与拆分前逐字节一致。
+# 进程启动时读一次、缓存于模块级（与 tools/code_mode_tools.py 的
+# GINNO_CODE_MODE 开关同范式）；测试用 monkeypatch 本模块的
+# ``_STREAM_ENGINE`` 切流（golden 双路参数化即此），不改 env。
+# 回退方式：unset 该 env（或设为 legacy）并重启 Ginno 即回原引擎；
+# stages 管道任一阶段未实现时 raise NotImplementedError——绝不会
+# 静默走回 legacy（fail-loud，防止「以为在测新管道实际跑旧路径」）。
+_STREAM_ENGINE = os.environ.get("GINNO_STREAM_ENGINE", "legacy").strip().lower()
+
+
 async def _stream_graph(
+    graph,
+    config: dict,
+    input_state: dict | None = None,
+    command: Command | None = None,
+) -> None:
+    """Turn 流引擎的**分叉入口**（feature fork，批次 5-1）。
+
+    开关语义（``GINNO_STREAM_ENGINE``，默认 legacy）：
+    - ``legacy``（默认）：原样进入 :func:`_stream_graph_legacy`——引擎
+      巨函数（约 1650 行）原封不动，行为零变化；
+    - ``staged``：进入 ``api/stream/stages/`` 的 ``run_staged_stream``
+      四阶段管道（permission → toolloop → streamio → finalize）。批次
+      5-2 逐阶段复制式迁移，迁完前各阶段 ``raise NotImplementedError``。
+
+    本入口是**唯一**应被新增代码引用的名字：所有既有调用方（turn.py /
+    ws.py / 引擎内 resume 段重入）保持调 ``_stream_graph`` 不变，分叉对
+    它们透明。回退即关 env 重启，详见模块内 ``_STREAM_ENGINE`` 注释块。
+    """
+    if _STREAM_ENGINE == "staged":
+        # 延迟 import：stages 包自身可能回引 engine 侧名字，避免环。
+        from .stages import run_staged_stream
+
+        await run_staged_stream(
+            graph, config, input_state=input_state, command=command
+        )
+        return
+    await _stream_graph_legacy(
+        graph, config, input_state=input_state, command=command
+    )
+
+
+async def _stream_graph_legacy(
     graph,
     config: dict,
     input_state: dict | None = None,
