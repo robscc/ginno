@@ -1,19 +1,22 @@
 /**
- * sessionBlocks（sessionStream 基座纯逻辑层）单测 —— 重构批次 3-2。
+ * sessionBlocks（sessionStream 基座纯逻辑层）单测 —— 重构批次 3-2，
+ * P1-4 起口径更新。
  *
- * 口径：applyBlock / finalizePendingTools / mapHistoryToMsgs 逐字吸收自
- * PinStream( pm ) / DevSessionDrawer( dm ) 复制体，这里的断言就是「两
- * 消费方行为不变」的回归钉：浮窗/抽屉子集语义（tool.end 未命中不追加、
- * empty 结果过滤等）刻意与主窗口 streamCore.applyBlock 的完整版不同，
- * 不得"顺手升级"。SOCKET_TIMING 钉住 WS 生命周期四常数。
+ * applyBlock 已升级为主版超集（re-export streamCore 同一真源）：本文件的
+ * 断言从「两消费方子集语义不变」改为钉超集语义——Pin 与 Dev 抽屉与主窗口
+ * 三端同实现，#240 修复（tool.end 定位 / 空结果只删目标块 / orphan append
+ * 兜底）与交叉增量合并对浮窗/抽屉同步生效。主版全量语义（user.question /
+ * widget / llm_call 等）由 streamCoreToolEnd / streamCoreLlmCall 钉住，
+ * 不在此重复。finalizePendingTools / mapHistoryToMsgs 断言不变；
+ * SOCKET_TIMING 钉住 WS 生命周期四常数。
  */
 import { describe, expect, it } from "vitest";
 import type { Block } from "@/components/chat/blocks";
 import {
-  EMPTY_TOOL_RESULT_RE,
   SOCKET_TIMING,
   applyBlock,
   finalizePendingTools,
+  isEmptyToolResult,
   makeMid,
   mapHistoryToMsgs,
   newTurnId,
@@ -57,24 +60,38 @@ describe("applyBlock — text/thinking 流", () => {
     ]);
   });
 
-  it("content 缺省兜底空串（不崩、不静默丢帧）", () => {
-    expect(applyBlock([], ev("token.delta"))).toEqual([{ kind: "text", text: "" }]);
+  it("交叉增量并回最近同 kind 块：thinking 后续写正文不新建碎片卡（超集：appendStreamDelta）", () => {
+    let b: Block[] = applyBlock([], ev("token.delta", { content: "答" }));
+    b = applyBlock(b, ev("thinking.delta", { content: "想" }));
+    b = applyBlock(b, ev("token.delta", { content: "案" }));
+    expect(b).toEqual([
+      { kind: "text", text: "答案" },
+      { kind: "thinking", text: "想" },
+    ]);
+  });
+
+  it("工具气泡是合并边界：边界之后的增量绝不并进边界之前的块", () => {
+    let b: Block[] = applyBlock([], ev("token.delta", { content: "前" }));
+    b = applyBlock(b, ev("tool.start", { id: "t1", name: "bash" }));
+    b = applyBlock(b, ev("token.delta", { content: "后" }));
+    expect(b).toEqual([
+      { kind: "text", text: "前" },
+      { kind: "tool", id: "t1", name: "bash", content: "…", pending: true },
+      { kind: "text", text: "后" },
+    ]);
+  });
+
+  it("content 缺省/空串增量 no-op（不崩、不建空块——超集：appendStreamDelta 空串直返）", () => {
+    const b: Block[] = [{ kind: "text", text: "x" }];
+    expect(applyBlock(b, ev("token.delta"))).toBe(b);
+    expect(applyBlock(b, ev("thinking.delta", { content: "" }))).toBe(b);
   });
 });
 
 describe("applyBlock — tool 块", () => {
-  it("tool.start 建 pending 气泡并带 argsPreview", () => {
-    const b = applyBlock([], ev("tool.start", { id: "t1", name: "bash", preview: "ls" }));
-    expect(b).toEqual([
-      {
-        kind: "tool",
-        id: "t1",
-        name: "bash",
-        content: "…",
-        pending: true,
-        argsPreview: "ls",
-      },
-    ]);
+  it("tool.start 建 pending 气泡（不带 argsPreview——实参预览专用 tool.args；服务端 tool.start 只发 {name,id}）", () => {
+    const b = applyBlock([], ev("tool.start", { id: "t1", name: "bash" }));
+    expect(b).toEqual([{ kind: "tool", id: "t1", name: "bash", content: "…", pending: true }]);
   });
 
   it("tool.args 按 id 精确挂预览；无 id/无 preview 为 no-op", () => {
@@ -91,16 +108,30 @@ describe("applyBlock — tool 块", () => {
     expect(b).toEqual([{ kind: "tool", id: "t1", name: "bash", content: "ok", pending: false, argsPreview: undefined }]);
   });
 
-  it("tool.end 无 id 时按名字兜底到 pending 块（子集语义）", () => {
+  it("tool.end 无 id 时 name 兜底只认 pending、从后往前取最近同名（超集：2026-11-15 定位算法）", () => {
     let b: Block[] = applyBlock([], ev("tool.start", { name: "read" }));
     b = applyBlock(b, ev("tool.end", { name: "read", content: "data" }));
     expect((b[0] as { content: string; pending: boolean }).content).toBe("data");
     expect((b[0] as { pending: boolean }).pending).toBe(false);
   });
 
-  it("tool.end 未命中任何块时内容不变（子集语义：不追加兜底块）", () => {
+  it("同名工具块两次调用：name-only 落到最近的 pending 块，不污染已完成块（超集）", () => {
+    const twoBash: Block[] = [
+      { kind: "tool", id: "t1", name: "bash", content: "first output", pending: false },
+      { kind: "tool", id: "t2", name: "bash", content: "…", pending: true },
+    ];
+    const out = applyBlock(twoBash, ev("tool.end", { name: "bash", content: "(denied)" }));
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ kind: "tool", id: "t1", content: "first output", pending: false });
+    expect(out[1]).toMatchObject({ kind: "tool", id: "t2", content: "(denied)", pending: false });
+  });
+
+  it("tool.end 未命中任何块时 append 已完成块，不静默丢结果（超集：#240 orphan 兜底）", () => {
     const b: Block[] = [{ kind: "text", text: "hi" }];
-    expect(applyBlock(b, ev("tool.end", { id: "ghost", content: "x" }))).toEqual(b);
+    expect(applyBlock(b, ev("tool.end", { id: "ghost", content: "x" }))).toEqual([
+      { kind: "text", text: "hi" },
+      { kind: "tool", id: "ghost", name: "tool", content: "x", pending: false },
+    ]);
   });
 
   it("empty 结果工具块被过滤（噪音白名单）", () => {
@@ -111,7 +142,7 @@ describe("applyBlock — tool 块", () => {
     expect((b[0] as { id?: string }).id).toBe("t2");
   });
 
-  it("EMPTY_TOOL_RESULT_RE 覆盖全部白名单模式", () => {
+  it("isEmptyToolResult 覆盖全部白名单模式（真源 streamCore）", () => {
     for (const s of [
       "(no matches)",
       "(no files found)",
@@ -123,9 +154,9 @@ describe("applyBlock — tool 块", () => {
       "(nothing found)",
       "  (Empty)  ",
     ]) {
-      expect(EMPTY_TOOL_RESULT_RE.test(s)).toBe(true);
+      expect(isEmptyToolResult(s)).toBe(true);
     }
-    expect(EMPTY_TOOL_RESULT_RE.test("3 files")).toBe(false);
+    expect(isEmptyToolResult("3 files")).toBe(false);
   });
 });
 

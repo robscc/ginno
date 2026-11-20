@@ -6,17 +6,13 @@
  * 定位：useSessionTurn 的 Pin 形态。opts 接口与 components/session/
  * useSessionTurn 逐字对齐（sessionId/midPrefix/mapHistory/mergeWithLive/
  * onExtraEvent/onTurnStart/onTurnEnd/onTurnStopped/onSocketReopen/texts/
- * buildErrorMsg），差异只在内部实现的三处 Pin 语义（见下）——共享层
- * applyBlock 超集化（sessionBlocks.applyBlock → 直调 streamCore）之后，
- * 本文件可退化为 `return useSessionTurn(opts)` 的薄包装，那是对共享层的
- * 单点决策，留给父会话（TODO 见批次报告）。
+ * buildErrorMsg），差异只在内部实现的两处 Pin 语义（见下）。P1-4 已把
+ * 共享层 applyBlock 升级为主版超集（sessionBlocks re-export 同一真源），
+ * 此前的差异 ①（流帧归约旧语义会回退 #240 修复）已消除——mutateLive
+ * 直调共享层 applyBlock；本文件退化为 useSessionTurn 薄包装的合并
+ * （连同 ②③ 的超集化）留给父会话按批次推进（TODO 见批次报告）。
  *
- * 为什么不直接用 useSessionTurn（三处语义差异，均已用脚本实证）：
- * ① 流帧归约：useSessionTurn.mutateLive 硬调 sessionBlocks.applyBlock
- *   （旧语义：tool.end 无 id 时 name 兜底不限 pending 从头扫取最早同名块、
- *   name-only 空结果 filter 全删同名、delta 只在末尾同 kind 才合并）——
- *   批次 3-1（#240）修的三 bug 会全部回退。这里保持 pinApplyBlock 直调
- *   主版 streamCore.applyBlock（2026-11-15 tool.end 定位 + 交叉增量合并）。
+ * 为什么还不直接用 useSessionTurn（两处语义差异，均已用脚本实证）：
  * ② turn.state 处置：共享版无 sendSeq>probeSeq 守卫——探针在途时 turn 收
  *   口、flushSteerQueue 立刻发新 turn 的话，迟到的 running=false 回答会把
  *   新 turn 判死。这里走 pinTurnStateAction（resume/stale/idle/reconcile）。
@@ -35,6 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import { getSessionHistory } from "@/lib/runtime";
 import { hasPendingTool, type Block } from "@/components/chat/blocks";
 import {
+  applyBlock,
   finalizePendingTools,
   makeMid,
   newTurnId,
@@ -45,7 +42,7 @@ import {
   SOCKET_TIMING,
 } from "@/components/session/sessionBlocks";
 import { useSessionSocket, type SocketStatus } from "@/components/session/useSessionSocket";
-import { pinApplyBlock, pinTurnStateAction, pinWatchdogTick } from "@/components/pin/pinStreamCore";
+import { pinTurnStateAction, pinWatchdogTick } from "@/components/pin/pinStreamCore";
 
 /** 消费方事件回调拿到的消息环操作面（与 useSessionTurn.TurnEventApi 同构）。 */
 export interface PinTurnApi<Msg extends SessionMsg> {
@@ -141,7 +138,7 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
   function mutateLive(ev: SessionFrame) {
     const id = ensureLive();
     setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, blocks: pinApplyBlock(m.blocks, ev) } : m)),
+      prev.map((m) => (m.id === id ? { ...m, blocks: applyBlock(m.blocks, ev) } : m)),
     );
   }
 

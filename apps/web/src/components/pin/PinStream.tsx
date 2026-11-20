@@ -6,11 +6,11 @@
  * (the parent keys the component by session id).
  *
  * Refactor batch 3-4: socket lifecycle + message loop live in
- * `usePinSessionLoop` (built on the shared `components/session/` layer);
- * the three batch-3-1 (#240) semantics stay pinned in `pinStreamCore`
- * (main-window streamCore.applyBlock, turn_state probe-sequence guard,
- * believing-live periodic probe). Why not plain `useSessionTurn`: the shared
- * applyBlock is NOT yet a superset — see usePinSessionLoop's header.
+ * `usePinSessionLoop` (built on the shared `components/session/` layer).
+ * The batch-3-1 (#240) semantics stay pinned in `pinStreamCore`
+ * (turn_state probe-sequence guard, believing-live periodic probe);
+ * applyBlock itself is now a mainline superset shared via sessionBlocks
+ * (P1-4) — pin, dev drawer and the main window run the same reducer.
  *
  * Stays HERE by design: the composer (IME-safe Enter, ↑/↓ input history,
  * attachments, in-flight gates), the steer queue's display/recall path,

@@ -2,12 +2,15 @@
  * sessionStream 基座（纯逻辑层）—— pin 浮窗 / Studio 开发抽屉共享的
  * 「单会话 WS 流」reducer/工厂/映射。重构批次 3-2（绞杀者）：三复制体
  * （m=useChatStreamEngine 多会话形态、pm=PinStream、dm=DevSessionDrawer）
- * fork 自同一骨架（批次 0 实测 574 行逐字相同），本模块吸收 pm/dm 子集；
- * m 是不同产品面仍留在原处。WS 生命周期见 useSessionSocket，消息环见
- * useSessionTurn。
+ * fork 自同一骨架（批次 0 实测 574 行逐字相同），本模块吸收 pm/dm 子集。
+ * P1-4（本提交）：applyBlock 升级为主版超集（见下），pm/dm 全部收敛到
+ * 本模块单实现——m 的真源在 streamCore 不动。WS 生命周期见 useSessionSocket，
+ * 消息环见 useSessionTurn。
  *
- * 纪律：本文件不 import React —— vitest node 环境直测；消费方差异（文案/
- * 渲染/附件/steer/team 联动）留在各自组件经 useSessionTurn 回调注入。
+ * 纪律：本文件不 import React —— vitest node 环境直测（applyBlock 的
+ * re-export 目标 streamCore 也只有 `import type`，无运行时依赖）；消费方
+ * 差异（文案/渲染/附件/steer/team 联动）留在各自组件经 useSessionTurn
+ * 回调注入。
  */
 
 import type { Block } from "@/components/chat/blocks";
@@ -67,9 +70,10 @@ export function makeMid(prefix: string): () => string {
   return () => `${prefix}${++n}`;
 }
 
-/** 工具「无结果」噪音过滤（与 ChatStream 同款白名单）。 */
-export const EMPTY_TOOL_RESULT_RE =
-  /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched|no matches found|no files found|\(nothing found\))\s*$/i;
+/** 工具「无结果」噪音过滤（与 ChatStream 同款白名单）。真源在
+ *  streamCore.isEmptyToolResult（同正则）——主版 applyBlock 的 tool.end
+ *  空结果过滤直接复用它，这里 re-export 供消费方/测试引用同一实现。 */
+export { isEmptyToolResult } from "@/components/chat/streamCore";
 
 /** 单会话 WS 生命周期四常数（三复制体逐字钉死的行为，批次 0 对齐基线）：
  *  断线 3s 重连 / 20s 心跳 ping / 45s 静默强断（10s 巡检）/ 探针 6s 兜底。
@@ -83,95 +87,38 @@ export const SOCKET_TIMING = {
   RECONCILE_FALLBACK_MS: 6000,
 } as const;
 
-/** Streaming-event → block-list reducer（Pin/Dev 抽屉的 13 事件子集，
- *  Pin 超集：image.emit 一并收敛——Dev 抽屉此前静默丢弃产图事件，接入
- *  共享层后 dev agent 的 image 产物能落块渲染，行为见批次报告）。
- *  与 streamCore.applyBlock（主窗口完整版）语义对齐但刻意保持子集：
- *  浮窗/抽屉不渲染 usage / goal / plan 等 widget。 */
-export function applyBlock(blocks: Block[], ev: SessionFrame): Block[] {
-  const last = blocks[blocks.length - 1];
-  switch (ev.event) {
-    case "token.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "text") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "text", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "text", text: t }];
-    }
-    case "thinking.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "thinking") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "thinking", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "thinking", text: t }];
-    }
-    case "tool.start":
-      return [
-        ...blocks,
-        {
-          kind: "tool",
-          id: ev.id as string | undefined,
-          name: ev.name as string,
-          content: "…",
-          pending: true,
-          argsPreview: (ev.preview as string) || undefined,
-        },
-      ];
-    case "tool.args": {
-      // 把工具实参预览（如 bash 命令）挂到 pending 气泡：用户看得见在跑什么。
-      const id = ev.id as string | undefined;
-      const preview = ev.preview as string;
-      if (!id || !preview) return blocks;
-      let matched = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        if (!matched && b.id === id) {
-          matched = true;
-          return { ...b, argsPreview: preview };
-        }
-        return b;
-      });
-    }
-    case "tool.end": {
-      const id = ev.id as string | undefined;
-      const name = ev.name as string | undefined;
-      const content = ev.content as string;
-      if (EMPTY_TOOL_RESULT_RE.test(content)) {
-        return blocks.filter((b) => {
-          if (b.kind !== "tool") return true;
-          const matches = id ? b.id === id : name ? b.name === name : b.pending;
-          return !matches;
-        });
-      }
-      let found = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
-        if (matches) {
-          found = true;
-          return { ...b, content, pending: false };
-        }
-        return b;
-      });
-    }
-    case "image.emit":
-      return [
-        ...blocks,
-        {
-          kind: "image",
-          fileId: ev.file_id as string,
-          name: ev.name as string | undefined,
-          mtime: ev.mtime as number | undefined,
-        },
-      ];
-    default:
-      return blocks;
-  }
-}
+/** Streaming-event → block-list reducer（Pin/Dev 抽屉共享，P1-4 起为主版
+ *  超集）：真源是主窗口 streamCore.applyBlock，此处 re-export——Pin（经
+ *  usePinSessionLoop）与 Dev 抽屉（经 useSessionTurn）与主窗口三端同实现。
+ *  #240 的三个修复语义（2026-11-15 tool.end 定位算法：有 id 精确匹配不限
+ *  pending 保重连重放幂等、无 id 只认 pending 从后往前取最近同名；空结果
+ *  只删目标块；无配对块 append 兜底不静默丢结果）与 appendStreamDelta 交叉
+ *  增量合并（2026-10-01）全部继承；user.question / widget / workflow / ref /
+ *  llm_call 等主版块能力也随真源就位。
+ *
+ * 消费方为什么不需要过滤主版的新块类型：useSessionTurn / usePinSessionLoop
+ * 的 handle() 只把 6 种流事件（token.delta / thinking.delta / tool.start /
+ * tool.args / tool.end / image.emit——主版事件集的严格子集）喂进 mutateLive；
+ * 主版 reducer 会为其建块的 user.question / widget.emit / workflow.emit /
+ * ref.emit / llm.request / llm.response 在两消费方一律走 default 分支
+ * （onExtraEvent，floating-window-design.md §2.4 刻意忽略：浮窗/抽屉不渲染
+ * usage / goal / plan 等 widget），这些 case 在该路径不可达。因此这 6 事件上
+ * 主版可能产出的块类型只有 text / thinking / tool / image——InnerBlocks 均
+ * 已渲染，无兼容缺口。（tool.end 的 foldQuestion 前置检查同理：消费方
+ * blocks 里永无 question 块，qi 恒为 -1。）
+ *
+ * 与子集版（批次 3-2，本提交前）的可见差异，均为主版修复语义：
+ * ① tool.end 无配对块时 append 已完成工具块（旧：静默丢结果）；
+ * ② tool.end 无 id 时 name 兜底只认 pending、从后往前取最近同名（旧：
+ *    不限 pending 从头扫取最早，同名工具块结果错位）；
+ * ③ name-only 空结果只删目标块（旧：filter 全删一个 turn 内所有同名块）；
+ * ④ delta 交叉合并：text/thinking 增量并回「最近一个非流式块之后」的最近
+ *    同 kind 块，工具气泡/卡片仍是边界（旧：只看末尾同 kind，交叉流式时
+ *    实时视图碎成夹在正文中的独立小卡片）；
+ * ⑤ tool.start 不再读 preview 字段——服务端 tool.start 只发 {name, id}
+ *    （api/stream/stages/toolloop.py 等），实参预览专用 tool.args 事件；
+ *    子集版的 argsPreview: ev.preview 是永不触发的死代码。 */
+export { applyBlock } from "@/components/chat/streamCore";
 
 /** closeLive(finalizeTools) 的内核：stop/error 路径把仍在 pending 的工具
  *  气泡强制收尾（服务端不会再发它们的 tool.end），“…” 占位换成中断文案。 */
