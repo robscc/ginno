@@ -148,7 +148,20 @@ def _resolve_session_meta(session_id: str) -> dict | None:
     """Find a session's meta (with project_slug/workspace) in memory or on disk."""
     s = _SESSIONS.get(session_id)
     if s:
-        return s
+        # 内存条目 → meta 形状投影（2026-11-21 修复模型 chip 显示）：
+        # 条目带着 model 对象（ChatOpenAI dump）、graph、以及内部键名
+        # model_provider/model_name/session_id——原样返回让 GET/PATCH
+        # 出口的 model 变成对象、provider 缺失、id 缺失，与磁盘分支
+        # （provider/model/id 字符串）形状漂移。前端 store merge 后
+        # ModelChipMenu 的 label = session.model（对象）→ 活跃会话
+        # （含 running subagent）点开/换绑 agent 后模型名渲染异常。
+        # 这里统一投影成磁盘 meta 的键形状；调用方均为「读 meta 字段」
+        # 型（无人依赖条目里的 model/graph 对象——对象一律走 _SESSIONS）。
+        out = {k: v for k, v in s.items() if k not in ("model", "graph")}
+        out.setdefault("id", session_id)
+        out.setdefault("provider", s.get("model_provider"))
+        out.setdefault("model", s.get("model_name"))
+        return out
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
         slug = slug_dir.parent.parent.name
         for m in _session_meta_list(slug):
