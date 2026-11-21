@@ -23,6 +23,8 @@ from ....server_shared import (
     _push_session_event,
 )
 from ... import sessions as sessions_mod
+from ..resume import resume_question as _resume_question
+from ..resume import _parked_user_question
 from ..turn import _attach_only_text, _prepare_steer_payload
 from .handshake import WsConn
 
@@ -31,33 +33,6 @@ from .handshake import WsConn
 # 自记一笔:重发的同 id steer 直接再答一次会让刚恢复的 turn 二次吞答案。
 # 有界:达到上限整体清空——宁可极小概率重复,不冒无界增长的险。
 _ANSWERED_STEERS: set[str] = set()
-
-
-
-
-def _parked_user_question(session: dict, session_id: str) -> dict | None:
-    """checkpointer 事实源:该 session 是否停在 ask_user 中断上。
-
-    与 ws_open 的重发路径同源(get_pending_interrupt)。不用内存守卫
-    (_PENDING_RESUME):守卫是进程内状态,重连/重启竞态下与 checkpointer
-    脱节(2026-10-22 f5af1e9 实录:守卫为空但中断明确 parked,回答被静默
-    丢弃,session 卡死)。无活任务的 parked turn 才算数——刚被回答、resume
-    任务已在跑的窗口由调用方的任务检查排除。
-    """
-    try:
-        graph = session.get("graph") if isinstance(session, dict) else None
-        if graph is None or graph.checkpointer is None:
-            return None
-        pending = graph.checkpointer.get_pending_interrupt(
-            {"configurable": {"thread_id": session_id}}
-        )
-    except Exception:
-        return None
-    for intr in pending or []:
-        value = getattr(intr, "value", None) or intr
-        if isinstance(value, dict) and value.get("kind") == "user_question":
-            return value
-    return None
 
 
 
@@ -221,7 +196,7 @@ async def handle_steer(conn: WsConn, msg: dict) -> None:
                 session_id,
                 steer_id,
                 _steer_turn,
-                (_parked_q or {}).get("id"),
+                (_parked_q or {}).get("qid") or (_parked_q or {}).get("id"),
                 steer_text[:120],
             )
             # 客户端据此收走队列条目;卡片本体随后随 ask_user 的
@@ -229,21 +204,23 @@ async def handle_steer(conn: WsConn, msg: dict) -> None:
             await _push_session_event(
                 session_id,
                 "steer.answered",
-                {"steer_id": steer_id, "question_id": (_parked_q or {}).get("id")},
+                {"steer_id": steer_id,
+                 "question_id": (_parked_q or {}).get("id"),
+                 "qid": (_parked_q or {}).get("qid")},
                 _steer_turn,
             )
-            # resume_pending_interrupt 只认内存守卫;这里以
-            # checkpointer 事实武装它,守卫丢失(重连/重启竞态)
-            # 也能恢复——这正是本路径存在的意义。
-            _PENDING_RESUME.add(session_id)
-            _PENDING_KIND[session_id] = "user_question"
-            conn.spawn_resume(
-                {
-                    "kind": "user_answer",
-                    "answer": steer_text,
-                    "option_index": None,
-                    "skip": False,
-                }
+            # resume_question 共享段（relay-question ⑤）：守卫武装 +
+            # payload 组装 + resume + relay 墓碑收口，与 user_answer /
+            # relay_answer 三路同源。checkpointer 事实武装守卫由共享
+            # 函数内部完成（arm_from_checkpoint）。
+            await _resume_question(
+                session_id,
+                answer=steer_text,
+                option_index=None,
+                skip=False,
+                base_config=conn.config,
+                arm_from_checkpoint=True,
+                session=session,
             )
             return
     try:
@@ -388,20 +365,14 @@ async def handle_user_answer(conn: WsConn, msg: dict) -> None:
     # 不在此处预 discard(同上 permission_response 分支):
     # resume_pending_interrupt 独占 check-and-pop,先清一次会让
     # 里面的守卫必查必空,回答被静默丢弃(f5af1e9 事故根因)。
-    _ans = {"kind": "user_answer"}
-    if msg.get("multi"):
-        # 多问题（契约 v2）：逐题答案数组原样透传；ask_tools 的
-        # _multi_receipt 逐题出回执。
-        _ans["multi"] = True
-        _ans["answers"] = [
-            a for a in (msg.get("answers") or []) if isinstance(a, dict)
-        ] or [{"answer": "", "option_index": None, "skip": True}]
-    else:
-        _ans.update(
-            {
-                "answer": str(msg.get("answer") or ""),
-                "option_index": msg.get("option_index"),
-                "skip": bool(msg.get("skip", False)),
-            }
-        )
-    conn.spawn_resume(_ans)
+    # resume_question 共享段（relay-question ⑤）：payload 组装 + resume
+    # + relay 墓碑收口，与 steer 即答 / relay_answer 三路同源。
+    await _resume_question(
+        session_id,
+        answer=str(msg.get("answer") or ""),
+        option_index=msg.get("option_index"),
+        skip=bool(msg.get("skip", False)),
+        multi=bool(msg.get("multi")),
+        answers=[a for a in (msg.get("answers") or []) if isinstance(a, dict)],
+        base_config=conn.config,
+    )

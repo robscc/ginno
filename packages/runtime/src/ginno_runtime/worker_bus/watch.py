@@ -287,6 +287,22 @@ async def on_turn_settled_hook(session_id: str) -> None:
             # 落盘失败不阻断 digest：降级为 inline 全文（仍不截断）。
             _log.exception("worker_digest_file_write_failed session=%s", session_id)
     body = f"[{st}] {excerpt}"
+    # relay-question ②：该 worker 若停在待代答问题上（pending_relay 有
+    # 登记条目），digest 附 pending_questions 摘要行——订阅方在看进度的
+    # 同时知道「它在等你转达问题」（worker 侧直扫登记表，digest 推给
+    # 该 worker 的全部订阅者）。
+    try:
+        from .relay import _PENDING_RELAY as _PR
+
+        pend = [e for e in _PR.values() if e.get("worker_sid") == session_id]
+        if pend:
+            qids = ", ".join(str(e.get("qid") or "") for e in pend)
+            body += (
+                f"\n[relay] {len(pend)} question(s) awaiting relay "
+                f"(qid: {qids}) — relay via relay_answer."
+            )
+    except Exception:
+        pass
     text = _worker_result_text(
         session_id, meta, st, digest=body, msg_id=_digest_msg_id,
         via_file=via_file, file_path=file_path,

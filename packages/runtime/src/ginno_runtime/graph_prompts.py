@@ -85,6 +85,7 @@ def build_stable_system(
     extra_allow: list[str] | None = None,
     tool_policy: dict | None = None,
     skill_dirs: list[str] | None = None,
+    relay_tool_names: list[str] | None = None,
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -131,6 +132,14 @@ def build_stable_system(
     # language settings change legitimately invalidates the prefix.
     parts = [persona, response_lang_directive(), world.render_system()]
     allowed = _allowed_tool_names(agent, all_tools, extra_allow)
+    # relay-answer 条件注入（relay-question 设计 ⑥）：动态补绑的工具不在
+    # 静态 all_tools 里，名单须同步——否则系统层「Never call a tool outside
+    # this list」与 bind 的 schema 自相矛盾。出现/即销时该 section 变化，
+    # stable prefix 相应失效一次（与 skill extra_allow 同语义）。
+    if relay_tool_names:
+        for _n in relay_tool_names:
+            if _n not in allowed:
+                allowed.append(_n)
     parts.append(
         "Tools available to you in this role: "
         + (", ".join(allowed) or "(none — answer from knowledge only)")

@@ -266,6 +266,15 @@ def _task_delegation_reconcile(handles: LifespanHandles) -> None:
             reconcile_subscriptions()
         except Exception:
             _log.exception("worker_reconcile_failed (continuing)")
+        # Worker ask_user 中断透传对账（relay-question 设计）：恢复
+        # pending_relay 登记表 + 墓碑（qid 幂等跨重启），并对已问未答的
+        # 订阅者重注入编排指令（模板标注提醒）。
+        try:
+            from .worker_bus import reconcile_relay
+
+            reconcile_relay()
+        except Exception:
+            _log.exception("relay_reconcile_failed (continuing)")
         # 关联会话戳对账（topbar-unification §3.2）：历史 watch 订阅在订阅方
         # 没有 linked_auto 截（戳只在新动作落）——补上,旧订阅才能进面板。
         try:

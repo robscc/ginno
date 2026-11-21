@@ -78,11 +78,26 @@ async def handle_interrupt(ctx: StreamTurnCtx, delta) -> None:
                 ctx.session_id, ctx.turn_id, value.get("kind"),
                 id(eng._PENDING_RESUME),
             )
+            # Worker ask_user 中断透传（relay-question 设计）：engine 层
+            # 登记钩子（不依赖 ws——headless wake turn 的 parked 同样过
+            # 这里）。无订阅者时 note_parked_question 直接返回 None，
+            # 既有行为零变化；qid 凭证由 ask_tools 在 interrupt payload
+            # 里生成并随 checkpoint 落盘（三层凭证链的第一层）。
+            try:
+                from ....worker_bus.relay import note_parked_question
+
+                await note_parked_question(ctx.session_id, ctx.turn_id, value)
+            except Exception:
+                eng._log.exception(
+                    "relay_parked_hook_failed session=%s turn=%s",
+                    ctx.session_id, ctx.turn_id,
+                )
             await ctx.safe_send(
                 ctx.emit(
                     "user.question",
                     {
                         "id": value.get("id"),
+                        "qid": value.get("qid"),
                         "question": value.get("question", ""),
                         "header": value.get("header", ""),
                         "options": value.get("options") or [],

@@ -37,6 +37,8 @@ def test_schema_hides_the_injected_id():
     t = _tool()
     props = t.tool_call_schema.model_json_schema()["properties"]
     assert "tool_call_id" not in props
+    # qid（契约 v3，relay-question 设计）：运行时凭证，不进模型 schema——
+    # 只有 tool_call_id 同类的注入式字段才出现在 interrupt payload 里。
     assert set(props) == {"question", "options", "header", "allow_free_text", "questions"}
 
 

@@ -31,6 +31,20 @@ from ..lang import t
 
 ASK_TOOL_NAMES = {"ask_user"}
 
+
+def _new_qid() -> str:
+    """qid 凭证（relay-question 设计）：惰性从 worker_bus.relay 取生成器，
+    避免 ask_tools → worker_bus 顶层 import（worker_bus 反向依赖 graph 组
+    装链）。格式 ``q_`` + uuid4 hex 前 12 位。"""
+    try:
+        from ..worker_bus.relay import new_qid
+
+        return new_qid()
+    except Exception:  # pragma: no cover — 防御性兜底，不该走到
+        import uuid as _uuid
+
+        return "q_" + _uuid.uuid4().hex[:12]
+
 # Autonomous turns (the goal continuation driver) have nobody to answer. A
 # parked turn there would hang until the stop signal, so the tool refuses and
 # tells the model to decide and say what it assumed. Same shape as the
@@ -357,6 +371,11 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
             # is stable in the checkpoint, the live event, and replay —
             # which is what makes the client's merge idempotent).
             "id": tool_call_id or "",
+            # qid 凭证（relay-question 设计，契约 v3）：worker ask_user 中断
+            # 透传的答问凭证。随 interrupt payload 落 checkpoint——重启后
+            # get_pending_interrupt 重读自然带出（qid 的持久化载体就是中断
+            # 本身）。普通会话多此字段零影响（resume/前端均不读）。
+            "qid": _new_qid(),
             "question": q,
             "options": opts,
             "header": (header or "").strip(),

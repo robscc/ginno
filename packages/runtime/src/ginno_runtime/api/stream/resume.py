@@ -35,6 +35,97 @@ _QUESTION_KINDS = {"user_question": "user_answer"}
 _DECISION_KINDS = ("permission_request", "version_propose")
 
 
+def _parked_user_question(session: dict, session_id: str) -> dict | None:
+    """checkpointer 事实源:该 session 是否停在 ask_user 中断上。
+
+    与 ws_open 的重发路径同源(get_pending_interrupt)。不用内存守卫
+    (_PENDING_RESUME):守卫是进程内状态,重连/重启竞态下与 checkpointer
+    脱节(2026-10-22 f5af1e9 实录:守卫为空但中断明确 parked,回答被静默
+    丢弃,session 卡死)。无活任务的 parked turn 才算数——刚被回答、resume
+    任务已在跑的窗口由调用方的任务检查排除。抽自 ws/steer.py(零复制:
+    ws 分支与 relay_answer 工具同源调用,见 resume_question)。
+    """
+    try:
+        graph = session.get("graph") if isinstance(session, dict) else None
+        if graph is None or graph.checkpointer is None:
+            return None
+        pending = graph.checkpointer.get_pending_interrupt(
+            {"configurable": {"thread_id": session_id}}
+        )
+    except Exception:
+        return None
+    for intr in pending or []:
+        value = getattr(intr, "value", None) or intr
+        if isinstance(value, dict) and value.get("kind") == "user_question":
+            return value
+    return None
+
+
+async def resume_question(
+    session_id: str,
+    answer: str = "",
+    option_index: int | None = None,
+    skip: bool = False,
+    *,
+    multi: bool = False,
+    answers: list[dict] | None = None,
+    base_config: dict | None = None,
+    arm_from_checkpoint: bool = False,
+    session: dict | None = None,
+    answered_by: str = "user",
+    relayed_by: str | None = None,
+) -> bool:
+    """user_question 的统一 resume 段（relay-question 设计 ⑤，零复制抽取）。
+
+    三路同源调用：
+
+    - 桌面 WS ``user_answer``（ws/steer.handle_user_answer）；
+    - steer 即答（ws/steer.handle_steer 的 parked-question 分支——该路
+      径守卫可能丢，传 ``arm_from_checkpoint=True`` + ``session``）；
+    - worker 中断透传 ``relay_answer``（worker_bus.relay）。
+
+    成功受理（check-and-pop 通过）后统一调 ``worker_bus.relay.
+    note_session_resumed`` 即销 pending_relay 登记条目、写墓碑——保证
+    任何一路 resume 之后，晚到的另一路 relay 必然命中墓碑（幂等零影响）。
+    """
+    if arm_from_checkpoint and session_id not in _PENDING_RESUME:
+        # resume_pending_interrupt 只认内存守卫;守卫丢失(重连/重启竞态)
+        # 时以 checkpointer 事实武装它——steer 即答路径的存在意义。
+        sess = session if session is not None else shared._SESSIONS.get(session_id)
+        if sess is not None and _parked_user_question(sess, session_id) is not None:
+            _PENDING_RESUME.add(session_id)
+            _PENDING_KIND[session_id] = "user_question"
+    value: dict = {"kind": "user_answer"}
+    if multi:
+        value["multi"] = True
+        value["answers"] = [
+            a for a in (answers or []) if isinstance(a, dict)
+        ] or [{"answer": "", "option_index": None, "skip": True}]
+    else:
+        value.update(
+            {
+                "answer": str(answer or ""),
+                "option_index": option_index,
+                "skip": bool(skip),
+            }
+        )
+    ok = resume_pending_interrupt(session_id, value, base_config=base_config)
+    if ok:
+        # 墓碑统一收口：relay 登记条目即销（无登记时零开销 dict 扫描）。
+        try:
+            from ...worker_bus.relay import note_session_resumed
+
+            summary = str(answer or "")
+            if multi:
+                summary = "; ".join(
+                    str(a.get("answer") or "") for a in value["answers"]
+                )
+            note_session_resumed(session_id, answered_by, summary)
+        except Exception:
+            _log.exception("relay_note_resumed_failed session=%s", session_id)
+    return ok
+
+
 def _payload_matches(pending_kind: str | None, resume_value: dict) -> bool:
     """peek-only validation: never pop on a mismatch (stale msg stays answerable)."""
     if pending_kind == "user_question":

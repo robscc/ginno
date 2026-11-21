@@ -191,6 +191,7 @@ async def open_connection(ws: WebSocket, session_id: str) -> WsConn | None:
                 # of showing the question twice.
                 payload = {
                     "id": value.get("id"),
+                    "qid": value.get("qid"),
                     "question": value.get("question", ""),
                     "header": value.get("header", ""),
                     "options": value.get("options") or [],

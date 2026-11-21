@@ -339,6 +339,22 @@ def _turn_agent_id(state: AgentState, config) -> str | None:
     return cfg.get("agent_id") or state.get("agent_id")
 
 
+def _relay_tool_for_session(session_id: str):
+    """relay-answer 条件注入的 bind 点 helper（relay-question 设计 ⑥）。
+
+    pending_relay 非空（本会话被登记为待代答订阅者）才产出工具；惰性
+    import 防环（worker_bus.relay → api.stream.resume → graph 顶部已 import
+    链）。"""
+    if not session_id:
+        return None
+    try:
+        from .worker_bus.relay import build_relay_tool
+
+        return build_relay_tool(session_id)
+    except Exception:
+        return None
+
+
 def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None):
     """``model_getter``：无参可调用，返回当前模型对象。本节点在每个
     superstep 入口（即每次 LLM 调用前）解析一次真实实例——模型热切
@@ -360,6 +376,15 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
         agent = _resolve_agent(_turn_agent_id(state, config))
         extra = _skill_extra_allow(state)
         allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
+        # Worker ask_user 中断透传（relay-question 设计 ⑥）：本会话被登记
+        # 为待代答订阅者（pending_relay[sub_sid] 非空）时补绑 relay_answer
+        # （qid enum=当前待答）。工具集是 session 级静态构建，而问题运行时
+        # 出现/即销——只能在 bind 点（每个 superstep 的 LLM 请求前）动态补。
+        # 无登记返回 None，一次 dict 扫描的零开销。
+        _relay_sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
+        _relay_tool = _relay_tool_for_session(_relay_sid)
+        if _relay_tool is not None:
+            allowed.append(_relay_tool)
         tools_filtered = False
         if tool_selector is not None:
             selected = await tool_selector.select(state, allowed)
@@ -389,6 +414,9 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
                 extra_allow=extra,
                 tool_policy=state.get("tool_policy") or {},
                 skill_dirs=state.get("skill_dirs") or [],
+                relay_tool_names=(
+                    [_relay_tool.name] if _relay_tool is not None else None
+                ),
             ),
             model,
         )

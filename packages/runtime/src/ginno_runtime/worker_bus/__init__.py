@@ -41,6 +41,19 @@ from .watch import (
     reconcile_subscriptions,
     watch_worker,
 )
+from . import relay as relay_mod
+
+# relay 模块（relay-question 设计）：qid 凭证登记表 / 墓碑 / relay_answer
+# 条件注入 / 启动恢复。函数级别名保持 worker_bus 顶层导出惯例。
+TOMBSTONE_TTL_S = relay_mod._TOMBSTONE_TTL_S
+reconcile_relay = relay_mod.reconcile_relay
+load_state = relay_mod.load_state
+note_parked_question = relay_mod.note_parked_question
+build_relay_tool = relay_mod.build_relay_tool
+relay_pending_for = relay_mod.relay_pending_for
+mark_answered = relay_mod.mark_answered
+find_pending = relay_mod.find_pending
+tombstone_of = relay_mod.tombstone_of
 
 __all__ = [
     "ASSIGNABLE_TYPES",
@@ -48,12 +61,21 @@ __all__ = [
     "TERMINAL_PROJECTED",
     "DIGEST_MIN_INTERVAL_S",
     "SUBSCRIBER_CAP",
+    "TOMBSTONE_TTL_S",
     "assign_to_worker",
+    "build_relay_tool",
+    "find_pending",
     "list_worker_rows",
+    "load_state",
+    "mark_answered",
+    "note_parked_question",
     "notify_settled",
     "on_turn_settled_hook",
     "project_status",
+    "reconcile_relay",
     "reconcile_subscriptions",
+    "relay_pending_for",
     "resolve_target",
+    "tombstone_of",
     "watch_worker",
 ]
