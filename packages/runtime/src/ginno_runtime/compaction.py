@@ -46,7 +46,12 @@ from .world_state import (
     summary_lead_in,
 )
 
-log = logging.getLogger("ginno.compaction")
+# sidecar.log 的 RotatingFileHandler 只挂在 "ginno.turn"（server_shared._log）
+# 上；独立命名的 "ginno.compaction" propagate 到无 handler 的 root，
+# triggered/done 等 INFO 全部静音——2026-11-21 会话 7978b… 排障全程盲飞，
+# 只能靠 usage/jsonl 侧写定罪。复用 _log（与 mods/tasks 等 8 个模块同
+# 路数）；server_shared import-light，顶部引入无循环。
+from .server_shared import _log as log
 
 # P3（2026-11-16）：摘要期间的进度心跳间隔。有 predicted_s 时每 30s 推一帧
 # 时间轴 pct——大历史摘要分钟级，8%→92% 之间前端只能干瞪着近乎冻结的条。
@@ -485,12 +490,81 @@ async def maybe_compact_history(
     )
     new_messages.append(summary_msg)
     new_messages.extend(_copy_with_new_id(m) for m in keep)
-    await graph.aupdate_state(config, {"messages": new_messages}, as_node="agent")
+    try:
+        await graph.aupdate_state(config, {"messages": new_messages}, as_node="agent")
+    except ValueError:
+        # 写回竞态自愈（2026-11-21，会话 7978b…）：summarizer 是分钟级窗口，
+        # 期间并发 turn 可能推进 checkpoint——旧快照构造的 RemoveMessage 引用
+        # 的 id 在新 checkpoint 中不存在时，langgraph add_messages 的严格删除
+        # 校验抛 ValueError（此前直接 compaction_failed：压缩白跑、摘要作废、
+        # ERROR 撒日志吓人）。分两种情况：
+        #   1) 批次其实已落盘（本例实况：writer 已 put 成功，branch 路由阶段
+        #      重放应用才炸）→ summary id 已在最新 state，视为成功，绝不重放
+        #      （重放会叠加重复摘要）；
+        #   2) 快照漂移且未落盘 → 重读最新 state，只删除新旧快照交集的 id
+        #      （并发追加的消息不在旧快照、也不在摘要覆盖范围，保留在位），
+        #      keep 副本照写，重试一次；再失败由调用方兜底（下 turn 再评估）。
+        state2 = await graph.aget_state(config)
+        if state2 is None or getattr(state2, "next", None):
+            raise
+        msgs2 = list((state2.values or {}).get("messages", []))
+        ids2 = {getattr(m, "id", None) for m in msgs2}
+        if summary_msg.id in ids2:
+            log.info(
+                "compaction_race_already_applied session=%s msgs_after=%d",
+                session_id, len(msgs2),
+            )
+        else:
+            old_ids = {m.id for m in messages if getattr(m, "id", None)}
+            if [getattr(m, "id", None) for m in msgs2] == [
+                getattr(m, "id", None) for m in messages
+            ]:
+                raise  # 快照未漂移：同批次重放无意义，按失败上报
+            retry: list[BaseMessage] = [
+                RemoveMessage(id=m.id)
+                for m in msgs2
+                if getattr(m, "id", None) and m.id in old_ids
+            ]
+            retry.append(summary_msg)
+            retry.extend(_copy_with_new_id(m) for m in keep)
+            await graph.aupdate_state(config, {"messages": retry}, as_node="agent")
+            log.info(
+                "compaction_race_retried session=%s snapshot_msgs=%d current_msgs=%d",
+                session_id, len(messages), len(msgs2),
+            )
+            new_messages = retry
     log.info(
         "compaction_done session=%s old_msgs=%d new_msgs=%d est_tokens_after=%d",
         session_id, len(messages), len(new_messages),
         estimate_messages_tokens(new_messages),
     )
+
+    # P0（2026-11-21，会话 7978b…）：压缩成功后立即落一条上下文基线，堵
+    # 「压完立即再压」——E3 阈值判定的 usage 口径（last_chat_input_tokens）
+    # 取最近一条非 sideband 记录，压缩后到下个真实对话记录之间它仍是压缩
+    # 前的巨值，紧接着的 turn（task 回传类自动 turn）E3 会立即再触发一次
+    # 压缩：白跑摘要，还放大写回竞态窗口。context_baseline 不在
+    # NON_CONTEXT_SOURCES，last_chat_input_tokens / TopBar 圆环（同分子）
+    # 即时校正到压缩后水位。
+    try:
+        from . import usage_store
+
+        usage_store.record(
+            input_tokens=estimate_messages_tokens(new_messages),
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            provider="",
+            model="",
+            source="context_baseline",
+            session_id=session_id or None,
+            project_slug=str(
+                (config.get("configurable") or {}).get("project_slug") or "default"
+            ),
+            agent_id=None,
+        )
+    except Exception:  # noqa: BLE001 — 基线是辅助，失败不影响压缩结果
+        log.debug("compaction_baseline_record_failed session=%s", session_id, exc_info=True)
 
     # E4 — re-assert the world after compression.
     reinject_text = None

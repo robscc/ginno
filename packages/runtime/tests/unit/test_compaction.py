@@ -597,3 +597,105 @@ def test_effective_threshold_follows_session_model(isolated_home):
         _effective_compact_threshold({}, {"model_provider": "small", "model_name": "m2"})
         == 150_000
     )
+
+
+# --------------------------------------------------------------------------- #
+# 写回竞态自愈（2026-11-21 会话 7978b…：summarizer 分钟级窗口内并发 turn
+# 推进 checkpoint → 旧快照的 RemoveMessage 引用不存在 id → langgraph
+# add_messages 严格删除校验抛 ValueError，压缩白跑）。
+# --------------------------------------------------------------------------- #
+async def _race_setup(isolated_home, thread_id: str, scripts: list):
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"compact_threshold_tokens": 10, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(scripts=[script(text=t) for t in scripts])
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": thread_id, "project_slug": "default"}}
+    for q in ("第一个问题", "第二个问题"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    return graph, config, model
+
+
+async def test_compact_write_race_retry_preserves_concurrent(isolated_home, monkeypatch):
+    graph, config, model = await _race_setup(
+        isolated_home, "comp-race-1", ["r0", "r1", "这是前情摘要。"]
+    )
+    orig = graph.aupdate_state
+    calls: list[int] = []
+
+    async def racing_update(cfg, values, as_node=None):
+        calls.append(1)
+        if len(calls) == 1:
+            # 模拟并发 turn 在 summarizer 窗口内推进 checkpoint（追加新消息）
+            await orig(
+                {"configurable": dict(cfg["configurable"])},
+                {"messages": [HumanMessage(content="并发回帖", id="race1")]},
+                as_node="agent",
+            )
+            raise ValueError(
+                "Attempting to delete a message with an ID that doesn't exist ('keep_x')"
+            )
+        return await orig(cfg, values, as_node=as_node)
+
+    monkeypatch.setattr(graph, "aupdate_state", racing_update)
+    session = {"graph": graph, "model": model, "project_slug": "default",
+               "session_id": "comp-race-1"}
+    stats = await maybe_compact_history(session, config, ctx_factory=None)
+    assert stats is not None and stats["summary_chars"] > 0
+    assert len(calls) == 2  # 首次竞态炸 + 交集重试成功
+
+    state = await graph.aget_state(config)
+    msgs = state.values["messages"]
+    ids = [m.id for m in msgs]
+    assert "race1" in ids  # 并发追加的消息不在旧快照，交集重试保留
+    assert sum(1 for m in msgs if SUMMARY_MSG_PREFIX in str(m.content)) == 1
+    joined = "\n".join(str(getattr(m, "content", "")) for m in msgs)
+    assert "第一个问题" not in joined  # 旧前缀仍被删净
+    assert "第二个问题" in joined  # 尾窗保留
+
+
+async def test_compact_write_race_already_applied_skips_retry(isolated_home, monkeypatch):
+    graph, config, model = await _race_setup(
+        isolated_home, "comp-race-2", ["r0", "r1", "这是前情摘要。"]
+    )
+    orig = graph.aupdate_state
+    calls: list[int] = []
+
+    async def applied_then_raise(cfg, values, as_node=None):
+        calls.append(1)
+        ret = await orig(cfg, values, as_node=as_node)  # 批次真实落盘
+        raise ValueError("branch-route reapply boom")  # 收尾路由阶段才炸
+
+    monkeypatch.setattr(graph, "aupdate_state", applied_then_raise)
+    session = {"graph": graph, "model": model, "project_slug": "default",
+               "session_id": "comp-race-2"}
+    stats = await maybe_compact_history(session, config, ctx_factory=None)
+    assert stats is not None  # 已生效 → 按成功返回
+    assert len(calls) == 1  # 绝不重放（重放会叠加重复摘要）
+
+    state = await graph.aget_state(config)
+    msgs = state.values["messages"]
+    assert sum(1 for m in msgs if SUMMARY_MSG_PREFIX in str(m.content)) == 1
+
+
+async def test_compact_records_context_baseline(isolated_home):
+    from ginno_runtime.usage import last_chat_input_tokens
+    from ginno_runtime import usage_store
+
+    graph, config, model = await _race_setup(
+        isolated_home, "comp-base-1", ["r0", "r1", "这是前情摘要。"]
+    )
+    session = {"graph": graph, "model": model, "project_slug": "default",
+               "session_id": "comp-base-1"}
+    stats = await maybe_compact_history(session, config, ctx_factory=None)
+    assert stats is not None
+
+    rows = usage_store.query_requests(session_id="comp-base-1", page=1, page_size=10)["rows"]
+    base = [r for r in rows if r.get("source") == "context_baseline"]
+    assert base, "压缩成功后必须落 context_baseline 基线"
+    # usage 口径即时校正：last_chat_input_tokens 不再回读压缩前巨值
+    assert last_chat_input_tokens("comp-base-1") == int(base[0]["input_tokens"]) > 0
