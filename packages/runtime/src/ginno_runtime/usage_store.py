@@ -47,6 +47,23 @@ def _norm_source(s: str | None) -> str:
     """空值兜底 + 防御性截长；不做任何白名单校验。"""
     return (s or "").strip().lower()[:24] or "other"
 
+
+# 合成记录（非真实 LLM 调用）：token 数是本地估算的占位、无 provider 上报、
+# latency/calls 语义均不成立，不能进任何「用量/调用次数」聚合。首个成员
+# context_baseline（f5e441b）是压缩成功后落下的水位基线（input=压后全量、
+# output=0、无 turn_id）——只给 last_chat_input_tokens / TopBar 圆环做即时
+# 校正。2026-11-21 实测毒化：真实 30k/3k + 基线 60k → session_totals（TopBar
+# 会话计数）与 aggregate_overview（用量页 KPI）均报 input 90000/calls 2——
+# 每压缩一次虚增一次调用和整个压后上下文。原始行读取（iter_range /
+# query_requests / latest_record / last_chat_input_tokens）不做过滤。
+SYNTHETIC_SOURCES = frozenset({"context_baseline"})
+
+
+def _is_synthetic(e: dict) -> bool:
+    """行级过滤谓词：聚合统计里跳过合成记录。"""
+    return (e.get("source") or "") in SYNTHETIC_SOURCES
+
+
 # Parsed COMPLETED days are immutable, so cache them. Today's file is always
 # re-read (it keeps growing). Key: (path, mtime_ns, size).
 _DAY_CACHE: dict[tuple, list[dict]] = {}
@@ -300,6 +317,8 @@ def aggregate_overview(days: int) -> dict:
         day_acc = _acc()
         day_models: dict[str, dict] = {}
         for e in load_day(ds):
+            if _is_synthetic(e):
+                continue
             _add(day_acc, e)
             _add(totals, e)
             p = e.get("provider") or "?"
@@ -322,6 +341,8 @@ def aggregate_overview(days: int) -> dict:
     today_str = dates[-1]
     today_acc = _acc()
     for e in load_day(today_str):
+        if _is_synthetic(e):
+            continue
         _add(today_acc, e)
     return {
         "window": {"days": days, "from": dates[0], "to": dates[-1]},
@@ -372,6 +393,8 @@ def aggregate_grid(from_: str | None = None, to: str | None = None) -> dict:
         ds = d.strftime("%Y-%m-%d")
         accs = [_acc() for _ in range(_GRID_BINS)]
         for e in load_day(ds):
+            if _is_synthetic(e):
+                continue
             # 本地时间分桶，与 aggregate_overview 的 daily 一样按本地日历日
             slot = int(time.localtime(float(e.get("ts") or 0)).tm_hour) // 2
             if 0 <= slot < _GRID_BINS:
@@ -387,6 +410,8 @@ def aggregate_sessions(from_date: str | None, to_date: str | None, sort: str = "
     to = _parse_date(to_date, _today())
     by_session: dict[str, dict] = {}
     for e in iter_range(frm, to):
+        if _is_synthetic(e):
+            continue
         sid = e.get("session_id") or ""
         s = by_session.setdefault(sid, _acc() | {"last_ts": 0.0, "project_slug": e.get("project_slug"), "agent_id": e.get("agent_id")})
         _add(s, e)
@@ -419,7 +444,7 @@ def session_totals(session_id: str, from_date: str | None = None, to_date: str |
     acc = _acc()
     found = False
     for e in iter_range(frm, to):
-        if e.get("session_id") == session_id:
+        if e.get("session_id") == session_id and not _is_synthetic(e):
             _add(acc, e)
             found = True
     return _with_ratio(acc) if found else None
@@ -458,7 +483,7 @@ def session_totals_many(
     acc = _acc()
     found = False
     for e in iter_range(frm, to):
-        if e.get("session_id") in session_ids:
+        if e.get("session_id") in session_ids and not _is_synthetic(e):
             _add(acc, e)
             found = True
     return _with_ratio(acc) if found else None

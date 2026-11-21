@@ -44,6 +44,11 @@ UPDATE_MSG_PREFIX = "[world state update]"
 REINJECT_MSG_PREFIX = "[world state re-injection]"
 TURN_CONTEXT_PREFIX = "[turn context]"
 SUMMARY_MSG_PREFIX = "[conversation summary]"
+# mid-turn compaction（graph._compact_check_node_factory）写回的摘要消息前缀。
+# 登记 ALL_CONTEXT_PREFIXES 后：messages_ui 渲染为居中 context 行（非用户
+# 气泡）、compaction._msg_line 摘录豁免 1500 截断、find_split_index 不计
+# 用户轮（审计 D/E，2026-11-21）。
+MID_COMPACT_PREFIX = "[compact]"
 
 # Fixed lead-in between the machine prefix and the summary body (compaction
 # writes it; summary_row_text strips it for the UI row). Language-dependent
@@ -65,6 +70,7 @@ ALL_CONTEXT_PREFIXES = (
     TURN_CONTEXT_PREFIX,
     SUMMARY_MSG_PREFIX,
     GOAL_CONTEXT_PREFIX,
+    MID_COMPACT_PREFIX,
 )
 
 WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -101,6 +107,7 @@ _CONTEXT_DEFAULTS = {
     "tool_output_max_chars": 20000,
     "microcompact_enabled": True,
     "microcompact_min_chars": 500,
+    "microcompact_head_chars": 1200,
     "compaction_enabled": True,
     "compact_threshold_tokens": 500000,
     # /dev-swap 默认 repo 路径（2026-11-04）：显式参数 > 此配置 > build-info

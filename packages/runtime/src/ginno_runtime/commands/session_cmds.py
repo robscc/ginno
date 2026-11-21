@@ -156,7 +156,8 @@ async def _compact_async_handler(
             )
         except Exception as e:
             _log.exception("compact_cmd_failed session=%s", sid)
-            await _announce_done()
+            # 不在此处发 done：finally 必达，except 内再发就是双发（2026-11
+            # 审计 P3——前端按「恰好一条 done」解锁，重复事件徒增噪音）。
             return t(
                 f"Compaction failed: {type(e).__name__}: {e}",
                 f"压缩失败：{type(e).__name__}: {e}",

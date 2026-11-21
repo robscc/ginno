@@ -41,6 +41,7 @@ from .lang import t
 from .tokens import estimate_messages_tokens
 from .usage import last_chat_input_tokens, last_turn_growth_tokens
 from .world_state import (
+    ALL_CONTEXT_PREFIXES,
     SUMMARY_MSG_PREFIX,
     render_reinjection,
     summary_lead_in,
@@ -129,8 +130,14 @@ def _msg_line(m: BaseMessage) -> str:
                 parts.append(b)
         content = "\n".join(parts)
     text = str(content or "").strip()
-    if len(text) > 1500:
-        text = text[:1500] + "…"
+    # 审计 D（2026-11-21）：机器上下文消息（历史 [conversation summary] 常
+    # 2-6k、[compact] mid-turn 摘要同理）在二次压缩时也走本函数逐条摘录
+    # ——统一 1500 硬截会把已压缩过一次的前情摘要腰斩，丢掉最前段信息。
+    # 此类消息（按 ALL_CONTEXT_PREFIXES 识别）放宽到 20000：足以全文带过，
+    # 又不把巨型工具输出拉进同一豁免（普通消息维持 1500）。
+    _limit = 20000 if text.startswith(ALL_CONTEXT_PREFIXES) else 1500
+    if len(text) > _limit:
+        text = text[:_limit] + "…"
     tcs = getattr(m, "tool_calls", None)
     if tcs:
         calls = ", ".join(tc.get("name", "?") for tc in tcs if isinstance(tc, dict))
@@ -153,6 +160,20 @@ def is_steered(m: BaseMessage) -> bool:
     return bool((getattr(m, "additional_kwargs", None) or {}).get("ginno_steer"))
 
 
+def _is_machine_context_msg(m: BaseMessage) -> bool:
+    """机器注入的 HumanMessage（审计 E，2026-11-21）。
+
+    [turn context] / [world state update] / [conversation summary] /
+    [world state re-injection] / [goal context] / [compact] 都是系统脚手架
+    而非用户轮次：此前 find_split_index 只排 steer，这类消息照常计入
+    keep_turns——用户实际保不住配置的轮数，保留窗口还被脚手架顶得前滑
+    （机器注入紧跟在用户消息后，每注入一条就多「占」一轮）。历史消息按
+    content startswith 兼容识别（老 checkpoint 无额外标记可依赖）。
+    """
+    c = getattr(m, "content", "")
+    return isinstance(c, str) and bool(c) and c.startswith(ALL_CONTEXT_PREFIXES)
+
+
 def find_split_index(messages: list[BaseMessage], keep_turns: int) -> int:
     """Index of the HumanMessage that starts the kept tail.
 
@@ -163,7 +184,9 @@ def find_split_index(messages: list[BaseMessage], keep_turns: int) -> int:
     human_idx = [
         i
         for i, m in enumerate(messages)
-        if isinstance(m, HumanMessage) and not is_steered(m)
+        if isinstance(m, HumanMessage)
+        and not is_steered(m)
+        and not _is_machine_context_msg(m)
     ]
     if len(human_idx) <= keep_turns:
         return 0
@@ -501,9 +524,10 @@ async def maybe_compact_history(
         #   1) 批次其实已落盘（本例实况：writer 已 put 成功，branch 路由阶段
         #      重放应用才炸）→ summary id 已在最新 state，视为成功，绝不重放
         #      （重放会叠加重复摘要）；
-        #   2) 快照漂移且未落盘 → 重读最新 state，只删除新旧快照交集的 id
-        #      （并发追加的消息不在旧快照、也不在摘要覆盖范围，保留在位），
-        #      keep 副本照写，重试一次；再失败由调用方兜底（下 turn 再评估）。
+        #   2) 快照漂移且未落盘 → 重读最新 state，全删当前消息 + 依序重建
+        #      [summary] + keep 副本 + 并发消息副本（并发追加的消息不在旧
+        #      快照、也不在摘要覆盖范围，复制到尾部保信息不丢），重试一次；
+        #      再失败由调用方兜底（下 turn 再评估）。
         state2 = await graph.aget_state(config)
         if state2 is None or getattr(state2, "next", None):
             raise
@@ -520,13 +544,25 @@ async def maybe_compact_history(
                 getattr(m, "id", None) for m in messages
             ]:
                 raise  # 快照未漂移：同批次重放无意义，按失败上报
+            # 审计 F（2026-11-21）：重试批次改为「全删 + 依序重建」。
+            # 旧实现交集删除保留并发消息在原位、[summary, keep] 追加其后
+            # ——落盘顺序变成 [并发消息, summary, keep]，摘要排到了最新消息
+            # 之后：时序与正常压缩结果（summary 在最前）相反，后续
+            # find_split_index / 尾窗语义都会把 keep 误当更旧内容。新时序
+            # 依序追加 [summary] + keep 副本 + 并发消息副本（msgs2 中不在
+            # 旧快照 id 集的，复制换新 id），与无竞态路径的产物一致。
             retry: list[BaseMessage] = [
                 RemoveMessage(id=m.id)
                 for m in msgs2
-                if getattr(m, "id", None) and m.id in old_ids
+                if getattr(m, "id", None) is not None
             ]
             retry.append(summary_msg)
             retry.extend(_copy_with_new_id(m) for m in keep)
+            retry.extend(
+                _copy_with_new_id(m)
+                for m in msgs2
+                if getattr(m, "id", None) is not None and m.id not in old_ids
+            )
             await graph.aupdate_state(config, {"messages": retry}, as_node="agent")
             log.info(
                 "compaction_race_retried session=%s snapshot_msgs=%d current_msgs=%d",

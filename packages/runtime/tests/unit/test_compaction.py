@@ -54,6 +54,62 @@ def test_split_with_tool_messages_between():
 
 
 # --------------------------------------------------------------------------- #
+# 审计 E（2026-11-21）：机器注入的 HumanMessage 不计用户轮
+# --------------------------------------------------------------------------- #
+def test_split_skips_machine_context_messages():
+    """[turn context]/[world state update]/[conversation summary]/[compact]
+    等系统脚手架不计入 keep_turns——切点落在真实用户消息上，保留窗口
+    不被机器注入顶得前滑。"""
+    from ginno_runtime.world_state import ALL_CONTEXT_PREFIXES, MID_COMPACT_PREFIX
+
+    assert MID_COMPACT_PREFIX in ALL_CONTEXT_PREFIXES  # 新前缀已登记
+    msgs = [
+        HumanMessage(content="[turn context]\nDate: 2026-11-21"),
+        HumanMessage(content="第一问"),
+        AIMessage(content="答1"),
+        HumanMessage(content="[world state update]\nworld changed"),
+        HumanMessage(content="第二问"),
+        AIMessage(content="答2"),
+        HumanMessage(content="[conversation summary]\n此前摘要……"),
+        HumanMessage(content=f"{MID_COMPACT_PREFIX} mid 压缩摘要……"),
+        HumanMessage(content="第三问"),
+    ]
+    # 3 个真实用户轮、keep 2 → 切点应是「第二问」；旧实现会把
+    # [compact] 摘要（倒数第二条 Human）当轮边界，窗口前滑一整轮。
+    split = find_split_index(msgs, keep_turns=2)
+    assert msgs[split].content == "第二问"
+    # 全部是机器注入时无用户轮可切
+    machine_only = [
+        HumanMessage(content="[turn context]\nx"),
+        HumanMessage(content=f"{MID_COMPACT_PREFIX} y"),
+    ]
+    assert find_split_index(machine_only, keep_turns=1) == 0
+
+
+# --------------------------------------------------------------------------- #
+# 审计 D（2026-11-21）：机器上下文消息豁免 1500 截断
+# --------------------------------------------------------------------------- #
+def test_msg_line_machine_context_exempt_from_1500_truncation():
+    """二次压缩时旧 [conversation summary]（常 2-6k）不能被 1500 腰斩；
+    普通消息照旧硬截。"""
+    from ginno_runtime.compaction import _msg_line
+
+    old_summary = "[conversation summary]\n" + "摘" * 5000
+    line = _msg_line(HumanMessage(content=old_summary))
+    assert "摘" * 4900 in line  # 全文带过，未截断
+    compact = "[compact] 前段摘要\n" + "压" * 3000
+    line2 = _msg_line(HumanMessage(content=compact))
+    assert "压" * 2900 in line2
+    plain = "x" * 5000
+    line3 = _msg_line(HumanMessage(content=plain))
+    assert len(line3) <= 1510 and line3.endswith("…")  # 普通消息维持 1500
+    # 超过 20000 的机器消息仍截（防失控巨型注入）
+    huge = "[compact] " + "z" * 30000
+    line4 = _msg_line(HumanMessage(content=huge))
+    assert len(line4) <= 20010 and line4.endswith("…")
+
+
+# --------------------------------------------------------------------------- #
 # copies
 # --------------------------------------------------------------------------- #
 def test_copy_with_new_id_preserves_content_and_changes_id():
@@ -650,12 +706,20 @@ async def test_compact_write_race_retry_preserves_concurrent(isolated_home, monk
 
     state = await graph.aget_state(config)
     msgs = state.values["messages"]
-    ids = [m.id for m in msgs]
-    assert "race1" in ids  # 并发追加的消息不在旧快照，交集重试保留
-    assert sum(1 for m in msgs if SUMMARY_MSG_PREFIX in str(m.content)) == 1
-    joined = "\n".join(str(getattr(m, "content", "")) for m in msgs)
-    assert "第一个问题" not in joined  # 旧前缀仍被删净
-    assert "第二个问题" in joined  # 尾窗保留
+    # 审计 F（2026-11-21）：重试批次改为「全删 + 依序重建」——落盘顺序
+    # [summary] → keep 副本 → 并发消息副本（并发消息被复制换新 id 追加到
+    # 尾部，原 id 不复存在）；旧实现的 [并发消息, summary, keep] 时序倒置
+    # 已废除。
+    contents = [str(getattr(m, "content", "")) for m in msgs]
+    summary_pos = next(
+        i for i, c in enumerate(contents) if SUMMARY_MSG_PREFIX in c
+    )
+    keep_pos = next(i for i, c in enumerate(contents) if "第二个问题" in c)
+    race_pos = next(i for i, c in enumerate(contents) if "并发回帖" in c)
+    assert summary_pos < keep_pos < race_pos  # 新时序：摘要在最前
+    assert sum(1 for c in contents if SUMMARY_MSG_PREFIX in c) == 1
+    assert "第一个问题" not in "\n".join(contents)  # 旧前缀仍被删净
+    assert "第二个问题" in "\n".join(contents)  # 尾窗保留
 
 
 async def test_compact_write_race_already_applied_skips_retry(isolated_home, monkeypatch):

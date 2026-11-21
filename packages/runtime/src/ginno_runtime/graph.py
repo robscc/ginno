@@ -1109,6 +1109,27 @@ def _tool_error_reply(exc: Exception) -> str:
     )
 
 
+# 审计 B（2026-11-21，P0）：mid-turn 压缩节流状态。ContextVar 版已实测
+# 失效——langgraph 每个 superstep 在独立 task context 里执行节点，节点内
+# set() 的计数/软限抬升不回传（三步工具循环后计数仍是 1），节流形同虚设。
+# 改为模块级 dict（key = configurable.thread_id or session_id，与事件路由
+# 同 key），由真正发起 turn 的入口（api/stream/turn.py 的 _run_stream /
+# _run_resume、ws/control.py 的 checkpoint retry）best-effort 调
+# reset_mid_compact_state 归零，防上一 turn 的计数跨 turn 泄漏。
+_MID_STATE: dict[str, tuple[int, float]] = {}
+
+
+def reset_mid_compact_state(session_id: str) -> None:
+    """新 turn 开始时归零 mid-turn 压缩节流（计数 →0 / 软限抬升 →1.0）。
+
+    删除条目即等价置 (0, 1.0)（读侧 get 带同款默认），且陈旧会话不驻留
+    dict。空 id 是 no-op。
+    """
+    sid = str(session_id or "")
+    if sid:
+        _MID_STATE.pop(sid, None)
+
+
 def _compact_check_node_factory(model):
     """turn 中压缩检查节点（P1，2026-11-21 mid-turn compaction 方案）。
 
@@ -1119,21 +1140,24 @@ def _compact_check_node_factory(model):
     双写者（这正是不复用 turn 外 maybe_compact_history 的原因：它直接
     aupdate_state，与本 graph run 并发冲突）。
 
-    节流：每 turn ≤2 次（contextvar 计数）；触发后软限 ×1.25 抬升（防
-    「压完立刻又超」循环）；2 次后放行让模型自然报错（保留可诊断性）。
+    节流：每 turn ≤2 次（模块级 _MID_STATE 计数，见上方审计 B 注释）；
+    触发后软限 ×1.25 抬升（防「压完立刻又超」循环）；2 次后放行让模型
+    自然报错（保留可诊断性）。
     """
-    import contextvars
     import logging as _logging
 
     from langchain_core.messages import HumanMessage
-    from langchain_core.messages import RemoveMessage
+    from langchain_core.messages import RemoveMessage, ToolMessage
 
     _mclog = _logging.getLogger("ginno_runtime.midcompact")
 
-    _mid_count = contextvars.ContextVar("mid_compact_count", default=0)
-    _soft_boost = contextvars.ContextVar("mid_soft_boost", default=1.0)
-
-    async def compact_check(state: dict, config: dict | None = None) -> dict:
+    # config 参数必须**不带注解**（或 Optional[RunnableConfig]）：langgraph
+    # 的 RunnableCallable 只向无注解/正确注解的 config 参数注入配置——
+    # 注解成 dict | None / RunnableConfig | None（PEP604 UnionType 不在
+    # 其接受表内）时静默不注入（仅发 UserWarning），节点内 config 恒为
+    # None，thread_id/session_id 全空（审计 C 的深层根因，2026-11-21
+    # 集成测试实测定罪：_MID_STATE 落了个 "" key）。
+    async def compact_check(state: dict, config=None) -> dict:
         from .compaction import (
             _effective_compact_threshold,
             _msg_line,
@@ -1147,27 +1171,50 @@ def _compact_check_node_factory(model):
             return {}
         messages = state.get("messages") or []
         est = estimate_messages_tokens(messages)
-        threshold = _effective_compact_threshold(settings, None)
+        # 审计 C（P1）：路由 id 读 thread_id——全仓 config 只有 thread_id /
+        # project_slug，旧读法恒拿空 session_id，事件全被 _push_session_event
+        # 的空 sid 早退丢掉。节流 key（审计 B）与阈值会话解析（审计 G①）
+        # 复用同一个 id。
+        _cfg = (config or {}).get("configurable") or {}
+        session_id = str(_cfg.get("thread_id") or _cfg.get("session_id") or "")
+        # 审计 G①（P3）：软限阈值按本会话模型窗口收紧（与 turn 外
+        # maybe_compact_history 同口径）——惰性取 server_shared 注册表，
+        # 取不到回退 None（全局默认模型，原行为）。
+        session_reg: dict | None = None
+        try:
+            from .server_shared import _SESSIONS
+
+            session_reg = _SESSIONS.get(session_id) or None
+        except Exception:  # noqa: BLE001 — 注册表不可用回退全局默认
+            session_reg = None
+        threshold = _effective_compact_threshold(settings, session_reg)
         headroom = int(settings.get("compact_mid_headroom_tokens", 32768))
-        soft = (threshold - headroom) * _soft_boost.get()
-        if _mid_count.get() >= int(settings.get("compact_mid_max_per_turn", 2)):
+        count, boost = _MID_STATE.get(session_id, (0, 1.0))
+        soft = (threshold - headroom) * boost
+        if count >= int(settings.get("compact_mid_max_per_turn", 2)):
             return {}  # 放行兜底：保留模型自然报错的可诊断性
         if est <= soft:
             return {}
 
-        session_id = str(
-            ((config or {}).get("configurable") or {}).get("session_id") or ""
-        )
         # 尾窗切分：当前 turn 尾部 K 条原样保留（工作记忆）；system 类
         # 消息（world 注入）一律保留；其余进摘要。
+        # 审计 A（P0，孤儿 ToolMessage）：切点回退——尾窗起点恰落在
+        # ToolMessage 上时，其配对的 AIMessage(tool_calls) 会进摘要段被
+        # 删，尾窗留下孤儿 ToolMessage（provider 校验 tool 消息必须跟随
+        # 发起它的 assistant 消息）→ 下一次模型调用 400（已实测复现：
+        # t0 在尾窗首位、a0 在窗外）。逐格回退直到边界不再落在
+        # ToolMessage（ToolMessage 与 owner 一起进摘要段）；退到 0 说明
+        # 全段是一条工具链，无可压缩内容，直接放行。
         keep_tail = max(4, int(settings.get("compact_mid_tail_messages", 12)))
-        protected = [m for m in messages if getattr(m, "type", "") == "system"]
-        tail = [m for m in messages if getattr(m, "type", "") != "system"][-keep_tail:]
-        tail_ids = {id(m) for m in tail}
-        protected_ids = {id(m) for m in protected}
-        old = [m for m in messages if id(m) not in tail_ids and id(m) not in protected_ids]
-        if not old:
+        non_system = [m for m in messages if getattr(m, "type", "") != "system"]
+        cut = max(0, len(non_system) - keep_tail)
+        while cut > 0 and isinstance(non_system[cut], ToolMessage):
+            cut -= 1
+        if cut == 0:
             return {}
+        protected = [m for m in messages if getattr(m, "type", "") == "system"]
+        tail = non_system[cut:]
+        old = non_system[:cut]
         transcript = "\n".join(_msg_line(m) for m in old)
 
         # 事件（惰性 import 无环；失败不影响压缩本身）
@@ -1202,8 +1249,7 @@ def _compact_check_node_factory(model):
             for m in old
             if getattr(m, "id", None) is not None
         ]
-        _mid_count.set(_mid_count.get() + 1)
-        _soft_boost.set(_soft_boost.get() * 1.25)
+        _MID_STATE[session_id] = (count + 1, boost * 1.25)
         _mclog.info(
             "mid_turn_compact session=%s est=%d soft=%d dropped=%d kept_tail=%d",
             session_id or "?", est, int(soft), len(drop), len(tail),
@@ -1215,6 +1261,51 @@ def _compact_check_node_factory(model):
                 + str(getattr(summary, "content", "") or "")
             )
         )
+        # 审计 G②（P3）：mid 压缩的摘要调用同样真金白银——usage 记账
+        # （source="compaction"，同 maybe_compact_history 的 extract_usage
+        # 路径）+ 压后落一条 context_baseline 基线（input=压缩后
+        # protected+tail+summary 的估算，堵「压完立即又超软限」）。均
+        # best-effort，绝不影响节点结果。
+        try:
+            from . import usage_store
+            from .usage import extract_usage
+
+            u = extract_usage(summary)
+            if u:
+                _sreg = session_reg or {}
+                usage_store.record(
+                    input_tokens=u["input_tokens"],
+                    output_tokens=u["output_tokens"],
+                    cache_read_tokens=u["cache_read_tokens"],
+                    cache_creation_tokens=u["cache_creation_tokens"],
+                    provider=_sreg.get("model_provider") or "",
+                    model=_sreg.get("model_name") or "",
+                    source="compaction",
+                    session_id=session_id or None,
+                    project_slug=str(_cfg.get("project_slug") or "default"),
+                    agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
+                )
+        except Exception:  # noqa: BLE001
+            _mclog.debug("mid_compact_usage_record_failed", exc_info=True)
+        try:
+            from . import usage_store
+
+            usage_store.record(
+                input_tokens=estimate_messages_tokens(
+                    protected + tail + [summary_msg]
+                ),
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                provider="",
+                model="",
+                source="context_baseline",
+                session_id=session_id or None,
+                project_slug=str(_cfg.get("project_slug") or "default"),
+                agent_id=None,
+            )
+        except Exception:  # noqa: BLE001
+            _mclog.debug("mid_compact_baseline_record_failed", exc_info=True)
         return {"messages": drop + [summary_msg]}
 
     return compact_check

@@ -237,6 +237,14 @@ async def handle_retry_from_checkpoint(conn: WsConn, msg: dict) -> None:
                 {"turn_id": _ui_tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True},
             )
             async with _turn_lock(session_id):
+                # 审计 B：从 checkpoint 重跑也是真正发起 turn——归零
+                # mid-turn 压缩节流（模块级 dict 状态，防跨 turn 泄漏）。
+                try:
+                    from ....graph import reset_mid_compact_state
+
+                    reset_mid_compact_state(session_id)
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
                 # Pass input_state=None to resume from latest checkpoint
                 await _stream_graph(
                     session["graph"],
