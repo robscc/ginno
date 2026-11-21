@@ -200,7 +200,11 @@ export function ContextFoldersChip({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl">
+          {/* right-0 锚定 chip 右缘向左展开（2026-11-21 溢出修复）：chip
+              挂在 composer 底部最右侧（ml-auto），旧 left-0 从 chip 左缘向
+              右伸 24rem，右栏关闭、composer 变宽时大面积溢出窗口右缘被裁
+              （路径/「只读」标签截断）。窄窗口仍由 max-w 的 100vw 计算兜底。 */}
+          <div className="absolute right-0 z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl">
             <div className="border-b border-line px-3 py-2 text-xs font-medium text-muted">
               {tr("folders.title")}
             </div>
