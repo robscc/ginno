@@ -26,6 +26,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
 
 from ginno_runtime import jsonx as json
+from ginno_runtime import paths
 
 from ..lang import t
 
@@ -333,6 +334,34 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
             return "[error] question is required"
 
         if not _INTERACTIVE.get():
+            # 企微异步人审（2026-11-21，settings "ask_relay_wecom": true 开
+            # 启）：真无人值守 turn（schedule/CLI）的 ask_user 先推企微等
+            # 人答（同步阻塞，graph 不打断）；拿到答案作为工具结果注入下
+            # 文。无渠道/超时/未开启 → 回退原语义（自选默认并声明假设）。
+            try:
+                from ..channels.ask_relay import (
+                    _relay_enabled,
+                    relay_ask_sync,
+                )
+
+                if _relay_enabled() and (q or subs):
+                    _opts = [str(o) for o in (opts or [])][:8]
+                    _tmo = 600.0
+                    try:
+                        import json as _json
+
+                        _raw = _json.loads(paths.settings_path().read_text() or "{}")
+                        _tmo = float(_raw.get("ask_relay_timeout_s") or 600.0)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    ans = relay_ask_sync(q, _opts, header or "无人值守提问", _tmo)
+                    if ans is not None:
+                        return (
+                            "[answered] 用户已在企业微信作答，按此答复继续："
+                            f"{ans}"
+                        )
+            except Exception:  # noqa: BLE001 — 人审链路绝不破坏原语义
+                pass
             return t(
                 "[error] This is an autonomous continuation (unattended) turn — "
                 "nobody can answer. Pick the most reasonable default and "

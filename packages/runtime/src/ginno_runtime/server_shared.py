@@ -803,6 +803,14 @@ async def _push_session_event(
     # Vibe Island notch 状态收口之一(另一处是 engine 的 emit()):连接器
     # 开关关闭时 no-op,映射在 vibe_island.on_turn_event,绝不抛。
     _vibe_island.on_turn_event(session_id, event, data)
+    # ask_relay 镜像（2026-11-21 企微异步人审）：user.question 事件 → 非
+    # wecom turn 补推企微卡片；与 vibe_island 同型，绝不抛。
+    try:
+        from .channels.ask_relay import on_turn_event as _ask_relay_on_event
+
+        _ask_relay_on_event(session_id, event, data)
+    except Exception:  # noqa: BLE001
+        pass
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:
