@@ -3,7 +3,7 @@
 // ./store 的 RightTab 是 type-only import（构建期擦除，不拉 React 模块图）。
 
 import { describe, expect, it } from "vitest";
-import { Bell, Brain, Code2, FileBox, ListTodo, Sparkles, Zap } from "lucide-react";
+import { Activity, Bell, Brain, Code2, FileBox, ListTodo, Sparkles, Zap } from "lucide-react";
 import {
   ALL_RIGHT_TAB_IDS,
   RIGHT_TABS,
@@ -16,6 +16,7 @@ import type { RightTab } from "@/lib/store";
 const DEFAULT_ORDER: RightTab[] = [
   "artifacts",
   "todo",
+  "running",
   "workflow",
   "memory",
   "synthesis",
@@ -24,7 +25,7 @@ const DEFAULT_ORDER: RightTab[] = [
 ];
 
 describe("注册表", () => {
-  it("七个 tab，顺序即默认顺序（新 tab 只追加末尾的约定）", () => {
+  it("八个 tab，顺序即默认顺序（「运行」按方案 §2.2 插在 workflow 前）", () => {
     expect(RIGHT_TABS.map((t) => t.id)).toEqual(DEFAULT_ORDER);
     expect(ALL_RIGHT_TAB_IDS).toEqual(DEFAULT_ORDER);
   });
@@ -37,6 +38,7 @@ describe("注册表", () => {
     const expected = {
       artifacts: FileBox,
       todo: ListTodo,
+      running: Activity,
       workflow: Zap,
       memory: Brain,
       synthesis: Sparkles,
@@ -73,6 +75,7 @@ describe("canonicalTabOrder", () => {
       "code",
       "todo",
       "artifacts",
+      "running",
       "workflow",
       "memory",
       "synthesis",
@@ -82,7 +85,16 @@ describe("canonicalTabOrder", () => {
 
   it("本构建不认识的 id 被丢弃（已删除的 tab 不残留）", () => {
     const out = canonicalTabOrder(["ghost", "notice", "legacy_tab"]);
-    expect(out).toEqual(["notice", "artifacts", "todo", "workflow", "memory", "synthesis", "code"]);
+    expect(out).toEqual([
+      "notice",
+      "artifacts",
+      "todo",
+      "running",
+      "workflow",
+      "memory",
+      "synthesis",
+      "code",
+    ]);
     expect(out).not.toContain("ghost");
     expect(out).not.toContain("legacy_tab");
   });
@@ -92,6 +104,7 @@ describe("canonicalTabOrder", () => {
       "code",
       "todo",
       "artifacts",
+      "running",
       "workflow",
       "memory",
       "synthesis",
@@ -104,6 +117,7 @@ describe("canonicalTabOrder", () => {
       "notice",
       "artifacts",
       "todo",
+      "running",
       "workflow",
       "memory",
       "synthesis",
@@ -127,6 +141,7 @@ describe("visibleTabOrder", () => {
       "code",
       "todo",
       "artifacts",
+      "running",
       "workflow",
       "memory",
       "synthesis",

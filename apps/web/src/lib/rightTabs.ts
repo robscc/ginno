@@ -10,7 +10,7 @@
  * and no runtime cycle exists even though `store.tsx` imports this module.
  */
 
-import { Bell, Brain, Code2, FileBox, ListTodo, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import { Activity, Bell, Brain, Code2, FileBox, ListTodo, Sparkles, Zap, type LucideIcon } from "lucide-react";
 import type { RightTab } from "./store";
 
 /** 标签 key 的字面量联合（"tabs.<id>"），保住 useTranslations 的 key 类型检查。 */
@@ -24,11 +24,14 @@ export interface RightTabMeta {
   icon: LucideIcon;
 }
 
-/** Default order. A newly added tab goes at the END so it never displaces the
- *  established ones (the same rule the tab strip has always followed). */
+/** Default order. The general rule is "a newly added tab goes at the END so it
+ * never displaces the established ones" — 「运行」 is a deliberate exception
+ * (tasks-overview 方案 §2.2)：它插在 workflow 之前，把「现在都在跑什么」放到
+ * 动作型 tab 的最前排。已存偏好经 canonicalTabOrder 兜底，不会错位。 */
 export const RIGHT_TABS: RightTabMeta[] = [
   { id: "artifacts", labelKey: "tabs.artifacts", icon: FileBox },
   { id: "todo", labelKey: "tabs.todo", icon: ListTodo },
+  { id: "running", labelKey: "tabs.running", icon: Activity },
   { id: "workflow", labelKey: "tabs.workflow", icon: Zap },
   { id: "memory", labelKey: "tabs.memory", icon: Brain },
   { id: "synthesis", labelKey: "tabs.synthesis", icon: Sparkles },

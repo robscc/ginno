@@ -214,6 +214,10 @@ pub(crate) fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
         // AppShell registers __ginnoOpenTasks() → navigates to /tasks. The
         // task id is not navigable on its own (no per-task route).
         "window.__ginnoOpenTasks && window.__ginnoOpenTasks();".to_string()
+    } else if kind == "tasks-overview" {
+        // Running-tasks overview panel (tasks-overview §2.2 entry): AppShell
+        // registers __ginnoOpenTasksOverview() → workspace + 「运行」tab.
+        "window.__ginnoOpenTasksOverview && window.__ginnoOpenTasksOverview();".to_string()
     } else {
         let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
         format!("window.__ginnoOpenSession && window.__ginnoOpenSession({id_js});")

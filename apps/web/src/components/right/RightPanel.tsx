@@ -6,10 +6,12 @@ import { PanelRightClose } from "lucide-react";
 import { PANEL_WIDTH_DEFAULT, useGinno } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 import { subscribeUnreadCount } from "@/lib/notice";
+import { overviewTotal, subscribeTasksOverview, tasksOverviewSnapshot } from "@/lib/tasksOverview";
 import { PanelResizer } from "@/components/workflow/studio/PanelResizer";
 import { CodePanel } from "./code/CodePanel";
 import { ModPaneHost } from "./ModPaneHost";
 import { TodoPanel } from "./TodoPanel";
+import { TasksOverviewPanel } from "./TasksOverviewPanel";
 import { WorkflowPanel } from "./WorkflowPanel";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { MemoryPanel } from "./MemoryPanel";
@@ -32,6 +34,16 @@ export function RightPanel() {
   // 通知 tab 未读数（badge 口径：countInBadge:false 的 session 投影不计）。
   const [noticeUnread, setNoticeUnread] = useState(0);
   useEffect(() => subscribeUnreadCount(setNoticeUnread), []);
+  // 「运行」tab 总徽标 = 六类活动总数（tasks-overview §2.2）。面板未挂载时
+  // 徽标也要活着，所以订阅 lib 层 hub（RightPanel 挂载期间 30s 轮询）。
+  const [runningTotal, setRunningTotal] = useState(() =>
+    overviewTotal(tasksOverviewSnapshot().data),
+  );
+  useEffect(
+    () =>
+      subscribeTasksOverview((s) => setRunningTotal(overviewTotal(s.data))),
+    [],
+  );
   // Below the default width the labels don't fit beside the icons — drop to
   // icon-only tabs (titles keep them discoverable).
   const compact = width < PANEL_WIDTH_DEFAULT;
@@ -76,6 +88,8 @@ export function RightPanel() {
               const showMemoryDraft = meta.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
               // Notice tab: unread count from the notice inbox (P1 §3).
               const showNoticeUnread = meta.id === "notice" && noticeUnread > 0;
+              // 「运行」tab：总活动数徽标（蓝色脉冲，六类合计）。
+              const showRunningTotal = meta.id === "running" && runningTotal > 0;
               const ariaExtra =
                 meta.id === "workflow" && (showHuman || showActive || showFailed)
                   ? `, ${tb("workflow", {
@@ -149,6 +163,14 @@ export function RightPanel() {
                       {noticeUnread > 99 ? "99+" : noticeUnread}
                     </span>
                   )}
+                  {showRunningTotal && (
+                    <span
+                      className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold leading-none text-white"
+                      title={tb("running", { n: runningTotal })}
+                    >
+                      {runningTotal > 99 ? "99+" : runningTotal}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -169,6 +191,7 @@ export function RightPanel() {
             the other panels are plain vertical scrollers. */}
         <div className={tab === "code" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-y-auto"}>
           {tab === "todo" && <TodoPanel />}
+          {tab === "running" && <TasksOverviewPanel />}
           {tab === "workflow" && <WorkflowPanel />}
           {tab === "artifacts" && <ArtifactsPanel />}
           {tab === "memory" && <MemoryPanel />}

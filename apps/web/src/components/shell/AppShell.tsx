@@ -380,6 +380,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setRightTab("workflow"); // manual open also clears the panel badge
       setRightPanelOpenForBridge(true);
     };
+    // 「运行中任务」面板（tasks-overview §2.2 入口直达）：menubar ▶N 下拉的
+    // 「查看全部」项（Rust tray 菜单）与侧栏品牌行 ▶N 徽标都落到这里——
+    // 与 openWorkflowRun 同款三步：回工作区 + 切 tab + 展开面板。
+    const openTasksOverview = () => {
+      if (window.location.pathname !== "/") router.push("/");
+      setRightTab("running");
+      setRightPanelOpenForBridge(true);
+    };
     // 后台任务完成通知的点击落点（background-tasks-design §6.3）：任务中心
     // 路由页——任务没有 per-task 路由，id 本身不可定位。
     const openTasks = () => {
@@ -389,12 +397,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       openSession;
     (window as unknown as { __ginnoOpenWorkflowRun?: () => void }).__ginnoOpenWorkflowRun =
       openWorkflowRun;
+    (window as unknown as { __ginnoOpenTasksOverview?: () => void }).__ginnoOpenTasksOverview =
+      openTasksOverview;
     (window as unknown as { __ginnoOpenScheduleRun?: (runId: string) => void })
       .__ginnoOpenScheduleRun = (runId: string) => openScheduleRunFromNotifyRef.current(runId);
     (window as unknown as { __ginnoOpenTasks?: () => void }).__ginnoOpenTasks = openTasks;
     return () => {
       delete (window as unknown as { __ginnoOpenSession?: unknown }).__ginnoOpenSession;
       delete (window as unknown as { __ginnoOpenWorkflowRun?: unknown }).__ginnoOpenWorkflowRun;
+      delete (window as unknown as { __ginnoOpenTasksOverview?: unknown }).__ginnoOpenTasksOverview;
       delete (window as unknown as { __ginnoOpenScheduleRun?: unknown }).__ginnoOpenScheduleRun;
       delete (window as unknown as { __ginnoOpenTasks?: unknown }).__ginnoOpenTasks;
     };

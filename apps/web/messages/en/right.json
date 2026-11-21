@@ -4,6 +4,7 @@
     "tabs": {
       "artifacts": "Artifacts",
       "todo": "TODO",
+      "running": "Running",
       "workflow": "Workflow",
       "memory": "Memory",
       "synthesis": "Synthesis",
@@ -53,7 +54,8 @@
       "workflow": "{human} awaiting input, {active} running, {failed} newly failed",
       "synthesis": "{n} syntheses in progress",
       "memoryDraft": "memory draft awaiting review",
-      "notice": "{n} unread notices"
+      "notice": "{n} unread notices",
+      "running": "{n} tasks in flight"
     },
     "memory": {
       "title": "Global Memory",
@@ -169,6 +171,44 @@
       "relatedArtifacts": "Related artifacts",
       "noArtifacts": "No linked artifacts yet. Have the Agent link produced files/docs to this TODO via todo_link; manual linking may come later.",
       "jumpArtifact": "Click to jump to the artifact's session · hover for details"
+    },
+    "tasksOverview": {
+      "title": "What's running now",
+      "refresh": "Refresh",
+      "empty": "Nothing is running right now",
+      "loadFailed": "Runtime unreachable — the list may be stale",
+      "nextFire": "next {at}",
+      "external": "external session",
+      "notStoppable": "Cannot stop right now",
+      "view": "View",
+      "stopFailed": "Failed to stop “{title}” — list restored",
+      "groups": {
+        "turn": "Conversations",
+        "schedule": "Scheduled",
+        "plan": "Subagents",
+        "run": "Workflow",
+        "goal": "Goals",
+        "delegation": "Delegations"
+      },
+      "stopBtn": {
+        "turn": "Stop",
+        "schedule": "Pause",
+        "plan": "Cancel",
+        "run": "Stop",
+        "goal": "End",
+        "delegation": "Stop"
+      },
+      "confirmTitle": {
+        "turn": "Stop this turn?",
+        "schedule": "Pause this schedule?",
+        "plan": "Cancel this subagent task?",
+        "run": "Stop this workflow run?",
+        "goal": "End this goal?",
+        "delegation": "Stop this delegation?"
+      },
+      "confirmBodyPause": "“{title}” will only be paused — resume anytime in Settings.",
+      "confirmBodyIrreversible": "“{title}” will stop immediately. This cannot be undone.",
+      "badgeEntry": "{n} tasks in flight — click to open the Running panel"
     },
     "workflow": {
       "title": "Workflow Runs",

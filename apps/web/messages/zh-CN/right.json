@@ -4,6 +4,7 @@
     "tabs": {
       "artifacts": "产物",
       "todo": "TODO",
+      "running": "运行",
       "workflow": "工作流",
       "memory": "记忆",
       "synthesis": "总结",
@@ -53,7 +54,8 @@
       "workflow": "{human} 个等待输入，{active} 个执行中，{failed} 个新失败",
       "synthesis": "{n} 个总结正在进行",
       "memoryDraft": "记忆草稿待审阅",
-      "notice": "{n} 条未读通知"
+      "notice": "{n} 条未读通知",
+      "running": "{n} 个任务进行中"
     },
     "memory": {
       "title": "全局记忆",
@@ -169,6 +171,44 @@
       "relatedArtifacts": "关联产物",
       "noArtifacts": "还没有关联产物。让 Agent 通过 todo_link 把产出的文件/文档关联到这条 TODO；手动关联后续推出。",
       "jumpArtifact": "点击跳转到产物所在会话 · 悬停查看详情"
+    },
+    "tasksOverview": {
+      "title": "现在都在跑什么",
+      "refresh": "刷新",
+      "empty": "现在没有进行中的任务",
+      "loadFailed": "运行时暂不可达，显示的可能不是最新状态",
+      "nextFire": "下次 {at}",
+      "external": "外部会话",
+      "notStoppable": "当前不可停止",
+      "view": "查看",
+      "stopFailed": "「{title}」停止失败，已恢复列表",
+      "groups": {
+        "turn": "正在对话",
+        "schedule": "调度",
+        "plan": "子代理",
+        "run": "Workflow",
+        "goal": "Goal",
+        "delegation": "委托"
+      },
+      "stopBtn": {
+        "turn": "停止",
+        "schedule": "暂停",
+        "plan": "取消",
+        "run": "停止",
+        "goal": "结束",
+        "delegation": "停止"
+      },
+      "confirmTitle": {
+        "turn": "停止这轮对话？",
+        "schedule": "暂停这条调度？",
+        "plan": "取消这个子代理任务？",
+        "run": "停止这个 workflow run？",
+        "goal": "结束这个 goal？",
+        "delegation": "停止这个委托？"
+      },
+      "confirmBodyPause": "「{title}」仅暂停，可随时在设置页恢复。",
+      "confirmBodyIrreversible": "「{title}」将立即停止，此操作不可撤销。",
+      "badgeEntry": "{n} 个任务进行中，点击打开「运行」面板"
     },
     "workflow": {
       "title": "工作流运行",

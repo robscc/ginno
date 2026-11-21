@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ALL_RIGHT_TAB_IDS, canonicalTabOrder, visibleTabOrder } from "../rightTabs";
 
-export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code" | "notice";
+export type RightTab =
+  | "todo"
+  | "running"
+  | "workflow"
+  | "artifacts"
+  | "memory"
+  | "synthesis"
+  | "code"
+  | "notice";
 
 // Right panel width bounds (right-panel-redesign.md §3.4). The panel renders
 // at `rightPanelWidth`; dragging clamps into this range, double-click resets.
@@ -20,6 +28,7 @@ export const PANEL_WIDTH_MAX_CODE = 1100;
 export function defaultPanelWidths(): Record<RightTab, number> {
   return {
     todo: PANEL_WIDTH_DEFAULT,
+    running: PANEL_WIDTH_DEFAULT,
     workflow: PANEL_WIDTH_DEFAULT,
     artifacts: PANEL_WIDTH_DEFAULT,
     memory: PANEL_WIDTH_DEFAULT,

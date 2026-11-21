@@ -22,5 +22,6 @@ export * from "./api/connectors";
 export * from "./api/a2a";
 export * from "./api/schedule";
 export * from "./api/tasks";
+export * from "./api/tasksOverview";
 export * from "./api/misc";
 export * from "./api/mcpApps";

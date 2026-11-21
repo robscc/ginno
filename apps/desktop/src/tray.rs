@@ -41,6 +41,16 @@ fn build_menu(app: &tauri::AppHandle, pinned: &[PinnedSession]) -> tauri::Result
         true,
         None::<&str>,
     )?;
+    // ▶N 直达（tasks-overview §2.2）：menubar 标题已示运行数，这里给一个
+    // 「查看全部」落点——focus + eval __ginnoOpenTasksOverview（AppShell
+    // 注册，切到右栏「运行」tab），与置顶会话同一条桥。
+    let view_running = MenuItem::with_id(
+        app,
+        "tray-view-running",
+        pick(lang, "View Running Tasks", "查看运行中任务"),
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(
         app,
         "tray-quit",
@@ -73,6 +83,7 @@ fn build_menu(app: &tauri::AppHandle, pinned: &[PinnedSession]) -> tauri::Result
     let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry> + '_>> = vec![
         Box::new(toggle),
         Box::new(open_main),
+        Box::new(view_running),
         Box::new(sep1),
         Box::new(header),
     ];
@@ -139,6 +150,10 @@ pub(crate) fn install_tray(app: &tauri::App) -> tauri::Result<()> {
                         // Accessory → Regular：主窗回来了，Dock 图标也回来。
                         crate::common::sync_dock_policy(app);
                     }
+                }
+                // 「查看运行中任务」：与通知点击同一条 focus_and_open 桥。
+                "tray-view-running" => {
+                    crate::notify::focus_and_open(app, "tasks-overview", "");
                 }
                 // app.exit runs ExitRequested (flips `quitting`) then Exit (kills
                 // the sidecar) — same path as ⌘Q.
