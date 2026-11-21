@@ -111,6 +111,32 @@ def _collect_turns() -> list[dict[str, Any]]:
     return out
 
 
+_WEEKDAYS_ZH = ["一", "二", "三", "四", "五", "六", "日"]
+
+
+def _schedule_label(sched: dict[str, Any]) -> str:
+    """调度的人读摘要（2026-11-21 修：此前 detail 填 target.type 内部值，用户看到的是 "prompt" 噪音）。"""
+    kind = str(sched.get("kind") or "").strip()
+    at = str(sched.get("at") or "").strip()
+    if kind == "daily":
+        return f"每天 {at}" if at else "每天"
+    if kind == "weekly":
+        try:
+            wd = _WEEKDAYS_ZH[int(sched.get("weekday", 0)) % 7]
+        except (TypeError, ValueError):
+            wd = "?"
+        return f"每周{wd} {at}".strip()
+    if kind == "interval":
+        try:
+            m = max(1, int(sched.get("minutes", 0)))
+        except (TypeError, ValueError):
+            m = 1
+        return f"每 {m} 分钟"
+    if kind == "cron" or sched.get("expr"):
+        return f"cron {sched.get('expr') or sched.get('cron') or ''}".strip()
+    return kind or "调度"
+
+
 def _collect_scheduled() -> list[dict[str, Any]]:
     cfg = schedule_store.load_config()
     if not cfg.get("enabled", True):
@@ -120,13 +146,12 @@ def _collect_scheduled() -> list[dict[str, Any]]:
     for task in cfg.get("tasks") or []:
         if not task.get("enabled"):
             continue
-        target = task.get("target") or {}
         handle = {
             "kind": "schedule",
             "id": str(task.get("id") or ""),
             "title": str(task.get("name") or "未命名任务"),
             "next_fire_at": task.get("next_run_at"),
-            "detail": str(target.get("type") or ""),
+            "detail": _schedule_label(task.get("schedule") or {}),
             "stoppable": True,
             "stop_hint": "暂停调度（可随时重新启用）",
         }
@@ -186,6 +211,34 @@ def _collect_runs() -> list[dict[str, Any]]:
     return out
 
 
+def _goal_progress_label(g: dict[str, Any]) -> str:
+    """goal 进度的人读摘要（2026-11-21 修：旧 goal 缺 turns_used/created_at
+    ——此前的 "turn 0 · 0min" 对旧数据永远失真；改以 updated_at 相对时间
+    为主信号，turns_used 仅在真实 >0 时附带）。"""
+    parts: list[str] = []
+    turns = int(g.get("turns_used") or 0)
+    if turns > 0:
+        secs = int(g.get("time_used_seconds") or 0)
+        parts.append(f"turn {turns} · {secs // 60}min")
+    updated = g.get("updated_at")
+    if updated:
+        try:
+            ago = max(0, int(time.time() - float(updated)))
+            if ago < 60:
+                parts.append("刚推进")
+            elif ago < 3600:
+                parts.append(f"{ago // 60} 分钟前推进")
+            elif ago < 86400:
+                parts.append(f"{ago // 3600} 小时前推进")
+            else:
+                parts.append(f"{ago // 86400} 天前推进")
+        except (TypeError, ValueError):
+            pass
+    if not parts:
+        parts.append("driver 活跃")
+    return " · ".join(parts)
+
+
 def _collect_goals() -> list[dict[str, Any]]:
     # goal_store 按项目集中存（projects/<slug>/goals.json keyed by session），
     # 全局枚举 = 扫各 project 的文件，只取 active（paused/blocked 的 driver
@@ -208,11 +261,8 @@ def _collect_goals() -> list[dict[str, Any]]:
                     "title": objective[:80] or "（无目标文本）",
                     "session_id": sid,
                     "session_title": _session_title(sid),
-                    "started_at": g.get("created_at"),
-                    "detail": (
-                        f"turn {g.get('turns_used', 0)} · "
-                        f"{int(g.get('time_used_seconds', 0) // 60)}min"
-                    ),
+                    "started_at": g.get("created_at") or g.get("updated_at"),
+                    "detail": _goal_progress_label(g),
                     "stoppable": True,
                     "stop_hint": "清除目标（含用量记录，不可恢复）",
                 }

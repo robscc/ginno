@@ -160,6 +160,7 @@ def test_overview_enumerates_all_six_sources(client):
     assert sched["kind"] == "schedule" and sched["id"] == "st-1"
     assert sched["title"] == "每日趋势分析"
     assert sched["next_fire_at"] == _NOW + 600
+    assert sched["detail"] == "每 60 分钟"  # 人读摘要（seed=interval；旧口径是 target.type 噪音）
     assert sched["stoppable"] is True and sched["stop_hint"]
 
     (plan,) = data["subagents"]
@@ -175,7 +176,7 @@ def test_overview_enumerates_all_six_sources(client):
     (goal,) = data["goals"]
     assert goal["kind"] == "goal" and goal["id"] == "s-goal"
     assert goal["title"] == "完成发版" and goal["session_title"] == "发版窗口"
-    assert goal["detail"].startswith("turn 0")
+    assert "推进" in goal["detail"]  # 新口径：相对时间主信号（turns=0 不附 turn 0）
 
     (dele,) = data["delegations"]
     assert dele["kind"] == "delegation" and dele["id"] == "did-1"
