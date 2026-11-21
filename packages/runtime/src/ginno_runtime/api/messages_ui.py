@@ -767,6 +767,64 @@ def _gen_image_blocks(
     return blocks
 
 
+_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _resolve_inline_md_images(
+    step: list[dict], slug: str | None, session_id: str | None
+) -> list[dict]:
+    """AIMessage 正文里手写的 ``![alt](bare.png)``（AI 引用自己刚生成的产物
+    截图，如 2026-11-21 811b… 会话的主题帧 v3-l-f2.png）：src 是相对会话
+    产物目录的裸文件名，前端 <img> 按页面 URL 解析必 404 → 渲染成 broken
+    占位块（用户截图里四行「按钮状乱码」）。
+
+    这里在 UI 块层把文本里的这类引用拆成 text + image 块，image 走
+    ``_gen_image_blocks`` 同一套 files-ledger 自愈登记（fileId → 前端
+    下载 helper 建 URL）。仅当文件确实存在于 ``session_files_dir`` 才改
+    写；http(s)/data:/绝对路径/不存在的文件名 → 原样保留 markdown。"""
+    if not slug or not session_id or not any(
+        blk.get("kind") == "text" and "![" in (blk.get("text") or "") for blk in step
+    ):
+        return step
+    from ..paths import session_files_dir
+
+    base = session_files_dir(slug, session_id)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for blk in step:
+        t = blk.get("text") if blk.get("kind") == "text" else None
+        if not t:
+            out.append(blk)
+            continue
+        pos = 0
+        replaced = False
+        for m in _MD_IMG_RE.finditer(t):
+            src = m.group(2)
+            if "://" in src or src.startswith(("data:", "/", "~")):
+                continue  # 绝对/远程引用——前端本就能渲染
+            cand = base / src
+            if not cand.is_file():
+                continue
+            imgs = _gen_image_blocks([str(cand)], slug, session_id, seen)
+            if not imgs:
+                continue
+            replaced = True
+            pre = t[pos : m.start()]
+            if pre.strip():
+                out.append({**blk, "text": pre})
+            elif pre:
+                out.append({**blk, "text": pre})
+            out.extend(imgs)
+            pos = m.end()
+        tail = t[pos:] if replaced else None
+        if replaced:
+            if tail and tail.strip():
+                out.append({**blk, "text": tail})
+        else:
+            out.append(blk)
+    return out
+
+
 def _replay_edit_diff(
     nm: str, args: dict, slug: str | None, session_id: str | None
 ) -> dict:
@@ -1097,6 +1155,9 @@ def _messages_to_ui(
                     "ginno_team_reply"
                 )
             step = list(_ai_content_blocks(getattr(m, "content", ""), glm_blocks))
+            # 正文裸 markdown 图引用（AI 引用自己刚生成的产物截图）→ 拆成
+            # fileId 图块（否则前端 404 broken 占位块，2026-11-21 报障）。
+            step = _resolve_inline_md_images(step, project_slug, session_id)
             # The gateway replays a turn's server_tool_use blocks — and the
             # narration that names the same calls — on every continuation
             # request: show each synthesized bubble/card once. Widget blocks

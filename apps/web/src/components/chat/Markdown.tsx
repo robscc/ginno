@@ -320,6 +320,17 @@ export const Markdown = memo(function Markdown({
             return <hr className="my-3 border-line" />;
           },
           img({ src, alt }) {
+            // 裸相对文件名（AI 手写产物引用，如 ![帧②](v3-l-f2.png)）：history
+            // 侧由后端 messages_ui 改写成 fileId 图块；live 流式半截帧里没有
+            // 可加载 URL——按页面 URL 解析必 404（811b… 会话四占位块报障，
+            // 2026-11-21）。渲染成 alt 占位文本，不渲染 broken <img>。
+            if (src && !/^(https?:|data:|blob:|\/)/.test(src)) {
+              return (
+                <span className="my-1 inline-flex items-center gap-1 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted">
+                  🖼 {alt || src}
+                </span>
+              );
+            }
             return <img src={src} alt={alt || ""} className="my-2 max-h-72 rounded-lg border border-line" />;
           },
           strong({ children }) {

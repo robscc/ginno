@@ -193,3 +193,58 @@ def test_history_replay_skips_missing_file(tmp_path: Path):
     ui = _ui(msgs)
     assistant = [m for m in ui if m["role"] == "assistant"][0]
     assert all(b["kind"] != "image" for b in assistant["blocks"])
+
+
+# ── AIMessage 正文裸 markdown 图引用（2026-11-21 811b… 报障） ────────────────
+
+
+def test_inline_md_image_resolves_from_session_files_dir(tmp_path: Path):
+    """AI 手写 ![alt](v3-l-f2.png) 引用自己刚生成的产物截图：history 侧应
+    拆成 text+image 块（fileId 走下载 helper），不再把裸文件名丢给 <img>
+    （相对页面 URL 解析必 404 → broken 占位块）。"""
+    import os
+
+    d = Path(os.environ["GINNO_HOME"]) / "projects/default/sessions/s1"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "v3-l-f2.png").write_bytes(b"png")
+
+    msgs = [
+        HumanMessage(content="给我看主题帧", id="t1"),
+        AIMessage(
+            content="看这四张：\n![白色系·帧②](v3-l-f2.png)\n\n收尾一句。",
+            additional_kwargs={"agent_id": "dev"},
+            id="a1",
+        ),
+    ]
+    ui = _ui(msgs)
+    assistant = [m for m in ui if m["role"] == "assistant"][0]
+    blocks = assistant["blocks"]
+    kinds = [b["kind"] for b in blocks]
+    assert "image" in kinds, "产物图应渲染为 image 块"
+    img = next(b for b in blocks if b["kind"] == "image")
+    assert img["name"] == "v3-l-f2.png" and img["fileId"]
+    texts = "".join(b.get("text", "") for b in blocks if b["kind"] == "text")
+    assert "![白色系·帧②]" not in texts, "原 markdown 引用应被拆走"
+    assert "看这四张" in texts and "收尾一句" in texts, "前后文本保留"
+    # image 块位置在两段文本之间
+    assert kinds.index("image") > 0
+
+
+def test_inline_md_image_remote_and_missing_stay_markdown(tmp_path: Path):
+    """http(s)/data: 与不存在的文件名不改写——前端本来就能渲染远程图，
+    缺文件改写反而会把可读引用变成空。"""
+    msgs = [
+        HumanMessage(content="看图", id="t1"),
+        AIMessage(
+            content="![logo](https://example.com/l.png) ![gone](nope.png)",
+            additional_kwargs={"agent_id": "dev"},
+            id="a1",
+        ),
+    ]
+    ui = _ui(msgs)
+    assistant = [m for m in ui if m["role"] == "assistant"][0]
+    kinds = [b["kind"] for b in assistant["blocks"]]
+    assert "image" not in kinds
+    texts = "".join(b.get("text", "") for b in assistant["blocks"] if b["kind"] == "text")
+    assert "![logo](https://example.com/l.png)" in texts
+    assert "![gone](nope.png)" in texts
