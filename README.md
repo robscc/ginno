@@ -25,7 +25,13 @@
 Ginno turns the capabilities an AI agent should have into a **complete desktop app**,
 instead of scattering them across a terminal and a dozen browser tabs.
 
-- 🧠 **Multi-agent chat** — switch agents mid-conversation, shared history, per-agent memory
+- 🧠 **Multi-agent chat & orchestration** — switch agents mid-conversation (shared history,
+  per-agent memory); spawn subagents with dependency graphs, run agent teams, and delegate
+  long work to background worker sessions you can watch from any chat
+- 🙋 **Ask-relay** — when a background worker hits a question, your agent relays it to you
+  as a question card and hands your answer back (one-shot qid credential, idempotent)
+- 📊 **Running-tasks panel** — every in-flight turn / scheduled task / subagent / workflow
+  run / goal in one panel, each individually stoppable
 - 🛠️ **Tools · permissions · skills · MCP · hooks** — Claude Code's shape, all built in
 - 🔀 **Visual Workflow Studio** — a versioned DSL you compile into a LangGraph state graph, with a live run observer
 - 📚 **Local knowledge base** — index your Obsidian vault; answers come back with citations
@@ -112,8 +118,8 @@ Requires: Node ≥ 20 · pnpm ≥ 9 · Python ≥ 3.11 (via `uv`) · Rust (Tauri
 
 ## Status
 
-- Every push runs a **full-stack CI** — web (lint/typecheck/vitest/build), Rust (fmt/check), runtime (2900+ tests with coverage) — [all green](https://github.com/robscc/ginno/actions).
-- A **personal project**, used daily (dogfooding) and iterated fast — ~3.5 months, 490+ commits.
+- Every push runs a **full-stack CI** — web (lint/typecheck/vitest/build), Rust (fmt/check), runtime (4500+ tests with coverage) — [all green](https://github.com/robscc/ginno/actions).
+- A **personal project**, used daily (dogfooding) and iterated fast — ~4 months, 900+ commits.
 - Early and unpolished; APIs and UI still move.
 - Issues, PRs, and ideas are welcome — in English or Chinese (see [CONTRIBUTING](CONTRIBUTING.md)).
 

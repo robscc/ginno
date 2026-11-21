@@ -121,6 +121,14 @@ manifest）；python 变更 → `ruff check`；前端变更 → `next lint`。�
 fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它就不会再犯**。应急跳过
 单次提交：`git commit --no-verify`（慎用，CI 仍会拦）。
 
+**重构契约测试五套**（2026-11 巨型文件绞杀者重构留下的防退化网，改相关区域前先知道它们在）：
+
+- `tests/unit/test_event_contract.py` — turn 事件 golden 逐字节快照（`api/stream/stages/` + `api/stream/ws/` 全模块扫描，路径按 `_REPO_ROOT` 绝对解析）；改 stages/ws 任何事件发射必红，预期内更新快照要走等价性论证。
+- `apps/web/src/components/chat/engine/handleDispatch.test.ts` — 前端事件分发表 94 用例快照：`handlers/index.ts` 注册表增删事件类型必须同步钉住清单（93→94 就是 worker.pending_questions 那次），否则 vitest 红。
+- `packages/runtime/tests/unit/test_startup_tasks.py` — 启动任务表守卫（36+ 任务，name/阶段/depends_on/timeout_s 全登记）。
+- 等价性/地图文档：`api/stream/stages/EQUIVALENCE.md`（四阶段引擎与 legacy 等价性论证）+ `apps/web/…/handlers/CODEMAP.md`（前端 handlers 注册表地图）。
+- OpenAPI 快照 — REST 面变更即红，提醒显式更新。
+
 **测试基建红线**（都踩过坑，别再踩）：
 
 - **禁止在 `tests/e2e/`（或任何子目录）建 `conftest.py`**——它会遮蔽模块名 `conftest`，
@@ -213,8 +221,20 @@ fmt/ruff 已在 CI 连红过五次（都是提交前没跑）——**装了它�
 
 - `packages/runtime/src/ginno_runtime/` — Python 运行时全部源码
   - `api/` — 按域拆分的 router（sessions/stream/workflows/files/knowledge/config/
-    todos/usage/memory/teams/tasks/plans/schedule/connectors/…，25+ 文件）；
-    `api/stream/` 是 turn 执行/WS 流的**包**（`resume.py` 含 interrupt 公共恢复入口）
+    todos/usage/memory/teams/tasks/plans/schedule/connectors/…，31 文件 ~275 端点）；
+    `api/stream/` 是 turn 执行/WS 流的**包**（`resume.py` 含 interrupt 公共恢复入口
+    `resume_question`——WS 直答/steer 即答/relay_answer 三路同源）；`stages/` 是
+    staged 四阶段引擎（permission/toolloop/streamio/finalize，唯一引擎，等价性
+    论证见 stages/EQUIVALENCE.md）；`ws/` 是 WS 通道模块包（deliver/registry/
+    relay/tools/watch）
+  - `worker_bus/` — 子代理/worker 跨会话派活协议：`registry.py` 花名册、
+    `watch.py` 订阅/digest、`relay.py` worker ask_user 中断透传（qid 一次性凭证 +
+    已答墓碑 + `relay_answer` 工具 + 订阅方条件注入，默认权限 allow——权限迁移在
+    `permission/policy.py` ensure_relay_permissions）
+  - `api/tasks_overview.py` — 六源运行中任务聚合（turns/scheduled/subagents/
+    runs/goals/delegations → GET /api/tasks/overview + stop 门面）
+  - `startup_tasks.py` — 启动任务声明表（name/阶段/depends_on/timeout_s/
+    fail_policy，36+ 任务）
   - `graph.py` — 聊天主图（agent/permission/tools 三节点，纯 `Command(goto=…)` 路由，
     无 permission→tools 静态边；含限流退避）
   - `browser/` — 浏览器双轨（browser-companion-extension-design.md）：`executor.py`

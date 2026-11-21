@@ -24,7 +24,12 @@
 
 Ginno 把"AI Agent 该有的能力"做成一个**完整的桌面应用**，而不是散落在终端和十几个浏览器标签里。
 
-- 🧠 **多 Agent 对话** —— 一个会话内可切换 Agent、历史共享，每个 Agent 有独立记忆
+- 🧠 **多 Agent 对话与编排** —— 会话内可切换 Agent（历史共享、每 Agent 独立记忆）；
+  派生带依赖图的子代理、跑 Agent 团队、把长活委托给后台 worker 会话并从任意对话订阅进展
+- 🙋 **代答转达（Ask-relay）** —— 后台 worker 卡在提问时，你的 agent 会把它转述成问题卡
+  问你、再把答案带回去（一次性 qid 凭证、幂等防错答）
+- 📊 **运行中任务面板** —— 在途 turn / 调度任务 / 子代理 / workflow run / goal 一屏总览，
+  每项可单独停止
 - 🛠️ **工具 · 权限 · 技能 · MCP · Hooks** —— 对齐 Claude Code 的形态，全套内置
 - 🔀 **可视化 Workflow Studio** —— 版本化 DSL 编译成 LangGraph 状态图，带实时运行观察台
 - 📚 **本地知识库** —— 直接索引你的 Obsidian Vault，回答带引用溯源
@@ -109,8 +114,8 @@ pnpm dev                           # 一键起 web + runtime + 桌面壳
 
 ## 状态
 
-- 每次 push 跑**三栈 CI**——web（lint/typecheck/vitest/build）、Rust（fmt/check）、runtime（2900+ 测试带覆盖率）——[全绿](https://github.com/robscc/ginno/actions)。
-- 一个**个人项目**，日常使用中（dogfooding），高频迭代 —— 约 3.5 个月、490+ commits。
+- 每次 push 跑**三栈 CI**——web（lint/typecheck/vitest/build）、Rust（fmt/check）、runtime（4500+ 测试带覆盖率）——[全绿](https://github.com/robscc/ginno/actions)。
+- 一个**个人项目**，日常使用中（dogfooding），高频迭代 —— 约 4 个月、900+ commits。
 - 尚早、不成熟，API 与界面仍在变动。
 - 欢迎 Issue / PR / 想法，中英文都可以（见[贡献指南](CONTRIBUTING.md)）。
 

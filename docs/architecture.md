@@ -1,7 +1,9 @@
 # Ginno Architecture
 
 > 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-09-25；
-> 2026-11-03 增量核对：图拓扑（权限边删除/限流退避）、CI 与发布流水线、测试基建、仓库布局、浏览器双轨落地状态）。
+> 2026-11-03 增量核对：图拓扑（权限边删除/限流退避）、CI 与发布流水线、测试基建、仓库布局、浏览器双轨落地状态；
+> 2026-11-21 增量核对：可维护性绞杀者重构终态（布局/stages 四阶段/前端 handlers 注册表）、worker ask_user
+> 中断透传 relay（§6.15）、运行中任务聚合面板、REST 面 ~275 端点、测试基数 4582(runtime)+1783(web)、v0.5.0 发布线）。
 > Ginno 已从"单轮 ReAct 骨架"演进为：多 Agent 对话 + 工具/权限/技能/MCP/记忆/知识库
 > + Workflow DSL 引擎 + Goal 长程自主推进 + TODO 外部平台同步 + 内置 Web 搜索与引用溯源
 > 的个人 AI Agent 桌面应用。
@@ -124,10 +126,15 @@ ginno/
 │           ├── server.py        # FastAPI 壳：app/lifespan/CORS/静态托管/main + facade
 │           ├── server_shared.py # 进程级可变状态（_SESSIONS/_SESSION_WS/…）+ 事件推送
 │           ├── session_meta.py  # sessions/_index.json 存取助手
-│           ├── api/             # 按域拆分的 router（25+ 文件）：sessions/ stream/(包)
+│           ├── api/             # 按域拆分的 router（31 文件，~275 端点）：sessions/
 │           │                    #   workflows(+runs/synthesis)/ files/ folders/ knowledge/
 │           │                    #   config/ todos/ usage/ memory/ messages_ui/ teams/
-│           │                    #   tasks/ plans/ schedule/ connectors/ code/ search/ …
+│           │                    #   tasks/ plans/ schedule/ connectors/ code/ search/
+│           │                    #   tasks_overview(六源聚合)/ badge/ health/ …
+│           ├── api/stream/      # turn 执行/WS 流包：engine.py(薄壳) + stages/ 四阶段
+│           │                    #   引擎(permission/toolloop/streamio/finalize，唯一引擎，
+│           │                    #   见 stages/EQUIVALENCE.md) + ws/ 通道模块 + resume.py
+│           │                    #   (WS 直答/steer/relay_answer 三路同源恢复)
 │           ├── graph.py         # 聊天主图（agent/permission/tools）+ 系统提示分层 + 限流退避
 │           ├── state.py         # 图状态 TypedDict
 │           ├── world_state.py   # WorldState 上下文工程（分节 + diff）
@@ -141,6 +148,12 @@ ginno/
 │           ├── commands/        # slash 命令 + @mentions 解析
 │           ├── skills/          # SKILL.md 加载 + 安装
 │           ├── hooks/ permission/ mcp/ agents/ memory/
+│           ├── permission/      # 包：policy.py 规则解析 + web/browser/relay 三组
+│           │                    #   seed-allow 幂等迁移（ensure_*_permissions）
+│           ├── worker_bus/      # 子代理/worker 跨会话派活协议：registry(花名册)/
+│           │                    #   watch(订阅+digest)/deliver/relay(ask_user 透传)
+│           ├── startup_tasks.py # 启动任务声明表（36+ 任务：name/阶段/depends_on/
+│           │                    #   timeout_s/fail_policy；lifespan 按表调度+守卫测试）
 │           ├── knowledge/       # LLMWiki：indexer/retriever/semantic/injection/compiler/
 │           │                    #   association + citations/usage/web_usage（引用台账）
 │           ├── web/             # 内置网络搜索：config/engines/fetch（§6.13）
@@ -208,6 +221,11 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   **同一 AIMessage 里的多个 tool call 是并发执行的**（langgraph 内部 `asyncio.gather`，同步工具进线程池），
   这一点对任何"读-改-写"型工具都是硬约束——2026-10-08 四联编辑事故即由此而来（§17.15）。
   内置文件工具已用进程级写锁自行兜底；**新增有副作用的工具必须自己处理**。
+- **情境工具双注册（2026-11-21 起）**：`relay_answer` 这类按 session 动态注入的工具，除了
+  `agent` 节点 bind 侧，**必须同时在 `tools` 节点按 thread_id 动态注册**（ToolNode 是静态
+  注册表，只 bind 不注册 → 模型调用必报 `not a valid tool`；e2e 抓到的 P0）。当前两条注册
+  路径：pending 登记非空 → enum 版；登记已销但本 superstep 调用含该名 → loose 版兜底
+  竞态窗口。都不命中零注册，静态会话行为不变。
 
 ### 6.2 图状态字段（`state.py`）
 
@@ -447,9 +465,38 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
 
 ---
 
+### 6.15 worker_bus — 子代理/worker 跨会话派活 + ask_user 中断透传（2026-11 落地）
+
+子代理（spawn_subagent）、外部委托（delegate）、定时任务、其它 main 会话统一抽象为
+**worker 会话**；本会话可 `watch_worker` 订阅其终态/摘要（digest 回注）。核心文件
+`worker_bus/`：`registry.py`（花名册）、`watch.py`（订阅 + digest）、`deliver.py`
+（投递）、`relay.py`（中断透传，~590 行）。
+
+**worker ask_user 中断透传（relay）**：worker 卡在 ask_user interrupt（parked）时——
+
+- **qid 一次性凭证**：问题生成即入 interrupt payload（跨重启恢复）；服务端 parked 集校验；
+  resume 即销并写**墓碑**（answered_by/摘要/时间，TTL 24h）。
+- **订阅方注入**：digest 附 `pending_questions` 列表（qid/worker_sid/header/options/multi/
+  worker_title）；订阅方 agent 收编排指令信封——用 ask_user **转述**问自己的用户（≤3 问
+  一屏），用户自然作答后把答案映射回原选项，**先写映射理由再调 `relay_answer`**。
+- **relay_answer**（默认权限 allow——qid 凭证链已是强门，再套 ask 是二次确认用户刚做的
+  决定）：choice 硬校验命中原选项集（不命中报错列合法选项→agent 自纠重调）；qid 已答
+  返回 `{ok:false, already_answered:true, answered_by, answer, note}` 且**四不**——
+  不 resume/不写 checkpoint/不广播/不动注册表（worker 侧零影响）。
+- **三路同源恢复**：WS 直答 / steer 即答 / relay_answer 都走 `api/stream/resume.py::
+  resume_question`；墓碑统一收口（用户直答后订阅方晚到代答不会误写僵尸答案）。
+- **前端**：注入信封 `<ginno_worker_question>` 折卡片（worker 标题 + 问题 + 原选项
+  chips + 展开原文兜底）；`worker.pending_questions` 事件 toast 提醒（qid 集去重）。
+
+任务聚合面板：`api/tasks_overview.py` 把六个在途句柄源（_RUNNING_TURNS / 调度 /
+子代理 plan / workflow run / goals / delegation）聚合成 `GET /api/tasks/overview`
++ `POST /api/tasks/overview/stop` 纯路由门面；前端右栏「运行」tab 30s 轮询。
+
+---
+
 ## 7. API 表面
 
-### 7.1 REST（~130 端点，前缀 `/api`，按组；路由分散在 `api/` 各 router + `server.py`）
+### 7.1 REST（~275 端点，前缀 `/api`，按组；路由分散在 `api/` 31 个 router + `server.py`）
 
 | 组 | 代表端点 |
 |---|---|
@@ -603,6 +650,13 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
   usage/general/notifications/tool-labels）。
   `/` 页面返回 `null`——工作区由 `AppShell` **常驻渲染**，路由切换用 `hidden` 隐藏而非卸载，
   保住 WS 连接与内存消息。
+- **事件分发注册表**（2026-11 绞杀者重构后）：`engine/handle.ts` 仅 40 行调度壳，全部
+  `user.question`/`token.delta`/`worker.*`… 事件处理在 `engine/handlers/` 包按域分文件
+  （05-workers.ts 等），`handlers/index.ts` 是唯一注册表（94 用例契约快照钉住；地图见
+  handlers/CODEMAP.md）。新增事件 = handler + 注册 + 快照登记三步缺一必红。
+- **消息块渲染**：`blocks.tsx` 的 UserBlocks/AgentBlocks 体系 + `blocks/` 子包组件
+  （chips/SourcesBlock/**WorkerQuestionCard**——worker 代答信封折卡片，双路径接入
+  UserBlocks 与 SteerBand）。
 - **状态管理**：单一 React Context（`store.tsx` 的 `GinnoProvider`，无 Zustand）。全局态
   （agents/skills/sessions/todos/workflows/artifacts/providers/goalBySession/…）+ 乐观更新+失败回滚；
   **聊天消息态不在 Context**，而在 `ChatStream` 的 per-session refs（后台会话续流、切回即见）。
@@ -728,6 +782,11 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 - **`testing/fake_model.py` 的 `ScriptedChatModel`**：确定性脚本化假 ChatModel，回放固定 AIMessage
   序列（文本 + tool calls），驱动**真实编译的 LangGraph**（工具执行、permission interrupt、checkpointer
   全走）——零网络、无 API key。经环境变量 `GINNO_FAKE_LLM` 接入 `build_model`。
+- **重构契约测试五套**（改 stream/stages/handlers/startup 前必知，详见 CLAUDE.md 同名节）：
+  turn 事件 golden 逐字节快照（stages+ws 全模块扫描）、前端分发表 94 用例快照、
+  startup 任务表守卫、stages/EQUIVALENCE.md + handlers/CODEMAP.md 地图、OpenAPI 快照。
+- **测试基数（2026-11-21）**：runtime 4582 passed（全量带 --extra docs）· web vitest
+  1783 用例（含 blocks 解析层 / tasksOverview / fireworks 引擎等组件级纯逻辑）。
 - **前端 vitest**（`apps/web`，2026-11-03 起）：`src/lib/*.test.ts`，node 环境纯逻辑单测
   （token 格式化 / 会话可见性 / classname 合并 / chat 等待态）；`pnpm test` 跑，进 CI。
 - **CI 三栈**（`.github/workflows/ci.yml`，2026-11-03 全绿）：
@@ -787,6 +846,13 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
     测这类语义要 monkeypatch `graph._RATE_LIMIT_WAIT_S`。
 17. 时间敏感测试先想 **UTC**：CI runner 是 UTC + 2 核慢机。「当天剩余网格点」类断言在 UTC 23:30 后
     会翻车（已修：不足 2 点切明天）；「查 history 断言 checkpoint 产物」有落盘竞态，要轮询等待。
+18. **动态注入的工具必须双注册**：`agent` 节点 `bind_tools` 了还不够——`ToolNode` 是静态
+    注册表，情境工具（如 `relay_answer`）要按 thread_id 在 tools 节点动态注册，否则模型
+    一调用就 `not a valid tool`（单测直调 helper 盖不到执行层，e2e 才抓得到）。
+19. **relay_answer 的 qid 是一次性凭证**：resume 即销 + 墓碑；已答分支对 worker 零影响
+    （不 resume/不写 checkpoint/不广播/不动注册表），晚到代答拿 `already_answered` 回执。
+20. headless/playwright 默认 **en-US locale**：断言 UI 文案要先把 `settings.language`
+    钉成目标语言，否则 i18n 渲染英文、中文锚必假红（packaged e2e 实坑）。
 
 ---
 
@@ -807,6 +873,9 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 | + | 内嵌浏览器（Chat\|Browser 分栏 + Space + 所有权三态） | ✅ **双轨落地**（扩展轨 + CDP，见 browser-companion-extension-design）；CEF 级嵌入未做 |
 | + | IM 渠道（钉钉 Stream / 企微）+ 连接器模块（connector-module-design） | ✅ 已合并 main |
 | + | **开源工程化**：三栈 CI 全绿 + Codecov 覆盖率 + tag→dmg 发布流水线 + 治理文件（CONTRIBUTING/SECURITY/CHANGELOG/ROADMAP）+ 前端测试 0→1 | ✅ 2026-11-03（v0.1.1 首个 CI 绿版本） |
+| + | **可维护性绞杀者重构**：8 个 1500+ 行巨型文件清零（registry/sessions/code/mod-broker/CodePanel/ws/engine/handle.ts），stages 四阶段唯一引擎，五套契约测试留库 | ✅ 2026-11（PR#234-#252） |
+| + | **运行中任务统一面板**：六源聚合 API + 右栏「运行」tab（stop 门面/轮询竞态防御） | ✅ 2026-11-21 |
+| + | **worker ask_user 中断透传**：订阅方代答转达（qid 凭证/幂等墓碑/条件注入/信封折卡片） | ✅ 2026-11-21（v0.5.0 后） |
 | 🔮 | 引用检索加权生效、provider 原生搜索适配、web→Raw 沉淀、经验循环、多项目、真实桌面通知、账号体系 | 路线中 |
 
 > 界面/功能的逐项完成度与已知限制，见 `docs/user-guide.md` 的图例标注。
