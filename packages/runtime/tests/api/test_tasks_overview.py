@@ -323,3 +323,16 @@ def test_stop_schedule_pauses_without_deleting(client):
     assert task["enabled"] is False
     data = _get_overview(client)
     assert data["scheduled"] == [], "暂停后不再枚举为运行中"
+
+
+@pytest.mark.parametrize(("turns", "seconds"), [("unknown", 10), (2, {})])
+def test_bad_goal_usage_does_not_break_other_groups(client, turns, seconds):
+    _seed_goal()
+    _seed_schedule_task()
+    goals = goal_store.list_goals("default")
+    goals["s-goal"].update(turns_used=turns, time_used_seconds=seconds)
+    goal_store._write("default", goals)
+    response = client.get("/api/tasks/overview")
+    assert response.status_code == 200
+    assert response.json()["goals"][0]["id"] == "s-goal"
+    assert response.json()["scheduled"][0]["id"] == "st-1"

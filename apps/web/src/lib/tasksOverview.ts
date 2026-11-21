@@ -197,14 +197,8 @@ let inFlight: Promise<boolean> | null = null;
  * 真值回滚）。
  */
 const stoppingIds = new Set<string>();
-/**
- * 成功停止时刻（ms，按完整身份键）：POST 成功后仍可能有「发起早于停止
- * 落定」的 GET 在飞（fetch 无取消），其过期快照若直接落库会把已停句柄
- * 闪回——落库前过滤「stoppedAt > 该 GET 发起时刻」的句柄；一旦有发起
- * 晚于停止时刻的快照成功落库（说明服务端真值已确认缺席），该 key 即失效
- * 可删（GC 防无界增长）。
- */
-const stoppedAt = new Map<string, number>();
+// 只记录当前 GET 飞行期间成功停止的身份；请求结束即可释放，不保留历史句柄。
+let stoppedDuringFetch: Set<string> | null = null;
 
 function emit() {
   for (const l of listeners) l(state);
@@ -240,20 +234,15 @@ function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
   return true;
 }
 
-function setState(next: TasksOverviewState) {
+function setState(next: TasksOverviewState, stale?: Set<string>) {
   let data = next.data;
-  if (stoppingIds.size || stoppedAt.size) {
-    // 竞态防御：停止在途（stoppingIds）或过期快照（stoppedAt 中停止时刻不早于
-    // 本轮拉取发起时刻——用 >= 保守判定，Date.now() 毫秒精度下同毫秒也算过期）
-    // 命中的句柄不随快照回屏。
+  if (stoppingIds.size || stale?.size) {
     const filtered = emptyTasksOverview();
     let touched = false;
     for (const { key } of OVERVIEW_GROUP_ORDER) {
       const kept = data[key].filter((h) => {
         const k = handleKey(h);
-        const stoppedTs = stoppedAt.get(k);
-        const stale = stoppedTs !== undefined && stoppedTs >= (fetchEpochs.get(k) ?? 0);
-        if (stoppingIds.has(k) || stale) {
+        if (stoppingIds.has(k) || stale?.has(k)) {
           touched = true;
           return false;
         }
@@ -277,40 +266,27 @@ function setState(next: TasksOverviewState) {
   emit();
 }
 
-/**
- * 每次成功 GET 落库前记录「该句柄最后一次被服务端观察到仍存在」的发起点。
- * setState 的 stoppedAt 过滤需要知道「本轮快照的发起时刻」才能判定过期——
- * 发起时刻按句柄记（而非全局一个数），因为并发下不同轮询批次覆盖不同句柄。
- */
-const fetchEpochs = new Map<string, number>();
-
 /** 立即重拉（进 tab、手动刷新、停止失败回滚、后台性能项共用）。
  * 并发调用共享同一 promise；返回本轮是否拉取成功（false = sidecar 不可达，
  * 旧快照保留）。 */
 export function refreshTasksOverview(): Promise<boolean> {
   if (inFlight) return inFlight;
-  const startedAt = Date.now();
+  const stale = new Set<string>();
+  stoppedDuringFetch = stale;
   inFlight = (async () => {
     try {
       // 仅首拉/从未成功后的重试置 loading（常规 30s 轮询不打扰已加载视图）。
       if (!state.loaded) setState({ ...state, loading: true });
       const raw = await getTasksOverview();
       const data = normalizeTasksOverview(raw);
-      for (const { key } of OVERVIEW_GROUP_ORDER) {
-        for (const h of data[key]) fetchEpochs.set(handleKey(h), startedAt);
-      }
-      setState({ data, ok: true, loaded: true, loading: false });
-      // GC：本轮快照发起严格早于停止时刻 → 服务端真值已确认该句柄缺席，
-      // 之后不会再有更旧的快照，记录失效可删（同毫秒发起的保留，下轮再 GC）。
-      for (const [k, ts] of stoppedAt) {
-        if (ts < startedAt) stoppedAt.delete(k);
-      }
+      setState({ data, ok: true, loaded: true, loading: false }, stale);
       return true;
     } catch {
       // sidecar 未起 / it_1 未合入：保旧快照，只降 ok 标记。
       setState({ data: state.data, ok: false, loaded: state.loaded, loading: false });
       return false;
     } finally {
+      stoppedDuringFetch = null;
       inFlight = null;
     }
   })();
@@ -403,8 +379,7 @@ export async function stopHandleWithRollback(h: TaskHandle): Promise<void> {
   try {
     await stopTasksOverviewItem(request);
     stoppingIds.delete(key);
-    // 过期 GET 防御基准点：晚于此发起的快照才可信该句柄缺席。
-    stoppedAt.set(key, Date.now());
+    stoppedDuringFetch?.add(key);
   } catch (err) {
     stoppingIds.delete(key);
     // 回滚：优先以服务端真值恢复；GET 也失败（双失败）时只还原本项。
@@ -420,7 +395,6 @@ export function __resetTasksOverviewHubForTests(): void {
   listeners = [];
   inFlight = null;
   stoppingIds.clear();
-  stoppedAt.clear();
-  fetchEpochs.clear();
+  stoppedDuringFetch = null;
   state = { data: emptyTasksOverview(), ok: false, loaded: false, loading: false };
 }
