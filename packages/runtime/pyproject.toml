@@ -110,9 +110,13 @@ test = [
     "playwright>=1.45",
     # correctness lint gate (issue #22) — CI `ruff check` runs in this env
     "ruff>=0.14",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
+timeout = 120
+timeout_method = "thread"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [

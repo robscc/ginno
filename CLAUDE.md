@@ -104,7 +104,11 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 ```bash
 # runtime ——⚠️ 必须带 --extra docs：extractors/preview/document-tools 等 50+ 用例
 # 依赖 openpyxl/pandas/docx/pptx/pypdf；bare --group test 环境会缺（CI 曾因此 48 红）
-cd packages/runtime && uv run --group test --extra docs pytest -q          # 全量（~6 分钟）
+cd packages/runtime && uv run --group test --extra docs pytest -q          # 全量（xdist 后 ~3.5 分钟；每测试 120s 兜底超时）
+# 本地已有 dist bundle 时 packaged UI e2e 会真跑（每个起 sidecar+chromium，
+# 全量会拖到 20min+）——只想要 CI 同款集合时排除之：
+#   ... --ignore-glob='tests/e2e/test_packaged_ui_*.py'
+# 提速并行：加 `-n 4 --dist loadgroup`（CI 即此配置）
 uv run --group test --extra docs pytest -m unit -q                        # 纯单测
 # 前端
 cd apps/web && pnpm test          # vitest（src/lib/*.test.ts，node 环境，无 DOM）

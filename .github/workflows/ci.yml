@@ -45,7 +45,7 @@ jobs:
       # The suite is hermetic: no network, no API key, no MCP servers spawn
       # (empty mcp.json), so no extra services are required.
       - name: Run tests (with coverage)
-        run: uv run --group test --extra docs pytest -q --cov=ginno_runtime --cov-report=term --cov-report=xml
+        run: uv run --group test --extra docs pytest -q -n auto --dist loadgroup --cov=ginno_runtime --cov-report=term --cov-report=xml
 
       # Correctness-only lint gate (issue #22): ruff with an explicit rule
       # list in pyproject.toml [tool.ruff.lint] — no style/format rules.

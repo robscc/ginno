@@ -277,6 +277,16 @@ def test_worker_answered_first_late_relay_is_readonly(
     不广播 / 不动注册表）。
     """
     monkeypatch.setattr(relay, "new_qid", lambda: QID)
+    # 2026-11-21 起 startup 会把 relay_answer seed 进 allow（用户拍板默认
+    # allow）——本用例的编排依赖「默认 ask 弹批准」窗口，须显式写 ask 规则
+    # 压过（policy 优先级 deny>ask>allow）。不写则 subscription 的 relay_answer
+    # 直接放行、等不到 permission.request → recv_until 挂死。
+    sp = isolated_home / "settings.json"
+    s0 = json.loads(sp.read_text()) if sp.exists() else {}
+    asks = s0.setdefault("permissions", {}).setdefault("ask", [])
+    if "relay_answer(*)" not in asks:
+        asks.append("relay_answer(*)")
+    sp.write_text(json.dumps(s0))
     cp = FileCheckpointer("default")
 
     sub_model = ScriptedChatModel(scripts=[])
