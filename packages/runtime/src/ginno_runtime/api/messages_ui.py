@@ -767,6 +767,53 @@ def _gen_image_blocks(
     return blocks
 
 
+def _replay_edit_diff(
+    nm: str, args: dict, slug: str | None, session_id: str | None
+) -> dict:
+    """回放侧编辑 diff（2026-11-21）：edit/write 的 diff 从 checkpoint 自带
+    的 tool_call args 惰性重算——数据天然持久（args + 首写前 baseline），
+    无需 sidecar 文件（曾设计 diffs.jsonl，惰性计算更简且免写放大）。
+    非 edit/write 或算不出 → 空 dict（调用处 **{} 展开零影响）。
+    best-effort：任何异常退化无 diff。"""
+    if nm not in ("edit_file", "write_file") or not isinstance(args, dict):
+        return {}
+    try:
+        from ..editdiff import make_edit_diff
+
+        path = args.get("path") or ""
+        if not path:
+            return {}
+        if nm == "edit_file":
+            old, new = args.get("old"), args.get("new")
+            if old is None or new is None:
+                return {}
+            d = make_edit_diff("edit", path, old, new)
+            return {"diff": d} if d else {}
+        new = args.get("content")
+        if new is None:
+            return {}
+        old: str | None = None
+        try:
+            if slug and session_id:
+                from .files import _session_workspace
+                from ..files.baselines import get_baseline
+
+                pp = Path(path).expanduser()
+                if not pp.is_absolute():
+                    pp = Path(
+                        str(_session_workspace(slug, session_id) / path)
+                    ).expanduser()
+                entry = get_baseline(session_id, pp)
+                if entry and entry.get("content") is not None:
+                    old = entry["content"]
+        except Exception:  # noqa: BLE001 — baseline 缺失按新文件
+            old = None
+        d = make_edit_diff("add" if old is None else "overwrite", path, old, new)
+        return {"diff": d} if d else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _messages_to_ui(
     messages: list[Any],
     agent_id: str | None,
@@ -803,6 +850,7 @@ def _messages_to_ui(
                     _turn_metas[str(_r["message_id"])] = _r
         except OSError:
             pass
+
     for m in messages:
         if isinstance(m, ToolMessage):
             raw = getattr(m, "content", "")
@@ -1094,6 +1142,7 @@ def _messages_to_ui(
                         step.append({
                             "kind": "tool", "id": tid, "name": nm, "content": res,
                             "pending": False, "argsPreview": _tool_args_preview(nm, args),
+                            **_replay_edit_diff(nm, args, project_slug, session_id),
                         })
                 elif nm == "ask_user" and (_qb := _question_block(tid, args, res)):
                     # The question card IS the UI for this call — but only for
@@ -1107,6 +1156,7 @@ def _messages_to_ui(
                     step.append({
                         "kind": "tool", "id": tid, "name": nm, "content": res,
                         "pending": False, "argsPreview": _tool_args_preview(nm, args),
+                        **_replay_edit_diff(nm, args, project_slug, session_id),
                     })
                     # Fallback path for code-generated images: if the turn ended
                     # before agent_node could lift the bash marker into

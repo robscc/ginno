@@ -5,6 +5,17 @@ import { useChatT } from "./i18n";
 
 export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
+/** 编辑类工具的展示 diff（tool.end 载荷独立字段，不进消息 content/模型
+ * 上下文——editdiff.py 契约）。added/removed 是全量统计（不受截断影响）。 */
+export type EditDiffPayload = {
+  op: "edit" | "add" | "overwrite";
+  path: string;
+  text: string;
+  added: number;
+  removed: number;
+  truncated: boolean;
+};
+
 export type Block =
   | { kind: "text"; text: string }
   // `url` is set for user uploads (data URL). Code-generated images carry a
@@ -20,7 +31,7 @@ export type Block =
   // 历史投影（messages_ui 标签路径）不带该标记，靠 session.remote_peer 兜底。
   | { kind: "ref"; refKind: string; name: string; refId?: string;
       remote?: boolean; peer?: string }
-  | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string }
+  | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: EditDiffPayload }
   // ask_user parked the turn on an ambiguity: the card REPLACES the pending
   // ask_user tool bubble (same tool-call id), and the tool's JSON result folds
   // back into status/answer on tool.end (a stop while parked → "skipped").
