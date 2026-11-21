@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderOpen, Star, X, Plus, Settings2, HardDriveDownload, ShieldAlert } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -9,6 +9,21 @@ import { isDesktop } from "@/lib/desktop";
 import { useGinno } from "@/lib/store";
 import type { FolderEntry, SessionMeta } from "@/lib/types";
 import { TopBarFuncButton } from "./TopBarFuncButton";
+
+/** 下拉对齐判定（2026-11-21 自适应 flip，纯函数可单测）：
+ * 默认右缘锚定（chip 恒在 composer 最右）；右侧空间不足且左侧更宽时
+ * 翻转为左缘锚定（composer 窄/窗口右半场景）。panelW=24rem(w-96)。 */
+export function pickDropdownAlign(
+  viewportW: number,
+  rect: { left: number; right: number } | null,
+  panelW = 384,
+  margin = 16,
+): "left" | "right" {
+  if (!rect) return "right";
+  const rightSpace = viewportW - rect.right;
+  if (rightSpace >= panelW + margin) return "right";
+  return rect.left > panelW + margin ? "left" : "right";
+}
 
 /** Mount chip (context-folders-design.md §3.4). Answers the user's constant
  * question "what can the agent see right now?" and is the mount/unmount/
@@ -42,6 +57,9 @@ export function ContextFoldersChip({
   const tr = useTranslations("shell");
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  // 自适应对齐（2026-11-21）：打开瞬间测触发按钮 rect 决定 left/right 锚定
+  const [align, setAlign] = useState<"left" | "right">("right");
+  const chipBtnRef = useRef<HTMLButtonElement | null>(null);
   const [library, setLibrary] = useState<FolderEntry[]>([]);
   const [runtimeHome, setRuntimeHome] = useState("");
   const [path, setPath] = useState("");
@@ -63,6 +81,11 @@ export function ContextFoldersChip({
       /* sidecar unreachable — chip degrades to counts only */
     }
   }, []);
+  useEffect(() => {
+    if (open) {
+      setAlign(pickDropdownAlign(window.innerWidth, chipBtnRef.current?.getBoundingClientRect() ?? null));
+    }
+  }, [open]);
   useEffect(() => {
     if (open) void refreshLibrary();
   }, [open, refreshLibrary]);
@@ -187,6 +210,7 @@ export function ContextFoldersChip({
         </TopBarFuncButton>
       ) : (
         <button
+          ref={chipBtnRef}
           onClick={() => setOpen((o) => !o)}
           title={tr("folders.chipTitle")}
           className="pill border border-line2 bg-card text-muted transition-colors hover:text-txt"
@@ -200,11 +224,11 @@ export function ContextFoldersChip({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          {/* right-0 锚定 chip 右缘向左展开（2026-11-21 溢出修复）：chip
-              挂在 composer 底部最右侧（ml-auto），旧 left-0 从 chip 左缘向
-              右伸 24rem，右栏关闭、composer 变宽时大面积溢出窗口右缘被裁
-              （路径/「只读」标签截断）。窄窗口仍由 max-w 的 100vw 计算兜底。 */}
-          <div className="absolute right-0 z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl">
+          {/* 自适应 flip（2026-11-21 升级）：打开瞬间按触发按钮与视口的
+              空间测判定 left/right 锚定（pickDropdownAlign）——默认右缘
+              向左展开（chip 恒在 composer 最右，右栏关闭也不溢出）；左侧
+              更宽时翻转向右。窄窗口仍由 max-w 的 100vw 计算兜底。 */}
+          <div className={`absolute ${align === "left" ? "left-0" : "right-0"} z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl`}>
             <div className="border-b border-line px-3 py-2 text-xs font-medium text-muted">
               {tr("folders.title")}
             </div>
