@@ -319,6 +319,7 @@ switch (ev.event) {
   case "tool.args": {
     // Attach the tool call's args preview (e.g. the bash command) to the
     // pending bubble so the user sees WHAT is running, not just the label.
+    // 终态接管：清掉流式预览（tool.args_delta 的 tail 快照）。
     const id = ev.id as string | undefined;
     const preview = ev.preview as string;
     if (!id || !preview) return blocks;
@@ -327,7 +328,24 @@ switch (ev.event) {
       if (b.kind !== "tool") return b;
       if (!matched && b.id === id) {
         matched = true;
-        return { ...b, argsPreview: preview };
+        return { ...b, argsPreview: preview, argsStream: undefined };
+      }
+      return b;
+    });
+  }
+  case "tool.args_delta": {
+    // 流式参数预览（2026-11-21）：args 生成期（大 JSON 可达数十秒）实时
+    // 显示累计尾部快照——替换式（非拼接），重连/乱序幂等；终态 tool.args
+    // 到达时清空。payload: {id, tail, total}。
+    const id = ev.id as string | undefined;
+    const tail = ev.tail as string | undefined;
+    if (!id || !tail) return blocks;
+    let matched = false;
+    return blocks.map((b) => {
+      if (b.kind !== "tool") return b;
+      if (!matched && b.id === id && !b.argsPreview) {
+        matched = true;
+        return { ...b, argsStream: tail };
       }
       return b;
     });

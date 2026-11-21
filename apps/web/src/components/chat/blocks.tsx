@@ -448,7 +448,7 @@ export function InnerBlocks({
           <McpAppCard key={`mcpapp-${key++}`} server={mcpUi.server} tool={mcpUi.tool} data={b.content} />,
         );
       }
-      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} />);
+      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} />);
     } else if (b.kind === "question") {
       out.push(
         <AskUserCard

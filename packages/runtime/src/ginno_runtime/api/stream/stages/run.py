@@ -292,6 +292,7 @@ def _setup_stream(ctx: StreamTurnCtx) -> None:
     # fires in ``updates`` mode (after the agent node finishes), which for
     # some models arrives too late (or simultaneously with ``tool.end``).
     ctx._partial_tool_args = {}
+    ctx._last_args_tail_ts = {}
     ctx._emitted_tool_args = set()
     # 已下发完整入参的 tool_call id（tool.input 事件，headless 消费方用；
     # updates 模式提交点 args 保证完整，每个 id 只发一次防 resume 重放重复）。

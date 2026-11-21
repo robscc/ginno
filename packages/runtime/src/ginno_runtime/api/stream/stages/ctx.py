@@ -78,6 +78,10 @@ class StreamTurnCtx:
     _attach_sent: set[tuple[str, str, str]]
     _tool_name_by_id: dict[str, str]
     _partial_tool_args: dict[str, str]
+    # tool.args_delta（2026-11-21 流式参数预览）节流时钟：id → 上次下发
+    # tail 快照的 monotonic 时刻。终态（tool.args）后由 _emitted_tool_args
+    # 门控，不再发 delta。
+    _last_args_tail_ts: dict[str, float]
     _emitted_tool_args: set[str]
     _emitted_tool_inputs: set[str]
     turn_text: list[str]
