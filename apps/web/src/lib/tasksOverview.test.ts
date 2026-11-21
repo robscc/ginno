@@ -333,3 +333,52 @@ describe("停止门面调用与乐观回滚", () => {
     unsub();
   });
 });
+
+describe("停止在途的轮询竞态防御（2026-11-21 数据同步审查）", () => {
+  // 挂起句柄存模块级（不挂 mock 函数上，保住 tsc 类型）
+  let held: { promise: Promise<Response>; release: () => void } | null = null;
+
+  beforeEach(() => {
+    held = null;
+    __resetTasksOverviewHubForTests();
+    vi.restoreAllMocks();
+    const calls: unknown[][] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: unknown, init?: RequestInit) => {
+      calls.push([input, init]);
+      const url = String(input);
+      const isStop = url.endsWith("/api/tasks/overview/stop");
+      if (isStop && held) return held.promise;
+      return new Response(JSON.stringify({
+        ok: true,
+        counts: { turns: 1, total: 1 },
+        turns: [{ kind: "turn", id: "s1", title: "跑着", stoppable: true, detail: "12s" }],
+      }), { status: 200 });
+    }));
+  });
+
+  it("POST /stop 在途时，轮询拉回的旧快照不会把已摘句柄闪回", async () => {
+    await refreshTasksOverview();
+    expect(tasksOverviewSnapshot().data.turns).toHaveLength(1);
+
+    // 挂起 stop 请求（先构造再赋 held，executor 内不触 held）
+    let rel!: () => void;
+    const stopRes = new Promise<Response>((r) => {
+      rel = () => r(new Response("{}", { status: 200 }));
+    });
+    held = { promise: stopRes, release: () => rel() };
+    const p = stopHandleWithRollback(
+      ({ kind: "turn", id: "s1", title: "跑着", stoppable: true } as TaskHandle)
+    );
+    await vi.waitFor(() => {
+      expect(tasksOverviewSnapshot().data.turns).toHaveLength(0); // 乐观移除
+    });
+
+    // 在途期间轮询再拉同一份旧快照 —— 已摘句柄不得回屏（GET 不挂起）
+    await refreshTasksOverview();
+    expect(tasksOverviewSnapshot().data.turns).toHaveLength(0);
+
+    held!.release();
+    await p;
+    expect(tasksOverviewSnapshot().data.turns).toHaveLength(0);
+  });
+});

@@ -151,6 +151,13 @@ let state: TasksOverviewState = { data: emptyTasksOverview(), ok: false, loaded:
 let listeners: Array<(s: TasksOverviewState) => void> = [];
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let inFlight: Promise<void> | null = null;
+/**
+ * 停止在途的句柄（kind:id）：POST /stop 未落定时，轮询可能拉回「服务端
+ * 尚未消化停止」的旧快照，把乐观移除的行闪回（2026-11-21 数据同步审查
+ * 发现的竞态窗口）。刷新结果在写入 state 前按此集合过滤；POST 结束后
+ * 清除（失败路径随后 refresh 以服务端真值回滚）。
+ */
+const stoppingIds = new Set<string>();
 
 function emit() {
   for (const l of listeners) l(state);
@@ -181,16 +188,31 @@ function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
 }
 
 function setState(next: TasksOverviewState) {
+  let data = next.data;
+  if (stoppingIds.size) {
+    // 竞态防御：停止在途的句柄不随轮询快照回屏（POST 结束后由 refresh 校正）。
+    const filtered = emptyTasksOverview();
+    let touched = false;
+    for (const { key } of OVERVIEW_GROUP_ORDER) {
+      const kept = data[key].filter((h) => {
+        const stopping = stoppingIds.has(`${h.kind}:${h.id}`);
+        if (stopping) touched = true;
+        return !stopping;
+      });
+      filtered[key] = kept;
+    }
+    if (touched) data = filtered;
+  }
   const unchanged =
     state.ok === next.ok &&
     state.loaded === next.loaded &&
-    sameOverview(state.data, next.data);
+    sameOverview(state.data, data);
   if (unchanged) {
     // 内容不变：保留旧 data 引用，订阅组件的浅比较不触发重渲染。
     state = { ...next, data: state.data };
     return;
   }
-  state = next;
+  state = { ...next, data };
   emit();
 }
 
@@ -258,11 +280,15 @@ export function optimisticRemoveHandle(kind: TaskHandleKind, id: string): void {
  */
 export async function stopHandleWithRollback(h: TaskHandle): Promise<void> {
   const prev = state.data;
+  const stopKey = `${h.kind}:${h.id}`;
+  stoppingIds.add(stopKey);
   optimisticRemoveHandle(h.kind, h.id);
   try {
     await stopTasksOverviewItem(h.kind, h.id);
+    stoppingIds.delete(stopKey);
   } catch (err) {
     // 回滚：以服务端真值恢复（prev 只作 fetch 再失败时的兜底）。
+    stoppingIds.delete(stopKey);
     try {
       await refreshTasksOverview();
     } catch {
