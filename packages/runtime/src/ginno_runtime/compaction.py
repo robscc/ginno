@@ -39,7 +39,7 @@ from langchain_core.messages import (
 
 from .lang import t
 from .tokens import estimate_messages_tokens
-from .usage import last_chat_input_tokens
+from .usage import last_chat_input_tokens, last_turn_growth_tokens
 from .world_state import (
     SUMMARY_MSG_PREFIX,
     render_reinjection,
@@ -289,7 +289,17 @@ async def maybe_compact_history(
         basis = "estimate"
     else:
         basis = "usage"
-    if not force and current_tokens < threshold:
+    # P0 外推充裕化（2026-11-21，技术方案 Raw/2026-11-21-turn中压缩）：
+    # 当前未超但「再跑一个同规模 turn 就超」→ 也压（reason=forecast，
+    # 前端可区分预防性压缩）。增量口径见 usage.last_turn_growth_tokens。
+    # headroom 默认 8k：外推本身就是估算，留冗余防抖（压了又立刻真触发）。
+    growth = last_turn_growth_tokens(session_id) if not force else None
+    forecast_exceeded = bool(
+        growth
+        and current_tokens + growth >= threshold
+        + int(settings.get("compact_forecast_headroom_tokens", 8192))
+    )
+    if not force and current_tokens < threshold and not forecast_exceeded:
         return None
 
     keep_turns = max(1, int(settings.get("compact_keep_turns", 3)))
@@ -297,9 +307,9 @@ async def maybe_compact_history(
     # （本日 890e49866 138k→71k 一案）。在决策点与完成点各打一条 INFO。
     # basis=usage|estimate 标明分子口径，直接对照圆环百分比。
     log.info(
-        "compaction_triggered session=%s force=%s tokens=%d basis=%s est_tokens=%d threshold=%d",
+        "compaction_triggered session=%s force=%s tokens=%d basis=%s est_tokens=%d threshold=%d forecast=%s growth=%d",
         session_id, force, current_tokens, basis,
-        est_tokens, threshold,
+        est_tokens, threshold, forecast_exceeded, growth or 0,
     )
     split = find_split_index(messages, keep_turns)
     if split <= 0:
