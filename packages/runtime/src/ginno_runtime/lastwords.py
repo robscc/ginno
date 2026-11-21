@@ -1100,7 +1100,6 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
     """auto：headless 续跑 turn（镜像 sessions._run_goal_turn / inject wake）。"""
     from . import server_shared as shared
     from .api.stream import _run_stream
-    from .tools.ask_tools import reset_interactive, set_interactive
 
     shared.clear_inherited_llm_context()
     sid = session["session_id"]
@@ -1144,7 +1143,10 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
     }
     _RUNNING = shared._RUNNING_TURNS
     _RUNNING[sid] = turn_id
-    ask_tok = set_interactive(False)
+    # 2026-11-21 用户决策：遗言 auto 续跑不再标记无人值守。热切换/重启恢复
+    # 的 turn 大多发生在用户眼前的会话页——ask_user 正常弹卡片等人（parked
+    # turn 可恢复），比「自选默认 + 假设声明」更符合「我在看着它重启」的
+    # 直觉。真正无人守的通道（schedule 注入 / A2A 入站 / 无头 CLI）不变。
     try:
         await _run_stream(
             None,
@@ -1164,7 +1166,6 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
             origin="lastwords",
         )
     finally:
-        reset_interactive(ask_tok)
         if _RUNNING.get(sid) == turn_id and sid not in shared._PENDING_RESUME:
             _RUNNING.pop(sid, None)
     return True

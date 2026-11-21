@@ -1249,3 +1249,33 @@ class TestListPending:
             }
         got = [d["session_id"] for d in lastwords.list_pending()]
         assert got == ["s-old2", "s-new"]
+
+
+class TestAutoRunInteractive:
+    """2026-11-21 用户决策：遗言 auto 续跑不再标记无人值守——热切换/重启
+    恢复的 turn 大多发生在用户眼前的会话页，ask_user 正常弹卡片等人，
+    不走「自选默认 + 假设声明」分支（那留给真正无人守的通道）。"""
+
+    async def test_auto_run_keeps_interactive(
+        self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from ginno_runtime.tools import ask_tools
+
+        (isolated_home / "settings.json").write_text(
+            json.dumps({"devswap": {"lastwords": {"mode": "auto"}}})
+        )
+        _write_valid("s-iv", reason="dev-swap")
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions._ensure_session",
+            lambda sid: _fake_session(sid, FakeGraph()),
+        )
+        seen: list[bool] = []
+
+        async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
+            seen.append(ask_tools._INTERACTIVE.get())
+
+        import ginno_runtime.api.stream as stream_mod
+
+        monkeypatch.setattr(stream_mod, "_run_stream", fake_run_stream)
+        await lastwords.recover_lastwords()
+        assert seen == [True], "遗言 auto 续跑回合必须保持交互态（ask_user 可弹卡）"
