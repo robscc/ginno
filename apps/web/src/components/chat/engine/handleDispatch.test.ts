@@ -250,7 +250,7 @@ const EXPECTED_CASES = [
   "run.bind", "run.event", "run.status",
   "artifacts.changed", "code.changed",
   "preview.emit", "preview.invalidate",
-  "worker.waiting", "worker.progress", "worker.resumed",
+  "worker.waiting", "worker.progress", "worker.resumed", "worker.pending_questions",
   "linked.done",
   "steer.recalled", "steer.accepted", "steer.answered", "steer.absorbed",
   "delegate_update",
@@ -488,6 +488,11 @@ const DISPATCH_TABLE: CaseSpec[] = [
   {
     event: "worker.resumed", desc: "结果注入 notice", ev: { target: "s2", target_title: "T" },
     probe: () => expect(pushNotice).toHaveBeenCalledWith("info", expect.any(String), expect.objectContaining({ dedupeKey: "worker.resumed-s2" })),
+  },
+  {
+    event: "worker.pending_questions", desc: "代答请求 notice（按 qid 集去重，观看中静默）",
+    ev: { target: "s2", questions: [{ qid: "q1", worker_title: "T" }] },
+    probe: (b) => expect(pushNotice).toHaveBeenCalledWith("info", expect.any(String), expect.objectContaining({ dedupeKey: "worker.pending_questions-q1" })),
   },
   {
     event: "linked.done", desc: "进 reply 合并窗（与 message.end 同窗，不直发）",

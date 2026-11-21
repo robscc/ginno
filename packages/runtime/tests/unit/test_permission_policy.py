@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from ginno_runtime import jsonx as json
+from ginno_runtime import paths
 from ginno_runtime.permission.policy import PermissionPolicy, _parse_rule
 
 pytestmark = pytest.mark.unit
@@ -69,3 +71,35 @@ def test_seeded_defaults_behaviour():
     assert p.decide("write_file", "{}") == "ask"
     assert p.decide("Bash", "rm -rf /tmp") == "deny"
     assert p.decide("Bash", "ls") == "ask"
+
+
+def test_relay_answer_seeded_allow():
+    """relay_answer 默认 allow（2026-11-21 用户决策：qid 凭证链已是强门，
+    再套 ask 等于二次确认用户刚做的决定）。fresh seed 在
+    paths._DEFAULT_SETTINGS，升级 install 由 ensure_relay_permissions 迁移。"""
+    # 1) fresh-install 默认表里有它
+    from ginno_runtime import paths as _paths
+
+    allow = _paths._DEFAULT_SETTINGS["permissions"]["allow"]
+    assert "relay_answer" in allow
+
+    # 2) 升级迁移：已有 settings 无该名 → 幂等补入 allow
+    from ginno_runtime.permission.policy import ensure_relay_permissions
+
+    sp = paths.settings_path()
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({"permissions": {"allow": ["read_file"],
+                                               "ask": ["bash(*)"]}}))
+    ensure_relay_permissions()
+    migrated = json.loads(sp.read_text())["permissions"]["allow"]
+    assert "relay_answer" in migrated
+    # 幂等：再跑不重复
+    ensure_relay_permissions()
+    assert json.loads(sp.read_text())["permissions"]["allow"].count("relay_answer") == 1
+
+    # 3) 用户显式 ask/deny 优先（不覆盖用户意志）
+    sp.write_text(json.dumps({"permissions": {"allow": [],
+                                              "ask": ["relay_answer"]}}))
+    ensure_relay_permissions()
+    assert json.loads(sp.read_text())["permissions"]["ask"] == ["relay_answer"]
+    assert json.loads(sp.read_text())["permissions"]["allow"] == []

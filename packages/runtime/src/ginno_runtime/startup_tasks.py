@@ -489,10 +489,15 @@ def _task_web_permissions_migration(handles: LifespanHandles) -> None:
     # 原块 24。Upgraded installs never got the web tools in
     # permissions.allow (defaults seed only fresh homes) — migrate so they
     # don't fall through to `ask`.
-    from .permission.policy import ensure_browser_permissions, ensure_web_permissions
+    from .permission.policy import (
+    ensure_browser_permissions,
+    ensure_relay_permissions,
+    ensure_web_permissions,
+)
 
     ensure_web_permissions()
     ensure_browser_permissions()
+    ensure_relay_permissions()
 
 
 def _task_workflows_seed(handles: LifespanHandles) -> None:

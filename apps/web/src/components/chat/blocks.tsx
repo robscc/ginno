@@ -18,6 +18,8 @@ import { useChatT } from "./blocks/i18n";
 import { McpAppCard } from "./McpAppCard";
 import type { Block, SteerBandFile, SteerBandImage } from "./blocks/types";
 import { MentionText } from "./MentionText";
+import { WorkerQuestionCard } from "./blocks/WorkerQuestionCard";
+import { parseWorkerQuestions } from "./blocks/workerQuestion";
 import {
   SubagentSpawnCard,
   SubagentResultCard,
@@ -575,13 +577,24 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
       <FileChips files={files} />
       <SkillChips skills={skills} />
       {imgs.length > 0 && <ImageGallery urls={imgs} />}
-      {allTexts.map((t, i) => (
-        // break-words: pasted terminal output carries long unbroken paths —
-        // without it the transcript overflows the page into horizontal scroll
-        <div key={i} className="selectable min-w-0 whitespace-pre-wrap break-words">
-          <MentionText text={t} />
-        </div>
-      ))}
+      {allTexts.map((t, i) => {
+        // worker 代答信封（2026-11-21 中断透传）：整段折卡片，信封外的
+        // 普通文本照旧 MentionText。解析失败（未知变体）时 items 为空，
+        // 走原路径——永不吞文本。
+        const { rest, items } = parseWorkerQuestions(t);
+        return (
+          <div key={i}>
+            {items.length > 0 && <WorkerQuestionCard items={items} />}
+            {rest.trim() && (
+              // break-words: pasted terminal output carries long unbroken paths —
+              // without it the transcript overflows the page into horizontal scroll
+              <div className="selectable min-w-0 whitespace-pre-wrap break-words">
+                <MentionText text={rest} />
+              </div>
+            )}
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -657,6 +670,9 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
   // 上下文注入数千字全量内联成文字墙；>240 字符折叠为预览+展开）。
   const [foldOpen, setFoldOpen] = React.useState(false);
   const g = useGinno();
+  // 忙时 worker 代答信封经 steer 边界注入（relay._inject_result）：信封抽出
+  // 折卡片（与 UserBlocks 同一组件），剩余文本走 IIFE 内原有 fold 逻辑。
+  const parsed = parseWorkerQuestions(block.text ?? "");
   const allImgUrls = (block.images ?? []).map(steerImgUrl).filter(Boolean);
   // Deliberately NOT the thinking block's shape or colour: that block is violet
   // with a header ROW of its own (blocks.tsx ThinkingBlock), and an early
@@ -684,7 +700,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
       </span>
       <div className="min-w-0 flex-1 text-[13px] leading-snug text-txt">
         {(() => {
-          const t = block.text ?? "";
+          const t = parsed.rest;
           const FOLD_AT = 240;
           if (t.length <= FOLD_AT) {
             return (
@@ -722,6 +738,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
             </div>
           );
         })()}
+        {parsed.items.length > 0 && <WorkerQuestionCard items={parsed.items} />}
       </div>
       {total > 0 && (
         <span className="mt-[2px] flex shrink-0 items-center gap-1">

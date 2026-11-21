@@ -686,7 +686,17 @@
       "resumedNotice": "✅ 「{title}」已完成——结果正在带回本对话",
       "progressNotice": "🔄 「{title}」有新进展——进度节选已带入本对话",
       "viaFileTip": "通过文件传递",
-      "copyPath": "复制路径"
+      "copyPath": "复制路径",
+      "questionNotice": "❓ Worker「{title}」有 {n} 个问题等你决策——本会话 agent 将转达给你",
+      "relayCard": {
+        "title": "代答请求",
+        "workers": "{n} 个 worker",
+        "reminder": "此问题此前已转达、尚未回答",
+        "multiBadge": "{n} 个子问题",
+        "hint": "agent 稍后会以问答卡片向你转达，届时直接作答即可",
+        "showRaw": "信封原文",
+        "hideRaw": "收起"
+      }
     },
     "jumpLatest": "跳到最新一条信息",
     "loadEarlier": "加载更早的 {showingMore} 条（还有 {hidden} 条未显示）",

@@ -64,6 +64,7 @@ export const EVENT_HANDLERS: ReadonlyMap<string, EventHandler> = new Map<string,
   ["worker.waiting", workers.onWorkerNotice],
   ["worker.progress", workers.onWorkerNotice],
   ["worker.resumed", workers.onWorkerNotice],
+  ["worker.pending_questions", workers.onWorkerQuestions],
   ["linked.done", workers.onLinkedDone],
   // ── 06 steering 协议与委托进度 ──
   ["steer.recalled", steerEvents.onSteerRecalled],

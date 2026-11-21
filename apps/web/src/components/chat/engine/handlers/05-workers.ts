@@ -74,3 +74,24 @@ export function onLinkedDone(ctx: EngineCtx, sid: string, ev: ServerEvent) {
     attentive: () => isWatching(ctx, sid),
   });
 }
+
+
+/** worker.pending_questions（中断透传 relay，2026-11-21）：worker 卡在
+ *  ask_user 上、代答请求已注入本会话（信封消息本体由 blocks.tsx 折卡片
+ *  渲染）。这里只做轻量可见化——toast 提醒用户有个决策在路上；真正的
+ *  交互走 agent 的 ask_user 转达卡（复用原生问答卡，前端零新交互面）。 */
+export function onWorkerQuestions(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  const qs = Array.isArray(ev.questions) ? ev.questions : [];
+  const title =
+    (typeof qs[0]?.worker_title === "string" && qs[0].worker_title.trim()) ||
+    ctx.g.sessions.find((x) => x.id === ev.target)?.title?.trim() ||
+    "…";
+  const qidKey = qs.map((q: { qid?: string }) => String(q?.qid ?? "")).join(",");
+  if (!isWatching(ctx, sid)) {
+    pushNotice(
+      "info",
+      ctx.i18nRef.current.tr("worker.questionNotice", { title, n: qs.length }),
+      { dedupeKey: `worker.pending_questions-${qidKey}` },
+    );
+  }
+}

@@ -686,7 +686,17 @@
       "resumedNotice": "✅ \"{title}\" finished — its result is arriving in this chat",
       "progressNotice": "🔄 \"{title}\" has new progress — a digest excerpt just arrived in this chat",
       "viaFileTip": "Delivered via file",
-      "copyPath": "Copy path"
+      "copyPath": "Copy path",
+      "questionNotice": "❓ Worker \"{title}\" has {n} question(s) waiting on you — this chat's agent will relay them",
+      "relayCard": {
+        "title": "Relay needed",
+        "workers": "{n} workers",
+        "reminder": "Relayed earlier, still unanswered",
+        "multiBadge": "{n} sub-questions",
+        "hint": "Your agent will relay this as a question card shortly — just answer it there",
+        "showRaw": "Raw envelope",
+        "hideRaw": "Collapse"
+      }
     },
     "jumpLatest": "Jump to latest message",
     "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)",

@@ -162,3 +162,35 @@ def ensure_browser_permissions() -> None:
     perms["allow"] = allow + added
     settings["permissions"] = perms
     p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+
+# relay_answer (worker ask_user 中断透传, 2026-11-21): the tool the SUBSCRIBER's
+# agent calls to hand the user's answer back to a parked worker. It is gated by
+# its own qid credential chain (one-shot qid + tombstone + choice hard-match)
+# and carries the user's explicit answer, so an "ask" prompt on top of it adds
+# a second confirmation of a decision the user just made — user decision
+# 2026-11-21: default allow. A deliberate deny/ask rule still wins.
+_RELAY_ALLOW_TOOLS = ("relay_answer",)
+
+
+def ensure_relay_permissions() -> None:
+    """Idempotent migration, same contract as ensure_web_permissions."""
+    p = paths.settings_path()
+    if not p.exists():
+        return
+    try:
+        settings = json.loads(p.read_text() or "{}")
+    except json.JSONDecodeError:
+        return
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict):
+        return
+    existing = " ".join(
+        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
+    ).lower()
+    allow = list(perms.get("allow") or [])
+    added = [n for n in _RELAY_ALLOW_TOOLS if n not in existing and n not in allow]
+    if not added:
+        return
+    perms["allow"] = allow + added
+    settings["permissions"] = perms
+    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
