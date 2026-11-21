@@ -210,6 +210,12 @@ class WeComTap(ChannelTap):
         q_id = str(data.get("id") or "")
         self._question_id = q_id
         self._options = list(data.get("options") or [])
+        # ask_relay 镜像去重：本 tap 已发的 qid 登记（wecom 自己发起的
+        # turn 不再镜像第二份卡片）。getattr 防御——测试 FakeAdapter 等
+        # 子类可能未初始化该 deque。
+        _ids = getattr(self.adapter, "_own_question_ids", None)
+        if _ids is not None and q_id:
+            _ids.append(q_id)
         lines = [f"\n\n❓ **{data.get('header') or 'Ginno 提问'}**",
                  str(data.get("question") or "")]
         for i, opt in enumerate(self._options):

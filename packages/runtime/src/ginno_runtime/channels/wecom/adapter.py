@@ -49,6 +49,12 @@ class WeComChannelAdapter(ChannelAdapter):
         self._supervise_task: asyncio.Task | None = None
         self._stopped = True
         self._session_locks: dict[str, asyncio.Lock] = {}  # 在途 turn 串行
+        # ask_relay（2026-11-21 企微异步人审）：最近活跃 chat_key（无人值守
+        # 转发目的地）+ wecom 自己 tap 已发的 question id（镜像器防重复）。
+        self.last_chat_key: str | None = None
+        from collections import deque
+
+        self._own_question_ids: deque[str] = deque(maxlen=32)
         # chat_key → {session_id, question_id, options}：ask_user 停车时，
         # 该会话的下一条文本消息按「作答」处理而不是开新 turn
         self._pending_q: dict[str, dict] = {}
@@ -148,6 +154,13 @@ class WeComChannelAdapter(ChannelAdapter):
             text = p.strip_mention_prefix(raw).strip()
             if not text:
                 return
+            self.last_chat_key = chat_key  # ask_relay 转发目的地
+            from ..ask_relay import _note_loop, try_answer_unattended
+
+            _note_loop()
+
+            if try_answer_unattended(chat_key, text):
+                return  # 无人值守问题的答复：消化，不开新 turn
             if await self._try_answer(req_id, chat_key, text):
                 return
             await self._dispatch_text(req_id, chat_key, userid, text)
