@@ -42,7 +42,7 @@ function BrowserHandoffCard() {
   );
 }
 
-export function ToolBlock({ name, content, pending, argsPreview }: { name: string; content: string; pending: boolean; argsPreview?: string }) {
+export function ToolBlock({ name, content, pending, argsPreview, argsStream }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
@@ -68,6 +68,10 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
     // 结果里没有机器头（错误回执等）→ 通用工具气泡渲染 [error] 原文。
   }
   if (pending) {
+    // 流式参数预览（2026-11-21）：终态 argsPreview 未到时显示 argsStream
+    // （tool.args_delta 的累计尾部快照）——「能显示多少信息就显示多少」，
+    // 长参数生成期不再只有 "…" 干等。终态到达后由 reducer 清空回 argsPreview。
+    const live = argsPreview ?? argsStream;
     return (
       // 2026-11-11 样式打磨：左缘琥珀状态条 + 轻呼吸光——比纯灰框更有
       // 「正在执行」的存在感，又不至于抢正文注意力。
@@ -75,11 +79,11 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
         <span className="absolute inset-y-1 left-1 w-0.5 animate-pulse rounded-full bg-amber-500/70" />
         <span
           className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-faint"
-          title={argsPreview ? `${name}\n${argsPreview}` : name}
+          title={live ? `${name}\n${live}` : name}
         >
           <Loader2 className="h-3 w-3 shrink-0 animate-spin text-amber-500/80" />
           <span className="shrink-0 text-muted">{label}…</span>
-          {argsPreview && <span className="truncate text-faint">· {argsPreview}</span>}
+          {live && <span className="truncate text-faint">· {live}</span>}
         </span>
       </div>
     );

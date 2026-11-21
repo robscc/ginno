@@ -67,6 +67,22 @@ async def handle_messages_tool_chunks(ctx: StreamTurnCtx, chunk) -> None:
                     ctx._partial_tool_args.get(tc_id, "") + args_frag
                 )
                 raw = ctx._partial_tool_args[tc_id]
+                # 流式参数预览（2026-11-21 用户需求「能显示多少信息就显示
+                # 多少信息」）：大 JSON args 生成期可达数十秒，此前只有
+                # tool.start 的 "…" 气泡干等。这里按 300ms 节流下发累计
+                # raw 的尾部快照（替换式、无需 JSON 可解析，重连/乱序均
+                # 幂等）；完整可解析后 tool.args 终态接管，前端清流态。
+                import time as _time
+
+                _now = _time.monotonic()
+                if _now - ctx._last_args_tail_ts.get(tc_id, 0.0) >= 0.3:
+                    ctx._last_args_tail_ts[tc_id] = _now
+                    await ctx.safe_send(
+                        ctx.emit(
+                            "tool.args_delta",
+                            {"id": tc_id, "tail": raw[-240:], "total": len(raw)},
+                        )
+                    )
                 try:
                     from ginno_runtime import jsonx as _json
 
