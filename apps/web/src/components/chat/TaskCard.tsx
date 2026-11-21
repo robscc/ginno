@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Square, TerminalSquare, Trash2 } from "lucide-react";
+import { ClipboardCopy, Loader2, Square, TerminalSquare, Trash2 } from "lucide-react";
 import {
   getTask,
   removeTask,
@@ -64,6 +64,18 @@ export function TaskCard({ taskId }: { taskId: string }) {
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [tail, setTail] = useState<string[]>([]);
   const [open, setOpen] = useState<boolean | null>(null);
+  // 命令行展开/复制（2026-11-21 C 方案：截断态点击展开 + hover 零延迟
+  // tooltip 兜底 + 展开态复制按钮——后台任务卡此前只有单行截断+慢 title）。
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyCmd = useCallback(() => {
+    const cmd = task?.command;
+    if (!cmd) return;
+    navigator.clipboard?.writeText(cmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }, [task?.command]);
   const [busy, setBusy] = useState(false);
   const [removed, setRemoved] = useState(false);
   const [tick, setTick] = useState(0);
@@ -152,9 +164,38 @@ export function TaskCard({ taskId }: { taskId: string }) {
               {b.text}
             </span>
           </div>
-          <div className="truncate font-mono text-[11px] text-faint" title={task?.command || undefined}>
-            $ {task?.command || "…"}
-          </div>
+          {cmdOpen ? (
+            <div className="relative mt-0.5 rounded border border-line bg-base/40">
+              <button
+                onClick={copyCmd}
+                title={copied ? "已复制" : "复制完整命令"}
+                className="absolute right-1 top-1 z-10 rounded p-1 text-faint hover:text-txt"
+                data-testid="bg-task-copy-cmd"
+              >
+                {copied
+                  ? <span className="px-0.5 text-[10px] text-emerald-500">已复制</span>
+                  : <ClipboardCopy className="h-3 w-3" />}
+              </button>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all px-2.5 py-1.5 pr-14 font-mono text-[11px] leading-relaxed text-faint select-text">
+                $ {task?.command || "…"}
+              </pre>
+            </div>
+          ) : (
+            <button
+              onClick={() => setCmdOpen(true)}
+              className="group/cmd relative mt-0.5 block w-full truncate text-left font-mono text-[11px] text-faint hover:text-muted"
+              title={task?.command || undefined}
+              data-testid="bg-task-cmd-collapsed"
+            >
+              <span className="truncate">$ {task?.command || "…"}</span>
+              {(task?.command?.length ?? 0) > 48 && <span className="text-faint/70"> ⋯</span>}
+              {task?.command && task.command.length > 24 && (
+                <span className="pointer-events-none absolute left-0 top-full z-30 mt-1 max-w-[min(48rem,80vw)] whitespace-pre-wrap break-all rounded bg-black/85 px-2 py-1 font-mono text-[10.5px] text-white opacity-0 transition-opacity duration-75 group-hover/cmd:opacity-100">
+                  $ {task.command}
+                </span>
+              )}
+            </button>
+          )}
         </div>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-faint" key={tick}>
           {elapsed}
