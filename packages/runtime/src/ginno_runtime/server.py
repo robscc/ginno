@@ -255,6 +255,7 @@ from .api import schedule as _schedule_api  # noqa: E402
 from .api import search as _search_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
+from .api import tasks_overview as _tasks_overview_api  # noqa: E402
 from .api import team_generate as _team_gen_api  # noqa: E402
 from .api import team_templates as _team_tpl_api  # noqa: E402
 from .api import teams as _teams_api  # noqa: E402
@@ -276,6 +277,7 @@ app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)
 app.include_router(_plans_api.router)
 app.include_router(_files_api.router)
+app.include_router(_tasks_overview_api.router)
 app.include_router(_tasks_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
