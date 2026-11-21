@@ -8,6 +8,8 @@ import { parseDelegation } from "./delegation";
 import { useChatT } from "./i18n";
 import { TaskCard, parseBgTaskId } from "../TaskCard";
 import { parseShellOutput } from "@/lib/toolOutput";
+import { DiffView } from "./diffView";
+import type { EditDiffPayload as ImportDiffPayload } from "./types";
 
 // Every tool output is collapsible. Long outputs (over these thresholds)
 // default to a compact header row and expand into a capped, internally
@@ -42,7 +44,7 @@ function BrowserHandoffCard() {
   );
 }
 
-export function ToolBlock({ name, content, pending, argsPreview, argsStream }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string }) {
+export function ToolBlock({ name, content, pending, argsPreview, argsStream, diff }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
@@ -130,10 +132,16 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream }: {
         <ChevronRight
           className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
         />
-        <span className="truncate text-faint" title={argsPreview || undefined}>
+        <span className="min-w-0 flex-1 truncate text-faint" title={argsPreview || undefined}>
           {tc("tools.prefix")}<span className="font-medium text-txt/80">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
+        {diff && (
+          <span className="flex shrink-0 gap-1 font-semibold text-[11px]">
+            <span className="text-emerald-600 dark:text-emerald-400">+{diff.added}</span>
+            <span className="text-red-600 dark:text-red-400">−{diff.removed}</span>
+          </span>
+        )}
         <span
           className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] leading-none ${
             fail
@@ -164,6 +172,7 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream }: {
       )}
       {expanded && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
+          {diff && <DiffView diff={diff} />}
           {(() => {
             const sh = shell;
             if (!sh) return <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{shown}</pre>;

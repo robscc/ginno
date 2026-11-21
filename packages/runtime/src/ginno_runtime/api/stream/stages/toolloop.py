@@ -9,9 +9,72 @@ from __future__ import annotations
 
 from langchain_core.messages import ToolMessage
 
+from pathlib import Path
+
 from .. import engine as eng
+from ..engine import _session_workspace  # noqa: TC001 — re-exported helper
 from .ctx import StreamTurnCtx
 from .permission import handle_interrupt
+from ....editdiff import make_edit_diff
+
+
+def _maybe_edit_diff(
+    nm: str, ctx: StreamTurnCtx, tc_id: str
+) -> dict | None:
+    """编辑类工具的展示 diff（best-effort，调用方已 try/except 兜底）。
+
+    edit_file：old/new 直取本 turn 的工具参数（ctx.tool_args_by_id，
+    精确到这次调用，无并发竞态）；write_file：新内容取参数 content，
+    旧内容取 files/baselines.py 的首写前快照（无快照 = 新文件全绿）。
+    相对路径按 builtin._ws 同款语义绑到 session workspace（与
+    effects.py 的 touched 解析对齐），baseline key 才能对上。
+    """
+    if nm not in ("edit_file", "write_file", "bash"):
+        return None
+    # ctx.tool_args_by_id 的两种形态（e2e 实录翻车点）：流式 chunk 路径
+    # 存 dict（handle_messages_tool_chunks）；agent updates 路径存
+    # (nm, args) 二元组（本文件 350 行）。tuple 里连工具名都有——一并
+    # 作为名字兜底链的一环。
+    raw = ctx.tool_args_by_id.get(tc_id)
+    args: dict = {}
+    if isinstance(raw, tuple) and len(raw) == 2 and isinstance(raw[1], dict):
+        args = raw[1]
+    elif isinstance(raw, dict):
+        args = raw
+    # bash 补丁识别（P2 #3）：heredoc 里的 git apply/apply_patch 补丁体
+    # 本身就是 unified diff——直接包装，不重算。
+    if nm == "bash":
+        from ....editdiff import _PATCH_HEREDOC, wrap_patch_diff
+
+        cmd = args.get("command") or ""
+        m = _PATCH_HEREDOC.search(cmd)
+        if m:
+            return wrap_patch_diff(m.group(2))
+        return None
+    path = args.get("path") or ""
+    if not path:
+        return None
+    if nm == "edit_file":
+        old, new = args.get("old"), args.get("new")
+        if old is None or new is None:
+            return None
+        return make_edit_diff("edit", path, old, new)
+    new = args.get("content")
+    if new is None:
+        return None
+    old: str | None = None
+    try:
+        pp = Path(path).expanduser()
+        if not pp.is_absolute():
+            pp = Path(str(_session_workspace(ctx.slug, ctx.session_id) / path)).expanduser()
+        from ....files.baselines import get_baseline
+
+        entry = get_baseline(ctx.session_id, pp)
+        if entry and entry.get("content") is not None:
+            old = entry["content"]
+    except Exception:  # noqa: BLE001 — baseline 缺失按新文件处理
+        old = None
+    return make_edit_diff("add" if old is None else "overwrite", path, old, new)
 
 
 async def handle_messages_tool_chunks(ctx: StreamTurnCtx, chunk) -> None:
@@ -434,17 +497,32 @@ async def _updates_tools(ctx: StreamTurnCtx, delta) -> None:
         elif nm in eng.RENDER_TOOL_NAMES or nm in eng.ARTIFACT_TOOL_NAMES:
             pass  # widget/ref emitted at agent-update; no bubble
         elif tc_id:
-            await ctx.safe_send(
-                ctx.emit(
-                    "tool.end",
-                    {
-                        "id": tc_id,
-                        "content": eng._truncate_for_ws(
-                            eng._tool_content_str(raw)
-                        ),
-                    },
+            payload = {
+                "id": tc_id,
+                "content": eng._truncate_for_ws(eng._tool_content_str(raw)),
+            }
+            # 编辑 diff 显示（2026-11-21 P0/P1）：edit_file/write_file 成功
+            # 时附纯展示 diff——edit 从 args 取 old/new（零竞态），write 的
+            # 旧内容取首写前 baseline。best-effort：绝不因 diff 失败破坏
+            # tool.end；diff 不进 content（不回灌模型上下文）。
+            # ⚠ nm 来自 special_ids（仅 workflow/render 特殊工具映射）——
+            # 普通工具名为 None，必须回退 _tool_name_by_id（tool.start 时
+            # 记录），否则 edit_file 永远命中不了（e2e 实录首跑翻车点）。
+            try:
+                # 名字三级兜底：special_ids（特殊工具）→ ToolMessage.name
+                # （LangGraph 执行后必带，fake/一次性 tool_calls 场景的唯一
+                # 来源，e2e 实录翻车点）→ _tool_name_by_id（流式 chunk 路径）。
+                tool_nm = (
+                    nm
+                    or getattr(m, "name", None)
+                    or ctx._tool_name_by_id.get(tc_id)
                 )
-            )
+                d = _maybe_edit_diff(tool_nm, ctx, tc_id)
+                if d is not None:
+                    payload["diff"] = d
+            except Exception:  # noqa: BLE001
+                pass
+            await ctx.safe_send(ctx.emit("tool.end", payload))
             # File-reactive side effects (docs §7.5): invalidate
             # previews of files this tool touched; auto-register
             # + open derived analysis results.

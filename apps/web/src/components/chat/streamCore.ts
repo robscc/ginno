@@ -5,6 +5,7 @@
 import type { ComposerImage, ComposerFile } from "@/lib/composerAttachments";
 import type { ResolvedMention } from "@/components/chat/commandMenu";
 import type { Block, QuestionBlock } from "@/components/chat/blocks";
+import type { EditDiffPayload as ImportDiff } from "@/components/chat/blocks/types";
 import type { TeamReplyMeta } from "@/lib/types";
 
 export interface ChatMsg {
@@ -403,6 +404,9 @@ switch (ev.event) {
         ...(next[ti] as Extract<Block, { kind: "tool" }>),
         content,
         pending: false,
+        // 编辑 diff（2026-11-21）：展示字段随终态落块；无 diff 的工具端
+        // （旧 sidecar / 非编辑类）字段缺省，渲染退化现状。
+        ...(ev.diff ? { diff: ev.diff as ImportDiff } : {}),
       };
       return next;
     }
@@ -413,7 +417,10 @@ switch (ev.event) {
     // 对它们的跳过是对称的，根本不会发到这里。
     return [
       ...blocks,
-      { kind: "tool", id, name: name ?? "tool", content, pending: false },
+      {
+        kind: "tool", id, name: name ?? "tool", content, pending: false,
+        ...(ev.diff ? { diff: ev.diff as ImportDiff } : {}),
+      },
     ];
   }
   case "user.question": {
