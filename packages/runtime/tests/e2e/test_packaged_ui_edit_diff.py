@@ -1,4 +1,6 @@
-"""Playwright e2e: 编辑 diff 显示（2026-11-21 P0/P1）在 REAL browser 对
+"""Playwright e2e: 编辑 diff 显示（CI 安全性：无 dist bundle 时
+fixture 首行即 skip，runtime-tests 全量收集零副作用——本地实录
+main 同批 e2e 失败均为 8787 占用噪声，与本文件无关）（2026-11-21 P0/P1）在 REAL browser 对
 PACKAGED sidecar 的端到端验证——scripted turn 让 agent 跑一次 edit_file，
 断言工具气泡：① 标题行 +N −M 红绿徽标；② 展开态 unified diff 行渲染
 （红删绿增）；③ hunk 头可见。
