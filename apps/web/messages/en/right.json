@@ -55,7 +55,8 @@
       "synthesis": "{n} syntheses in progress",
       "memoryDraft": "memory draft awaiting review",
       "notice": "{n} unread notices",
-      "running": "{n} tasks in flight"
+      "running": "{n} tasks",
+      "runningBreakdown": "{n} tasks: {running} running · {waiting} waiting for you · {scheduled} scheduled"
     },
     "memory": {
       "title": "Global Memory",
@@ -183,11 +184,16 @@
       "nextFire": "next {at}",
       "external": "external session",
       "notStoppable": "Cannot stop right now",
-      "view": "View",
+      "openTitle": "Open “{title}”",
       "stopFailed": "Failed to stop “{title}” — list restored",
+      "phases": {
+        "running": "Running",
+        "waiting": "Waiting for you",
+        "scheduled": "Scheduled"
+      },
       "groups": {
         "turn": "Conversations",
-        "schedule": "Scheduled",
+        "schedule": "Schedules",
         "plan": "Subagents",
         "run": "Workflow",
         "goal": "Goals",
@@ -211,7 +217,7 @@
       },
       "confirmBodyPause": "“{title}” will only be paused — resume anytime in Settings.",
       "confirmBodyIrreversible": "“{title}” will stop immediately. This cannot be undone.",
-      "badgeEntry": "{n} tasks in flight — click to open the Running panel"
+      "badgeEntry": "{n} tasks — click to open the Running panel"
     },
     "workflow": {
       "title": "Workflow Runs",

@@ -129,6 +129,7 @@ def test_overview_empty_returns_empty_groups(client):
     for group in ("turns", "scheduled", "subagents", "runs", "goals", "delegations"):
         assert data[group] == [], group
     assert data["counts"]["total"] == 0
+    assert data["counts"]["phases"] == {"running": 0, "waiting": 0, "scheduled": 0}
 
 
 # ---- 六源枚举 -----------------------------------------------------------------
@@ -147,10 +148,12 @@ def test_overview_enumerates_all_six_sources(client):
     assert data["counts"] == {
         "turns": 1, "scheduled": 1, "subagents": 1, "runs": 1,
         "goals": 1, "delegations": 1, "total": 6,
+        "phases": {"running": 5, "waiting": 0, "scheduled": 1},
     }
 
     (turn,) = data["turns"]
     assert turn["kind"] == "turn" and turn["id"] == "s-turn"
+    assert turn["phase"] == "running"  # 三档分类：活 turn → 执行中
     assert turn["title"] == "ginno 开发区"
     assert turn["session_id"] == "s-turn" and turn["session_title"] == "ginno 开发区"
     assert turn["started_at"] == _NOW and turn["stoppable"] is True
@@ -158,6 +161,7 @@ def test_overview_enumerates_all_six_sources(client):
 
     (sched,) = data["scheduled"]
     assert sched["kind"] == "schedule" and sched["id"] == "st-1"
+    assert sched["phase"] == "scheduled"  # 三档分类：调度 → 已排期
     assert sched["title"] == "每日趋势分析"
     assert sched["next_fire_at"] == _NOW + 600
     assert sched["detail"] == "每 60 分钟"  # 人读摘要（seed=interval；旧口径是 target.type 噪音）
@@ -165,21 +169,25 @@ def test_overview_enumerates_all_six_sources(client):
 
     (plan,) = data["subagents"]
     assert plan["kind"] == "plan" and plan["id"] == plan_id
+    assert plan["phase"] == "running"
     assert plan["title"] == "重构批次 8"
     assert plan["session_id"] == "s-plan"
     assert plan["detail"] == "0 done / 0 running / 3 items"
 
     (run,) = data["runs"]
     assert run["kind"] == "run" and run["id"] == run_id
+    assert run["phase"] == "running"
     assert run["title"] == "周报流水线" and run["session_id"] == "s-run-host"
 
     (goal,) = data["goals"]
     assert goal["kind"] == "goal" and goal["id"] == "s-goal"
+    assert goal["phase"] == "running"
     assert goal["title"] == "完成发版" and goal["session_title"] == "发版窗口"
     assert "推进" in goal["detail"]  # 新口径：相对时间主信号（turns=0 不附 turn 0）
 
     (dele,) = data["delegations"]
     assert dele["kind"] == "delegation" and dele["id"] == "did-1"
+    assert dele["phase"] == "running"
     assert dele["title"] == "codex · 修复登录超时"
     assert dele["session_id"] == "s-parent" and dele["stoppable"] is True
 
@@ -214,6 +222,9 @@ def test_parked_turn_is_not_stoppable(client):
     (turn,) = data["turns"]
     assert turn["stoppable"] is False
     assert turn["stop_hint"] == "等待你回答，请到会话中处理"
+    # 三档分类：parked turn → waiting（等人），与 running turn 同组不同档
+    assert turn["phase"] == "waiting"
+    assert data["counts"]["phases"] == {"running": 0, "waiting": 1, "scheduled": 0}
     # POST stop 同语义拒停（透传不可停语义，不 heal 挂起 turn）
     r = client.post(
         "/api/tasks/overview/stop", json={"kind": "turn", "id": "s-parked"}
@@ -230,6 +241,7 @@ def test_parked_turn_without_running_flag_still_listed(client):
     (turn,) = data["turns"]
     assert turn["id"] == "s-only-parked"
     assert turn["stoppable"] is False
+    assert turn["phase"] == "waiting"
 
 
 # ---- stop 门面：纯路由分发 -------------------------------------------------------

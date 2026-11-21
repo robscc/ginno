@@ -227,7 +227,7 @@ def test_packaged_ui_tasks_overview_pause_schedule(tmp_path):
                 item.locator('[data-testid="tasks-overview-stop-schedule"]').click()
                 dialog = page.locator('[role="dialog"]')
                 dialog.wait_for(state="visible", timeout=5_000)
-                assert "Pause this schedule?" in (dialog.get_attribute("aria-label") or "")
+                assert page.get_by_role("dialog", name="Pause this schedule?").is_visible()
                 confirm_btn = dialog.locator("button").last
                 assert confirm_btn.inner_text().strip() == "Pause"
 
@@ -307,9 +307,7 @@ def test_packaged_ui_tasks_overview_cancel_plan(tmp_path):
                 item.locator('[data-testid="tasks-overview-stop-plan"]').click()
                 dialog = page.locator('[role="dialog"]')
                 dialog.wait_for(state="visible", timeout=5_000)
-                assert "Cancel this subagent task?" in (
-                    dialog.get_attribute("aria-label") or ""
-                )
+                assert page.get_by_role("dialog", name="Cancel this subagent task?").is_visible()
                 confirm_btn = dialog.locator("button").last
                 assert confirm_btn.inner_text().strip() == "Cancel"
 

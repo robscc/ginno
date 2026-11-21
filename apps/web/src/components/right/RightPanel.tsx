@@ -45,8 +45,20 @@ export function RightPanel() {
   // 轮询 /api/tasks/counts，服务端 mtime 增量索引）；面板打开期间降到 5s
   // 快轮询（停止动作后徽标 ≤5s 收敛），关闭恢复 30s。明细列表仍走既有
   // tasksOverview 订阅（TasksOverviewPanel 挂载时自起）。
-  const [runningTotal, setRunningTotal] = useState(() => tasksCountsSnapshot().counts.total);
-  useEffect(() => subscribeTasksCounts((s) => setRunningTotal(s.counts.total)), []);
+  // 2026-11-21 分类修订：徽标 tooltip/aria 携带三档 breakdown（执行中/等你
+  // 处理/已排期）——不进面板就能分清三类；旧 sidecar 无 phases 时退回纯总数。
+  const [runningCounts, setRunningCounts] = useState(() => tasksCountsSnapshot().counts);
+  useEffect(() => subscribeTasksCounts((s) => setRunningCounts(s.counts)), []);
+  const runningTotal = runningCounts.total;
+  const runningPhases = runningCounts.phases;
+  const runningBadgeTitle = runningPhases
+    ? tb("runningBreakdown", {
+        n: runningTotal,
+        running: runningPhases.running,
+        waiting: runningPhases.waiting,
+        scheduled: runningPhases.scheduled,
+      })
+    : tb("running", { n: runningTotal });
   useEffect(() => {
     setTasksCountsPollMs(
       tab === "running" ? TASKS_COUNTS_OPEN_PANEL_POLL_MS : TASKS_COUNTS_POLL_MS,
@@ -119,8 +131,8 @@ export function RightPanel() {
                   key={meta.id}
                   role="tab"
                   aria-selected={tab === meta.id}
-                  aria-label={`${label}${ariaExtra}`}
-                  title={label}
+                  aria-label={showRunningTotal ? `${label}: ${runningBadgeTitle}` : `${label}${ariaExtra}`}
+                  title={showRunningTotal ? runningBadgeTitle : label}
                   onClick={() => g.setRightTab(meta.id, { manual: true })}
                   className={`flex items-center rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors ${
                     tab === meta.id ? "bg-card2 text-txt" : "text-muted hover:text-txt"
@@ -173,11 +185,12 @@ export function RightPanel() {
                     </span>
                   )}
                   {showRunningTotal && (
-                    <span
-                      className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold leading-none text-white"
-                      title={tb("running", { n: runningTotal })}
-                    >
-                      {runningTotal > 99 ? "99+" : runningTotal}
+                    <span className="ml-1 inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold" title={runningBadgeTitle}>
+                      {runningPhases ? (["waiting", "running", "scheduled"] as const).map(phase => runningPhases[phase] > 0 && (
+                        <span key={phase} className={phase === "waiting" ? "text-yellow" : phase === "running" ? "text-blue" : "text-muted"}>
+                          {tn(`tasksOverview.phases.${phase}`)} {runningPhases[phase]}
+                        </span>
+                      )) : runningTotal}
                     </span>
                   )}
                 </button>

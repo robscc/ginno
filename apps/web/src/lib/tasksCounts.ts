@@ -1,5 +1,5 @@
 /**
- * 运行计数 hub —— 常驻徽标的轻量订阅源（SidebarHeader ▶N / RightPanel
+ * 运行计数 hub —— 常驻徽标的轻量订阅源（右栏「运行」tab
  * 「运行」tab），30s 轮询 /api/tasks/counts。
  *
  * 与 lib/tasksOverview（明细 hub）的分工：徽标常驻每个页面，不能为它挂
@@ -38,11 +38,21 @@ function emit() {
 }
 
 function setState(next: TasksCountsState) {
+  // phases 按值比较（每次归一都是新对象，引用恒不等——不能直接 ===）。
+  const samePhases =
+    state.counts.phases === undefined && next.counts.phases === undefined
+      ? true
+      : state.counts.phases !== undefined &&
+        next.counts.phases !== undefined &&
+        state.counts.phases.running === next.counts.phases.running &&
+        state.counts.phases.waiting === next.counts.phases.waiting &&
+        state.counts.phases.scheduled === next.counts.phases.scheduled;
   const unchanged =
     state.ok === next.ok &&
     state.loaded === next.loaded &&
+    samePhases &&
     (Object.keys(state.counts) as Array<keyof TasksCounts>).every(
-      (k) => state.counts[k] === next.counts[k],
+      (k) => k !== "phases" && state.counts[k] === next.counts[k],
     );
   if (unchanged) {
     // 数值不变：保引用 bailout，订阅组件的浅比较不触发重渲染。

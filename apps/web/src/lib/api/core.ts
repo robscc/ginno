@@ -54,6 +54,23 @@ export async function json<T>(input: string | URL | Request, init?: RequestInit)
   return (await r.json()) as T;
 }
 
+// 严格版：非 2xx 直接抛错，绝不把错误体（如 FastAPI 的 {"detail": ...}）当业务文档返回。
+// 读改写型调用方（设置面板等）必须用这个，否则服务端故障窗口内会把错误体整份写回。
+export async function jsonStrict<T>(input: string | URL | Request, init?: RequestInit): Promise<T> {
+  const r = await fetch(input, { ...init, headers: { "X-Ginno-Language": currentLocale(), ...(init?.headers ?? {}) } });
+  // 测试桩可能不带 status；真实 fetch 恒有。仅在明确非 2xx 时抛错。
+  if (r.status !== undefined && !r.ok) {
+    let detail = "";
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+    } catch {
+      /* 非 JSON 错误体 */
+    }
+    throw new Error(detail || `HTTP ${r.status}`);
+  }
+  return (await r.json()) as T;
+}
+
 export async function health() {
   return json<{ ok: boolean; version: string }>(`${BASE}/health`);
 }

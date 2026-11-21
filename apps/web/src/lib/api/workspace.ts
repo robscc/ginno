@@ -4,7 +4,7 @@
  *
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
  */
-import { BASE, H, json } from "./core";
+import { BASE, H, json, jsonStrict } from "./core";
 import { uiText } from "../../i18n/uiText";
 // 非 hook 层取已解析 locale（模块级镜像，provider 渲染期同步赋值）：随每个
 // API 请求/WS 连接下发给 runtime（i18n-design.md §1/§5）。
@@ -400,10 +400,10 @@ export async function validateMod(name: string) {
 }
 
 export async function getSettings() {
-  return json<Record<string, unknown>>(`${BASE}/settings`);
+  return jsonStrict<Record<string, unknown>>(`${BASE}/settings`);
 }
 export async function putSettings(data: Record<string, unknown>) {
-  return json<{ ok: boolean }>(`${BASE}/settings`, {
+  return jsonStrict<{ ok: boolean }>(`${BASE}/settings`, {
     method: "PUT",
     headers: H,
     body: JSON.stringify(data),

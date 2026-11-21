@@ -10,9 +10,22 @@ import { BASE, H } from "./core";
 /** 六类句柄的 kind（与后端聚合 API 的分组一一对应）。 */
 export type TaskHandleKind = "turn" | "schedule" | "plan" | "run" | "goal" | "delegation";
 
+/**
+ * 句柄三态（2026-11-21 分类修订）：总览视图按「执行中 / 等你处理 / 已排期」
+ * 三档分组。phase 由服务端按真源判定（parked turn → waiting、schedule →
+ * scheduled、其余 → running），旧 sidecar 无此字段时前端按 kind/stoppable
+ * 兜底派生（见 normalizeTasksOverview）。
+ */
+export type TaskPhase = "running" | "waiting" | "scheduled";
+
+export const TASK_PHASES: readonly TaskPhase[] = ["running", "waiting", "scheduled"];
+
 /** 统一句柄形状（方案 §2.1）：跨六类可共用的渲染/停止字段。 */
 export interface TaskHandle {
   kind: TaskHandleKind;
+  /** 三态分类（服务端真源判定；normalizeTasksOverview 恒赋值；手写句柄
+   * 字面量可省略——读取走 phaseOf()，缺省按 running 处理）。 */
+  phase?: TaskPhase;
   /** turn/goal = session id；schedule/plan/run/delegation = 各域自己的 id。 */
   id: string;
   title: string;

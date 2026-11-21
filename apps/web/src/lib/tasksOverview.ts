@@ -2,9 +2,10 @@
  * 运行中任务统一面板的纯逻辑层 + 模块级数据 hub（tasks-overview 方案 §2.2）。
  *
  * 为什么是模块级 hub 而不是组件 state：tab 徽标（总活动数）必须在面板未挂载
- * 时也活着——RightPanel 的 tab 条、RightDock 收起态、侧栏品牌行 ▶N 三个展示位
- * 共享同一份快照与同一个 30s 轮询（badge 轮询节流范式，notice.ts 同款
- * 「模块级 listener 数组」手法，宿主挂载即订阅）。
+ * 时也活着——右栏 tab 条、折叠 dock 等 tab 展示位共享同一份快照与同一个 30s
+ * 轮询（badge 轮询节流范式，notice.ts 同款「模块级 listener 数组」手法，
+ * 宿主挂载即订阅）。侧栏品牌行 ▶N 徽标已按用户裁定移除（2026-11-21），
+ * 入口收敛到右栏 tab——不要再加回侧栏展示位。
  *
  * 轮询纪律（方案 §2.2）：首个订阅者出现 → 立即拉一次 + 起 30s interval；
  * 最后一个退订 → 停表（快照保留，重新订阅时再拉）。不做 WS（§2.3 明确出界）。
@@ -14,13 +15,20 @@ import {
   emptyTasksOverview,
   getTasksOverview,
   stopTasksOverviewItem,
+  TASK_PHASES,
   type StopOverviewItemRequest,
   type TaskHandle,
   type TaskHandleKind,
+  type TaskPhase,
   type TasksOverview,
 } from "./api/tasksOverview";
 
-export type { TaskHandle, TaskHandleKind, TasksOverview };
+export type { TaskHandle, TaskHandleKind, TaskPhase, TasksOverview };
+export { TASK_PHASES };
+
+/** 三档分组的展示顺序（执行中 → 等你处理 → 已排期）：按「要用户动手的紧急
+ * 度」递减——正在跑的最需要盯着，等人的需要处理，已排期的最不紧急。 */
+export const TASK_PHASE_ORDER: ReadonlyArray<TaskPhase> = ["running", "waiting", "scheduled"];
 
 /** 轮询间隔（方案 §2.2：30s；进 tab 即拉由首个订阅/手动 refresh 负责）。 */
 export const TASKS_OVERVIEW_POLL_MS = 30_000;
@@ -94,8 +102,11 @@ function asHandleArray(v: unknown, kind: TaskHandleKind): TaskHandle[] {
             : typeof h.elapsed_s === "number"
               ? `elapsed ${Math.round(h.elapsed_s)}s`
               : undefined;
+    const stoppable = h.stoppable === false ? false : true;
     out.push({
       kind,
+      // 三态分类：服务端显式 phase 采信；旧载荷按 kind/stoppable 派生兜底。
+      phase: asPhase(h.phase, kind, stoppable),
       id,
       title,
       detail: typeof h.detail === "string" ? h.detail : fallbackDetail,
@@ -113,11 +124,26 @@ function asHandleArray(v: unknown, kind: TaskHandleKind): TaskHandle[] {
         typeof h.next_fire_at === "number" && Number.isFinite(h.next_fire_at) && h.next_fire_at > 0
           ? h.next_fire_at
           : undefined,
-      stoppable: h.stoppable === false ? false : true,
+      stoppable,
       stop_hint: typeof h.stop_hint === "string" ? h.stop_hint : undefined,
     });
   }
   return out;
+}
+
+const TASK_PHASE_SET: ReadonlySet<string> = new Set(TASK_PHASES);
+
+/**
+ * phase 归一：服务端显式给的三态直接采信（真源在服务端）；旧 sidecar 没有
+ * phase 字段时按 kind/stoppable 派生兜底——parked turn 的服务端语义就是
+ * ``stoppable=false``（tasks_overview._turn_handle），schedule 天然已排期，
+ * 其余五类都是执行中。未知值（乱串/数字）同走派生，不透传脏数据。
+ */
+function asPhase(v: unknown, kind: TaskHandleKind, stoppable: boolean): TaskPhase {
+  if (typeof v === "string" && TASK_PHASE_SET.has(v)) return v as TaskPhase;
+  if (kind === "schedule") return "scheduled";
+  if (kind === "turn" && !stoppable) return "waiting";
+  return "running";
 }
 
 /** 任意未知载荷 → 合法 TasksOverview（六组缺失补空）。 */
@@ -149,6 +175,50 @@ export function overviewGroups(data: TasksOverview): OverviewGroup[] {
 /** tab 总徽标 = 六组活动总数（方案 §2.2）。 */
 export function overviewTotal(data: TasksOverview): number {
   return OVERVIEW_GROUP_ORDER.reduce((n, { key }) => n + data[key].length, 0);
+}
+
+export interface OverviewPhaseGroup {
+  phase: TaskPhase;
+  /** 该阶段句柄总数（= 各 kind 组计数之和，与明细口径构造上一致）。 */
+  total: number;
+  /** 六类分组（原 OVERVIEW_GROUP_ORDER 顺序，空组滤掉）——阶段内保留
+   * 六类的组头/图标/计数，六类可识别性不因三档分组丢失。 */
+  groups: OverviewGroup[];
+}
+
+/** 句柄的三态读取：normalizeTasksOverview 恒赋值；手写字面量缺省按 running
+ * （「正在跑」是六类句柄的本征语义，只有 parked turn / schedule 例外）。 */
+export function phaseOf(h: TaskHandle): TaskPhase {
+  return h.phase ?? "running";
+}
+
+/**
+ * 三档分组视图（2026-11-21 分类修订）：把六组句柄按真源 phase 归并成
+ * 「执行中 / 等你处理 / 已排期」三个顶层段，段内保留原六类分组。同一 kind
+ * 可跨段（turns 的 parked 行在 waiting、running 行在 running）。空段不占位。
+ */
+export function overviewPhaseGroups(data: TasksOverview): OverviewPhaseGroup[] {
+  const out: OverviewPhaseGroup[] = [];
+  for (const phase of TASK_PHASE_ORDER) {
+    const groups: OverviewGroup[] = [];
+    for (const { key, kind } of OVERVIEW_GROUP_ORDER) {
+      const items = data[key].filter((h) => phaseOf(h) === phase);
+      if (items.length > 0) groups.push({ key, kind, items });
+    }
+    if (groups.length > 0) {
+      out.push({ phase, groups, total: groups.reduce((n, g) => n + g.items.length, 0) });
+    }
+  }
+  return out;
+}
+
+/** 三档计数（徽标 breakdown 用）：键恒齐全，缺段为 0；合计 = overviewTotal。 */
+export function phaseTotals(data: TasksOverview): Record<TaskPhase, number> {
+  const totals: Record<TaskPhase, number> = { running: 0, waiting: 0, scheduled: 0 };
+  for (const { key } of OVERVIEW_GROUP_ORDER) {
+    for (const h of data[key]) totals[phaseOf(h)] += 1;
+  }
+  return totals;
 }
 
 /** 停止确认文案的语义分支：schedule=暂停可恢复，其余=不可撤销（方案 §2.1
@@ -212,9 +282,9 @@ function emit() {
 
 /** 六组句柄的等值判定——30s 轮询数值不变时保引用 bailout，避免每个周期都
  * 触发订阅组件全量重渲染（SidebarFooter 同款纪律）。必须覆盖所有「改变展示
- * 或跳转」的字段：title/detail（文本）、session_id（跳转目标）、started_at
- * （相对时间展示）、next_fire_at（schedule 行时间）、stoppable/stop_hint
- * （按钮态）。 */
+ * 或跳转」的字段：phase（三档分组归属）、title/detail（文本）、session_id
+ * （跳转目标）、started_at（相对时间展示）、next_fire_at（schedule 行时间）、
+ * stoppable/stop_hint（按钮态）。 */
 function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
   for (const { key } of OVERVIEW_GROUP_ORDER) {
     const x = a[key];
@@ -225,6 +295,7 @@ function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
       const q = y[i];
       if (
         p.id !== q.id ||
+        p.phase !== q.phase ||
         p.title !== q.title ||
         p.detail !== q.detail ||
         p.session_id !== q.session_id ||
