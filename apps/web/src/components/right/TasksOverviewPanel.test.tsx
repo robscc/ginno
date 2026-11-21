@@ -125,10 +125,9 @@ describe("RightPanel / 入口接线", () => {
     expect(RIGHT_PANEL).toContain('tb("running", { n: runningTotal })');
   });
 
-  it("侧栏品牌行 ▶N 徽标：点击 = 回工作区 + running tab + 展开右栏", () => {
-    expect(SIDEBAR_HEADER).toContain('data-testid="sidebar-running-badge"');
-    expect(SIDEBAR_HEADER).toContain('g.setRightTab("running")');
-    expect(SIDEBAR_HEADER).toContain('g.setRightPanelOpen(true)');
+  it("侧栏品牌行 ▶N 徽标已按用户要求移除（2026-11-21）——入口收敛到右栏 tab 与 menubar", () => {
+    expect(SIDEBAR_HEADER).not.toContain('data-testid="sidebar-running-badge"');
+    expect(SIDEBAR_HEADER).not.toContain("sidebar-running-badge");
   });
 
   it("AppShell 注册 __ginnoOpenTasksOverview 桥（menubar ▶N 下拉「查看全部」的落点）", () => {
