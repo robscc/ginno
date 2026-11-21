@@ -1,12 +1,8 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
 import { Archive, Plus, Search, X } from "lucide-react";
 import { agentHex } from "@/lib/theme";
-import { useGinno } from "@/lib/store";
-import { subscribeTasksCounts, tasksCountsSnapshot } from "@/lib/tasksCounts";
 import type { AgentConfig } from "@/lib/types";
 import { DevBuildBadge } from "@/components/devswap/DevBuildBadge";
 import { HotSwapButton } from "@/components/devswap/HotSwapButton";
@@ -65,21 +61,6 @@ export function SidebarHeader({
   children,
 }: SidebarHeaderProps) {
   const t = useTranslations("shell");
-  // 「运行」入口徽标（tasks-overview §2.2 入口直达）：品牌行 ▶N = 六类活动
-  // 总数。2026-11-21 性能修复：徽标常驻每页，改走轻量 /api/tasks/counts
-  // （lib/tasksCounts hub，mtime 增量索引，不拉明细不挂面板）；打开面板的
-  // 明细列表仍走既有 tasksOverview 订阅。点击 = 通知桥同款三步：回工作区
-  // + 切 running tab + 展开右栏。
-  const g = useGinno();
-  const router = useRouter();
-  const tr = useTranslations("right.tasksOverview");
-  const [runningTotal, setRunningTotal] = useState(() => tasksCountsSnapshot().counts.total);
-  useEffect(() => subscribeTasksCounts((s) => setRunningTotal(s.counts.total)), []);
-  const openTasksOverview = () => {
-    if (window.location.pathname !== "/") router.push("/");
-    g.setRightTab("running");
-    g.setRightPanelOpen(true);
-  };
   return (
     <>
       {/* brand：右侧挂 dev bundle 徽标 + 热切换入口按钮（devswap-progress-design
@@ -90,20 +71,6 @@ export function SidebarHeader({
             给品牌行留位）。 */}
         <img src="/icon.png" alt="" className="h-7 w-7 shrink-0" />
         <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
-        {/* ▶N 运行徽标（tasks-overview §2.2）：总活动数 >0 时显示，点击直达
-            右栏「运行」tab——menubar ▶N（tray 标题）的应用内对应入口。 */}
-        {runningTotal > 0 && (
-          <button
-            onClick={openTasksOverview}
-            title={tr("badgeEntry", { n: runningTotal })}
-            aria-label={tr("badgeEntry", { n: runningTotal })}
-            data-testid="sidebar-running-badge"
-            className="flex shrink-0 items-center gap-1 rounded-full border border-blue/30 bg-blue/15 px-2 py-0.5 text-[11px] tabular-nums text-blue transition-colors hover:bg-blue/30"
-          >
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue" aria-hidden />
-            ▶ {runningTotal > 99 ? "99+" : runningTotal}
-          </button>
-        )}
         <DevBuildBadge />
         <HotSwapButton />
       </div>
