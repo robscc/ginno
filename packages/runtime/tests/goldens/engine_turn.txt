@@ -34,6 +34,7 @@ message.end {"meta":{"elapsed_s":"<n>","input_tokens":"<n>","message_id":"<id1>"
 === scenario: tool_call_bash ===
 turn.start {"agent_id":"dev","name":"Dev Agent"}
 tool.start {"id":"<id1>","name":"bash"}
+tool.args_delta {"id":"<id1>","tail":"{\"command\":\"echo hello-golden\"}","total":31}
 tool.args {"id":"<id1>","preview":"echo hello-golden"}
 tool.input {"id":"<id1>","input":{"command":"echo hello-golden"}}
 tool.end {"content":"[exit 0]\nhello-golden\n\n--- stderr ---\n","id":"<id1>"}
