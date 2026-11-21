@@ -71,19 +71,19 @@ app: check guard-app-not-running
 # Release CI uses it to override bundle.macOS.signingIdentity with ad-hoc
 # ("--config release-override.conf.json") — runners have no local signing
 # identities; see .github/workflows/release.yml.
-	@# tray_anim 帧自愈（2026-11-21 两度被外部进程批量删除 → cargo include_bytes!
-	@# 编译失败）：帧是 apps/desktop/scripts/gen_tray_rainbow.py 的预烘生成物，
-	@# 缺失时自动重跑脚本再生成（生成物语义，比 git restore 更稳——总是最新
-	@# 脚本版本）；12 帧齐全则零开销跳过。
-	@frames=$$(ls $(ROOT)/apps/desktop/icons/tray_anim/frame_*.png 2>/dev/null | wc -l | tr -d ' '); \
-	if [ "$$frames" != "12" ]; then \
-	  echo "⚠️  tray_anim 帧缺失（$$frames/12），重跑预烘脚本自愈"; \
-	  (cd $(ROOT)/apps/desktop && python3 scripts/gen_tray_rainbow.py) || { \
-	    echo "⚠️  预烘脚本失败（如缺 Pillow），回落 git restore 兜底"; \
-	    git -C $(ROOT) checkout -- apps/desktop/icons/tray_anim/ || true; \
+	@# tray_anim 帧预检 + 精准自愈（2026-11-21）：判据单一来源是
+	@# apps/desktop/scripts/check_tray_frames.sh——逐名校验 frame_00..11
+	@# + PNG magic（【不是计数】：错名 frame_5.png + 凑数文件曾能骗过
+	@# wc -l，直到 include_bytes! 才爆）。apps/desktop/build.rs 调同一
+	@# 脚本，直接 cargo 构建 / CI rust job 共用同一套判据。
+	@bad=$$(bash $(ROOT)/apps/desktop/scripts/check_tray_frames.sh --bad-only) || true; \
+	if [ -n "$$bad" ]; then \
+	  echo "⚠️  tray_anim 坏帧（缺失/错名/坏内容）：$$bad —— 精准重烘，不覆盖其余帧"; \
+	  (cd $(ROOT)/apps/desktop && python3 scripts/gen_tray_rainbow.py --only $$bad) || { \
+	    echo "⚠️  预烘脚本失败（如缺 Pillow），回落 git restore（仅还原坏帧）"; \
+	    git -C $(ROOT) checkout -- $$(for f in $$bad; do echo "apps/desktop/icons/tray_anim/$$f"; done) || true; \
 	  }; \
-	  frames2=$$(ls $(ROOT)/apps/desktop/icons/tray_anim/frame_*.png 2>/dev/null | wc -l | tr -d ' '); \
-	  [ "$$frames2" = "12" ] || { echo "❌ tray_anim 帧无法恢复（$$frames2/12）"; exit 1; }; \
+	  bash $(ROOT)/apps/desktop/scripts/check_tray_frames.sh || { echo "❌ tray_anim 帧无法恢复（坏帧清单见上）"; exit 1; }; \
 	fi
 	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build $(TAURI_ARGS)
 	@# Regression guard: an only-linker-signed .app makes WKWebView's

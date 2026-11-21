@@ -22,8 +22,9 @@ export interface TaskHandle {
   session_id?: string;
   /** epoch 秒（turn/plan/run/goal/delegation）。 */
   started_at?: number;
-  /** schedule 专用：下次触发时间的可读串。 */
-  next_fire_at?: string;
+  /** schedule 专用：下次触发的 epoch 秒（2026-11-21 契约修订：后端
+   * next_run_at 本就是数字，前端格式化为本地语言/时区展示，不再收字符串）。 */
+  next_fire_at?: number;
   /** false = 按钮置灰 + tooltip 显示 stop_hint（如 parked ask_user 拒停）。 */
   stoppable?: boolean;
   /** stoppable=false 时的原因说明。 */
@@ -58,12 +59,24 @@ export async function getTasksOverview(): Promise<TasksOverview> {
   return (await res.json()) as TasksOverview;
 }
 
-/** 统一停止门面：POST /api/tasks/overview/stop，body 只带 {kind, id}。 */
-export async function stopTasksOverviewItem(kind: TaskHandleKind, id: string): Promise<void> {
+/**
+ * 停止请求的强类型载荷：plan 的 cancel 是 per-session 路由（plan_id 全局
+ * 不唯一），后端对缺 session_id 的 plan 停止回 400（tasks_overview.py
+ * StopRequest 契约）——类型层面就强制带上，编译期拦住漏参调用。
+ */
+export type StopOverviewItemRequest =
+  | { kind: Extract<TaskHandleKind, "plan">; id: string; session_id: string }
+  | { kind: Exclude<TaskHandleKind, "plan">; id: string; session_id?: string };
+
+/** 统一停止门面：POST /api/tasks/overview/stop。plan 必带 session_id，
+ * 其余五类 session_id 可选透传（有则一并送，服务端不依赖）。 */
+export async function stopTasksOverviewItem(req: StopOverviewItemRequest): Promise<void> {
+  const body: Record<string, unknown> = { kind: req.kind, id: req.id };
+  if (req.session_id) body.session_id = req.session_id;
   const res = await fetch(`${BASE}/tasks/overview/stop`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ kind, id }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`tasks/overview/stop ${res.status}`);
 }

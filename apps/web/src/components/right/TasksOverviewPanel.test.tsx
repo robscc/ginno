@@ -37,8 +37,8 @@ describe("TasksOverviewPanel 渲染结构", () => {
     }
   });
 
-  it("空态：groups.length === 0 → 空态块（🎉 文案键 empty）", () => {
-    expect(SRC).toMatch(/groups\.length === 0 &&/);
+  it("空态：showEmpty（loaded && ok && 零组）→ 空态块（🎉 文案键 empty，失败不伪装成真空）", () => {
+    expect(SRC).toMatch(/const showEmpty = loaded && fetchOk && groups\.length === 0/);
     expect(SRC).toContain('data-testid="tasks-overview-empty"');
     expect(SRC).toContain('t("empty")');
   });
@@ -62,6 +62,30 @@ describe("TasksOverviewPanel 渲染结构", () => {
     expect(SRC).toContain('t("confirmBodyPause", { title: confirmTarget.title })');
     expect(SRC).toContain('t("confirmBodyIrreversible", { title: confirmTarget.title })');
     expect(SRC).toContain('confirmLabel={t(`stopBtn.${confirmTarget.kind}`)}');
+  });
+
+  it("行/停止身份用完整 key（handleKey）：plan_id 全局不唯一，须连 session_id 区分", () => {
+    expect(SRC).toContain("key={handleKey(h)}");
+    expect(SRC).toContain("stoppingIds.has(handleKey(h))");
+    expect(SRC).not.toMatch(/`\$\{h\.kind\}:\$\{h\.id\}`/); // 旧的不完整身份键不得残留
+  });
+
+  it("三态：未加载（loading）/ 失败可重试（load-error + retry）/ 真空态（ok 才 🎉）", () => {
+    expect(SRC).toContain('data-testid="tasks-overview-loading"');
+    expect(SRC).toContain('data-testid="tasks-overview-load-error"');
+    expect(SRC).toMatch(/const showEmpty = loaded && fetchOk && groups\.length === 0/);
+    expect(SRC).toMatch(/const showStale = loaded && !fetchOk/);
+    expect(SRC).toMatch(/const neverLoaded = !loaded && !firstLoading/);
+    // 失败/过期两处都有重试按钮，落 refreshTasksOverview
+    expect(SRC.match(/t\("retry"\)/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("schedule 行：next_fire_at（epoch 秒）按本地语言/时区格式化，且与周期 detail 同显", () => {
+    expect(SRC).toContain("formatNextFireAt(h.next_fire_at, locale)");
+    expect(SRC).toContain("const locale = useLocale();");
+    expect(SRC).toMatch(/fireLabel && h\.detail && <span className="mx-1">·<\/span>/);
+    // 旧的字符串拼接展示不得残留
+    expect(SRC).not.toContain('t("nextFire", { at: h.next_fire_at })');
   });
 
   it("停止动线：确认后走 stopHandleWithRollback（乐观移除+失败回滚），错误落 stopError 条", () => {
@@ -91,10 +115,12 @@ describe("TasksOverviewPanel 渲染结构", () => {
 });
 
 describe("RightPanel / 入口接线", () => {
-  it("RightPanel：running tab 挂载面板 + 总徽标（hub 订阅 + bg-blue 脉冲）", () => {
+  it("RightPanel：running tab 挂载面板 + 总徽标（徽标走并行落地的轻量 tasksCounts hub，面板明细仍走 tasksOverview）", () => {
     expect(RIGHT_PANEL).toContain('import { TasksOverviewPanel } from "./TasksOverviewPanel"');
     expect(RIGHT_PANEL).toContain('{tab === "running" && <TasksOverviewPanel />}');
-    expect(RIGHT_PANEL).toContain("subscribeTasksOverview");
+    // 2026-11-21 性能项（并行子代理）：徽标改走 lib/tasksCounts 轻量订阅，
+    // 本契约只钉「徽标活着 + 面板挂载」两点。
+    expect(RIGHT_PANEL).toContain("subscribeTasksCounts");
     expect(RIGHT_PANEL).toMatch(/meta\.id === "running" && runningTotal > 0/);
     expect(RIGHT_PANEL).toContain('tb("running", { n: runningTotal })');
   });
@@ -137,6 +163,9 @@ describe("i18n：right.json 双语键齐全", () => {
       "refresh",
       "empty",
       "loadFailed",
+      "loading",
+      "firstLoadFailed",
+      "retry",
       "nextFire",
       "external",
       "notStoppable",

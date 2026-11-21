@@ -27,6 +27,8 @@ WS 连接上——订阅它的会话（订阅方）应当能代为转达：用�
 from __future__ import annotations
 
 import json as _json
+import os
+import secrets
 import time
 import uuid
 from typing import Any
@@ -59,9 +61,31 @@ def _state_path():
     return paths.home() / _STATE_FILENAME
 
 
+def _atomic_write_text(p, text: str) -> None:
+    """原子写（复用仓库范式，同 ``context_folders._atomic_write``）：
+    同目录唯一随机后缀 tmp + ``os.replace``——replace 在同一文件系统上
+    原子完成，崩溃半写只会留在 tmp（可清理），真文件要么是旧完整内容、
+    要么是新完整内容，绝不出现截断态。tmp 写失败/replace 失败时删 tmp
+    再抛，不留垃圾文件。"""
+    tmp = p.with_name(f".{p.name}.tmp{secrets.token_hex(3)}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _persist_unlocked() -> None:
     """内存表 → 磁盘（登记/即销时调用；失败静默——恢复降级为「无 pending」，
-    worker 侧 parked 事实仍在 checkpoint，不丢答案只丢代答便利）。"""
+    worker 侧 parked 事实仍在 checkpoint，不丢答案只丢代答便利）。
+
+    原子写：失败发生在 replace 前（tmp 写坏 / replace 被打断）时，真文件
+    保持上一次成功写入的完整旧内容——重启恢复不丢已落盘的 pending /
+    墓碑；失败原因记 ``relay_state_persist_failed`` 日志。"""
     try:
         now = int(time.time())
         # 顺带做 TTL 惰性清理：墓碑过 24h 即可丢（晚到答案的幂等窗口
@@ -69,14 +93,14 @@ def _persist_unlocked() -> None:
         for qid in [q for q, tb in _RELAY_TOMBSTONES.items()
                     if now - int(tb.get("answered_at") or 0) > _TOMBSTONE_TTL_S]:
             _RELAY_TOMBSTONES.pop(qid, None)
-        _state_path().write_text(
+        _atomic_write_text(
+            _state_path(),
             _json.dumps(
                 {"version": 1,
                  "pending": _PENDING_RELAY,
                  "tombstones": _RELAY_TOMBSTONES},
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
     except Exception:
         _log.exception("relay_state_persist_failed")

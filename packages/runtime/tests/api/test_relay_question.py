@@ -651,3 +651,87 @@ async def test_tombstone_ttl(monkeypatch, isolated_home):
     }
     relay._persist_unlocked()
     assert "q_old" not in relay._RELAY_TOMBSTONES
+
+
+async def _register(monkeypatch, question: str):
+    """在不清空既有登记表的前提下追加注册一条 pending（persist 走真实
+    原子写），返回 qid——与 ``_park`` 不同，不 reset（reset 会把先前
+    注册条目从内存抹掉，破坏「多轮落盘累积」的测试前提）。"""
+    _fake_meta(monkeypatch, ["sess-sub"])
+    _capture_pushes(monkeypatch)
+    value = {"kind": "user_question", "qid": "", "question": question,
+             "options": ["Ginno 全局", "装到仓库"], "header": "选择安装位置"}
+    return await relay.note_parked_question("sess-worker", "turn-1", value)
+
+
+def _tmp_leftovers() -> list:
+    """GINNO_HOME 下的 relay 临时文件（成功写完 / 失败清理后都应为空）。"""
+    home = relay._state_path().parent
+    return sorted(home.glob(f".{relay._STATE_FILENAME}.tmp*"))
+
+
+async def test_persist_normal_update_overwrites(isolated_home, monkeypatch):
+    """正常更新也覆盖：原子写成功路径下，新内容整体替换旧文件（覆盖而非
+    追加/双写），且不留 tmp 残留。"""
+    relay._reset_state()
+    q1 = await _register(monkeypatch, "q-one")
+    q2 = await _register(monkeypatch, "q-two")
+    data = json.loads(relay._state_path().read_text())
+    assert set(data["pending"]) == {q1, q2}          # 两次登记都落盘
+    assert data["tombstones"] == {}
+    relay.mark_answered(q1, "user", "Ginno 全局")     # pending → 墓碑
+    data = json.loads(relay._state_path().read_text())
+    assert set(data["pending"]) == {q2}              # q1 已从盘上 pending 移除
+    assert set(data["tombstones"]) == {q1}           # 覆盖写带出了新墓碑
+    assert _tmp_leftovers() == []
+    # 清空内存重载：盘上状态完整回得来（覆盖写没有吃掉任何一条）。
+    relay._reset_state()
+    relay.load_state()
+    assert relay.find_pending(q2) is not None
+    assert relay.tombstone_of(q1) is not None
+
+
+async def test_persist_replace_failure_keeps_old_state(
+    isolated_home, monkeypatch, caplog
+):
+    """崩溃半写防护：注入 replace 前失败 → 真文件保持上一次完整旧内容，
+    tmp 被清理、失败有日志；清空内存重新加载后旧 pending / tombstone
+    均保留，本次（未落盘的）新登记按设计丢弃。"""
+    import logging
+    import os as _os
+
+    relay._reset_state()
+    q1 = await _register(monkeypatch, "q-one")
+    relay.mark_answered(q1, "user", "Ginno 全局")
+    q2 = await _register(monkeypatch, "q-two")
+    p = relay._state_path()
+    good = p.read_text()                              # 上次成功写的完整内容
+
+    real_replace = _os.replace
+
+    def _boom(src, dst):
+        # 只对 relay-state.json 的 replace 注入失败（replace 前/即失败 =
+        # 崩溃半写窗口），不干扰进程内其它写。
+        if str(dst) == str(p):
+            raise OSError("simulated crash before replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(relay.os, "replace", _boom)
+    with caplog.at_level(logging.ERROR, logger="ginno.turn"):
+        q3 = await _register(monkeypatch, "q-three")  # persist 失败（静默）
+    assert q3 is not None
+
+    # 真文件未被破坏：字节级等于旧完整内容（覆盖写没有发生）。
+    assert p.read_text() == good
+    # 临时文件已清理，不留垃圾。
+    assert _tmp_leftovers() == []
+    # 失败有日志。
+    assert any("relay_state_persist_failed" in r.getMessage()
+               for r in caplog.records)
+
+    # 清空内存重新加载：旧 pending + 旧 tombstone 均保留。
+    relay._reset_state()
+    relay.load_state()
+    assert relay.find_pending(q2) is not None         # 旧 pending 保留
+    assert relay.tombstone_of(q1) is not None         # 旧墓碑保留
+    assert relay.find_pending(q3) is None             # 失败批次按设计丢弃

@@ -62,8 +62,8 @@ def notify_change(session_id: str) -> None:
 def _session_slug(session_id: str) -> str:
     from ..session_meta import _find_meta
 
-    meta, _ = _find_meta(session_id) or ({}, None)
-    return (meta or {}).get("project_slug") or "default"
+    found = _find_meta(session_id)
+    return found[1] if found else "default"
 
 
 async def _watch_loop(session_id: str) -> None:

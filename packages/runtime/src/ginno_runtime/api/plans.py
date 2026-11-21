@@ -16,8 +16,8 @@ router = APIRouter()
 
 
 def _slug_of(session_id: str) -> str:
-    meta, _ = _find_meta(session_id) or ({}, None)
-    return (meta or {}).get("project_slug") or "default"
+    found = _find_meta(session_id)
+    return found[1] if found else "default"
 
 
 def _require_session(session_id: str) -> None:

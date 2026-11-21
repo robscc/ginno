@@ -1,0 +1,170 @@
+{
+ "_meta": {
+  "covers": "path+method+parameters+requestBody+responses(status+schema)+schema闭包",
+  "endpoints": 3,
+  "note": "OpenAPI contract snapshot — 拆分资源 Router 的验收基准，勿手改；契约有意识变更时再生成并连同本文件一起提交。",
+  "paths": 3,
+  "regenerate": "cd packages/runtime && GINNO_UPDATE_OPENAPI_SNAPSHOT=1 uv run --group test --extra docs pytest tests/api/test_openapi_contract.py -q",
+  "router": "ginno_runtime.api.{tasks_overview,tasks_counts}.router",
+  "source_module": "src/ginno_runtime/api/{tasks_overview,tasks_counts}.py",
+  "stripped_prose": "summary/description/operationId/response description"
+ },
+ "components": {
+  "schemas": {
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "StopRequest": {
+    "properties": {
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     }
+    },
+    "required": [
+     "kind",
+     "id"
+    ],
+    "title": "StopRequest",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "paths": {
+  "/api/tasks/counts": {
+   "get": {
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Tasks Counts Api Tasks Counts Get",
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/tasks/overview": {
+   "get": {
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Tasks Overview Api Tasks Overview Get",
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/tasks/overview/stop": {
+   "post": {
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StopRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Tasks Overview Stop Api Tasks Overview Stop Post",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}
