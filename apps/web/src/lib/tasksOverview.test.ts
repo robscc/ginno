@@ -547,6 +547,19 @@ describe("停止门面调用与乐观回滚", () => {
     unsub();
   });
 
+  it("同毫秒内停止后发起的新 GET 可以展示同一会话的新 turn", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(123456);
+    try {
+      vi.mocked(fetch).mockImplementation(async (input) => new Response(
+        String(input).includes("/stop") ? "{}" : JSON.stringify(REAL_BACKEND_SAMPLE),
+      ));
+      await refreshTasksOverview();
+      await stopHandleWithRollback(tasksOverviewSnapshot().data.turns[0]);
+      await refreshTasksOverview();
+      expect(tasksOverviewSnapshot().data.turns.map(h => h.id)).toContain("sid-1");
+    } finally { vi.restoreAllMocks(); }
+  });
+
   it("失败回滚：POST 500 → 重拉恢复真实列表并向上抛错", async () => {
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (input) => {
       const url = String(input);

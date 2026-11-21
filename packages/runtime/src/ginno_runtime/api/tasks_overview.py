@@ -205,14 +205,21 @@ def _collect_runs() -> list[dict[str, Any]]:
     return out
 
 
+def _usage_counter(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _goal_progress_label(g: dict[str, Any]) -> str:
     """goal 进度的人读摘要（2026-11-21 修：旧 goal 缺 turns_used/created_at
     ——此前的 "turn 0 · 0min" 对旧数据永远失真；改以 updated_at 相对时间
     为主信号，turns_used 仅在真实 >0 时附带）。"""
     parts: list[str] = []
-    turns = int(g.get("turns_used") or 0)
+    turns = _usage_counter(g.get("turns_used"))
     if turns > 0:
-        secs = int(g.get("time_used_seconds") or 0)
+        secs = _usage_counter(g.get("time_used_seconds"))
         parts.append(f"turn {turns} · {secs // 60}min")
     updated = g.get("updated_at")
     if updated:
