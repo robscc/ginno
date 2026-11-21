@@ -41,7 +41,7 @@ def dist_sidecar_pids() -> list[int]:
     return pids
 
 
-def spawn_sidecar(bin_path: str, env: dict) -> subprocess.Popen:
+def spawn_sidecar(bin_path: str, env: dict, err=None) -> subprocess.Popen:
     """独立进程组启动 packaged sidecar（``setsid`` 语义）。
 
     进程组是 stop_sidecar 能连子进程一起强拆的前提；Popen 默认同组，
@@ -51,7 +51,7 @@ def spawn_sidecar(bin_path: str, env: dict) -> subprocess.Popen:
         [str(bin_path)],
         env=env,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=err if err is not None else subprocess.DEVNULL,
         start_new_session=True,
     )
 
