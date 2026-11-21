@@ -71,6 +71,20 @@ app: check guard-app-not-running
 # Release CI uses it to override bundle.macOS.signingIdentity with ad-hoc
 # ("--config release-override.conf.json") — runners have no local signing
 # identities; see .github/workflows/release.yml.
+	@# tray_anim 帧自愈（2026-11-21 两度被外部进程批量删除 → cargo include_bytes!
+	@# 编译失败）：帧是 apps/desktop/scripts/gen_tray_rainbow.py 的预烘生成物，
+	@# 缺失时自动重跑脚本再生成（生成物语义，比 git restore 更稳——总是最新
+	@# 脚本版本）；12 帧齐全则零开销跳过。
+	@frames=$$(ls $(ROOT)/apps/desktop/icons/tray_anim/frame_*.png 2>/dev/null | wc -l | tr -d ' '); \
+	if [ "$$frames" != "12" ]; then \
+	  echo "⚠️  tray_anim 帧缺失（$$frames/12），重跑预烘脚本自愈"; \
+	  (cd $(ROOT)/apps/desktop && python3 scripts/gen_tray_rainbow.py) || { \
+	    echo "⚠️  预烘脚本失败（如缺 Pillow），回落 git restore 兜底"; \
+	    git -C $(ROOT) checkout -- apps/desktop/icons/tray_anim/ || true; \
+	  }; \
+	  frames2=$$(ls $(ROOT)/apps/desktop/icons/tray_anim/frame_*.png 2>/dev/null | wc -l | tr -d ' '); \
+	  [ "$$frames2" = "12" ] || { echo "❌ tray_anim 帧无法恢复（$$frames2/12）"; exit 1; }; \
+	fi
 	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build $(TAURI_ARGS)
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens
