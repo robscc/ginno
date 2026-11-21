@@ -244,3 +244,96 @@ jobs:
         # 永远进不了闸门（正是 CLAUDE.md 立规要防的「闸门覆盖不到新用例」）。
         # test_playwright_mcp_trending.py 不匹配该前缀，单独列出。
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_*.py tests/e2e/test_playwright_mcp_trending.py -q
+
+  # ── UI e2e 精准冒烟（按路径触发，2026-11-21）──────────────────────────
+  # tasks-overview 相关 PR 在 Linux 上以「源码 sidecar + 静态导出」跑
+  # test_packaged_ui_tasks_overview.py 两条冒烟（无 PyInstaller、零 macOS
+  # 分钟）；全套 packaged UI e2e 仍保留在上方手动 ui-e2e job。
+  # 防假绿双闸：GINNO_E2E_STRICT=1 把「环境不满足→skip」升级为 fail；
+  # junit 断言 2 用例全 passed（skipped/failed 都算红）。
+  ui-e2e-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect tasks-overview related changes (path filter)
+        id: filter
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          CHANGED="$(git diff --name-only "$BASE_SHA...HEAD")"
+          echo "$CHANGED"
+          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_tasks_overview\.py$)|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
+            echo "smoke=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "smoke=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Not applicable (no tasks-overview changes)
+        if: steps.filter.outputs.smoke != 'true'
+        run: echo "PR does not touch tasks-overview surfaces — smoke skipped by path filter"
+
+      - name: Install uv
+        if: steps.filter.outputs.smoke == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        if: steps.filter.outputs.smoke == 'true'
+        run: uv python install 3.12
+
+      - name: Install pnpm
+        if: steps.filter.outputs.smoke == 'true'
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        if: steps.filter.outputs.smoke == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install runtime test deps
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: packages/runtime
+        run: uv sync --group test --extra docs
+
+      - name: Install workspace dependencies
+        if: steps.filter.outputs.smoke == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web static export (source sidecar serves apps/web/out)
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: apps/web
+        run: pnpm build
+
+      - name: Install Chromium (playwright)
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: packages/runtime
+        run: uv run --group test python -m playwright install --with-deps chromium
+
+      - name: Run tasks-overview UI smoke (source sidecar, isolated port)
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: packages/runtime
+        env:
+          GINNO_E2E_RUNTIME: source
+          GINNO_E2E_STRICT: "1"
+        run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_tasks_overview.py -q --junitxml=smoke-junit.xml
+
+      - name: Assert smoke actually ran (skip = fail, anti fake-green)
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: packages/runtime
+        run: |
+          uv run --group test python - <<'PY'
+          import xml.etree.ElementTree as ET
+          s = ET.parse("smoke-junit.xml").getroot()
+          s = s.find("testsuite") if s.tag == "testsuites" else s
+          t = int(s.get("tests", "0")); f = int(s.get("failures", "0"))
+          e = int(s.get("errors", "0")); k = int(s.get("skipped", "0"))
+          print(f"tests={t} failures={f} errors={e} skipped={k}")
+          assert t == 2 and f == 0 and e == 0 and k == 0, "smoke gate: both tests must pass; skipping is a failure"
+          PY

@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Archive, Plus, Search, X } from "lucide-react";
 import { agentHex } from "@/lib/theme";
 import { useGinno } from "@/lib/store";
-import { overviewTotal, subscribeTasksOverview, tasksOverviewSnapshot } from "@/lib/tasksOverview";
+import { subscribeTasksCounts, tasksCountsSnapshot } from "@/lib/tasksCounts";
 import type { AgentConfig } from "@/lib/types";
 import { DevBuildBadge } from "@/components/devswap/DevBuildBadge";
 import { HotSwapButton } from "@/components/devswap/HotSwapButton";
@@ -66,18 +66,15 @@ export function SidebarHeader({
 }: SidebarHeaderProps) {
   const t = useTranslations("shell");
   // 「运行」入口徽标（tasks-overview §2.2 入口直达）：品牌行 ▶N = 六类活动
-  // 总数，与右栏 tab 徽标同源（lib/tasksOverview hub，挂载期间 30s 轮询）。
-  // 点击 = 通知桥同款三步：回工作区 + 切 running tab + 展开右栏。
+  // 总数。2026-11-21 性能修复：徽标常驻每页，改走轻量 /api/tasks/counts
+  // （lib/tasksCounts hub，mtime 增量索引，不拉明细不挂面板）；打开面板的
+  // 明细列表仍走既有 tasksOverview 订阅。点击 = 通知桥同款三步：回工作区
+  // + 切 running tab + 展开右栏。
   const g = useGinno();
   const router = useRouter();
   const tr = useTranslations("right.tasksOverview");
-  const [runningTotal, setRunningTotal] = useState(() =>
-    overviewTotal(tasksOverviewSnapshot().data),
-  );
-  useEffect(
-    () => subscribeTasksOverview((s) => setRunningTotal(overviewTotal(s.data))),
-    [],
-  );
+  const [runningTotal, setRunningTotal] = useState(() => tasksCountsSnapshot().counts.total);
+  useEffect(() => subscribeTasksCounts((s) => setRunningTotal(s.counts.total)), []);
   const openTasksOverview = () => {
     if (window.location.pathname !== "/") router.push("/");
     g.setRightTab("running");

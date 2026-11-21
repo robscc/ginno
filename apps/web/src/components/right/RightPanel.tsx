@@ -6,7 +6,13 @@ import { PanelRightClose } from "lucide-react";
 import { PANEL_WIDTH_DEFAULT, useGinno } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 import { subscribeUnreadCount } from "@/lib/notice";
-import { overviewTotal, subscribeTasksOverview, tasksOverviewSnapshot } from "@/lib/tasksOverview";
+import {
+  setTasksCountsPollMs,
+  subscribeTasksCounts,
+  TASKS_COUNTS_OPEN_PANEL_POLL_MS,
+  TASKS_COUNTS_POLL_MS,
+  tasksCountsSnapshot,
+} from "@/lib/tasksCounts";
 import { PanelResizer } from "@/components/workflow/studio/PanelResizer";
 import { CodePanel } from "./code/CodePanel";
 import { ModPaneHost } from "./ModPaneHost";
@@ -35,15 +41,18 @@ export function RightPanel() {
   const [noticeUnread, setNoticeUnread] = useState(0);
   useEffect(() => subscribeUnreadCount(setNoticeUnread), []);
   // 「运行」tab 总徽标 = 六类活动总数（tasks-overview §2.2）。面板未挂载时
-  // 徽标也要活着，所以订阅 lib 层 hub（RightPanel 挂载期间 30s 轮询）。
-  const [runningTotal, setRunningTotal] = useState(() =>
-    overviewTotal(tasksOverviewSnapshot().data),
-  );
-  useEffect(
-    () =>
-      subscribeTasksOverview((s) => setRunningTotal(overviewTotal(s.data))),
-    [],
-  );
+  // 徽标也要活着。2026-11-21 性能修复：改走轻量 lib/tasksCounts hub（30s
+  // 轮询 /api/tasks/counts，服务端 mtime 增量索引）；面板打开期间降到 5s
+  // 快轮询（停止动作后徽标 ≤5s 收敛），关闭恢复 30s。明细列表仍走既有
+  // tasksOverview 订阅（TasksOverviewPanel 挂载时自起）。
+  const [runningTotal, setRunningTotal] = useState(() => tasksCountsSnapshot().counts.total);
+  useEffect(() => subscribeTasksCounts((s) => setRunningTotal(s.counts.total)), []);
+  useEffect(() => {
+    setTasksCountsPollMs(
+      tab === "running" ? TASKS_COUNTS_OPEN_PANEL_POLL_MS : TASKS_COUNTS_POLL_MS,
+    );
+    return () => setTasksCountsPollMs(TASKS_COUNTS_POLL_MS);
+  }, [tab]);
   // Below the default width the labels don't fit beside the icons — drop to
   // icon-only tabs (titles keep them discoverable).
   const compact = width < PANEL_WIDTH_DEFAULT;

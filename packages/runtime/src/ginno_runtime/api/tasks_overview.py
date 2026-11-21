@@ -43,6 +43,7 @@ delegations      ``tools.external_agent._ACTIVE_DELEGATIONS`` 的 in-flight
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -72,14 +73,15 @@ def _session_title(session_id: str) -> str:
     return ((found[0] if found else None) or {}).get("title") or session_id
 
 
-def _turn_handle(sid: str, parked_kind: str | None) -> dict[str, Any]:
+def _turn_handle(sid: str, parked_kind: str | None, started_at: float | None) -> dict[str, Any]:
+    title = _session_title(sid)
     handle: dict[str, Any] = {
         "kind": "turn",
         "id": sid,
-        "title": _session_title(sid),
+        "title": title,
         "session_id": sid,
-        "session_title": _session_title(sid),
-        "started_at": server_shared._RUNNING_TURNS_AT.get(sid),
+        "session_title": title,
+        "started_at": started_at,
     }
     if parked_kind is not None:
         handle["stoppable"] = False
@@ -93,22 +95,14 @@ def _turn_handle(sid: str, parked_kind: str | None) -> dict[str, Any]:
     return handle
 
 
-def _collect_turns() -> list[dict[str, Any]]:
-    # badge 内核同源（_RUNNING_TURNS），外加 parked 集合：parked 的会话可能
-    # 已从 _RUNNING_TURNS 弹出但仍在等回答（stop_session 的 parked 分支），
-    # 对面板而言它们同样是「进行中、需要人看」的句柄。
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for sid in list(server_shared._RUNNING_TURNS):
-        seen.add(sid)
-        out.append(_turn_handle(sid, None))
-    for sid in list(server_shared._PENDING_RESUME):
-        if sid in seen:
-            # 同一会话既登记又在 parked：以 parked 语义覆盖（hint 优先）。
-            out = [h for h in out if h["id"] != sid]
-        out.append(_turn_handle(sid, server_shared._PENDING_KIND.get(sid)))
-    out.sort(key=lambda h: h["id"])
-    return out
+def _snapshot_turns() -> list[tuple[str, str | None, float | None]]:
+    # 事件循环拥有这些容器；在第一个 await 前捕获同一时刻的值。
+    parked = server_shared._PENDING_RESUME
+    return [
+        (sid, server_shared._PENDING_KIND.get(sid) if sid in parked else None,
+         server_shared._RUNNING_TURNS_AT.get(sid))
+        for sid in sorted(set(server_shared._RUNNING_TURNS).union(parked))
+    ]
 
 
 _WEEKDAYS_ZH = ["一", "二", "三", "四", "五", "六", "日"]
@@ -271,19 +265,22 @@ def _collect_goals() -> list[dict[str, Any]]:
     return out
 
 
-def _collect_delegations() -> list[dict[str, Any]]:
+def _snapshot_delegations() -> list[tuple[str, str | None]]:
     # in-flight 真源：_ACTIVE_DELEGATIONS。proc=None 的条目是并发闸门的
     # 预占槽（uuid key、无子会话），不是真实委托，跳过。
     from ..tools.external_agent import _ACTIVE_DELEGATIONS, _ACTIVE_LOCK
 
     with _ACTIVE_LOCK:
-        entries = [
-            (did, dict(entry))
+        return [
+            (did, entry.get("session_id"))
             for did, entry in _ACTIVE_DELEGATIONS.items()
             if entry.get("proc") is not None
         ]
+
+
+def _collect_delegations(entries: list[tuple[str, str | None]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for did, entry in entries:
+    for did, session_id in entries:
         found = _find_meta(did)
         meta = (found[0] if found else None) or {}
         started = meta.get("created")
@@ -291,7 +288,7 @@ def _collect_delegations() -> list[dict[str, Any]]:
             "kind": "delegation",
             "id": did,
             "title": str(meta.get("title") or f"外部委托 {did[:8]}"),
-            "session_id": entry.get("session_id"),
+            "session_id": session_id,
             "detail": "外部 CLI 进程运行中",
             "started_at": started,
             "stoppable": True,
@@ -306,12 +303,19 @@ def _collect_delegations() -> list[dict[str, Any]]:
 
 @router.get("/api/tasks/overview")
 async def tasks_overview() -> dict:
-    turns = _collect_turns()
+    return await asyncio.to_thread(_collect_overview, _snapshot_turns(), _snapshot_delegations())
+
+
+def _collect_overview(
+    turn_snapshot: list[tuple[str, str | None, float | None]],
+    delegation_snapshot: list[tuple[str, str | None]],
+) -> dict:
+    turns = [_turn_handle(*entry) for entry in turn_snapshot]
     scheduled = _collect_scheduled()
     subagents = _collect_subagents()
     runs = _collect_runs()
     goals = _collect_goals()
-    delegations = _collect_delegations()
+    delegations = _collect_delegations(delegation_snapshot)
     return {
         "ok": True,
         "counts": {

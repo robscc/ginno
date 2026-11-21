@@ -39,6 +39,8 @@ import pytest
 from ginno_runtime import server
 from ginno_runtime.api import code as code_api
 from ginno_runtime.api import sessions as sessions_api
+from ginno_runtime.api import tasks_counts as tasks_counts_api
+from ginno_runtime.api import tasks_overview as tasks_overview_api
 
 pytestmark = pytest.mark.api
 
@@ -285,6 +287,28 @@ def test_code_openapi_contract_snapshot() -> None:
     )
     assert meta["endpoints"] == 9, f"code 端点数漂移: {meta['endpoints']}"
     _assert_snapshot("code", contract, meta)
+
+
+class _MergedRoutes:
+    """_owned_ops 只读 ``.routes``——把两个 tasks router 拼成一只鸭子。"""
+
+    routes: list[Any] = []
+
+
+def test_tasks_openapi_contract_snapshot() -> None:
+    """tasks_overview（GET overview + POST stop）+ tasks_counts（GET counts）
+    的契约快照。counts 是 2026-11-21 徽标轻量路径新增端点，与 overview 的
+    ``counts`` 形状一致；明细端点形状变更也会被这里拦住。"""
+    routes = _MergedRoutes()
+    routes.routes = [*tasks_overview_api.router.routes, *tasks_counts_api.router.routes]
+    contract = _scoped_contract(routes)
+    meta = _meta(
+        "src/ginno_runtime/api/{tasks_overview,tasks_counts}.py",
+        "ginno_runtime.api.{tasks_overview,tasks_counts}.router",
+        contract,
+    )
+    assert meta["endpoints"] == 3, f"tasks 端点数漂移: {meta['endpoints']}"
+    _assert_snapshot("tasks", contract, meta)
 
 
 def test_foreign_prefix_paths_pinned() -> None:

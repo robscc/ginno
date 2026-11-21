@@ -14,6 +14,7 @@ import {
   emptyTasksOverview,
   getTasksOverview,
   stopTasksOverviewItem,
+  type StopOverviewItemRequest,
   type TaskHandle,
   type TaskHandleKind,
   type TasksOverview,
@@ -37,6 +38,32 @@ export const OVERVIEW_GROUP_ORDER: ReadonlyArray<{
   { key: "goals", kind: "goal" },
   { key: "delegations", kind: "delegation" },
 ];
+
+/**
+ * 行/停止的完整身份键：kind + id + session_id。plan_id 全局不唯一（同一
+ * plan_id 可能出现在不同会话的枚举里），只有连 session_id 一起比才是同一行
+ * ——React key、停止在途集合、成功停止时间戳都用它，防止并发停止/乐观移除
+ * 误伤同 id 的别会话句柄。turn/goal 的 id 即 session_id，缺失时派生补齐
+ * （与 normalizeTasksOverview 的派生一致，保证两侧键恒等）。
+ */
+export function handleKey(h: Pick<TaskHandle, "kind" | "id" | "session_id">): string {
+  const sid = h.session_id ?? (h.kind === "turn" || h.kind === "goal" ? h.id : undefined);
+  return sid ? `${h.kind}:${h.id}:${sid}` : `${h.kind}:${h.id}`;
+}
+
+/**
+ * next_fire_at（epoch 秒）→ 本地语言/时区的可读时间。locale 由调用方传
+ * （面板取 next-intl 的 useLocale()），时区不传即系统本地时区；测试可注入
+ * 固定 timeZone 断言。无效值（<=0/NaN）返回空串，调用方自行跳过渲染。
+ */
+export function formatNextFireAt(epochSec: number, locale: string, timeZone?: string): string {
+  if (!Number.isFinite(epochSec) || epochSec <= 0) return "";
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "short",
+    timeStyle: "short",
+    ...(timeZone ? { timeZone } : {}),
+  }).format(new Date(epochSec * 1000));
+}
 
 /** 防御性归一化：后端字段缺失/类型走样（旧 sidecar 404 的 {"detail":...}、
  * it_1 未合入的空响应）不得炸组件——一律收敛成合法 TasksOverview。 */
@@ -80,7 +107,12 @@ function asHandleArray(v: unknown, kind: TaskHandleKind): TaskHandle[] {
             ? id
             : undefined,
       started_at: typeof h.started_at === "number" ? h.started_at : undefined,
-      next_fire_at: typeof h.next_fire_at === "string" ? h.next_fire_at : undefined,
+      // 契约（2026-11-21 修订）：next_fire_at 是正的 epoch 秒数字；旧字符串
+      // （"明天 08:00"）/NaN/非正数一律丢弃——展示层按本地语言/时区统一格式化。
+      next_fire_at:
+        typeof h.next_fire_at === "number" && Number.isFinite(h.next_fire_at) && h.next_fire_at > 0
+          ? h.next_fire_at
+          : undefined,
       stoppable: h.stoppable === false ? false : true,
       stop_hint: typeof h.stop_hint === "string" ? h.stop_hint : undefined,
     });
@@ -145,26 +177,44 @@ export interface TasksOverviewState {
   ok: boolean;
   /** 是否已成功拉到过（区分「空态」与「从未加载」）。 */
   loaded: boolean;
+  /** 拉取在途（仅首拉/从未成功后的重试置位；常规 30s 轮询不打扰视图）。 */
+  loading: boolean;
 }
 
-let state: TasksOverviewState = { data: emptyTasksOverview(), ok: false, loaded: false };
+let state: TasksOverviewState = {
+  data: emptyTasksOverview(),
+  ok: false,
+  loaded: false,
+  loading: false,
+};
 let listeners: Array<(s: TasksOverviewState) => void> = [];
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let inFlight: Promise<void> | null = null;
+let inFlight: Promise<boolean> | null = null;
 /**
- * 停止在途的句柄（kind:id）：POST /stop 未落定时，轮询可能拉回「服务端
- * 尚未消化停止」的旧快照，把乐观移除的行闪回（2026-11-21 数据同步审查
- * 发现的竞态窗口）。刷新结果在写入 state 前按此集合过滤；POST 结束后
- * 清除（失败路径随后 refresh 以服务端真值回滚）。
+ * 停止在途的完整身份键（handleKey）：POST /stop 未落定时，轮询可能拉回
+ * 「服务端尚未消化停止」的旧快照，把乐观移除的行闪回。刷新结果在写入
+ * state 前按此集合过滤；POST 结束后清除（失败路径随后 refresh 以服务端
+ * 真值回滚）。
  */
 const stoppingIds = new Set<string>();
+/**
+ * 成功停止时刻（ms，按完整身份键）：POST 成功后仍可能有「发起早于停止
+ * 落定」的 GET 在飞（fetch 无取消），其过期快照若直接落库会把已停句柄
+ * 闪回——落库前过滤「stoppedAt > 该 GET 发起时刻」的句柄；一旦有发起
+ * 晚于停止时刻的快照成功落库（说明服务端真值已确认缺席），该 key 即失效
+ * 可删（GC 防无界增长）。
+ */
+const stoppedAt = new Map<string, number>();
 
 function emit() {
   for (const l of listeners) l(state);
 }
 
-/** 六组句柄的等值判定（id/kind/title/detail 级）——30s 轮询数值不变时保引用
- * bailout，避免每个周期都触发订阅组件全量重渲染（SidebarFooter 同款纪律）。 */
+/** 六组句柄的等值判定——30s 轮询数值不变时保引用 bailout，避免每个周期都
+ * 触发订阅组件全量重渲染（SidebarFooter 同款纪律）。必须覆盖所有「改变展示
+ * 或跳转」的字段：title/detail（文本）、session_id（跳转目标）、started_at
+ * （相对时间展示）、next_fire_at（schedule 行时间）、stoppable/stop_hint
+ * （按钮态）。 */
 function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
   for (const { key } of OVERVIEW_GROUP_ORDER) {
     const x = a[key];
@@ -177,6 +227,9 @@ function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
         p.id !== q.id ||
         p.title !== q.title ||
         p.detail !== q.detail ||
+        p.session_id !== q.session_id ||
+        p.started_at !== q.started_at ||
+        p.next_fire_at !== q.next_fire_at ||
         p.stoppable !== q.stoppable ||
         p.stop_hint !== q.stop_hint
       ) {
@@ -189,15 +242,22 @@ function sameOverview(a: TasksOverview, b: TasksOverview): boolean {
 
 function setState(next: TasksOverviewState) {
   let data = next.data;
-  if (stoppingIds.size) {
-    // 竞态防御：停止在途的句柄不随轮询快照回屏（POST 结束后由 refresh 校正）。
+  if (stoppingIds.size || stoppedAt.size) {
+    // 竞态防御：停止在途（stoppingIds）或过期快照（stoppedAt 中停止时刻不早于
+    // 本轮拉取发起时刻——用 >= 保守判定，Date.now() 毫秒精度下同毫秒也算过期）
+    // 命中的句柄不随快照回屏。
     const filtered = emptyTasksOverview();
     let touched = false;
     for (const { key } of OVERVIEW_GROUP_ORDER) {
       const kept = data[key].filter((h) => {
-        const stopping = stoppingIds.has(`${h.kind}:${h.id}`);
-        if (stopping) touched = true;
-        return !stopping;
+        const k = handleKey(h);
+        const stoppedTs = stoppedAt.get(k);
+        const stale = stoppedTs !== undefined && stoppedTs >= (fetchEpochs.get(k) ?? 0);
+        if (stoppingIds.has(k) || stale) {
+          touched = true;
+          return false;
+        }
+        return true;
       });
       filtered[key] = kept;
     }
@@ -206,6 +266,7 @@ function setState(next: TasksOverviewState) {
   const unchanged =
     state.ok === next.ok &&
     state.loaded === next.loaded &&
+    state.loading === next.loading &&
     sameOverview(state.data, data);
   if (unchanged) {
     // 内容不变：保留旧 data 引用，订阅组件的浅比较不触发重渲染。
@@ -216,16 +277,39 @@ function setState(next: TasksOverviewState) {
   emit();
 }
 
-/** 立即重拉（进 tab、手动刷新、停止失败回滚共用）。并发调用共享同一 promise。 */
-export function refreshTasksOverview(): Promise<void> {
+/**
+ * 每次成功 GET 落库前记录「该句柄最后一次被服务端观察到仍存在」的发起点。
+ * setState 的 stoppedAt 过滤需要知道「本轮快照的发起时刻」才能判定过期——
+ * 发起时刻按句柄记（而非全局一个数），因为并发下不同轮询批次覆盖不同句柄。
+ */
+const fetchEpochs = new Map<string, number>();
+
+/** 立即重拉（进 tab、手动刷新、停止失败回滚、后台性能项共用）。
+ * 并发调用共享同一 promise；返回本轮是否拉取成功（false = sidecar 不可达，
+ * 旧快照保留）。 */
+export function refreshTasksOverview(): Promise<boolean> {
   if (inFlight) return inFlight;
+  const startedAt = Date.now();
   inFlight = (async () => {
     try {
-      const data = normalizeTasksOverview(await getTasksOverview());
-      setState({ data, ok: true, loaded: true });
+      // 仅首拉/从未成功后的重试置 loading（常规 30s 轮询不打扰已加载视图）。
+      if (!state.loaded) setState({ ...state, loading: true });
+      const raw = await getTasksOverview();
+      const data = normalizeTasksOverview(raw);
+      for (const { key } of OVERVIEW_GROUP_ORDER) {
+        for (const h of data[key]) fetchEpochs.set(handleKey(h), startedAt);
+      }
+      setState({ data, ok: true, loaded: true, loading: false });
+      // GC：本轮快照发起严格早于停止时刻 → 服务端真值已确认该句柄缺席，
+      // 之后不会再有更旧的快照，记录失效可删（同毫秒发起的保留，下轮再 GC）。
+      for (const [k, ts] of stoppedAt) {
+        if (ts < startedAt) stoppedAt.delete(k);
+      }
+      return true;
     } catch {
       // sidecar 未起 / it_1 未合入：保旧快照，只降 ok 标记。
-      setState({ data: state.data, ok: false, loaded: state.loaded });
+      setState({ data: state.data, ok: false, loaded: state.loaded, loading: false });
+      return false;
     } finally {
       inFlight = null;
     }
@@ -263,37 +347,69 @@ export function tasksOverviewSnapshot(): TasksOverviewState {
 }
 
 /**
- * 乐观移除：POST 期间先把句柄摘掉（badge/行即时反馈）。
- * 失败路径由调用方 refreshTasksOverview() 回滚重查（truth 在服务端）。
+ * 乐观移除：POST 期间先把句柄摘掉（badge/行即时反馈）。按完整身份
+ * （handleKey）过滤——同 plan_id 不同会话的两行只能摘目标行。
+ * 失败路径由调用方 stopHandleWithRollback 回滚（truth 在服务端）。
  */
-export function optimisticRemoveHandle(kind: TaskHandleKind, id: string): void {
+export function optimisticRemoveHandle(target: Pick<TaskHandle, "kind" | "id" | "session_id">): void {
+  const key = handleKey(target);
   const next = emptyTasksOverview();
-  for (const { key, kind: k } of OVERVIEW_GROUP_ORDER) {
-    next[key] = k === kind ? state.data[key].filter((h) => h.id !== id) : state.data[key];
+  for (const { key: groupKey, kind } of OVERVIEW_GROUP_ORDER) {
+    next[groupKey] =
+      kind === target.kind
+        ? state.data[groupKey].filter((h) => handleKey(h) !== key)
+        : state.data[groupKey];
   }
-  setState({ data: next, ok: state.ok, loaded: state.loaded });
+  setState({ data: next, ok: state.ok, loaded: state.loaded, loading: state.loading });
+}
+
+/** TaskHandle → 强类型停止请求：plan 缺少身份时在乐观移除与发请求前拒绝。 */
+function stopRequestOf(h: TaskHandle): StopOverviewItemRequest {
+  if (h.kind === "plan") {
+    if (!h.session_id?.trim()) throw new Error("Missing plan session_id");
+    return { kind: "plan", id: h.id, session_id: h.session_id };
+  }
+  return h.session_id
+    ? { kind: h.kind, id: h.id, session_id: h.session_id }
+    : { kind: h.kind, id: h.id };
+}
+
+/** 双失败兜底：POST 与紧随的刷新都失败时，只把刚移除的这一项还原——
+ * 绝不整表回写 prev（那会把并发期间已成功停止的其他句柄一并复活）。 */
+function restoreSingleHandle(h: TaskHandle): void {
+  const k = handleKey(h);
+  if (state.data[OVERVIEW_GROUP_ORDER.find((g) => g.kind === h.kind)!.key].some(
+    (x) => handleKey(x) === k,
+  )) {
+    return; // 已在（并发刷新带回了真值），不重复塞。
+  }
+  const next = emptyTasksOverview();
+  for (const { key, kind } of OVERVIEW_GROUP_ORDER) {
+    next[key] = kind === h.kind ? [...state.data[key], h] : state.data[key];
+  }
+  setState({ data: next, ok: state.ok, loaded: state.loaded, loading: state.loading });
 }
 
 /**
- * 停止门面调用 + 乐观 UI（方案 §2.2）：先摘行，POST 成功即结束；失败回滚
- * （重拉恢复真实列表）并向上抛错供面板展示错误提示。
+ * 停止门面调用 + 乐观 UI（方案 §2.2）：先摘行，POST 成功即结束；失败先重拉
+ * 服务端真值回滚，重拉也失败（双失败）才退化为只还原本项。全程向上抛错供
+ * 面板展示错误提示。
  */
 export async function stopHandleWithRollback(h: TaskHandle): Promise<void> {
-  const prev = state.data;
-  const stopKey = `${h.kind}:${h.id}`;
-  stoppingIds.add(stopKey);
-  optimisticRemoveHandle(h.kind, h.id);
+  const key = handleKey(h);
+  const request = stopRequestOf(h);
+  stoppingIds.add(key);
+  optimisticRemoveHandle(h);
   try {
-    await stopTasksOverviewItem(h.kind, h.id);
-    stoppingIds.delete(stopKey);
+    await stopTasksOverviewItem(request);
+    stoppingIds.delete(key);
+    // 过期 GET 防御基准点：晚于此发起的快照才可信该句柄缺席。
+    stoppedAt.set(key, Date.now());
   } catch (err) {
-    // 回滚：以服务端真值恢复（prev 只作 fetch 再失败时的兜底）。
-    stoppingIds.delete(stopKey);
-    try {
-      await refreshTasksOverview();
-    } catch {
-      setState({ data: prev, ok: state.ok, loaded: state.loaded });
-    }
+    stoppingIds.delete(key);
+    // 回滚：优先以服务端真值恢复；GET 也失败（双失败）时只还原本项。
+    const refreshed = await refreshTasksOverview().catch(() => false);
+    if (!refreshed) restoreSingleHandle(h);
     throw err;
   }
 }
@@ -303,5 +419,8 @@ export function __resetTasksOverviewHubForTests(): void {
   stopPolling();
   listeners = [];
   inFlight = null;
-  state = { data: emptyTasksOverview(), ok: false, loaded: false };
+  stoppingIds.clear();
+  stoppedAt.clear();
+  fetchEpochs.clear();
+  state = { data: emptyTasksOverview(), ok: false, loaded: false, loading: false };
 }

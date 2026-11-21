@@ -15,10 +15,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import { useLocale } from "next-intl";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { emptyTasksOverview } from "@/lib/api/tasksOverview";
 import {
+  formatNextFireAt,
   handleJumpTarget,
+  handleKey,
   overviewGroups,
   overviewTotal,
   refreshTasksOverview,
@@ -51,6 +54,7 @@ const EMPTY = emptyTasksOverview();
 export function TasksOverviewPanel() {
   const g = useGinno();
   const router = useRouter();
+  const locale = useLocale();
   const t = useTranslations("right.tasksOverview");
   // hub 订阅：面板挂载即拉一次（首个订阅者触发），30s 轮询由 hub 统一管理。
   const [snap, setSnap] = useState<TasksOverviewState | null>(() => tasksOverviewSnapshot());
@@ -63,6 +67,15 @@ export function TasksOverviewPanel() {
   const data = snap?.data ?? EMPTY;
   const groups = useMemo(() => overviewGroups(data), [data]);
   const total = useMemo(() => overviewTotal(data), [data]);
+  // 三态判据（2026-11-21 契约修订）：未加载（loading/从未成功且失败）、
+  // 拉取失败但保留旧数据（stale）、确认真空（ok 且零条）——空态🎉只属于
+  // 「成功拉到且确实没有活动」，失败绝不能伪装成「没有任务在跑」。
+  const loaded = snap?.loaded === true;
+  const fetchOk = snap?.ok === true;
+  const firstLoading = (snap?.loading ?? false) && !loaded;
+  const neverLoaded = !loaded && !firstLoading;
+  const showStale = loaded && !fetchOk;
+  const showEmpty = loaded && fetchOk && groups.length === 0;
 
   /** 行点击 / 查看按钮：跳对应会话（open_session 意图）或 workflow 面板。 */
   const openHandle = (h: TaskHandle) => {
@@ -88,7 +101,7 @@ export function TasksOverviewPanel() {
 
   /** 确认后的停止：乐观移除（hub 内完成）→ 失败回滚重拉 + 错误条。 */
   const doStop = (h: TaskHandle) => {
-    const key = `${h.kind}:${h.id}`;
+    const key = handleKey(h);
     setStoppingIds((prev) => new Set(prev).add(key));
     setStopError(null);
     stopHandleWithRollback(h)
@@ -132,17 +145,45 @@ export function TasksOverviewPanel() {
           {stopError}
         </div>
       )}
-      {!snap?.ok && snap?.loaded && (
+      {firstLoading && (
         <div
           className="mx-4 mb-2 rounded-md border border-line bg-card2 px-2.5 py-1.5 text-[11px] text-faint"
+          data-testid="tasks-overview-loading"
+        >
+          {t("loading")}
+        </div>
+      )}
+      {neverLoaded && (
+        <div
+          className="mx-4 mb-2 flex items-center justify-between gap-2 rounded-md border border-red/40 bg-red/10 px-2.5 py-1.5 text-[11px] text-red"
+          data-testid="tasks-overview-load-error"
+        >
+          <span>{t("firstLoadFailed")}</span>
+          <button
+            onClick={() => void refreshTasksOverview()}
+            className="shrink-0 rounded-md border border-red/40 px-2 py-0.5 text-[11px] transition-colors hover:bg-red/10"
+          >
+            {t("retry")}
+          </button>
+        </div>
+      )}
+      {showStale && (
+        <div
+          className="mx-4 mb-2 flex items-center justify-between gap-2 rounded-md border border-line bg-card2 px-2.5 py-1.5 text-[11px] text-faint"
           data-testid="tasks-overview-stale"
         >
-          {t("loadFailed")}
+          <span>{t("loadFailed")}</span>
+          <button
+            onClick={() => void refreshTasksOverview()}
+            className="shrink-0 rounded-md border border-line px-2 py-0.5 text-[11px] text-muted transition-colors hover:bg-card2 hover:text-txt"
+          >
+            {t("retry")}
+          </button>
         </div>
       )}
 
       <div className="flex-1 space-y-4 px-3 pb-4">
-        {groups.length === 0 && (
+        {showEmpty && (
           <div
             className="px-1 py-12 text-center text-xs text-faint"
             data-testid="tasks-overview-empty"
@@ -170,12 +211,18 @@ export function TasksOverviewPanel() {
               <div className="space-y-1.5">
                 {grp.items.map((h) => {
                   const jump = handleJumpTarget(h);
-                  const stopping = stoppingIds.has(`${h.kind}:${h.id}`);
+                  const stopping = stoppingIds.has(handleKey(h));
                   const stopDisabled = h.stoppable === false;
                   const stopHint = h.stop_hint || t("notStoppable");
+                  // schedule 行：下次触发（epoch 秒 → 本地语言/时区）+ 周期
+                  // （后端 detail：每天 08:00 / 每周三 …）同时显示。
+                  const fireLabel =
+                    grp.kind === "schedule" && h.next_fire_at
+                      ? t("nextFire", { at: formatNextFireAt(h.next_fire_at, locale) })
+                      : null;
                   return (
                     <div
-                      key={h.id}
+                      key={handleKey(h)}
                       className={`flex items-start gap-2.5 rounded-lg border border-line bg-card px-3 py-2.5 transition-colors ${
                         jump ? "cursor-pointer hover:border-line2 hover:bg-card2" : ""
                       } ${stopping ? "pointer-events-none opacity-45" : ""}`}
@@ -193,8 +240,9 @@ export function TasksOverviewPanel() {
                           {h.title}
                         </div>
                         <div className="mt-0.5 truncate text-[11px] text-faint">
-                          {h.detail ??
-                            (h.next_fire_at ? t("nextFire", { at: h.next_fire_at }) : "")}
+                          {fireLabel}
+                          {fireLabel && h.detail && <span className="mx-1">·</span>}
+                          {h.detail}
                           {!jump && (
                             <span className="ml-1.5 inline-flex items-center gap-0.5">
                               <ExternalLink className="h-2.5 w-2.5" />
