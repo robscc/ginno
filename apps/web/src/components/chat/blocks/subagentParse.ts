@@ -13,19 +13,49 @@ function parseEnvelope(text: string): Document | null {
   }
 }
 
+/** HTML 实体解码（服务端 html.unescape 的镜像）：正则路径不再过 DOM，
+ *  属性/正文里的 &amp;/&lt;/&gt;/&quot;/&#39;/&#x…;/&#…; 在此还原。 */
+function decodeEntities(s: string): string {
+  const NAMED: Record<string, string> = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  };
+  return s.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1] === "x" || body[1] === "X"
+        ? parseInt(body.slice(2), 16)
+        : parseInt(body.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED[body] ?? whole;
+  });
+}
+
+/** 服务端同款信封正则（messages_ui.py `_RESULT_ENV_RE` 的 JS 镜像）。 */
+const RESULT_ENV_RE = /<ginno_subagent_result\b([^>]*)>([\s\S]*?)<\/ginno_subagent_result>/g;
+
 /** 契约 3：注入消息里的全部 <ginno_subagent_result>（合并注入时一条消息可能带
- *  多个）。属性 session/goal 由 runtime 转义，DOMParser 会自行解码。 */
+ *  多个——前缀说明文本 + 多信封混合，2026-11-21 turn 75320061 实机形状）。
+ *  2026-11-22 起 DOMParser 改为服务端同款正则：text/html 解析器对正文里的
+ *  富 markdown（表格竖线、<think> 尖括号行、未闭合标签）会构建出意外 DOM，
+ *  合并注入场景漏抓信封 → live echo 把整段 XML 原文插成 user 气泡，渲染
+ *  层不认识协议标签 → 空泡 + 裸 turnId chip。正则与 server 完全同构
+ *  （属性抓取、非贪婪正文、实体解码），前后端行为对齐且不再依赖 DOM。 */
 export function parseSubagentResults(
   text: string,
 ): Array<{ sessionId: string; goal: string; summary: string }> {
-  const doc = parseEnvelope(text);
-  if (!doc) return [];
   const out: Array<{ sessionId: string; goal: string; summary: string }> = [];
-  for (const el of Array.from(doc.getElementsByTagName("ginno_subagent_result"))) {
+  RESULT_ENV_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = RESULT_ENV_RE.exec(text)) !== null) {
+    const attrs = m[1];
+    const attr = (name: string): string => {
+      const am = new RegExp(`${name}="([^"]*)"`).exec(attrs);
+      return am ? decodeEntities(am[1]) : "";
+    };
     out.push({
-      sessionId: el.getAttribute("session") ?? "",
-      goal: el.getAttribute("goal") ?? "",
-      summary: (el.textContent ?? "").trim(),
+      sessionId: attr("session"),
+      goal: attr("goal"),
+      summary: decodeEntities(m[2].trim()),
     });
   }
   return out;
