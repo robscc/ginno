@@ -34,7 +34,9 @@ export async function createWorkflow(
   });
 }
 export async function deleteWorkflow(id: string) {
-  return json<{ ok: boolean }>(`${BASE}/workflows/${id}`, { method: "DELETE" });
+  // 内置工作流受 is_system_def 保护时返回 200 + {ok:false, error:"Built-in…"}；
+  // error 仅在该分支出现，旧数据/正常删除路径不受影响。
+  return json<{ ok: boolean; error?: string }>(`${BASE}/workflows/${id}`, { method: "DELETE" });
 }
 export async function getWorkflow(id: string) {
   return json<{ ok: boolean; workflow: import("../types").WorkflowDef }>(`${BASE}/workflows/${id}`);

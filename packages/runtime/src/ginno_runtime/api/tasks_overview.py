@@ -5,8 +5,9 @@
 地方——本模块只做两件事：
 
 * ``GET /api/tasks/overview``：一次返回六组活动句柄（统一形状
-  ``{kind, id, title, session_id?, session_title?, started_at?/next_fire_at?,
-  detail?, stoppable, stop_hint?}``，空态返回空数组而非 404）；
+  ``{kind, phase, id, title, session_id?, session_title?, started_at?/next_fire_at?,
+  detail?, stoppable, stop_hint?}``，``phase`` ∈ running|waiting|scheduled
+  三档分类（模块头 HANDLE_PHASES），空态返回空数组而非 404）；
 * ``POST /api/tasks/overview/stop``：纯路由门面——按 ``kind`` 把停止动作
   分发给各域既有 handler，**不复制任何停止逻辑**。
 
@@ -58,6 +59,17 @@ from ..workflows import store as wf_store
 
 router = APIRouter()
 
+# 句柄三态（2026-11-21 分类修订）：总览视图按「执行中 / 等你处理 / 已排期」
+# 三档分组，phase 在服务端按真源判定，前端不做猜测：
+# * running   —— 有活任务在跑：running turn、plan、workflow run、goal、delegation；
+# * waiting   —— parked turn（_PENDING_RESUME，ask_user/权限/版本提案卡）：
+#   turn 没在跑、在等人，与 running turn 同属 turns 组但分进「等你处理」；
+# * scheduled —— 已排期的调度任务（enabled 且全局调度开，有 next_run_at）。
+PHASE_RUNNING = "running"
+PHASE_WAITING = "waiting"
+PHASE_SCHEDULED = "scheduled"
+HANDLE_PHASES = (PHASE_RUNNING, PHASE_WAITING, PHASE_SCHEDULED)
+
 # parked（_PENDING_KIND）→ 面板行文案。这类 turn 没有活任务在跑，停在面板
 # 上的动作应是「去会话里回答」，所以 stoppable=false + hint。
 _PARKED_HINTS = {
@@ -77,6 +89,9 @@ def _turn_handle(sid: str, parked_kind: str | None, started_at: float | None) ->
     title = _session_title(sid)
     handle: dict[str, Any] = {
         "kind": "turn",
+        # 同一组 turns 按 parked 与否分两档：parked → waiting（等人），
+        # 其余 → running（真源：_PENDING_RESUME 成员资格，见模块头 HANDLE_PHASES）。
+        "phase": PHASE_WAITING if parked_kind is not None else PHASE_RUNNING,
         "id": sid,
         "title": title,
         "session_id": sid,
@@ -99,7 +114,7 @@ def _snapshot_turns() -> list[tuple[str, str | None, float | None]]:
     # 事件循环拥有这些容器；在第一个 await 前捕获同一时刻的值。
     parked = server_shared._PENDING_RESUME
     return [
-        (sid, server_shared._PENDING_KIND.get(sid) if sid in parked else None,
+        (sid, (server_shared._PENDING_KIND.get(sid) or "unknown") if sid in parked else None,
          server_shared._RUNNING_TURNS_AT.get(sid))
         for sid in sorted(set(server_shared._RUNNING_TURNS).union(parked))
     ]
@@ -142,6 +157,7 @@ def _collect_scheduled() -> list[dict[str, Any]]:
             continue
         handle = {
             "kind": "schedule",
+            "phase": PHASE_SCHEDULED,
             "id": str(task.get("id") or ""),
             "title": str(task.get("name") or "未命名任务"),
             "next_fire_at": task.get("next_run_at"),
@@ -167,6 +183,7 @@ def _collect_subagents() -> list[dict[str, Any]]:
         out.append(
             {
                 "kind": "plan",
+                "phase": PHASE_RUNNING,
                 "id": str(plan.get("plan_id") or ""),
                 "title": str(plan.get("title") or "Untitled plan"),
                 "session_id": session_id,
@@ -193,6 +210,7 @@ def _collect_runs() -> list[dict[str, Any]]:
         out.append(
             {
                 "kind": "run",
+                "phase": PHASE_RUNNING,
                 "id": str(run.get("id") or ""),
                 "title": str(run.get("name") or run.get("workflow_id") or "workflow"),
                 "session_id": run.get("present_in_session_id") or run.get("session_id"),
@@ -258,6 +276,7 @@ def _collect_goals() -> list[dict[str, Any]]:
             out.append(
                 {
                     "kind": "goal",
+                    "phase": PHASE_RUNNING,
                     "id": sid,
                     "title": objective[:80] or "（无目标文本）",
                     "session_id": sid,
@@ -293,6 +312,7 @@ def _collect_delegations(entries: list[tuple[str, str | None]]) -> list[dict[str
         started = meta.get("created")
         handle = {
             "kind": "delegation",
+            "phase": PHASE_RUNNING,
             "id": did,
             "title": str(meta.get("title") or f"外部委托 {did[:8]}"),
             "session_id": session_id,
@@ -323,6 +343,7 @@ def _collect_overview(
     runs = _collect_runs()
     goals = _collect_goals()
     delegations = _collect_delegations(delegation_snapshot)
+    all_handles = [*turns, *scheduled, *subagents, *runs, *goals, *delegations]
     return {
         "ok": True,
         "counts": {
@@ -332,10 +353,14 @@ def _collect_overview(
             "runs": len(runs),
             "goals": len(goals),
             "delegations": len(delegations),
-            "total": (
-                len(turns) + len(scheduled) + len(subagents)
-                + len(runs) + len(goals) + len(delegations)
-            ),
+            "total": len(all_handles),
+            # 三档分类计数（2026-11-21）：由句柄 phase 现场归并——与明细行
+            # 同一真源，构造上保证「明细 ⇆ 三档计数」一致；tasks_counts 端点
+            # 用同口径的 O(1) 推导复现（见该模块 _count_phases 注释）。
+            "phases": {
+                phase: sum(1 for h in all_handles if h["phase"] == phase)
+                for phase in HANDLE_PHASES
+            },
         },
         "turns": turns,
         "scheduled": scheduled,

@@ -67,6 +67,78 @@ describe("normalizeTasksCounts", () => {
     expect(normalizeTasksCounts({})).toEqual(emptyTasksCounts());
   });
 
+  it("phases 三项齐全合法 → 透传（新 sidecar 三档 breakdown）", () => {
+    const d = normalizeTasksCounts({
+      counts: {
+        ...SAMPLE.counts,
+        phases: { running: 5, waiting: 1, scheduled: 1 },
+      },
+    });
+    expect(d.phases).toEqual({ running: 5, waiting: 1, scheduled: 1 });
+  });
+
+  it("phases 缺失/部分缺失/非法值 → 不产出该字段（UI 退回纯总数文案）", () => {
+    // 旧 sidecar：无 phases
+    expect(normalizeTasksCounts(SAMPLE).phases).toBeUndefined();
+    // 部分缺失
+    expect(
+      normalizeTasksCounts({
+        counts: { ...SAMPLE.counts, phases: { running: 5, waiting: 1 } },
+      }).phases,
+    ).toBeUndefined();
+    // 非法值（负数/非数字）
+    expect(
+      normalizeTasksCounts({
+        counts: { ...SAMPLE.counts, phases: { running: -1, waiting: 1, scheduled: 0 } },
+      }).phases,
+    ).toBeUndefined();
+    expect(
+      normalizeTasksCounts({
+        counts: { ...SAMPLE.counts, phases: { running: "x", waiting: 1, scheduled: 0 } },
+      }).phases,
+    ).toBeUndefined();
+  });
+
+  it("phases 数值变化触发通知（bailout 按值比较 phases，不吃掉更新）", async () => {
+    __resetTasksCountsHubForTests();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () =>
+        new Response(JSON.stringify(SAMPLE), { status: 200 }),
+      ),
+    );
+    let notifications = 0;
+    const unsub = subscribeTasksCounts(() => {
+      notifications += 1;
+    });
+    await vi.waitFor(() => expect(tasksCountsSnapshot().ok).toBe(true));
+    const baseline = notifications;
+    await refreshTasksCounts(); // 同载荷（phases 引用每次新建但值相同）→ bailout
+    expect(notifications).toBe(baseline);
+    // phases 值变化 → 必须通知（waiting 出现 parked turn）
+    fetchMock().mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          counts: {
+            ...SAMPLE.counts,
+            phases: { running: 5, waiting: 1, scheduled: 1 },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    await refreshTasksCounts();
+    expect(notifications).toBe(baseline + 1);
+    expect(tasksCountsSnapshot().counts.phases).toEqual({
+      running: 5,
+      waiting: 1,
+      scheduled: 1,
+    });
+    unsub();
+    __resetTasksCountsHubForTests();
+    vi.unstubAllGlobals();
+  });
+
   it("getTasksCounts 打到 /api/tasks/counts", async () => {
     vi.stubGlobal(
       "fetch",

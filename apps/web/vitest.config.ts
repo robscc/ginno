@@ -4,6 +4,10 @@ import path from "node:path";
 // Node-environment unit tests for pure-logic modules (no React/DOM yet).
 // Keep new tests dependency-free: import the module, assert on plain values.
 export default defineConfig({
+  // JSX 走 automatic runtime（react/jsx-runtime）：组件级测试渲染 .tsx 时
+  // esbuild 默认 classic transform 会要求 React 在作用域内，而组件按 Next
+  // 约定不 import React——只影响含 JSX 的测试文件，纯逻辑测试不受影响。
+  esbuild: { jsx: "automatic" },
   test: {
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],

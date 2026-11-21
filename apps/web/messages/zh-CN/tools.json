@@ -591,8 +591,26 @@
       "mustBeObject": "DSL 必须是 JSON 对象",
       "missingNodes": "缺少 nodes 数组（至少一个节点）",
       "missingEntry": "缺少 entry（入口节点 id）",
+      "invalidNode": "第 {index} 步必须是带有非空 id 的节点。",
       "entryNotInNodes": "entry「{entry}」不在 nodes 中",
-      "dslOk": "DSL 结构正确 · {count} 个节点"
+      "dslOk": "DSL 结构正确 · {count} 个节点",
+      "builtinBadge": "内置",
+      "builtinHint": "内置工作流由系统维护，不可删除。",
+      "deleteConfirmTitle": "删除工作流「{name}」？",
+      "deleteConfirmBody": "将永久删除该工作流的定义（全部版本与 DSL）。运行历史会保留。此操作不可恢复。",
+      "deleting": "删除中…",
+      "deleteFailed": "删除失败：{error}",
+      "modeSteps": "步骤编辑器",
+      "modeJson": "高级 JSON",
+      "addStep": "添加步骤",
+      "removeStep": "移除",
+      "stepNamePlaceholder": "步骤名称（显示在运行面板）",
+      "stepGoalPlaceholder": "执行要求——这一步要让 agent 做什么",
+      "stepBlank": "步骤 {index} 为空——请填写或移除。",
+      "stepNoGoal": "步骤 {index}：缺少执行要求。",
+      "jsonInvalidSwitch": "JSON 尚未通过解析，请先修复语法再切换到步骤编辑器。",
+      "jsonTooComplex": "该 JSON 含步骤编辑器无法表达的结构（自定义节点类型、分支、非默认 agent、额外字段等）。已保留在 JSON 模式，未做任何降级修改。",
+      "jsonBadNode": "步骤 {index} 的节点无法用步骤编辑器表达。"
     },
     "synthesis": {
       "title": "总结质量",
@@ -1228,6 +1246,10 @@
       "saveFailed": "保存失败",
       "saveFailedConn": "保存失败：无法连接 runtime",
       "loadFailed": "读取失败",
+      "loading": "读取中…",
+      "saving": "保存中…",
+      "retry": "重试",
+      "noChanges": "没有需要保存的修改",
       "pathNote": "PATH 会被追加到现有值之后（不覆盖）；值支持字符串/数字/布尔。"
     }
   }

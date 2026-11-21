@@ -139,9 +139,11 @@ def test_counts_empty_shape(client):
     assert data["ok"] is True
     counts = data["counts"]
     assert set(counts) == {
-        "turns", "scheduled", "subagents", "runs", "goals", "delegations", "total",
+        "turns", "scheduled", "subagents", "runs", "goals", "delegations", "total", "phases",
     }
-    assert all(v == 0 for v in counts.values())
+    for key in ("turns", "scheduled", "subagents", "runs", "goals", "delegations", "total"):
+        assert counts[key] == 0, key
+    assert counts["phases"] == {"running": 0, "waiting": 0, "scheduled": 0}
 
 
 def test_counts_match_overview_all_six_sources(client):
@@ -165,7 +167,22 @@ def test_counts_match_overview_all_six_sources(client):
     assert counts["goals"] == 1
     assert counts["delegations"] == 1
     assert counts["total"] == 6
+    assert counts["phases"] == {"running": 5, "waiting": 0, "scheduled": 1}
     assert run_id  # silence unused
+
+
+def test_counts_phases_waiting_parked_turn(client):
+    """三档计数 ⇆ 明细一致：parked turn → waiting（counts 的 O(1) 推导与
+    overview 逐句柄 phase 归并必须逐值相等）。"""
+    _seed_session("s-parked", title="等你回答")
+    _arm_turn("s-parked")
+    _park_turn("s-parked")
+    _seed_schedule_task()
+    counts = _get(client, "/api/tasks/counts")["counts"]
+    overview = _get(client, "/api/tasks/overview")["counts"]
+    assert counts == overview
+    assert counts["phases"] == {"running": 0, "waiting": 1, "scheduled": 1}
+    assert counts["total"] == 2
 
 
 def test_counts_parked_turn_counted_once(client):

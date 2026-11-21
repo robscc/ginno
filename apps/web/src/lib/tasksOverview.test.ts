@@ -17,7 +17,9 @@ import {
   normalizeTasksOverview,
   optimisticRemoveHandle,
   overviewGroups,
+  overviewPhaseGroups,
   overviewTotal,
+  phaseTotals,
   refreshTasksOverview,
   stopConfirmVariant,
   stopHandleWithRollback,
@@ -42,6 +44,7 @@ const REAL_BACKEND_SAMPLE: unknown = {
       started_at: 1732147200,
       stoppable: true,
       detail: "已运行 720s",
+      phase: "running",
     },
     {
       kind: "turn",
@@ -52,6 +55,7 @@ const REAL_BACKEND_SAMPLE: unknown = {
       stoppable: false,
       stop_hint: "等待你回答，请到会话中处理",
       detail: "等待你回答，请到会话中处理",
+      phase: "waiting",
     },
   ],
   scheduled: [
@@ -154,6 +158,34 @@ describe("normalizeTasksOverview（后端真实形状 → 统一句柄）", () =
     expect(d.turns[0]!.stoppable).toBe(true);
   });
 
+  it("phase 契约：服务端显式三态采信；旧 sidecar 无 phase 按 kind/stoppable 派生", () => {
+    // 显式：新 sidecar 直出 phase，原样保留
+    const d = normalizeTasksOverview(REAL_BACKEND_SAMPLE);
+    expect(d.turns[0]!.phase).toBe("running");
+    expect(d.turns[1]!.phase).toBe("waiting");
+    // 旧 sidecar（无 phase 字段）：parked turn（stoppable=false）→ waiting、
+    // schedule → scheduled、其余 → running
+    const legacy = normalizeTasksOverview({
+      turns: [
+        { id: "run-1", title: "在跑", stoppable: true },
+        { id: "park-1", title: "等人", stoppable: false },
+      ],
+      scheduled: [{ id: "st-1", title: "已排期" }],
+      subagents: [{ id: "p1", title: "子代理", session_id: "s1" }],
+    });
+    expect(legacy.turns[0]!.phase).toBe("running");
+    expect(legacy.turns[1]!.phase).toBe("waiting");
+    expect(legacy.scheduled[0]!.phase).toBe("scheduled");
+    expect(legacy.subagents[0]!.phase).toBe("running");
+    // 未知值（乱串/数字）同走派生，不透传脏数据
+    const junk = normalizeTasksOverview({
+      turns: [{ id: "x", title: "t", phase: "yolo" }],
+      scheduled: [{ id: "y", title: "s", phase: 42 }],
+    });
+    expect(junk.turns[0]!.phase).toBe("running");
+    expect(junk.scheduled[0]!.phase).toBe("scheduled");
+  });
+
   it("next_fire_at 契约：非数字（旧字符串/NaN/负数）一律丢弃", () => {
     const d = normalizeTasksOverview({
       scheduled: [
@@ -225,6 +257,52 @@ describe("overviewGroups / overviewTotal", () => {
 
   it("tab 总徽标 = 六组合计（样例 7 = 2+1+1+1+1+1）", () => {
     expect(overviewTotal(normalizeTasksOverview(REAL_BACKEND_SAMPLE))).toBe(7);
+  });
+});
+
+describe("overviewPhaseGroups / phaseTotals（2026-11-21 三档分类）", () => {
+  it("三段顺序固定：执行中 → 等你处理 → 已排期；turns 跨段拆分", () => {
+    const d = normalizeTasksOverview(REAL_BACKEND_SAMPLE);
+    const ph = overviewPhaseGroups(d);
+    expect(ph.map((p) => p.phase)).toEqual(["running", "waiting", "scheduled"]);
+    // running 段：turn(sid-1) + plan + run + goal + delegation，组序仍按六类
+    const running = ph[0]!;
+    expect(running.groups.map((g) => g.kind)).toEqual(["turn", "plan", "run", "goal", "delegation"]);
+    expect(running.total).toBe(5);
+    // waiting 段：只有 parked turn
+    expect(ph[1]!.groups.map((g) => g.kind)).toEqual(["turn"]);
+    expect(ph[1]!.total).toBe(1);
+    // scheduled 段：只有 schedule
+    expect(ph[2]!.groups.map((g) => g.kind)).toEqual(["schedule"]);
+    expect(ph[2]!.total).toBe(1);
+  });
+
+  it("空段不占位；全空 → 零段", () => {
+    const d = normalizeTasksOverview({ scheduled: [{ id: "s1", title: "x" }] });
+    expect(overviewPhaseGroups(d).map((p) => p.phase)).toEqual(["scheduled"]);
+    expect(overviewPhaseGroups(emptyTasksOverview())).toEqual([]);
+  });
+
+  it("段内保留六类明细句柄（对象同一性，动作/跳转字段不丢）", () => {
+    const d = normalizeTasksOverview(REAL_BACKEND_SAMPLE);
+    const ph = overviewPhaseGroups(d);
+    const runningTurn = ph[0]!.groups[0]!.items[0]!;
+    expect(runningTurn).toBe(d.turns[0]);
+    const waitingTurn = ph[1]!.groups[0]!.items[0]!;
+    expect(waitingTurn).toBe(d.turns[1]);
+    expect(waitingTurn.stoppable).toBe(false);
+  });
+
+  it("phaseTotals：三档计数与明细一致，合计 = overviewTotal", () => {
+    const d = normalizeTasksOverview(REAL_BACKEND_SAMPLE);
+    const totals = phaseTotals(d);
+    expect(totals).toEqual({ running: 5, waiting: 1, scheduled: 1 });
+    expect(totals.running + totals.waiting + totals.scheduled).toBe(overviewTotal(d));
+    expect(phaseTotals(emptyTasksOverview())).toEqual({
+      running: 0,
+      waiting: 0,
+      scheduled: 0,
+    });
   });
 });
 
@@ -418,6 +496,15 @@ describe("tasksOverview hub", () => {
     );
     await refreshTasksOverview();
     expect(tasksOverviewSnapshot().data).not.toBe(ref3);
+    const ref4 = tasksOverviewSnapshot().data;
+    // 仅改 phase（三档分组归属变了——2026-11-21 分类修订纳入等值判定）
+    const t4 = structuredClone(base);
+    (t4.runs![0] as unknown as { phase: string }).phase = "waiting";
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response(JSON.stringify(t4), { status: 200 }),
+    );
+    await refreshTasksOverview();
+    expect(tasksOverviewSnapshot().data).not.toBe(ref4);
     unsub();
   });
 

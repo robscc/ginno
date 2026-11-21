@@ -260,13 +260,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect tasks-overview related changes (path filter)
+      - name: Detect product UX and tasks-overview changes (path filter)
         id: filter
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           CHANGED="$(git diff --name-only "$BASE_SHA...HEAD")"
           echo "$CHANGED"
-          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_tasks_overview\.py$)|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
+          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_(tasks_overview|product_ux|ask_user)\.py$)|(^apps/web/src/components/(ConfirmModal|settings/(EnvVarsSettings|WorkflowsSettings))\.tsx$)|(^apps/web/src/lib/(workflows/|envVarsRows\.ts$|api/(workspace|workflows)\.ts$))|(^apps/web/messages/(en|zh-CN)/tools\.json$)|(^packages/runtime/src/ginno_runtime/(api/(workflows|settings)\.py$|workflows/))|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
             echo "smoke=true" >> "$GITHUB_OUTPUT"
           else
             echo "smoke=false" >> "$GITHUB_OUTPUT"
@@ -323,6 +323,14 @@ jobs:
           GINNO_E2E_RUNTIME: source
           GINNO_E2E_STRICT: "1"
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_tasks_overview.py -q --junitxml=smoke-junit.xml
+
+      - name: Run product UX regression (separate suite; keep smoke count at two)
+        if: steps.filter.outputs.smoke == 'true'
+        working-directory: packages/runtime
+        env:
+          GINNO_E2E_RUNTIME: source
+          GINNO_E2E_STRICT: "1"
+        run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_product_ux.py -q
 
       - name: Assert smoke actually ran (skip = fail, anti fake-green)
         if: steps.filter.outputs.smoke == 'true'

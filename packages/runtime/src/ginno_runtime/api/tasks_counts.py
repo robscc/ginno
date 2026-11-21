@@ -6,7 +6,7 @@
   打开时按 30s 轮询走这里——它要做 ``_find_meta`` 逐句柄扫索引和
   ``list_runs``/``all_active_plans`` 全历史 JSON 解析，属于「打开面板才付」
   的成本；
-* ``/api/tasks/counts``：SidebarHeader ▶N / RightPanel「运行」tab 徽标常驻
+* ``/api/tasks/counts``：右栏「运行」tab 徽标常驻
   轮询的轻量路径——**只回计数、不做标题 join、不建句柄**，且 runs/plans/
   goals 走 mtime 增量索引（见 ``_PerFileIndex``）：历史文件增多后，周期轮询
   只付 O(N) 次 ``stat``（微秒级），JSON 解析只发生在「新文件 / 文件被重写」
@@ -192,6 +192,25 @@ def _count_turns() -> int:
     return len(set(server_shared._RUNNING_TURNS) | set(server_shared._PENDING_RESUME))
 
 
+def _count_phases(total: int, scheduled: int, waiting: int) -> dict[str, int]:
+    """三档分类计数（2026-11-21，与 overview 的 handle.phase 同口径）的
+    O(1) 推导，零额外 I/O：
+
+    * waiting = ``|_PENDING_RESUME|``——overview 侧每个 parked sid 恰好产出
+      一个 phase=waiting 的句柄（并集去重保证同 sid 只出现一次）；
+    * running = total − waiting − scheduled——waiting 只出自 turns 组、
+      scheduled 只出自 schedule 组，其余五组与 running turn 全是 running；
+    * scheduled 即 scheduled 组计数（磁盘源已有）。
+
+    ``total`` 传六组合计（含 scheduled 自己），不是 turns 单组计数。
+    """
+    return {
+        "running": max(0, total - waiting - scheduled),
+        "waiting": waiting,
+        "scheduled": scheduled,
+    }
+
+
 def _count_delegations() -> int:
     """内存快照：in-flight 真源 _ACTIVE_DELEGATIONS，proc=None 的并发闸预占槽
     不算（overview._collect_delegations 同口径）。"""
@@ -251,9 +270,10 @@ async def tasks_counts() -> dict:
     runs/goals）丢线程池——徽标 30s 轮询 never blocks the loop。
     """
     turns = _count_turns()
+    waiting = len(server_shared._PENDING_RESUME)
     delegations = _count_delegations()
     disk = await asyncio.to_thread(_collect_disk_counts)
-    counts: dict[str, int] = {
+    counts: dict[str, Any] = {
         "turns": turns,
         "scheduled": disk["scheduled"],
         "subagents": disk["subagents"],
@@ -262,4 +282,5 @@ async def tasks_counts() -> dict:
         "delegations": delegations,
     }
     counts["total"] = sum(counts.values())
+    counts["phases"] = _count_phases(counts["total"], disk["scheduled"], waiting)
     return {"ok": True, "counts": counts}

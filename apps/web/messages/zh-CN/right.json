@@ -55,7 +55,8 @@
       "synthesis": "{n} 个总结正在进行",
       "memoryDraft": "记忆草稿待审阅",
       "notice": "{n} 条未读通知",
-      "running": "{n} 个任务进行中"
+      "running": "共 {n} 项任务",
+      "runningBreakdown": "共 {n} 项任务：执行中 {running} · 等你处理 {waiting} · 已排期 {scheduled}"
     },
     "memory": {
       "title": "全局记忆",
@@ -183,8 +184,13 @@
       "nextFire": "下次 {at}",
       "external": "外部会话",
       "notStoppable": "当前不可停止",
-      "view": "查看",
+      "openTitle": "打开「{title}」",
       "stopFailed": "「{title}」停止失败，已恢复列表",
+      "phases": {
+        "running": "执行中",
+        "waiting": "等你处理",
+        "scheduled": "已排期"
+      },
       "groups": {
         "turn": "正在对话",
         "schedule": "调度",
@@ -211,7 +217,7 @@
       },
       "confirmBodyPause": "「{title}」仅暂停，可随时在设置页恢复。",
       "confirmBodyIrreversible": "「{title}」将立即停止，此操作不可撤销。",
-      "badgeEntry": "{n} 个任务进行中，点击打开「运行」面板"
+      "badgeEntry": "共 {n} 项任务，点击打开「运行」面板"
     },
     "workflow": {
       "title": "工作流运行",

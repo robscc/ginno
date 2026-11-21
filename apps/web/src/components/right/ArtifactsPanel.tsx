@@ -27,7 +27,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
 import { pushNotice } from "@/lib/notice";
-import { ConfirmModal } from "@/components/ConfirmModal";
+import { ConfirmModal, hasOpenConfirmModal } from "@/components/ConfirmModal";
 import { FILE_MISSING_EVENT } from "@/components/chat/FileViewer";
 import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
 import { filterByText } from "@/lib/sessionTextFilter";
@@ -315,7 +315,7 @@ export function ArtifactMetaCard({
   // Escape: in edit mode → discard draft back to view; in view mode → close.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || hasOpenConfirmModal()) return;
       e.stopPropagation();
       if (editing) setEditing(false);
       else onClose();

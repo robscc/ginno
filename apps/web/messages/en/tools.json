@@ -591,8 +591,26 @@
       "mustBeObject": "DSL must be a JSON object",
       "missingNodes": "Missing nodes array (at least one node)",
       "missingEntry": "Missing entry (entry node id)",
+      "invalidNode": "Step {index} must be a node with a non-empty id.",
       "entryNotInNodes": "entry “{entry}” is not in nodes",
-      "dslOk": "DSL structure OK · {count} nodes"
+      "dslOk": "DSL structure OK · {count} nodes",
+      "builtinBadge": "Built-in",
+      "builtinHint": "Built-in workflows are maintained by the app and cannot be deleted.",
+      "deleteConfirmTitle": "Delete workflow “{name}”?",
+      "deleteConfirmBody": "This permanently deletes the workflow definition (all versions and its DSL). Past runs are kept. This cannot be undone.",
+      "deleting": "Deleting…",
+      "deleteFailed": "Delete failed: {error}",
+      "modeSteps": "Step editor",
+      "modeJson": "Advanced JSON",
+      "addStep": "Add step",
+      "removeStep": "Remove",
+      "stepNamePlaceholder": "Step name (label shown in run panels)",
+      "stepGoalPlaceholder": "Execution requirement — what the agent should do in this step",
+      "stepBlank": "Step {index} is blank — fill it in or remove it.",
+      "stepNoGoal": "Step {index}: execution requirement is required.",
+      "jsonInvalidSwitch": "JSON has not parsed yet — fix the syntax before switching to the step editor.",
+      "jsonTooComplex": "This JSON uses structures the step editor cannot represent (custom node types, branching, non-default agents, extra fields…). Kept in JSON mode — nothing was changed or downgraded.",
+      "jsonBadNode": "The node of step {index} cannot be represented in the step editor."
     },
     "synthesis": {
       "title": "Synthesis Quality",
@@ -1228,6 +1246,10 @@
       "saveFailed": "Save failed",
       "saveFailedConn": "Save failed: runtime unreachable",
       "loadFailed": "Failed to load",
+      "loading": "Loading…",
+      "saving": "Saving…",
+      "retry": "Retry",
+      "noChanges": "No changes to save",
       "pathNote": "PATH is appended after the existing value (not replaced); values accept string/number/boolean."
     }
   }
