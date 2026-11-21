@@ -1109,6 +1109,117 @@ def _tool_error_reply(exc: Exception) -> str:
     )
 
 
+def _compact_check_node_factory(model):
+    """turn 中压缩检查节点（P1，2026-11-21 mid-turn compaction 方案）。
+
+    接在 tools→agent 之间，每轮工具循环直通检查（本地 token 估算 <1ms）；
+    超软限（阈值−headroom）时对「历史轮次 + 当前 turn 前段」做摘要压缩、
+    **保留当前 turn 尾窗**（工作记忆），以 RemoveMessage + 摘要消息的
+    state 更新落地——add_messages reducer 语义天然串行，无 checkpoint
+    双写者（这正是不复用 turn 外 maybe_compact_history 的原因：它直接
+    aupdate_state，与本 graph run 并发冲突）。
+
+    节流：每 turn ≤2 次（contextvar 计数）；触发后软限 ×1.25 抬升（防
+    「压完立刻又超」循环）；2 次后放行让模型自然报错（保留可诊断性）。
+    """
+    import contextvars
+    import logging as _logging
+
+    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import RemoveMessage
+
+    _mclog = _logging.getLogger("ginno_runtime.midcompact")
+
+    _mid_count = contextvars.ContextVar("mid_compact_count", default=0)
+    _soft_boost = contextvars.ContextVar("mid_soft_boost", default=1.0)
+
+    async def compact_check(state: dict, config: dict | None = None) -> dict:
+        from .compaction import (
+            _effective_compact_threshold,
+            _msg_line,
+            _summary_system_message,
+            estimate_messages_tokens,
+        )
+        from .world_state import context_settings as _cs
+
+        settings = _cs()
+        if not settings.get("compact_mid_turn", True):
+            return {}
+        messages = state.get("messages") or []
+        est = estimate_messages_tokens(messages)
+        threshold = _effective_compact_threshold(settings, None)
+        headroom = int(settings.get("compact_mid_headroom_tokens", 32768))
+        soft = (threshold - headroom) * _soft_boost.get()
+        if _mid_count.get() >= int(settings.get("compact_mid_max_per_turn", 2)):
+            return {}  # 放行兜底：保留模型自然报错的可诊断性
+        if est <= soft:
+            return {}
+
+        session_id = str(
+            ((config or {}).get("configurable") or {}).get("session_id") or ""
+        )
+        # 尾窗切分：当前 turn 尾部 K 条原样保留（工作记忆）；system 类
+        # 消息（world 注入）一律保留；其余进摘要。
+        keep_tail = max(4, int(settings.get("compact_mid_tail_messages", 12)))
+        protected = [m for m in messages if getattr(m, "type", "") == "system"]
+        tail = [m for m in messages if getattr(m, "type", "") != "system"][-keep_tail:]
+        tail_ids = {id(m) for m in tail}
+        protected_ids = {id(m) for m in protected}
+        old = [m for m in messages if id(m) not in tail_ids and id(m) not in protected_ids]
+        if not old:
+            return {}
+        transcript = "\n".join(_msg_line(m) for m in old)
+
+        # 事件（惰性 import 无环；失败不影响压缩本身）
+        async def _ev(payload: dict) -> None:
+            try:
+                from .server_shared import _push_session_event
+
+                await _push_session_event(session_id, "context.compacting", payload, None)
+            except Exception:  # noqa: BLE001
+                pass
+
+        await _ev({"stage": "summarizing", "pct": 8, "reason": "mid-turn"})
+        try:
+            summary = await model.ainvoke(
+                [
+                    _summary_system_message(),
+                    HumanMessage(
+                        content=(
+                            "Summarize the following earlier conversation "
+                            "(a long running task continues; keep task-relevant "
+                            f"facts, decisions and file paths):\n\n{transcript}"
+                        )
+                    ),
+                ]
+            )
+        except Exception:  # noqa: BLE001 — 摘要失败：放行（不破坏 turn）
+            _mclog.warning("mid_compact_summary_failed session=%s", session_id or "?")
+            await _ev({"stage": "done", "pct": 100, "reason": "mid-turn-failed"})
+            return {}
+        drop = [
+            RemoveMessage(id=m.id)
+            for m in old
+            if getattr(m, "id", None) is not None
+        ]
+        _mid_count.set(_mid_count.get() + 1)
+        _soft_boost.set(_soft_boost.get() * 1.25)
+        _mclog.info(
+            "mid_turn_compact session=%s est=%d soft=%d dropped=%d kept_tail=%d",
+            session_id or "?", est, int(soft), len(drop), len(tail),
+        )
+        await _ev({"stage": "done", "pct": 100, "reason": "mid-turn"})
+        summary_msg = HumanMessage(
+            content=(
+                "[compact] 前段对话已压缩摘要（turn 中自动压缩）：\n"
+                + str(getattr(summary, "content", "") or "")
+            )
+        )
+        return {"messages": drop + [summary_msg]}
+
+    return compact_check
+
+
 def _tools_node_factory(all_tools):
     """Wrap the prebuilt ToolNode with output truncation (plan E2).
 
@@ -1317,7 +1428,12 @@ def build_graph(
     # like bg_run spawned duplicate tasks — 2026-11-03 session 1a0c1d77,
     # four pytest/cargo spawns from two calls). Verified by
     # test_permission_block_does_not_fork_lanes.
-    g.add_edge("tools", "agent")
+    g.add_node("compact_check", _compact_check_node_factory(model))
+    # turn 中压缩（P1）：工具循环每轮回 agent 前过一遍软限检查——
+    # 未超时直通零开销（本地估算 <1ms），超软限做「摘要旧轮次 + 保留
+    # 当前 turn 尾窗」的部分压缩（全量重建仍归 turn 边界 E3）。
+    g.add_edge("tools", "compact_check")
+    g.add_edge("compact_check", "agent")
 
     # NOTE: pending_writes intentionally stay hidden from langgraph here (the
     # checkpointer's default) — surfacing them changes resume semantics and,

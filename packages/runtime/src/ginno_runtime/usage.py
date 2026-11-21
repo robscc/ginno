@@ -128,6 +128,37 @@ NON_CONTEXT_SOURCES = frozenset({
 _CONTEXT_SCAN_ROWS = 20
 
 
+def last_turn_growth_tokens(session_id: str) -> int | None:
+    """上一 turn 的上下文净增估算（P0 外推充裕化，2026-11-21）。
+
+    E3 判定发生在 turn 开始前——usage 窗口内全部是已完成 turn 的调用。
+    口径：最近一个 turn（rows[0] 的 turn_id 组）的 max(input_tokens) +
+    max(output_tokens) ≈「再跑一个同规模 turn 需要的余量」。无 turn 分组
+    信息或无记录返回 None（不外推）。"""
+    try:
+        from . import usage_store
+
+        rows = (
+            usage_store.query_requests(
+                session_id=session_id, page=1, page_size=_CONTEXT_SCAN_ROWS
+            ).get("rows")
+            or []
+        )
+        ctx_rows = [r for r in rows if r.get("source") not in NON_CONTEXT_SOURCES]
+        if not ctx_rows:
+            return None
+        tid = ctx_rows[0].get("turn_id")
+        group = [r for r in ctx_rows if r.get("turn_id") == tid] if tid else ctx_rows[:1]
+        growth = max(int(r.get("input_tokens") or 0) for r in group) + max(
+            int(r.get("output_tokens") or 0) for r in group
+        )
+        # 净增不可能超过该 turn 总量的一半还离谱——cap 到窗口 1/4 防御
+        # 异常记录（工具循环但中间被清过 usage 等）。
+        return min(growth, 131_072)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def last_chat_input_tokens(session_id: str) -> int | None:
     """最近一次**对话调用**的全量 prompt tokens——TopBar 圆环同分子。
 
