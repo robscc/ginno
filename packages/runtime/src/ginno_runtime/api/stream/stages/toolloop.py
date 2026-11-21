@@ -77,6 +77,10 @@ async def handle_messages_tool_chunks(ctx: StreamTurnCtx, chunk) -> None:
                 _now = _time.monotonic()
                 if _now - ctx._last_args_tail_ts.get(tc_id, 0.0) >= 0.3:
                     ctx._last_args_tail_ts[tc_id] = _now
+                    # 保序对齐（2026-11-15 纪律）：非 delta 事件直发前先
+                    # flush 合帧缓冲——args 生成期与 text delta 互斥，理论
+                    # 无序风险≈0，但对齐 tool.start/tool.args 的既有写法。
+                    await ctx._coal.flush()
                     await ctx.safe_send(
                         ctx.emit(
                             "tool.args_delta",
