@@ -646,6 +646,7 @@ export function TranscriptList({
               failed={m.failed}
               ts={m.ts}
               isTail={m.id === lastAssistantId}
+              isLatestTurn={m.id === lastAssistantId}
               sessionKey={session?.id ?? null}
               onAnswerQuestion={answerQuestion}
               // questionLive: is this session's turn actually alive? A

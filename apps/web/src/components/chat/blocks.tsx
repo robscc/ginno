@@ -367,11 +367,14 @@ function useMcpToolsWithUi(): Record<string, McpToolUiInfo> {
 export function InnerBlocks({
   blocks,
   streaming,
+  isLatestTurn,
   onAnswerQuestion,
   questionLive,
 }: {
   blocks: Block[];
   streaming?: boolean;
+  /** 本 turn 是否为列表最新（决定历史编辑 diff 的默认收起，2026-11-21） */
+  isLatestTurn?: boolean;
   onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
   questionLive?: boolean;
 }) {
@@ -450,7 +453,7 @@ export function InnerBlocks({
           <McpAppCard key={`mcpapp-${key++}`} server={mcpUi.server} tool={mcpUi.tool} data={b.content} />,
         );
       }
-      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} />);
+      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} isLatestTurn={isLatestTurn} />);
     } else if (b.kind === "question") {
       out.push(
         <AskUserCard

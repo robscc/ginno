@@ -44,7 +44,7 @@ function BrowserHandoffCard() {
   );
 }
 
-export function ToolBlock({ name, content, pending, argsPreview, argsStream, diff }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload }) {
+export function ToolBlock({ name, content, pending, argsPreview, argsStream, diff, isLatestTurn = true }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload; isLatestTurn?: boolean }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
@@ -109,7 +109,9 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream, dif
     name === "delegate_agent" ||
     lineCount > LONG_OUTPUT_LINES ||
     content.length > LONG_OUTPUT_CHARS;
-  const expanded = open ?? !isLong;
+  // 编辑 diff（2026-11-21）：历史 turn 默认收起（长会话里旧 diff 铺满屏），
+  // 只有最新 turn 保持默认展开；用户手动点开/收起（open 非 null）恒优先。
+  const expanded = open ?? (diff && !isLatestTurn ? false : !isLong);
   const fail = shell?.ok === false;
   return (
     // 2026-11-11 样式打磨：状态色左缘条（绿/红一眼分）+ 圆角升级 + 状态

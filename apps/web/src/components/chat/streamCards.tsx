@@ -288,6 +288,7 @@ questionLive,
 connState,
 parkedTurn,
 isTail,
+  isLatestTurn,
 sessionKey,
 }: {
 agent: AgentConfig | null;
@@ -319,6 +320,8 @@ parkedTurn?: boolean;
 /** 本气泡是否转录流中最后一个 assistant 气泡：dev-swap 进度行（§4）在
  *  发起 turn 已结束（非 streaming）时也挂在尾部持续显示，靠它定位。 */
 isTail?: boolean;
+  /** 本气泡是否为最新 turn（透传 InnerBlocks → ToolBlock，历史 diff 默认收起） */
+  isLatestTurn?: boolean;
 /** 当前会话 id：dev-swap 进度行/结果落块的会话门控（§4.5 B 会话不打扰）。 */
 sessionKey?: string | null;
 }) {
@@ -497,6 +500,7 @@ return (
             <InnerBlocks
               blocks={blocks}
               streaming={streaming}
+              isLatestTurn={isLatestTurn}
               onAnswerQuestion={onAnswerQuestion}
               questionLive={questionLive}
             />
