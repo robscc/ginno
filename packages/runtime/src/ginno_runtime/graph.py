@@ -1171,6 +1171,35 @@ def _tools_node_factory(all_tools):
                             return  # 通道关闭：心跳退役，不拖垮工具节点
 
                 heartbeat = asyncio.get_running_loop().create_task(_beat())
+            # Worker ask_user 中断透传（relay-question ⑥ 的执行侧对称）：
+            # ToolNode 的工具注册表是 graph 构建时的静态 all_tools，而
+            # relay_answer 是运行时条件工具——agent_node 每个 superstep 按
+            # pending 登记动态补绑给 LLM，执行侧不认识会报 "not a valid
+            # tool"，模型按编排指令调了却永远失败（e2e 实录；单测直调
+            # helper 覆盖不到这层）。两层取工具：
+            #   * pending 登记非空 → enum 版（qid 描述随最新待答重建）；
+            #   * 登记已即销但本 superstep 的调用里有 relay_answer → loose
+            #     版（bind 成立在先，执行点可能已被 worker 用户直答即销——
+            #     晚到的代答走墓碑回执，不是 invalid tool name 死胡同）。
+            # 两条都不命中时不注册——静态工具集与会话行为零变化。
+            _relay_sid = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+            if _relay_sid:
+                try:
+                    from .worker_bus.relay import (
+                        build_relay_tool,
+                        build_relay_tool_loose,
+                    )
+
+                    _relay_tool = build_relay_tool(_relay_sid)
+                    if _relay_tool is None and any(
+                        tc.get("name") == "relay_answer"
+                        for tc in (state.get("pending_tool_calls") or [])
+                    ):
+                        _relay_tool = build_relay_tool_loose(_relay_sid)
+                    if _relay_tool is not None:
+                        node.tools_by_name[_relay_tool.name] = _relay_tool
+                except Exception:  # noqa: BLE001
+                    pass
             out = await node.ainvoke(state, config)
         finally:
             if heartbeat is not None:

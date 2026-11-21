@@ -181,7 +181,7 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
     # parking never reach this branch, so an unfinished goal is never
     # archived by a transient turn failure.
     try:
-        from ..sessions import _GOAL_DRIVERS, _archive_complete_goal
+        from ...sessions import _GOAL_DRIVERS, _archive_complete_goal
         from ....goals import store as _goal_store
 
         _g = _goal_store.get_goal(ctx.slug, ctx.session_id)

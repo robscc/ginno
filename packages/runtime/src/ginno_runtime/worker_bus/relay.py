@@ -591,6 +591,54 @@ def build_relay_tool(subscriber_id: str | None):
     return tool(relay_answer, args_schema=_RelayArgs)
 
 
+def build_relay_tool_loose(subscriber_id: str | None):
+    """tools_node 执行侧兜底（relay-question ⑥ 的执行对称补全）。
+
+    ``build_relay_tool`` 只在 pending 登记非空时产出（bind 侧语义正确：
+    没有待答问题时模型不该看到这个工具）。但模型**已经发出**的
+    relay_answer 调用必须可执行——bind 发生在 superstep 前，执行点登记
+    可能已被即销（worker 用户直答的竞态窗口，e2e 实录：默认 ask 权限下
+    订阅方的批准等待正好落在这个窗口里）。此变体不设 qid enum，凭证
+    校验全交给服务端 ``relay_answer_impl``（unknown qid / already_answered
+    墓碑都是合法 JSON 回执，模型可据此收场），避免 ToolNode 报
+    invalid tool name 把「晚到的代答」变成死胡同。
+    """
+    if not subscriber_id:
+        return None
+    from langchain_core.tools import tool
+
+    async def relay_answer(
+        worker_session: str, qid: str, choice: str | list[str],
+        mapping_reason: str = "",
+    ) -> str:
+        """Relay YOUR user's answer back to a parked worker question.
+
+        Executed after the question may already have been answered elsewhere;
+        the server replies with the authoritative outcome (resumed /
+        already_answered / unknown qid) — read the JSON and act on it.
+        """
+        return await relay_answer_impl(
+            subscriber_id, worker_session, qid, choice, mapping_reason
+        )
+
+    import pydantic
+
+    class _LooseArgs(pydantic.BaseModel):
+        worker_session: str = pydantic.Field(
+            description="worker session id (from the ginno_worker_question envelope)"
+        )
+        qid: str = pydantic.Field(description="question credential (q_…)")
+        choice: str | list[str] = pydantic.Field(
+            description="the ORIGINAL option text (list for multi-question cards)",
+        )
+        mapping_reason: str = pydantic.Field(
+            default="",
+            description="why the user's answer maps to that original option",
+        )
+
+    return tool(relay_answer, args_schema=_LooseArgs)
+
+
 def reconcile_relay() -> None:
     """启动恢复（server lifespan 调）：读盘重建 + 对全部待答条目重注入。
 
