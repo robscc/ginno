@@ -18,12 +18,18 @@ lighter rung below E3 in the ladder (Codex/Claude-Code style microcompact):
   new-id re-adds are actually removed-then-appended in the given order;
   (2) FileCheckpointer's delta mode detects history rewrites by message-id
   mismatch only — same-id content edits would be silently lost when the delta
-  chain is reconstructed. Cleared outputs are replaced by
-  ``CLEARED_TOOL_OUTPUT``.
+  chain is reconstructed. Cleared outputs are replaced by a short marker that
+  KEEPS a head excerpt of the original (``microcompact_head_chars``, default
+  1200 chars): the E3 summarizer builds its transcript only AFTER this
+  rewrite, and its prompt asks for code snippets to survive — a bare
+  "[old tool output cleared]" starved it of raw material, structurally
+  degrading code-heavy session summaries. The head keeps the beginning of
+  the output (where command lines / code usually live) while freeing the
+  bulk of the bytes.
 * No model call — a pure state rewrite, cheap. Tool invocation itself stays
   visible (the AIMessage ``tool_calls`` and the ToolMessage pairing survive);
-  only the bulky output body is dropped. The model can re-invoke the tool if
-  it needs the content again.
+  only the bulky output body is replaced by the marker + head excerpt. The
+  model can re-invoke the tool if it needs the full content again.
 
 Only runs when no interrupt is pending (``state.next`` empty) — never disturb
 a turn paused at a permission prompt (same guard as E3).
@@ -43,9 +49,15 @@ from langchain_core.messages import (
 from .compaction import _copy_with_new_id, find_split_index
 from .world_state import context_settings
 
-CLEARED_TOOL_OUTPUT = "[old tool output cleared]"
+CLEARED_TOOL_OUTPUT = "[old tool output cleared]"  # legacy full-clear marker
 
-# Prefix match (not equality) so future variants of the marker stay idempotent.
+# Replacement body for cleared outputs: marker + head excerpt of the original.
+# The E3 summarizer sees the transcript only AFTER this rewrite and its prompt
+# demands code snippets survive — a bare marker starved it (P1 audit 2026-11).
+_CLEARED_HEAD_PREFIX = "[old tool output cleared, head kept]\n"
+
+# Prefix match (not equality) so BOTH marker variants (legacy full clear and
+# head-kept) are recognized as already-cleared → idempotent across upgrades.
 _CLEARED_PREFIX = "[old tool output"
 
 
@@ -68,22 +80,35 @@ def _clearable_positions(messages: list[BaseMessage], split: int, min_chars: int
     return out
 
 
+def _cleared_content(original: str, head_chars: int) -> str:
+    """Replacement body: marker + head excerpt, trailing whitespace stripped.
+
+    Stripping the tail matters when the cut lands mid-whitespace — a ragged
+    trailing newline block costs tokens and tells the model nothing.
+    """
+    return f"{_CLEARED_HEAD_PREFIX}{original[:head_chars]}".rstrip()
+
+
 def rewrite_with_cleared(
-    messages: list[BaseMessage], positions: set[int]
+    messages: list[BaseMessage], positions: set[int], head_chars: int = 1200
 ) -> list[BaseMessage]:
-    """Delete-all + re-add in order, ``positions`` replaced by the marker.
+    """Delete-all + re-add in order, ``positions`` replaced by marker + head.
 
     Every message is re-added with a NEW id (see module docstring for why) —
     so the RemoveMessage batch actually clears the whole history and the
     re-added batch lands in the given order. Callers must have verified every
-    message carries an id.
+    message carries an id. Cleared positions keep the first ``head_chars``
+    of their original content (see ``_cleared_content``).
     """
     new_messages: list[BaseMessage] = [RemoveMessage(id=m.id) for m in messages]
     for i, m in enumerate(messages):
         if i in positions:
+            # ``_clearable_positions`` only selects str contents; ``str()`` is
+            # a defensive no-op for direct unit-level calls.
+            original = m.content if isinstance(m.content, str) else str(m.content)
             new_messages.append(
                 ToolMessage(
-                    content=CLEARED_TOOL_OUTPUT,
+                    content=_cleared_content(original, head_chars),
                     tool_call_id=getattr(m, "tool_call_id", None),
                     name=getattr(m, "name", None),
                     status=getattr(m, "status", None),
@@ -102,7 +127,9 @@ async def maybe_microcompact_history(
     """Clear stale tool outputs. Returns stats dict or None.
 
     ``session`` is the server's in-memory session dict (needs "graph").
-    Stats: ``cleared_tool_outputs`` (count) and ``chars_freed``.
+    Stats: ``cleared_tool_outputs`` (count) and ``chars_freed`` — net chars
+    freed AFTER the head excerpts are kept (``len(original) - len(replacement)``
+    per cleared message).
     """
     settings = context_settings()
     if not settings.get("microcompact_enabled", True):
@@ -121,16 +148,19 @@ async def maybe_microcompact_history(
     if split <= 0:
         return None
     min_chars = int(settings.get("microcompact_min_chars", 500))
+    head_chars = max(0, int(settings.get("microcompact_head_chars", 1200)))
     positions = _clearable_positions(messages, split, min_chars)
     if not positions:
         return None
 
     chars_freed = sum(
-        len(str(messages[i].content)) - len(CLEARED_TOOL_OUTPUT) for i in positions
+        len(str(messages[i].content))
+        - len(_cleared_content(str(messages[i].content), head_chars))
+        for i in positions
     )
     await graph.aupdate_state(
         config,
-        {"messages": rewrite_with_cleared(messages, positions)},
+        {"messages": rewrite_with_cleared(messages, positions, head_chars)},
         as_node="agent",
     )
     return {

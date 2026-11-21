@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 
 from ginno_runtime import jsonx as json
 from ginno_runtime.microcompact import (
-    CLEARED_TOOL_OUTPUT,
+    _cleared_content,
     _clearable_positions,
     maybe_microcompact_history,
     rewrite_with_cleared,
@@ -17,6 +17,8 @@ from ginno_runtime.microcompact import (
 pytestmark = pytest.mark.unit
 
 BIG = "x" * 1200  # > default microcompact_min_chars (500)
+HUGE = "y" * 3000  # > default microcompact_head_chars (1200)
+HEAD_PREFIX = "[old tool output cleared, head kept]\n"
 
 
 @tool
@@ -55,7 +57,20 @@ async def _seed_turns(graph, config, n: int):
 
 
 async def test_marker_text():
-    assert CLEARED_TOOL_OUTPUT == "[old tool output cleared]"
+    # Two marker generations, one idempotency prefix (startswith, not ==).
+    assert "[old tool output cleared]".startswith("[old tool output")
+    assert (HEAD_PREFIX + "abc").startswith("[old tool output")
+
+
+def test_cleared_content_keeps_head_and_strips_trailing_whitespace():
+    # cut inside the content → head excerpt only
+    assert _cleared_content(HUGE, 1200) == HEAD_PREFIX + "y" * 1200
+    # content shorter than head → kept whole
+    assert _cleared_content("abcdef", 1200) == HEAD_PREFIX + "abcdef"
+    # cut lands mid-whitespace → tail stripped, marker still prefix-recognizable
+    assert _cleared_content("abc\n\n  ", 5) == HEAD_PREFIX + "abc"
+    # empty content → marker alone (still starts with the prefix)
+    assert _cleared_content("", 1200) == "[old tool output cleared, head kept]"
 
 
 # --------------------------------------------------------------------------- #
@@ -68,7 +83,9 @@ def test_clearable_positions_skip_small_and_cleared():
         AIMessage(content="", tool_calls=[call], id="a0"),
         ToolMessage(content=BIG, tool_call_id="c0", id="t0"),  # clearable
         ToolMessage(content="ok", tool_call_id="c0", id="t1"),  # too small
-        ToolMessage(content=CLEARED_TOOL_OUTPUT, tool_call_id="c0", id="t2"),  # done
+        # already cleared (head-kept marker, 1232 chars > min_chars) — the
+        # prefix check, not the length check, is what keeps it idempotent
+        ToolMessage(content=HEAD_PREFIX + BIG, tool_call_id="c0", id="t2"),
         HumanMessage(content="q1", id="h1"),  # split (keep_turns=1)
         AIMessage(content="", tool_calls=[dict(call, id="c1")], id="a1"),
         ToolMessage(content=BIG, tool_call_id="c1", id="t3"),  # kept window
@@ -92,7 +109,8 @@ def test_rewrite_preserves_order_and_pairs():
     assert human.content == "q0" and human.id != "h0"
     assert ai.tool_calls == [call] and ai.id != "a0"
     assert tm.id != "t0"
-    assert tm.content == CLEARED_TOOL_OUTPUT
+    # marker + head excerpt (BIG is exactly 1200 chars → kept whole)
+    assert tm.content == HEAD_PREFIX + BIG
     assert tm.tool_call_id == "c0" and tm.name == "echo"  # pairing survives
 
 
@@ -101,8 +119,9 @@ def test_rewrite_preserves_order_and_pairs():
 # --------------------------------------------------------------------------- #
 async def test_old_tool_outputs_cleared_recent_kept(isolated_home):
     # 4 user turns: 3 with tool calls, then one plain. keep_turns default 3 →
-    # only turn 0 lies outside the keep window.
-    model = _scripts(3, [BIG, BIG, BIG])
+    # only turn 0 lies outside the keep window. Turn 0's output is HUGE
+    # (> head) so the clear actually frees chars.
+    model = _scripts(3, [HUGE, BIG, BIG])
     graph, config = _graph_and_config(model, "mc-1")
     await _seed_turns(graph, config, 4)
 
@@ -116,7 +135,9 @@ async def test_old_tool_outputs_cleared_recent_kept(isolated_home):
     msgs = state.values["messages"]
     tools = [m for m in msgs if isinstance(m, ToolMessage)]
     assert len(tools) == 3
-    assert tools[0].content == CLEARED_TOOL_OUTPUT  # the stale one
+    # the stale one: marker + head excerpt (only the first 1200 of HUGE)
+    assert tools[0].content.startswith(HEAD_PREFIX)
+    assert tools[0].content == HEAD_PREFIX + HUGE[:1200]
     assert tools[1].content == BIG and tools[2].content == BIG  # keep window intact
     # user turns untouched and in order
     humans = [m.content for m in msgs if isinstance(m, HumanMessage)]
@@ -194,3 +215,87 @@ async def test_no_tool_history_is_noop(isolated_home):
     await _seed_turns(graph, config, 4)
     session = {"graph": graph, "project_slug": "default", "session_id": "mc-7"}
     assert await maybe_microcompact_history(session, config) is None
+
+
+# --------------------------------------------------------------------------- #
+# head-excerpt contract (P1: don't starve the E3 summarizer of raw material)
+# --------------------------------------------------------------------------- #
+async def test_long_output_keeps_head_excerpt(isolated_home):
+    # 3000-char output, default head 1200 → marker + first 1200 chars, and
+    # chars_freed accounts for the kept head (net, not gross).
+    model = _scripts(3, [HUGE, BIG, BIG])
+    graph, config = _graph_and_config(model, "mc-8")
+    await _seed_turns(graph, config, 4)
+    session = {"graph": graph, "project_slug": "default", "session_id": "mc-8"}
+
+    stats = await maybe_microcompact_history(session, config)
+    assert stats is not None
+    assert stats["cleared_tool_outputs"] == 1
+    state = await graph.aget_state(config)
+    tools = [m for m in state.values["messages"] if isinstance(m, ToolMessage)]
+    assert tools[0].content == HEAD_PREFIX + HUGE[:1200]
+    assert stats["chars_freed"] == len(HUGE) - len(tools[0].content)
+
+
+async def test_short_output_untouched(isolated_home):
+    # ≤ microcompact_min_chars stays cheap-to-keep state ("ok") — never
+    # rewritten, not even into a marker + head.
+    model = _scripts(3, ["ok", BIG, BIG])
+    graph, config = _graph_and_config(model, "mc-9")
+    await _seed_turns(graph, config, 4)
+    session = {"graph": graph, "project_slug": "default", "session_id": "mc-9"}
+
+    assert await maybe_microcompact_history(session, config) is None
+    state = await graph.aget_state(config)
+    tools = [m for m in state.values["messages"] if isinstance(m, ToolMessage)]
+    assert tools[0].content == "ok"
+
+
+async def test_second_clear_idempotent_head_not_retruncated(isolated_home):
+    # After the first clear the replacement is 1232 chars — still way above
+    # min_chars (500). Only the marker prefix keeps a second run from
+    # re-truncating the head excerpt (and double-wrapping the marker).
+    model = _scripts(3, [HUGE, BIG, BIG])
+    graph, config = _graph_and_config(model, "mc-10")
+    await _seed_turns(graph, config, 4)
+    session = {"graph": graph, "project_slug": "default", "session_id": "mc-10"}
+
+    first = await maybe_microcompact_history(session, config)
+    assert first is not None
+    state = await graph.aget_state(config)
+    cleared_once = [
+        m.content
+        for m in state.values["messages"]
+        if isinstance(m, ToolMessage) and m.content.startswith("[old tool output")
+    ]
+    assert cleared_once == [HEAD_PREFIX + HUGE[:1200]]
+
+    assert await maybe_microcompact_history(session, config) is None
+    state = await graph.aget_state(config)
+    cleared_twice = [
+        m.content
+        for m in state.values["messages"]
+        if isinstance(m, ToolMessage) and m.content.startswith("[old tool output")
+    ]
+    assert cleared_twice == cleared_once  # byte-identical, no re-processing
+
+
+async def test_head_chars_override(isolated_home, monkeypatch):
+    # The setting key flows from context_settings() to the excerpt length.
+    # (Patched at the module boundary: world_state's _CONTEXT_DEFAULTS
+    # registry entry for the key is wired separately from this module.)
+    import ginno_runtime.microcompact as mc
+
+    monkeypatch.setattr(
+        mc, "context_settings", lambda: {"microcompact_head_chars": 50}
+    )
+    model = _scripts(3, [HUGE, BIG, BIG])
+    graph, config = _graph_and_config(model, "mc-11")
+    await _seed_turns(graph, config, 4)
+    session = {"graph": graph, "project_slug": "default", "session_id": "mc-11"}
+
+    stats = await maybe_microcompact_history(session, config)
+    assert stats is not None
+    state = await graph.aget_state(config)
+    tools = [m for m in state.values["messages"] if isinstance(m, ToolMessage)]
+    assert tools[0].content == HEAD_PREFIX + HUGE[:50]

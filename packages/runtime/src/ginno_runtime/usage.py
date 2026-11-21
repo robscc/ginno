@@ -144,7 +144,18 @@ def last_turn_growth_tokens(session_id: str) -> int | None:
             ).get("rows")
             or []
         )
-        ctx_rows = [r for r in rows if r.get("source") not in NON_CONTEXT_SOURCES]
+        # context_baseline 必须排除（2026-11-21 实测：真实 turn 35k/2k +
+        # 压缩落下的基线 60k → growth 误返回 60000）：基线行排在窗口最前
+        # 且无 turn_id，被当成「上一 turn 增量」后，小窗口模型下
+        # current+growth ≥ threshold+8k 恒成立，压完下个 turn 必再触发全量
+        # 压缩。基线只服务 last_chat_input_tokens / 圆环的即时校正
+        # （f5e441b 有意行为），不是增量口径的原料。全剩 baseline 时
+        # ctx_rows 为空 → 返回 None（不外推）。
+        ctx_rows = [
+            r
+            for r in rows
+            if r.get("source") not in NON_CONTEXT_SOURCES and r.get("source") != "context_baseline"
+        ]
         if not ctx_rows:
             return None
         tid = ctx_rows[0].get("turn_id")

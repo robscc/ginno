@@ -186,6 +186,60 @@ def test_session_totals_and_empty(isolated_home):
     assert usage_store.session_totals("missing") is None
 
 
+def test_aggregates_skip_synthetic_context_baseline(isolated_home):
+    """聚合排除合成基线（2026-11-21 实测定罪）：真实 30k/3k + 基线 60k，
+    修复前 session_totals（TopBar 会话计数）与 aggregate_overview（用量页
+    KPI）均报 input 90000/calls 2——每压缩一次虚增一次调用和整个压后上下文。
+    SYNTHETIC_SOURCES 行级过滤后聚合只含真实调用；latest_record 等原始行
+    读取继续看得到基线。"""
+    import time as _time
+
+    t0 = _time.time()
+    usage_store.record(
+        input_tokens=30_000, output_tokens=3_000, cache_read_tokens=0,
+        cache_creation_tokens=0, provider="anthropic", model="claude-x",
+        session_id="audit-agg", turn_id="t1", ts=t0 - 2,
+    )
+    usage_store.record(
+        input_tokens=60_000, output_tokens=0, cache_read_tokens=0,
+        cache_creation_tokens=0, provider="", model="",
+        session_id="audit-agg", source="context_baseline", ts=t0 - 1,
+    )
+
+    st = usage_store.session_totals("audit-agg")
+    assert st["input_tokens"] == 30_000
+    assert st["output_tokens"] == 3_000
+    assert st["calls"] == 1
+    many = usage_store.session_totals_many({"audit-agg"})
+    assert many is not None
+    assert many["input_tokens"] == 30_000 and many["calls"] == 1
+
+    ov = usage_store.aggregate_overview(7)
+    assert ov["totals"]["input_tokens"] == 30_000
+    assert ov["totals"]["calls"] == 1
+    assert ov["today"]["input_tokens"] == 30_000  # today 循环同样排除
+    assert ov["today"]["calls"] == 1
+    # providers/models/sources 分解里 context_baseline 一并消失（预期）
+    assert "context_baseline" not in {s["source"] for s in ov["sources"]}
+    assert {p["provider"] for p in ov["providers"]} == {"anthropic"}
+    # 原始行不过滤：latest_record 仍返回基线（last_chat_input_tokens 同源）
+    latest = usage_store.latest_record("audit-agg")
+    assert latest is not None and latest["source"] == "context_baseline"
+
+
+def test_baseline_only_session_not_counted(isolated_home):
+    """只有基线行：会话/树合计不计（None），overview 零计数。"""
+    _record(input_tokens=60_000, output_tokens=0, provider="", model="",
+            session_id="audit-base-only", source="context_baseline")
+    assert usage_store.session_totals("audit-base-only") is None
+    assert usage_store.session_totals_many({"audit-base-only"}) is None
+    ov = usage_store.aggregate_overview(7)
+    assert ov["totals"]["calls"] == 0
+    assert ov["totals"]["input_tokens"] == 0
+    # sessions_active 也不把只有基线的会话计入
+    assert ov["sessions_active"] == 0
+
+
 def test_session_totals_many_aggregates_a_tree(isolated_home):
     """集合版单趟聚合：一棵子会话树（父 + 多子）的合计，None 当且仅当
     整棵树无记录（2026-10-12：TopBar 改全树口径的底座）。"""

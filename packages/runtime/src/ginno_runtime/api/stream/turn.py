@@ -352,6 +352,23 @@ def _sync_rewrite_into_content(
     return rewritten
 
 
+def _reset_mid_compact(config: dict) -> None:
+    """turn 发起时归零 mid-turn 压缩节流（graph._MID_STATE，审计 B）。
+
+    ContextVar 版跨 langgraph superstep 丢状态后改为模块级 dict——计数
+    会跨 turn 泄漏（上 turn 用满额度的会话，新 turn 永远放行兜底），
+    每个真正发起 turn 的入口 best-effort 重置；失败绝不阻断 turn。
+    """
+    try:
+        from ...graph import reset_mid_compact_state
+
+        reset_mid_compact_state(
+            str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+        )
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+
+
 async def _run_stream(
     ws: WebSocket | None,
     graph,
@@ -792,6 +809,7 @@ async def _run_stream(
         "context_dirs": list(session.get("context_dirs") or []),
         "primary_path": str(session.get("primary_path") or ""),
     }
+    _reset_mid_compact(config)  # 审计 B：新 turn 归零 mid 压缩节流
     await _stream_graph(graph, config, input_state=input_state)
 
 
@@ -802,4 +820,5 @@ async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: d
     _sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
     if _sid:
         _vibe_island.permission_result(_sid)
+    _reset_mid_compact(config)  # 审计 B：resume 再入也按新 turn 归零节流
     await _stream_graph(graph, config, command=Command(resume=resume_value))
