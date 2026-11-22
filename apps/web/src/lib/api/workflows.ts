@@ -202,6 +202,13 @@ export async function doctorWorkflow(id: string) {
 }
 
 // ---- workflow dry-run (stability plan P1d: zero-LLM preflight) ----
+
+/** python 节点 entry 白名单（scripts/ENTRY_REGISTRY）+ docstring——方案 D2：
+ *  NodeInspector 的 entry 下拉数据源。只读、无副作用；404/断连时调用方降级手输。 */
+export async function listPythonEntries() {
+  return json<{ entries: Array<{ name: string; doc?: string }> }>(`${BASE}/workflows/python-entries`);
+}
+
 export interface DryRunFinding {
   rule: string;
   node_id?: string;
