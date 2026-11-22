@@ -254,3 +254,64 @@ def test_config_override_disables_passthrough(monkeypatch):
         reasoning_passthrough=False,
     )
     assert "reasoning_content" not in out["messages"][1]
+
+
+# --------------------------------------------------------------------------- #
+# zhipu 方言 + 路由前缀判别（2026-11-22 会话 1821ce8 报障：zhipu/glm-5.3
+# 被池前缀遮成 generic → off 落 minimal（上游仍回 38 字思考）、auto 完全
+# 不发参数（上游默认开思考）——「怎么改思考都没用」。上游实测：合法值
+# none/minimal/low/medium/high/xhigh/max；thinking 开关只减不关。
+# --------------------------------------------------------------------------- #
+def test_dialect_routing_prefix_leaf():
+    from ginno_runtime.models import thinking_dialect
+
+    cfg = {"base_url": "http://127.0.0.1:3425/v1"}
+    assert thinking_dialect(cfg, "zhipu/glm-5.3") == "zhipu"
+    assert thinking_dialect(cfg, "qwen-token-plan/glm-5.3") == "glm"
+    assert thinking_dialect(cfg, "bailian-token-plan-2/qwen3.8-max") == "qwen"
+    assert thinking_dialect(cfg, "chatgpt-api/gpt-6.2-astra") == "generic"
+    assert thinking_dialect(cfg, "glm-4-plus") == "glm"
+    assert thinking_dialect(cfg, "qwen3.8-max") == "qwen"
+    assert thinking_dialect(cfg, "deepseek-v4.1-flash") == "deepseek"
+    assert thinking_dialect({"base_url": "https://open.bigmodel.cn/api"}, "x") == "glm"  # bigmodel 直连维持老开关契约
+
+
+def _mk_zhipu(monkeypatch, over=None):
+    monkeypatch.setattr(
+        prov_mod, "load_providers", lambda: {"custom": {**_cfg(), **(over or {})}}
+    )
+    from ginno_runtime.models import build_model
+
+    return build_model
+
+
+def test_zhipu_off_maps_to_none_not_minimal(monkeypatch):
+    m = _mk_zhipu(monkeypatch)("custom", "zhipu/glm-5.3", thinking_effort="off")
+    assert getattr(m, "reasoning_effort", None) == "none"
+
+
+def test_zhipu_efforts_passthrough(monkeypatch):
+    for eff in ("low", "medium", "high"):
+        m = _mk_zhipu(monkeypatch)("custom", "zhipu/glm-5.3", thinking_effort=eff)
+        assert getattr(m, "reasoning_effort", None) == eff, eff
+
+
+def test_zhipu_auto_respects_enable_thinking_false(monkeypatch):
+    # auto（effort=None）+ 配置 enable_thinking=False（_cfg 默认）→ 显式
+    # none（上游默认开思考，不发参数关不掉）
+    m = _mk_zhipu(monkeypatch)("custom", "zhipu/glm-5.3", thinking_effort=None)
+    assert getattr(m, "reasoning_effort", None) == "none"
+    # 配置打开思考 → 维持旧行为：extra_body.enable_thinking=True
+    m2 = _mk_zhipu(monkeypatch, {"enable_thinking": True})(
+        "custom", "zhipu/glm-5.3", thinking_effort=None
+    )
+    assert getattr(m2, "reasoning_effort", None) is None
+    assert _et(m2) is True
+
+
+def test_generic_off_still_minimal_openai_official(monkeypatch):
+    # OpenAI 官方值域没有 none——generic（含 chatgpt-api 池）off 维持
+    # minimal 映射不变（会话 1821ce8 的 astra 实测上游不回流思考，与
+    # 本修复无关）。
+    m = _mk_zhipu(monkeypatch)("custom", "chatgpt-api/gpt-6.2-astra", thinking_effort="off")
+    assert getattr(m, "reasoning_effort", None) == "minimal"
