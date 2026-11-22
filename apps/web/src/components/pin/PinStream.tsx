@@ -558,6 +558,7 @@ export function PinStream({
       files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
       notReadyLabel: () => t("connNotReady"),
       failedLabel: () => t("sendFailed"),
+      tooLongLabel: () => t("textTooLong"),
       // 记入输入历史(队列 flush 会二次 append,连续去重吸收)。notReady
       // 早退路径不记——内容还在输入框里。
       onSent: (turnId) => {

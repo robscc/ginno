@@ -55,6 +55,8 @@ export interface PinTurnApi<Msg extends SessionMsg> {
   mid: () => string;
 }
 
+import { MAX_SEND_TEXT_BYTES, textByteLength } from "@/lib/limits";
+
 export interface PinPostTurnArgs {
   /** 发给服务端的 message 文本。 */
   text: string;
@@ -65,6 +67,8 @@ export interface PinPostTurnArgs {
   files?: Array<{ id: string; name: string; path: string }>;
   notReadyLabel: () => string;
   failedLabel: () => string;
+  /** 文本超 WS 上限（D11）时的行内提示。 */
+  tooLongLabel: () => string;
   /** 已发出（清 input/附件/重置输入框高度）。turnId 是本端乐观生成的
    *  turn id——消费方的 steer 队列要用它指向在途 turn（发到 turn.start
    *  到达之间的窗口期）。 */
@@ -352,6 +356,11 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
     if (busyRef.current) return false;
     if (!socket.isOpen()) {
       setSendError(args.notReadyLabel());
+      return false;
+    }
+    // 超大文本前置拦截（D11）：与后端 WS 1MB 帧上限同口径。
+    if (textByteLength(args.text) > MAX_SEND_TEXT_BYTES) {
+      setSendError(args.tooLongLabel());
       return false;
     }
     const turnId = newTurnId();

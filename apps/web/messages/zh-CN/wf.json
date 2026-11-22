@@ -189,7 +189,8 @@
       "collapseDiff": "收起差异",
       "viewDiff": "查看完整差异（{count} 处变更）",
       "applying": "应用中…",
-      "apply": "应用（生成新版本）"
+      "apply": "应用（生成新版本）",
+      "textTooLong": "文本过长（上限 1MB），请精简后再发送"
     },
     "miniDag": {
       "extractTitle": "提取 · {id}",

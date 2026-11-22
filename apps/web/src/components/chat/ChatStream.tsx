@@ -10,6 +10,7 @@ import { getLinkedSessions } from "@/lib/api/sessions";
 import type { LinkedMentionEntry } from "@/components/chat/commandMenu";
 import { isRemoteSession } from "@/components/chat/remoteGuard";
 import { pushNotice } from "@/lib/notice";
+import { MAX_SEND_TEXT_BYTES, textByteLength } from "@/lib/limits";
 import { useTranslations } from "next-intl";
 import { agentHex } from "@/lib/theme";
 import { hasPendingTool, type Block } from "@/components/chat/blocks";
@@ -507,6 +508,33 @@ export function ChatStream({
     const uid = userMsgId ?? mid();
     const sock = socketsRef.current[sid];
     const sockReady = !!sock && sock.readyState === WebSocket.OPEN;
+
+    // 超大文本前置拦截（D11）：后端 WS 对 >1MB 文本帧回 error 事件（uvicorn
+    // 层 >16MB 直接 1009 断连）——与其发出后收到报错，发送前就拦下并给
+    // 可见失败原因，payload 保留可编辑/重试。
+    if (textByteLength(payload.text) > MAX_SEND_TEXT_BYTES) {
+      storeRef.current[sid] = userMsgId
+        ? (storeRef.current[sid] ?? []).map((m) =>
+            m.id === userMsgId
+              ? { ...m, status: "failed" as const, failReason: "textTooLong" }
+              : m,
+          )
+        : [
+            ...(storeRef.current[sid] ?? []),
+            {
+              id: uid,
+              role: "user" as const,
+              blocks: userBlocks,
+              turnId,
+              agentId: payload.agentId,
+              status: "failed" as const,
+              failReason: "textTooLong",
+              sendPayload: payload,
+            },
+          ];
+      syncDisplay(sid);
+      return;
+    }
 
     if (!sockReady) {
       // 断线窗口发送（2026-11-07 /compact「连接断开——未送达」实案）：

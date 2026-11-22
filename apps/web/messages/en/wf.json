@@ -189,7 +189,8 @@
       "collapseDiff": "Collapse diff",
       "viewDiff": "View full diff ({count} changes)",
       "applying": "Applying…",
-      "apply": "Apply (creates a new version)"
+      "apply": "Apply (creates a new version)",
+      "textTooLong": "Text too long (max 1MB) — trim before sending"
     },
     "miniDag": {
       "extractTitle": "Extract · {id}",

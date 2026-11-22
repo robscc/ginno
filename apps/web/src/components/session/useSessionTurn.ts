@@ -39,6 +39,8 @@ export interface TurnEventApi<Msg extends SessionMsg> {
   mid: () => string;
 }
 
+import { MAX_SEND_TEXT_BYTES, textByteLength } from "@/lib/limits";
+
 export interface PostTurnArgs {
   /** 发给服务端的 message 文本。 */
   text: string;
@@ -49,6 +51,8 @@ export interface PostTurnArgs {
   files?: Array<{ id: string; name: string; path: string }>;
   notReadyLabel: () => string;
   failedLabel: () => string;
+  /** 文本超 WS 上限（D11）时的行内提示。 */
+  tooLongLabel: () => string;
   /** 已发出（清 input/附件/重置输入框高度）；失败回滚后（放回 composer）。 */
   onSent?: () => void;
   onFailed?: (text: string) => void;
@@ -264,6 +268,11 @@ export function useSessionTurn<Msg extends SessionMsg>(opts: UseSessionTurnOpts<
     if (busyRef.current) return false;
     if (!socket.isOpen()) {
       setSendError(args.notReadyLabel());
+      return false;
+    }
+    // 超大文本前置拦截（D11）：与后端 WS 1MB 帧上限同口径。
+    if (textByteLength(args.text) > MAX_SEND_TEXT_BYTES) {
+      setSendError(args.tooLongLabel());
       return false;
     }
     const turnId = newTurnId();

@@ -166,7 +166,8 @@
       "title": "Send failed: {reason}",
       "ariaRetry": "Send failed, click to retry",
       "editResend": "Edit & resend",
-      "delete": "Delete"
+      "delete": "Delete",
+      "textTooLong": "Text too long (max 1MB) — not sent"
     },
     "permission": {
       "title": "Permission required",

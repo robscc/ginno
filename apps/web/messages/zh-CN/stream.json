@@ -23,6 +23,7 @@
     "compact_started": "压缩已启动，完成后通知结果",
     "error_channel_readonly": "渠道会话（企微/钉钉）在 IM 侧对话，此处只读",
     "remote_accepted": "远端 {peer} 已接单",
-    "remote_state": "远端状态：{state}"
+    "remote_state": "远端状态：{state}",
+    "error_text_too_long": "文本过长（上限 {limit}MB），消息未发送"
   }
 }
