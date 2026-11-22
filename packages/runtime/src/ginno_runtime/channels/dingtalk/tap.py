@@ -156,7 +156,8 @@ class DingTalkTap(ChannelTap):
         self._question_id = str(q["id"] or "")
         # register_question 是协程（内部持 _q_lock）：漏 await 时卡片回调
         # 查不到登记、静默 no-op——提问永远无法作答（wecom 侧同路径有 await）。
-        await self.adapter.register_question(self._question_id, self.session_id)
+        await self.adapter.register_question(
+            self._question_id, self.session_id, staff_id=self.staff_id)
         try:
             await self.adapter.cards.send_question_card(self.staff_id, q)
         except Exception:
@@ -173,7 +174,7 @@ class DingTalkTap(ChannelTap):
             timeout_s, lambda: asyncio.create_task(self._ask_timeout()))
 
     async def _ask_timeout(self) -> None:
-        from ...api.stream.resume import resume_pending_interrupt
+        from ...api.stream.resume import resume_question
 
         if self._question_id:
             await self.adapter.unregister_question(self._question_id)
@@ -181,10 +182,18 @@ class DingTalkTap(ChannelTap):
                 await self.adapter.cards.disable_question_card(self._question_id)
             except Exception:
                 pass
-        resume_pending_interrupt(
-            self.session_id,
-            {"kind": "user_answer", "answer": "", "option_index": None, "skip": True},
-        )
+        # 超时跳过同样走 resume_question 共享段（对齐 wecom tap，PR #278）。
+        # 刻意不带 arm_from_checkpoint：计时器是兜底不是凭证——用户可能
+        # 刚在桌面答完（resume 任务在跑），宽松武装会把已答问题再拉起。
+        ok = await resume_question(
+            self.session_id, skip=True, answered_by="dingtalk_timeout")
+        if ok:
+            # 渠道墓碑：超时跳过也算「已答」，晚到的按钮点按命中墓碑被
+            # 拒绝并告知，而不是静默丢失。
+            self.adapter.mark_question_answered(
+                self._question_id or "", session_id=self.session_id,
+                skip=True, answered_by="dingtalk_timeout",
+                staff_id=self.staff_id)
 
     def _cancel_ask_timer(self) -> None:
         if self._ask_timer is not None:

@@ -362,3 +362,123 @@ async def test_e2e_attachment_downloads_and_attaches(monkeypatch, tmp_path):
     assert files[0]["path"].endswith("报表.xlsx") and files[0]["kind"] == "file"
     with open(files[0]["path"], "rb") as fh:  # 下载内容真实落盘
         assert fh.read() == b"XLSX-BYTES"
+
+
+# ------------------------------------------- F4b 直答 resume_question 语义
+# （对齐 wecom PR #278 的四分支幂等：qid 一次性凭证 + 墓碑重放防线 +
+# 守卫/checkpoint 双信号拒绝。真实 resume_pending_interrupt 受理，仅最底层
+# spawn 替换为记录器——同本文件既有 e2e 口径。）
+def _arm_q(a: DingTalkChannelAdapter, qid: str = "q-1", sid: str = "sess-1",
+           staff: str = "s-allow") -> None:
+    a._q2session[qid] = {"sid": sid, "staff": staff}
+    shared._PENDING_RESUME.add(sid)
+    shared._PENDING_KIND[sid] = "user_question"
+
+
+def _disarm(sid: str) -> None:
+    shared._PENDING_RESUME.discard(sid)
+    shared._PENDING_KIND.pop(sid, None)
+
+
+def _click(qid: str, act: str = "opt", i: int = 1) -> dict:
+    return {"content": json.dumps({"q": qid, "act": act, "i": i})}
+
+
+async def test_card_answer_replay_executes_once(monkeypatch):
+    """四分支①（重放恰好执行一次）：首次点按经 resume_question 恰一次
+    （qid 一次性凭证：先弹登记再恢复）并落渠道墓碑；同回调重投 → 命中
+    墓碑被消化 + 告知 + 卡片再置灰，不二次 resume。"""
+    rec = Recorder()
+    a = _make_adapter(monkeypatch, rec)
+    _patch_spawn(monkeypatch, rec, a._resume_evt)
+    _arm_q(a)
+    try:
+        await a.handle_card_callback(_click("q-1"))
+        assert len(rec.resumes) == 1
+        sid, val = rec.resumes[0]
+        assert sid == "sess-1"
+        assert val == {"kind": "user_answer", "answer": "",
+                       "option_index": 1, "skip": False}
+        tb = a._answered_q["q-1"]
+        assert tb["answered_by"] == "dingtalk" and "sess-1" == tb["session_id"]
+        # 同一回调重投（钉钉流重连等场景）：消化 + 告知，零二次执行
+        await a.handle_card_callback(_click("q-1"))
+        assert len(rec.resumes) == 1
+        assert rec.card_events.count(("disabled", "q-1")) == 2  # 再置灰尽力
+        assert any("未重复" in str(p) for _, k, p in rec.sends
+                   if k == "sampleMarkdown")
+        assert "sess-1" not in shared._PENDING_RESUME
+    finally:
+        _disarm("sess-1")
+
+
+async def test_card_answer_expired_qid_rejected(monkeypatch):
+    """四分支②（过期 qid 拒绝）：登记还在、但守卫与 checkpointer 双信号
+    都说「没在等」（超时已跳过 / turn 已死 / 重启丢守卫且无 parked 事实）
+    → 拒绝 + 告知，不 resume、登记即销。"""
+    rec = Recorder()
+    a = _make_adapter(monkeypatch, rec)
+    _patch_spawn(monkeypatch, rec, a._resume_evt)
+    # 只登记、不武装守卫（真实场景：守卫已被超时/桌面端路径销掉）
+    a._q2session["q-old"] = {"sid": "sess-dead", "staff": "s-allow"}
+    await a.handle_card_callback(_click("q-old"))
+    assert rec.resumes == []
+    assert "q-old" not in a._q2session   # 一次性凭证：登记已销
+    assert any("已结束" in str(p) for _, k, p in rec.sends
+               if k == "sampleMarkdown")
+
+
+async def test_card_answer_unknown_qid_silent(monkeypatch):
+    """四分支③（无登记不误吞）：未知 qid（无登记无墓碑）→ 静默 no-op
+    （F11 防探测口径），不 resume、不发任何消息。"""
+    rec = Recorder()
+    a = _make_adapter(monkeypatch, rec)
+    _patch_spawn(monkeypatch, rec, a._resume_evt)
+    await a.handle_card_callback(_click("q-forged"))
+    assert rec.resumes == [] and rec.sends == [] and rec.card_events == []
+
+
+async def test_card_answer_after_desktop_answer_rejected(monkeypatch):
+    """四分支④（已答再答拒绝）：桌面先答（resume_question 真跑，守卫即销
+    + relay 墓碑收口）→ 钉钉卡片晚到点按（登记未及清理的竞态窗口）被
+    守卫/checkpoint 双信号拒绝：恰一次 resume、只提示。"""
+    rec = Recorder()
+    a = _make_adapter(monkeypatch, rec)
+    _patch_spawn(monkeypatch, rec, a._resume_evt)
+    _arm_q(a, qid="q-raced", sid="sess-raced")
+    try:
+        from ginno_runtime.api.stream.resume import resume_question
+
+        ok = await resume_question(
+            "sess-raced", answer="A", option_index=0, answered_by="user")
+        assert ok is True and len(rec.resumes) == 1
+        # 钉钉按钮晚到（tap 尚未收尾，登记还在）
+        await a.handle_card_callback(_click("q-raced", i=0))
+        assert len(rec.resumes) == 1        # 恰一次，未二次执行
+        assert any("已结束" in str(p) for _, k, p in rec.sends
+                   if k == "sampleMarkdown")
+        assert "q-raced" not in a._q2session
+    finally:
+        _disarm("sess-raced")
+
+
+async def test_card_timeout_tombstone_late_click_and_window(monkeypatch):
+    """超时墓碑的两面：窗口内晚到点按命中 dingtalk_timeout 墓碑 →「已
+    超时自动跳过」告知，不 resume；窗口过期后墓碑惰性清理，点按按未知
+    qid 静默——TTL 只做内存卫生，正确性不依赖它。"""
+    rec = Recorder()
+    a = _make_adapter(monkeypatch, rec)
+    _patch_spawn(monkeypatch, rec, a._resume_evt)
+    a.mark_question_answered(
+        "q-t", session_id="sess-t", skip=True,
+        answered_by="dingtalk_timeout", staff_id="s-allow")
+    await a.handle_card_callback(_click("q-t"))
+    assert rec.resumes == []
+    assert any("已超时自动跳过" in str(p) for _, k, p in rec.sends
+               if k == "sampleMarkdown")
+    # 窗口过期：墓碑被惰性清理，后续点按静默（内存卫生验证）
+    a._answered_q["q-t"]["answered_at"] = 0.0
+    a._resume_evt.clear()
+    await a.handle_card_callback(_click("q-t"))
+    assert len([s for s in rec.sends if "已超时" in str(s[2])]) == 1
+    assert "q-t" not in a._answered_q
