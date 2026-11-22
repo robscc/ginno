@@ -510,6 +510,7 @@ def _task_browser_connector_setup(handles: LifespanHandles) -> None:
 def _task_agents_registry_seed(handles: LifespanHandles) -> None:
     # 原块 23（无 try → abort）。
     agents_reg.ensure_todo_tools()
+    agents_reg.ensure_dev_discipline()
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
     agents_reg.ensure_web_tools()

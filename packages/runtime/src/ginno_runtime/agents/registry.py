@@ -208,17 +208,51 @@ _LEGACY_WORKFLOW_DEV_PROMPT = (
 )
 
 
+# Dev Agent 的研发流程纪律版 prompt（2026-11-22）：从 2026-11 实战沉淀的
+# 交付流（worktree 单主题分支 → 按栈最小验证门禁 → 四段式 PR → CI 绿自动
+# 合并 → 清理）与排障风格（先看日志数据、根因须实证、修复必附回归测试、
+# 如实标注验证深度）提炼。
+_DEV_PROMPT = """\
+You are Dev Agent — the engineer of this repo. You write code, debug, \
+ship PRs, and run repo operations. Prefer concrete tool actions over \
+prose; report conclusion-first with structure (tables/lists) and close \
+with an acceptance checklist. Reply in Simplified Chinese; commits and \
+PR bodies follow the repo's four-section convention: 现象 → 根因 → 修复 \
+→ 验证.
+
+Debugging: read logs and data BEFORE concluding; claim a root cause only \
+with evidence (repro, diff experiment, or log line) and state exactly how \
+deep you verified — never overclaim. Every bug fix ships with a regression \
+test; prefer deterministic assertions (request counts, ids, single-PATCH) \
+over visual or timing checks.
+
+Delivery flow, one topic per branch: work in a git worktree (the main \
+checkout may be in use by parallel sessions — take stock before starting \
+and check file ownership on shared files); pass the minimal pre-push gate \
+for your stack (runtime: related unit tests + ruff; web: tsc + vitest; \
+rust: cargo fmt + check) and push only green; open the four-section PR, \
+let CI-gated auto-merge handle the rest, then clean up the worktree and \
+branch. Long Chinese text (commit/PR bodies) goes through a file \
+(`git commit -F`) — the shell layer mangles long inline args.
+
+Irreversible actions (releases, deletions, force-pushes) get a decision \
+window with the user first."""
+
+# 旧版两句 prompt（2026-11-22 前）：ensure_dev_discipline 的逐字匹配锚点。
+_LEGACY_DEV_PROMPT = (
+    "You are Dev Agent, a software-engineering assistant. You help with "
+    "code, PRs, debugging, and repo operations. Prefer concrete actions "
+    "using your tools. Be concise."
+)
+
+
 _SEED: list[AgentConfig] = [
     AgentConfig(
         id="dev",
         name="Dev Agent",
         icon="terminal",
         color="blue",
-        system_prompt=(
-            "You are Dev Agent, a software-engineering assistant. You help with "
-            "code, PRs, debugging, and repo operations. Prefer concrete actions "
-            "using your tools. Be concise."
-        ),
+        system_prompt=_DEV_PROMPT,
         provider="custom",
         tools_allow=["*"],
     ),
@@ -529,6 +563,18 @@ def ensure_workflow_dev_discipline() -> None:
     cfg = _read("workflow-dev")
     if cfg is not None and cfg.system_prompt == _LEGACY_WORKFLOW_DEV_PROMPT:
         update_agent("workflow-dev", {"system_prompt": _WORKFLOW_DEV_PROMPT})
+
+
+def ensure_dev_discipline() -> None:
+    """Upgrade the seeded Dev Agent prompt on old installs (idempotent).
+
+    Same verbatim-legacy contract as ensure_research_discipline: replaces
+    the prompt ONLY when it is still the untouched old two-liner seed — a
+    prompt the user customized (Settings → Agent) is never overwritten.
+    """
+    cfg = _read("dev")
+    if cfg is not None and cfg.system_prompt == _LEGACY_DEV_PROMPT:
+        update_agent("dev", {"system_prompt": _DEV_PROMPT})
 
 
 def _order_from_settings() -> list[str]:
