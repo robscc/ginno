@@ -276,3 +276,29 @@ def test_read_sanitizes_malformed_subagent_models(isolated_home, caplog):
         cfg = registry.get_agent("dev")
     assert cfg is not None
     assert cfg.subagent_models == {}  # 未知类型 + 非 dict 条目都被清掉
+
+
+def test_seed_names_are_bilingual(isolated_home, monkeypatch):
+    """中文化尾巴 ③：内置 agent 名是展示层文案，seed 时刻按 locale 选边
+    落盘（老数据不迁移，只影响新装默认；id/图标/工具等机器字段不动）。"""
+    monkeypatch.setenv("GINNO_LANGUAGE", "zh-CN")
+    registry.ensure_seeded()
+    names = {a.id: a.name for a in registry.list_agents()}
+    assert names["dev"] == "开发助手"
+    assert names["research"] == "调研助手"
+    assert names["writer"] == "写作助手"
+    assert names["workflow-dev"] == "工作流开发助手"
+    # 机器字段不随 locale 漂移
+    assert registry.get_agent("dev").tools_allow == ["*"]
+    assert registry.get_agent("research").id == "research"
+
+
+def test_seed_names_default_to_english(isolated_home):
+    """en locale（含 CI 的 auto→en）保持英文原名，存量断言语义不变。"""
+    import os
+
+    os.environ.pop("GINNO_LANGUAGE", None)
+    registry.ensure_seeded()
+    names = {a.id: a.name for a in registry.list_agents()}
+    assert names["dev"] == "Dev Agent"
+    assert names["workflow-dev"] == "Workflow Dev Agent"

@@ -763,6 +763,46 @@ _SEED = [
 ]
 
 
+# 示例工作流 pr-triage 展示文案双语（中文化尾巴 ③）：_SEED 里的英文是
+# 稳定契约，本地表提供 zh 变体，_localized_seed 在写盘时刻按 locale 选边
+# （模块级 t() 会在 import 时固化）。id / steps[].id 等机器字段不动；
+# pr-triage 非 system seed——已落盘的旧安装不会被重写，只影响新装默认。
+_SEED_I18N_ZH: dict[str, dict[str, str]] = {
+    "pr-triage": {
+        "name": "PR 分诊",
+        "description": "分诊开放的 Pull Request：列出、审查、汇总。",
+        "step:s1": "列出开放的 PR",
+        "step:s2": "逐个审查 PR",
+        "step:s3": "汇总发现",
+    },
+}
+
+
+def _localized_seed(wf: dict) -> dict:
+    """Seed 展示文案按当前 locale 选边（en = 原文，zh-CN = 中文展示名）。"""
+    zh = _SEED_I18N_ZH.get(str(wf.get("id")))
+    if not zh:
+        return wf
+    from ..lang import current_locale
+
+    if current_locale() != "zh-CN":
+        return wf
+    out = dict(wf)
+    for key in ("name", "description"):
+        if key in out:
+            out[key] = zh[key]
+    steps = [
+        {**step, "title": zh[f"step:{step['id']}"]}
+        if f"step:{step['id']}" in zh
+        else step
+        for step in (wf.get("steps") or [])
+        if isinstance(step, dict)
+    ]
+    if steps:
+        out["steps"] = steps
+    return out
+
+
 def ensure_seeded() -> None:
     paths.workflows_dir().mkdir(parents=True, exist_ok=True)
     # migrate any legacy seed file first
@@ -770,7 +810,7 @@ def ensure_seeded() -> None:
         _migrate_if_needed(wf["id"])
     for wf in _SEED:
         if not _is_new_layout(wf["id"]):
-            create_def(wf)
+            create_def(_localized_seed(wf))
         elif wf.get("system") and isinstance(wf.get("dsl"), dict):
             # System seeds track the shipped definition: push a new immutable
             # version when stored nodes drift (e.g. goal wording upgraded).
