@@ -131,8 +131,11 @@ async def test_missing_context_key_fails_with_pointing_error(monkeypatch):
         initial={"model_name": "m"},
     )
     events = await _run(doc)
-    assert events[-1]["kind"] == "error", events
-    text = _err_text(events)
+    # 语义断言而非位置断言：error 事件存在（带四要素），末条是失败节点的
+    # 终态 node_exit(failed)（Q10 起 error 后补发配对 node_exit，events[-1]
+    # 不再是 error）。
+    assert events[-1]["kind"] == "node_exit" and events[-1]["status"] == "failed", events
+    text = _err_text(events)  # 内部已断言 error 事件存在
     assert "'p'" in text, text                      # 节点 id
     assert "'records'" in text, text                # arg 名
     assert "usage_records" in text, text            # 缺失的 key
@@ -151,8 +154,9 @@ async def test_nested_missing_key_fails_too(monkeypatch):
         initial={"usage": {"shallow": 1}},
     )
     events = await _run(doc)
-    assert events[-1]["kind"] == "error", events
-    text = _err_text(events)
+    # 同上：语义断言（error 在流中 + 末条 node_exit(failed)），不断位置。
+    assert events[-1]["kind"] == "node_exit" and events[-1]["status"] == "failed", events
+    text = _err_text(events)  # 内部已断言 error 事件存在
     assert "'pn'" in text and "context.usage.deep.rows" in text, text
     assert "cannot access 'rows' on non-mapping" in text, text  # 根因可见
     assert "available keys: usage" in text, text                 # 顶层可用 keys
