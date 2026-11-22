@@ -109,7 +109,9 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
                 title={t(tab.mark === "A" ? "markAdded" : "markModified")}
                 className={cn(
                   "w-[10px] shrink-0 text-center font-mono text-[10px] leading-none",
-                  tab.mark === "A" ? "text-[#4caf7d]" : "text-[#d19a66]",
+                  // Quick-fix D7: A/M 标记原为暗色档硬编码 hex，白底 2.5~2.7:1
+                  // 不可读；改走 globals.css 的 --tab-add/--tab-mod 双主题变量。
+                  tab.mark === "A" ? "text-[var(--tab-add)]" : "text-[var(--tab-mod)]",
                 )}
               >
                 {tab.mark}

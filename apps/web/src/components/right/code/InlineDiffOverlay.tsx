@@ -212,8 +212,8 @@ export function InlineDiffOverlay({
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-[rgb(var(--code-bg))]", className)}>
       {/* Banner: what happened + exit. Accent blue per design §5. */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-[rgba(74,158,255,.3)] bg-[rgba(74,158,255,.1)] px-2.5 py-1 text-[11px]">
-        <GitCompare size={12} className="shrink-0 text-[#4a9eff]" />
+      <div className="flex shrink-0 items-center gap-2 border-b border-[rgb(var(--diff-accent-rgb)_/_0.3)] bg-[rgb(var(--diff-accent-rgb)_/_0.1)] px-2.5 py-1 text-[11px]">
+        <GitCompare size={12} className="shrink-0 text-[var(--diff-accent)]" />
         <span className="shrink-0 font-medium text-txt" title={path}>
           {basename(path)}
         </span>
@@ -227,7 +227,7 @@ export function InlineDiffOverlay({
           <button
             type="button"
             onClick={() => setExpanded(true)}
-            className="flex shrink-0 items-center gap-1 rounded border border-[rgba(74,158,255,.4)] px-1.5 py-0.5 text-[11px] text-[#4a9eff] hover:bg-[rgba(74,158,255,.15)]"
+            className="flex shrink-0 items-center gap-1 rounded border border-[rgb(var(--diff-accent-rgb)_/_0.4)] px-1.5 py-0.5 text-[11px] text-[var(--diff-accent)] hover:bg-[rgb(var(--diff-accent-rgb)_/_0.15)]"
           >
             <FileDiff size={12} />
             {t("viewDiff")}
@@ -246,7 +246,7 @@ export function InlineDiffOverlay({
               className={cn(
                 "flex h-5 w-5 items-center justify-center rounded border transition-colors",
                 sideBySide
-                  ? "border-[#4a9eff] bg-[rgba(74,158,255,.15)] text-[#4a9eff]"
+                  ? "border-[var(--diff-accent)] bg-[rgb(var(--diff-accent-rgb)_/_0.15)] text-[var(--diff-accent)]"
                   : "border-line text-faint hover:text-txt",
               )}
             >
@@ -260,7 +260,7 @@ export function InlineDiffOverlay({
               className={cn(
                 "flex h-5 w-5 items-center justify-center rounded border transition-colors",
                 !sideBySide
-                  ? "border-[#4a9eff] bg-[rgba(74,158,255,.15)] text-[#4a9eff]"
+                  ? "border-[var(--diff-accent)] bg-[rgb(var(--diff-accent-rgb)_/_0.15)] text-[var(--diff-accent)]"
                   : "border-line text-faint hover:text-txt",
               )}
             >

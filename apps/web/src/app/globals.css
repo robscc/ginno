@@ -36,6 +36,18 @@
   --chart-3: #199e70;
   --chart-4: #c98500;
   --chart-5: #d55181;
+  /* Code panel (right/code/*) git 徽标 / 编辑器 tab 标记 / inline diff
+     强调色的语义色（quick-fix D7）：原先硬编码在这三个组件里、按暗色表面
+     调的 hex（amber/cyan/tan/blue），白底上对比度只有 2.2~2.8:1。与
+     --st-* 同一套路：本块为暗档（保持原值，暗底 7~9:1），html.light 里的
+     亮档深一档保证白底 ≥4.5:1。--diff-accent-rgb 是三元组形态，供透明度
+     变体（边框 0.3~0.4 / 底色 0.1~0.15）用 rgb(var(...)/a) 语法取用。 */
+  --git-mod: #f59e0b;
+  --git-copy: #22d3ee;
+  --tab-add: #4caf7d;
+  --tab-mod: #d19a66;
+  --diff-accent: #4a9eff;
+  --diff-accent-rgb: 74 158 255;
 }
 
 html.light {
@@ -70,6 +82,15 @@ html.light {
   --chart-3: #1baf7a;
   --chart-4: #eda100;
   --chart-5: #e87ba4;
+  /* Code panel 语义色的亮色档（quick-fix D7，对应 :root 注释）：
+     白底对比 4.9~5.4:1（WCAG AA）；暗底 3.7~4.0:1 仅作参考——
+     亮档只会在 html.light 下生效。 */
+  --git-mod: #b45309;
+  --git-copy: #0e7490;
+  --tab-add: #15803d;
+  --tab-mod: #a16207;
+  --diff-accent: #2563eb;
+  --diff-accent-rgb: 37 99 235;
 }
 
 html,

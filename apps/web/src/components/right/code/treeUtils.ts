@@ -161,17 +161,20 @@ export interface GitBadge {
  *  `yellow`/`green`/`red`/`blue`/`violet`/`faint`/`muted` but NO `amber` or
  *  `cyan` token (`theme.extend.colors` leaves Tailwind's default *palette*
  *  objects, so `text-amber` / `text-cyan` compile to nothing and silently lose
- *  their colour). Those two therefore use literal hex values. */
+ *  their colour). Those two therefore use theme-aware CSS variables from
+ *  globals.css (quick-fix D7): `--git-mod` / `--git-copy` carry a dark step
+ *  (former literal hex) and a light step tuned for white surfaces — the old
+ *  literals were 2.2~2.4:1 on the light background. */
 type GitTipKey = keyof typeof codeEn.code.git;
 
 const GIT_BADGE: Record<string, { className: string; tip: GitTipKey }> = {
-  M: { className: "text-[#f59e0b]", tip: "modified" },
+  M: { className: "text-[var(--git-mod)]", tip: "modified" },
   A: { className: "text-green", tip: "added" },
   U: { className: "text-green", tip: "added" },
   "?": { className: "text-green", tip: "untracked" },
   D: { className: "text-red", tip: "deleted" },
   R: { className: "text-blue", tip: "renamed" },
-  C: { className: "text-[#06b6d4]", tip: "copied" },
+  C: { className: "text-[var(--git-copy)]", tip: "copied" },
   "!": { className: "text-faint", tip: "ignored" },
 };
 
