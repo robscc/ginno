@@ -28,7 +28,9 @@
       "abort": "Abort run",
       "replied": "Replied: {answer}",
       "confirmed": "Confirmed",
-      "skipped": "Skipped"
+      "skipped": "Skipped: did not wait for input — downstream continues with an empty answer",
+      "skipTitle": "Skip = continue without waiting: downstream nodes run as normal with an empty answer. This is not a gate — nothing is blocked or sent back.",
+      "skipHint": "Skip = continue without waiting (downstream gets an empty answer and runs as normal — not a gate)."
     },
     "error": {
       "interruptedRestart": "Interrupted by a process restart, retryable",
