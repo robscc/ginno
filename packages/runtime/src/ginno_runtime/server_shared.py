@@ -417,6 +417,10 @@ _COMPACTING: set[str] = set()
 # steer_enqueue REPLACES by steer_id, so such a re-send can never duplicate the
 # message.
 _STEER_STASH: dict[str, list[dict]] = {}
+# interactive（用户 composer 插话）条目在段末清场时的去所（2026-11-22
+# 巡检 P1）：清场后从排水路径移除（不会被下个 turn 误吸收），等前端
+# ⏹/turn-end 发来的 steer.recall 领回。只进不出会话删除时一并清。
+_STEER_RECALL_BUFFER: dict[str, list[dict]] = {}
 
 
 # Key marking the companion message that carries a steered message's attached
@@ -442,6 +446,17 @@ def steer_recall(session_id: str, steer_ids: list[str]) -> list[str]:
         _STEER_STASH[session_id] = kept
     else:
         _STEER_STASH.pop(session_id, None)
+    # recall buffer（2026-11-22 巡检 P1）：段末清场挪进来的 interactive
+    # 条目也允许领回——⏹ 打断带未吸收插播时，条目在 buffer 不在 stash。
+    buf = _STEER_RECALL_BUFFER.get(session_id) or []
+    removed_buf = [e.get("steer_id") for e in buf if e.get("steer_id") in ids]
+    if removed_buf:
+        kept_buf = [e for e in buf if e.get("steer_id") not in ids]
+        if kept_buf:
+            _STEER_RECALL_BUFFER[session_id] = kept_buf
+        else:
+            _STEER_RECALL_BUFFER.pop(session_id, None)
+        removed.extend(removed_buf)
     if removed:
         _log.info("steer_recalled session=%s count=%d", session_id, len(removed))
     return removed
@@ -534,9 +549,17 @@ def steer_keep_channel(session_id: str) -> None:
     eventual delivery，不静默丢。AgentTeam 投递（origin="team"）同待遇：
     团队投递没有「客户端会重发」这个兜底方（广场发完就 continue），
     清场即永久丢失，而回执已报 delivered——正是本函数要防的空头支票。"""
+    buf = _STEER_RECALL_BUFFER.setdefault(session_id, [])
     for _e in steer_drain(session_id):
         if _e.get("origin") in ("channel", "task", "worker", "team"):
             steer_enqueue(session_id, _e)
+        else:
+            # interactive（用户 composer 插话，无 origin）：design §4.1
+            # 「queued for absorption is handed back to the composer」——
+            # 挪进 recall buffer 等前端 steer.recall 领回，而不是静默丢
+            # 弃；也不留在 stash（避免被下一个 turn 的排水误吸收——那会
+            # 变成用户没同意的注入）。会话删除时随 buffer 一并清理。
+            buf.append(_e)
 
 
 # Drained by an agent superstep but not yet COMMITTED with its update
