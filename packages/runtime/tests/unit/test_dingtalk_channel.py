@@ -97,6 +97,7 @@ class FakeAdapter:
         self.cards = FakeCards()
         self.markdowns: list[tuple[str, str, str]] = []
         self.registered: dict[str, str] = {}
+        self.answered: dict[str, dict] = {}
 
     async def send_markdown(self, staff_id, title, text):
         self.markdowns.append((staff_id, title, text))
@@ -104,11 +105,21 @@ class FakeAdapter:
     async def send_media(self, *a, **kw):
         raise AssertionError("not expected in these tests")
 
-    async def register_question(self, qid, sid):
+    async def register_question(self, qid, sid, staff_id=""):
         self.registered[qid] = sid
 
     async def unregister_question(self, qid):
         self.registered.pop(qid, None)
+
+    def mark_question_answered(self, qid, *, session_id="", answer="",
+                               skip=False, answered_by="user", staff_id=""):
+        import time as _time
+
+        self.answered[qid] = {
+            "session_id": session_id, "answer": answer, "skip": skip,
+            "answered_by": answered_by, "staff": staff_id,
+            "answered_at": _time.time(),
+        }
 
 
 def _frame(event: str, **data) -> str:
@@ -202,6 +213,11 @@ async def test_tap_question_card_and_timeout_skip(monkeypatch):
         await asyncio.sleep(0.12)  # 超过 ask_timeout_s
         assert ad.cards.disabled == ["q1"]
         assert resumed and resumed[0][1]["skip"] is True
+        # 超时跳过 = 已答（dingtalk_timeout）：渠道墓碑落地，晚到的按钮
+        # 点按将命中墓碑被消化而非静默丢失。
+        assert ad.answered["q1"]["answered_by"] == "dingtalk_timeout"
+        assert ad.answered["q1"]["skip"] is True
+        assert ad.answered["q1"]["staff"] == "s1"
     finally:
         shared._PENDING_RESUME.discard("sess1")
         shared._PENDING_KIND.pop("sess1", None)

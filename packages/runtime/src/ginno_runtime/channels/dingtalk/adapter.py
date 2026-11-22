@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 
 from ginno_runtime import jsonx as json
@@ -33,6 +34,11 @@ from .tap import DingTalkTap
 
 _MSG_TEXT = "sampleText"
 _MSG_MARKDOWN = "sampleMarkdown"
+# 答案墓碑的重放窗口（对齐 ask_timeout_s 默认 600s）：钉钉卡片回调可能
+# 重投，窗口内同 qid 视为重放；窗口外墓碑惰性清理、回调按未知 qid 静默
+# ——TTL 只做内存卫生，正确性不依赖它（过期由 resume_question 的守卫/
+# checkpointer 双信号拒绝，见 handle_card_callback）。
+_ANSWER_REPLAY_WINDOW_S = 600.0
 
 
 class DingTalkChannelAdapter(ChannelAdapter):
@@ -51,8 +57,11 @@ class DingTalkChannelAdapter(ChannelAdapter):
         self._sdk_thread: threading.Thread | None = None
         self._stopped = True
         self._session_locks: dict[str, asyncio.Lock] = {}   # F9 per-session 串行
-        self._q2session: dict[str, str] = {}                # question_id → session_id
+        self._q2session: dict[str, dict] = {}                # qid → {sid, staff}
         self._q_lock = asyncio.Lock()
+        # qid → 答案墓碑（relay-question 范式）：qid 作答即销后记录答案与
+        # 溯源，用于拦截卡片回调重放（同 qid 重投不二次执行）。
+        self._answered_q: dict[str, dict] = {}
 
     # ---- F1 生命周期 -------------------------------------------------------
 
@@ -351,17 +360,25 @@ class DingTalkChannelAdapter(ChannelAdapter):
 
     # ---- F4 卡片回调 -------------------------------------------------------
 
-    async def register_question(self, question_id: str, session_id: str) -> None:
+    async def register_question(self, question_id: str, session_id: str,
+                                staff_id: str = "") -> None:
         async with self._q_lock:
-            self._q2session[question_id] = session_id
+            self._q2session[question_id] = {"sid": session_id,
+                                            "staff": str(staff_id or "")}
 
     async def unregister_question(self, question_id: str) -> None:
         async with self._q_lock:
             self._q2session.pop(question_id, None)
 
     async def handle_card_callback(self, data: dict) -> None:
-        """按钮回调 → resume_pending_interrupt（与桌面 WS 同一协议，F4 步骤 3）。"""
-        from ...api.stream.resume import resume_pending_interrupt
+        """按钮回调 → resume_question（F4 步骤 3，relay-question 范式）。
+
+        resume_question 语义（对齐 wecom _try_answer，PR #278）：
+        qid 一次性凭证（先弹登记再恢复）；守卫丢失（重连/重启竞态）时以
+        checkpointer 事实武装（``arm_from_checkpoint``）；过期/已答拒绝并
+        告知（不静默吞答案）；作答即销后写渠道墓碑，重放命中墓碑被消化。
+        """
+        from ...api.stream.resume import resume_question
 
         raw = str((data.get("content") or {}).get("value")
                   if isinstance(data.get("content"), dict) else data.get("content") or "")
@@ -371,12 +388,15 @@ class DingTalkChannelAdapter(ChannelAdapter):
             return
         qid = str(val.get("q") or "")
         async with self._q_lock:
-            sid = self._q2session.pop(qid, None)
-        if sid is None:
+            ent = self._q2session.pop(qid, None)
+        if ent is None:
+            await self._replay_answer_guard(qid)
             return
+        sid = str(ent.get("sid") or "")
+        staff = str(ent.get("staff") or "")
         act = str(val.get("act") or "opt")
         if act == "skip":
-            resume = {"kind": "user_answer", "answer": "", "option_index": None, "skip": True}
+            answer, idx, skip = "", None, True
         else:
             idx = val.get("i")
             answer = str(val.get("text") or "").strip()
@@ -384,12 +404,76 @@ class DingTalkChannelAdapter(ChannelAdapter):
                 # 选项文本由钉钉按钮带入或省略：resume 契约以 answer 为准，
                 # option_index 供 ask_tools 分支判断（见 ask_tools.py 恢复处理）。
                 answer = str(val.get("label") or "")
-            resume = {"kind": "user_answer", "answer": answer,
-                      "option_index": idx if isinstance(idx, int) else None, "skip": False}
-        resume_pending_interrupt(sid, resume)
+            skip = False
+        ok = await resume_question(
+            sid, answer=answer,
+            option_index=idx if isinstance(idx, int) else None,
+            skip=skip, arm_from_checkpoint=True, answered_by="dingtalk")
         try:
             await self.cards.disable_question_card(qid)
         except Exception:
+            pass
+        if ok:
+            self.mark_question_answered(
+                qid, session_id=sid, answer=answer, skip=skip,
+                answered_by="dingtalk", staff_id=staff)
+            return
+        # 过期 qid / 已答（守卫空且 checkpoint 无 parked）：拒绝并告知，
+        # 不再静默 return——迟到的按钮点按如果什么都不说，用户会以为
+        # 答案已注入而事实上 turn 已结束/已被桌面端作答。
+        shared._log.info(
+            "dingtalk_answer_rejected qid=%s sid=%s reason=not_parked", qid, sid)
+        self.mark_question_answered(
+            qid, session_id=sid, answer=answer, skip=skip,
+            answered_by="dingtalk", staff_id=staff)
+        await self._send_answer_notice(staff)
+
+    async def _replay_answer_guard(self, qid: str) -> None:
+        """无登记时的重放防线（relay 墓碑范式）：qid 在重放窗口内已有墓碑
+        → 卡片再置灰 + 告知（不二次执行）。窗口过期 → 墓碑惰性清理
+        （内存卫生），按未知 qid 静默处理（F11 防探测口径不变）。"""
+        tb = self._answered_q.get(qid)
+        if not tb:
+            return
+        if time.time() - float(tb.get("answered_at") or 0) > _ANSWER_REPLAY_WINDOW_S:
+            self._answered_q.pop(qid, None)  # TTL 惰性清理（内存卫生）
+            return
+        try:
+            await self.cards.disable_question_card(qid)
+        except Exception:
+            pass
+        await self._send_answer_notice(str(tb.get("staff") or ""), tb)
+
+    def mark_question_answered(
+        self, qid: str, *, session_id: str = "", answer: str = "",
+        skip: bool = False, answered_by: str = "user", staff_id: str = "",
+    ) -> None:
+        """渠道侧答案墓碑（对齐 worker_bus.relay.mark_answered / wecom 同名
+        方法）：qid 作答即销后记录溯源，供重放防线与「晚到点按」判定。
+        每 qid 至多一条，无 TTL 依赖——窗口过期只是放行成静默 no-op。"""
+        self._answered_q[str(qid or "")] = {
+            "session_id": str(session_id or ""), "answer": str(answer or ""),
+            "skip": bool(skip), "answered_by": str(answered_by or ""),
+            "staff": str(staff_id or ""), "answered_at": time.time(),
+        }
+
+    async def _send_answer_notice(self, staff_id: str, tb: dict | None = None) -> None:
+        """拒绝/重放回执（尽力送达，失败静默——回调本身已消化）。"""
+        if not staff_id or self.api is None:
+            return
+        if tb is not None and tb.get("answered_by") == "dingtalk_timeout":
+            msg = ("⏱️ 该提问已超时自动跳过，本次点按未注入；"
+                   "如需继续请直接说明。")
+        elif tb is not None and tb.get("answered_by") == "dingtalk":
+            shown = "（跳过）" if tb.get("skip") else str(tb.get("answer") or "")
+            msg = (f"✅ 该提问已作答（答案：{shown}），本次重复点按未重复"
+                   "执行；如需继续请直接说明。")
+        else:
+            msg = ("⏱️ 该提问已结束（可能已在桌面端作答或超时自动跳过），"
+                   "本次点按未注入；如需继续请直接说明。")
+        try:
+            await self.send_markdown(staff_id, "Ginno", msg)
+        except Exception:  # noqa: BLE001
             pass
 
     # ---- 渠道发送便捷方法 ---------------------------------------------------
