@@ -61,6 +61,20 @@ from . import store
 # 重启丢失可接受（steer stash 同款边界）。
 _QUEUES: dict[str, list[dict]] = {}
 
+
+def queued_position(team_id: str, instance_id: str) -> int:
+    """成员在并发闸队列中的位次（1-based；0 = 不在队列）。只读。
+
+    status.idle 呈现用（2026-11-22 巡检 P1）：排队成员语义态是 idle，但
+    ``status._idle_detail`` 刻意无视 stored status_detail（probe
+    2026-10-24 防御），投递时写入的「排队中」被覆盖成「空闲」→ 面板
+    诱导重复投递。队列是本模块私有 ``_QUEUES``，从这里出只读位次查询，
+    不用文案锚。drain（含 pop）后自然归零。"""
+    for _i, _q in enumerate(_QUEUES.get(team_id) or []):
+        if _q.get("instance_id") == instance_id:
+            return _i + 1
+    return 0
+
 # 并发闸预约位（backlog P1-5）：team_id → 已决定起 turn 但尚未登记
 # _RUNNING_TURNS 的 instance_id。闸检查在 spawn 之前、登记在 task 内部，
 # 中间这段窗口会让两个并发 deliver 同时通过闸 → 双开 turn / 闸击穿。
