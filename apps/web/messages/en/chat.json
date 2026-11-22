@@ -101,6 +101,8 @@
       "thinkingLow": "Low · fast",
       "thinkingMedium": "Medium",
       "thinkingHigh": "High · deep",
+      "thinkingXhigh": "Extra high",
+      "thinkingMax": "Maximum",
       "thinkingUnsupported": "This provider declares no thinking-effort support"
     },
     "agentChips": {

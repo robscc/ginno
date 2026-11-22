@@ -163,10 +163,6 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
       : "") ||
     "auto";
   const thinkingEffort = session ? sessionEffort : homeEffort;
-  // 能力闸门(设计 §7):provider 显式声明 thinking_mode="none" 时置灰。
-  const effortProviderId = session ? session.provider : homeEffective?.provider;
-  const effortDisabled =
-    effortProviderId != null && g.providers[effortProviderId]?.thinking_mode === "none";
 
   // 选模型 + 设思考档位的**原子**操作（2026-11-14 用户反馈「难度要点两次才到位」）。
   // 旧实现里 ModelChipMenu 的难度档 onClick 分别调 pickModel + pickThinking，两条
@@ -226,6 +222,6 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
     modelOpen, setModelOpen, pickModel, enabledProviders, defaultProviderCfg,
     targetAgent, agentBindingPid, homeEffective, homeModelSource, modelChipLabel,
-    thinkingEffort, effortDisabled, pickModelAndThinking,
+    thinkingEffort, pickModelAndThinking,
   };
 }

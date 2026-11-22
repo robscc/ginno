@@ -3,7 +3,7 @@
 // ModelChipMenu — composer 的模型 chip 与下拉菜单（自 ChatStream.tsx 机械拆出，
 // 渲染逐字一致）：per-session provider/model 切换；home 态为「首条消息将生效」
 // 的选择（含 agent 绑定与应用默认的解析结果）。thinking-effort-design §5：
-// 菜单尾部带「Thinking」分组（5 档 radio），chip 上以角标显示非 auto 档。
+// 各模型行可展开「Thinking」分组，chip 上以角标显示非 auto 档。
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Globe, Server } from "lucide-react";
@@ -19,6 +19,8 @@ const EFFORT_BADGE: Record<string, string> = {
   low: "LO",
   medium: "MED",
   high: "HI",
+  xhigh: "XHI",
+  max: "MAX",
 };
 
 export function ModelChipMenu({
@@ -29,7 +31,6 @@ export function ModelChipMenu({
   homeEffective,
   enabledProviders,
   thinkingEffort,
-  effortDisabled,
   open,
   onToggle,
   onClose,
@@ -44,8 +45,6 @@ export function ModelChipMenu({
   enabledProviders: Array<[string, ProviderConfig]>;
   /** 当前思考档位（"auto" = 跟随 provider 配置）。 */
   thinkingEffort: string;
-  /** provider 声明 thinking_mode="none" 时置灰分组。 */
-  effortDisabled: boolean;
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
@@ -81,7 +80,16 @@ export function ModelChipMenu({
     low: tc("model.thinkingLow"),
     medium: tc("model.thinkingMedium"),
     high: tc("model.thinkingHigh"),
+    xhigh: tc("model.thinkingXhigh"),
+    max: tc("model.thinkingMax"),
   };
+  const currentProvider = session ? session.provider : homeEffective.provider;
+  const currentModel = session ? session.model : homeEffective.model;
+  const currentLevels = enabledProviders.find(([id]) => id === currentProvider)?.[1]
+    .model_thinking_efforts?.[currentModel || ""];
+  // Older sessions can still have off on disk. This mirrors the runtime's
+  // legacy normalization until the user saves a new choice.
+  const activeEffort = currentLevels && thinkingEffort === "off" ? "low" : thinkingEffort;
   return (
     <div className="relative">
       <button
@@ -113,12 +121,12 @@ export function ModelChipMenu({
         <span className="max-w-[160px] truncate font-medium">
           {remotePeer ? remoteName : label}
         </span>
-        {!remotePeer && EFFORT_BADGE[thinkingEffort] && (
+        {!remotePeer && EFFORT_BADGE[activeEffort] && (
           <span
             className="shrink-0 rounded border border-violet/40 px-1 text-[9px] leading-4 font-medium text-violet"
             title={tc("model.thinkingTitle")}
           >
-            {EFFORT_BADGE[thinkingEffort]}
+            {EFFORT_BADGE[activeEffort]}
           </span>
         )}
         {!remotePeer && <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />}
@@ -155,6 +163,9 @@ export function ModelChipMenu({
                       const on = curProvider === pid && curModel === m;
                       const key = `${pid}:${m}`;
                       const isOpen = expanded === key;
+                      const levels = p.model_thinking_efforts?.[m];
+                      const efforts = levels ? ["auto", ...levels] : EFFORTS;
+                      const effortDisabled = p.thinking_mode === "none";
                       return (
                         <div key={key}>
                           <button
@@ -180,9 +191,9 @@ export function ModelChipMenu({
                               }}
                               className="-m-1 flex shrink-0 items-center gap-1 rounded p-1 text-faint hover:bg-line2/60 hover:text-txt"
                             >
-                              {on && EFFORT_BADGE[thinkingEffort] && (
+                              {on && EFFORT_BADGE[activeEffort] && (
                                 <span className="text-[9px] font-medium text-violet">
-                                  {EFFORT_BADGE[thinkingEffort]}
+                                  {EFFORT_BADGE[activeEffort]}
                                 </span>
                               )}
                               <ChevronRight
@@ -192,11 +203,12 @@ export function ModelChipMenu({
                           </button>
                           {isOpen && !effortDisabled && (
                             <div className="mb-1 ml-6 flex flex-wrap gap-1 px-3">
-                              {EFFORTS.map((e) => {
-                                const eOn = thinkingEffort === e && on;
+                              {efforts.map((e) => {
+                                const eOn = activeEffort === e && on;
                                 return (
                                   <button
                                     key={e}
+                                    aria-pressed={eOn}
                                     onClick={() => {
                                       onPickModelEffort(pid, m, e);
                                       onClose();

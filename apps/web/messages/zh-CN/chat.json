@@ -101,6 +101,8 @@
       "thinkingLow": "低 · 快速",
       "thinkingMedium": "中",
       "thinkingHigh": "高 · 深度",
+      "thinkingXhigh": "极高",
+      "thinkingMax": "最大",
       "thinkingUnsupported": "该服务商声明不支持思考档位"
     },
     "agentChips": {

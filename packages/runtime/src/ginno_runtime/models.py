@@ -374,6 +374,38 @@ def _healing_chat_anthropic() -> type:
 
 # ---- 思考强度(thinking-effort-design.md §1/§3)-----------------------------
 THINKING_EFFORTS = ("off", "low", "medium", "high")
+_CODEX_EFFORTS = ("low", "medium", "high", "xhigh")
+_CODEX_MODEL_EFFORTS = {
+    "gpt-5.2-codex": _CODEX_EFFORTS,
+    "gpt-5.3-codex": _CODEX_EFFORTS,
+    "gpt-6.2-sol": (*_CODEX_EFFORTS, "max"),
+}
+
+
+def codex_efforts(model: str | None) -> tuple[str, ...] | None:
+    """Recognize official model IDs and gateway aliases such as codex/gpt-6.2-sol."""
+    return _CODEX_MODEL_EFFORTS.get((model or "").strip().lower().rsplit("/", 1)[-1])
+
+
+def resolve_model_effort(model: str | None, value: Any, *, strict: bool = False) -> str | None:
+    """Resolve a saved preference, or validate a new explicit choice."""
+    raw = str(value or "").strip().lower()
+    if raw in ("", "auto"):
+        return None
+    codex = codex_efforts(model)
+    options = codex or THINKING_EFFORTS
+    if raw in options:
+        return raw
+    if codex and raw == "off" and not strict:
+        return "low"
+    # Legacy callers for other models could submit arbitrary strings and got
+    # auto. Extended levels are explicit choices and must not silently vanish.
+    if strict and (codex or raw in ("xhigh", "max", "ultra")):
+        raise ValueError(
+            f"Unsupported thinking effort {raw!r}. Available: auto, {', '.join(options)}"
+        )
+    return None
+
 
 # 档位 → token 预算内置默认;provider 配置 thinking_budgets 可整体覆盖。
 _THINKING_BUDGETS = {"low": 4096, "medium": 16384, "high": 32768}
@@ -433,10 +465,10 @@ def thinking_dialect(cfg: dict, model: str | None) -> str:
     return "generic"
 
 
-def _effective_effort(cfg: dict, value: Any) -> str | None:
+def _effective_effort(cfg: dict, model: str | None, value: Any) -> str | None:
     """解析档位并套能力闸门:provider 显式声明 thinking_mode="none" 时按
     auto 处理(UI 置灰之外的服务端兜底,见设计 §7)。"""
-    eff = normalize_effort(value)
+    eff = resolve_model_effort(model, value)
     if eff and str(cfg.get("thinking_mode") or "auto") == "none":
         return None
     return eff
@@ -629,7 +661,8 @@ def build_model(
     base_url = cfg.get("base_url") or None
     # 思考档位(设计 §3):一次解析三个分支共用;auto(None)时各分支维持
     # 现状(provider 配置的 enable_thinking 等继续生效)。
-    effort = _effective_effort(cfg, thinking_effort)
+    effort = _effective_effort(cfg, model, thinking_effort)
+    codex = codex_efforts(model) is not None
 
     if proto == "anthropic":
         key = cfg.get("api_key")
@@ -705,7 +738,7 @@ def build_model(
             model=model or "gpt-4o",
             api_key=cfg.get("api_key") or "not-needed",
             base_url=base_url or "https://api.openai.com/v1",
-            temperature=temperature if temperature is not None else 0.7,
+            temperature=None if codex else (temperature if temperature is not None else 0.7),
             streaming=True,
             timeout=_chat_timeout(cfg),
             max_retries=6,
@@ -737,7 +770,7 @@ def build_model(
         model=model or "gpt-4o",
         api_key=key or "not-needed",
         base_url=base_url,
-        temperature=temperature if temperature is not None else 0.7,
+        temperature=None if codex else (temperature if temperature is not None else 0.7),
         streaming=True,
         timeout=_chat_timeout(cfg),
         max_retries=6,
@@ -754,14 +787,16 @@ def build_model(
     #   re-attaches to additional_kwargs for the thinking.delta pipeline.
     extra_body: dict[str, Any] = {}
     es = cfg.get("enable_search") if enable_search is None else enable_search
-    if es:
+    if es and not codex:
         extra_body["enable_search"] = True
     # 方言提前判定（auto 分支也要用）：见下方 zhipu 的 enable_thinking=False 处理。
     dialect = thinking_dialect(cfg, model)
     if effort:
         # 会话档位覆盖 provider 配置(设计 §3):有档位时 cfg.enable_thinking
         # 不再参与;方言决定参数形状。
-        if dialect == "qwen":
+        if codex:
+            chat_kw["reasoning_effort"] = effort
+        elif dialect == "qwen":
             # DashScope 兼容模式:开关 + 预算(商业版 qwen3 系)。
             if effort == "off":
                 extra_body["enable_thinking"] = False
@@ -782,9 +817,9 @@ def build_model(
             # deepseek / generic:尽力透传 reasoning_effort(chat completions
             # 参数);不支持的老网关报错原文回错误卡,用户可回落 auto。
             chat_kw["reasoning_effort"] = "minimal" if effort == "off" else effort
-    elif cfg.get("enable_thinking"):
+    elif not codex and cfg.get("enable_thinking"):
         extra_body["enable_thinking"] = True
-    elif dialect == "zhipu" and cfg.get("enable_thinking") is False:
+    elif not codex and dialect == "zhipu" and cfg.get("enable_thinking") is False:
         # auto 跟随配置（2026-11-22 补）：zhipu 上游默认开思考，配置
         # enable_thinking=false 的意图是关——显式落 none，否则 auto 档
         # 发不出任何参数、上游照常思考，与 off 一样「改了没反应」。

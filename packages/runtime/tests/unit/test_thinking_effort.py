@@ -241,3 +241,68 @@ def test_patch_thinking_effort_hot_swap_and_normalize(client, monkeypatch):
     r3 = client.patch(f"/api/sessions/{sid}", json={"thinking_effort": "extreme"}).json()
     assert r3["ok"] is True
     assert r3["session"]["thinking_effort"] == "auto"
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("effort, expected", [("xhigh", "xhigh"), ("max", "max"), ("off", "low"), ("auto", None)])
+def test_codex_sol_uses_actual_sdk_payload(monkeypatch, protocol, effort, expected):
+    from langchain_core.messages import HumanMessage
+
+    _patch(monkeypatch, _cfg(
+        model="codex/gpt-6.2-sol", protocol=protocol, enable_search=True, enable_thinking=True,
+    ))
+    model = build_model("custom", thinking_effort=effort)
+    payload = model._get_request_payload([HumanMessage("fixture")])
+    assert model._use_responses_api(payload)
+    assert payload.get("reasoning") == ({"effort": expected} if expected else None)
+    assert "reasoning_effort" not in payload
+    assert "temperature" not in payload
+    assert not model.extra_body
+
+
+@pytest.mark.parametrize("name", ["gpt-5.2-codex", "codex/gpt-5.3-codex"])
+def test_older_codex_supports_xhigh_but_not_max(monkeypatch, name):
+    from langchain_core.messages import HumanMessage
+
+    _patch(monkeypatch, _cfg(model=name))
+    model = build_model("custom", thinking_effort="xhigh")
+    body = model._get_request_payload([HumanMessage("fixture")])
+    if model._use_responses_api(body):
+        assert body["reasoning"] == {"effort": "xhigh"}
+    else:
+        assert body["reasoning_effort"] == "xhigh"
+    assert build_model("custom", thinking_effort="max").reasoning_effort is None
+
+
+def test_codex_session_create_patch_restore_and_model_switch(client, patch_build_model):
+    import ginno_runtime.api.sessions as sessions
+    from ginno_runtime.session_meta import _session_meta_patch
+
+    patch_build_model(object())
+    path = "/api/sessions"
+    sol = "codex/gpt-6.2-sol"
+    request = {"project_slug": "effort-test", "workspace": "/tmp/x", "model": sol}
+    created = client.post(path, json={**request, "thinking_effort": "xhigh"}).json()
+    assert created["thinking_effort"] == "xhigh"
+    sid = created["id"]
+    session_path = f"{path}/{sid}"
+    rejected = client.post(path, json={**request, "thinking_effort": "ultra"}).json()
+    assert rejected == {
+        "ok": False,
+        "error": "Unsupported thinking effort 'ultra'. Available: auto, low, medium, high, xhigh, max",
+    }
+    # Evict the live session so the switch operates against the on-disk index.
+    sessions._SESSIONS.pop(sid)
+    changed = client.patch(session_path, json={"model": sol, "thinking_effort": "max"}).json()
+    assert changed["session"]["thinking_effort"] == "max"
+    assert sessions._ensure_session(sid)["thinking_effort"] == "max"
+    older = "codex/gpt-5.3-codex"
+    invalid = client.patch(session_path, json={"model": older, "thinking_effort": "max"}).json()
+    assert not invalid["ok"]
+    assert invalid["error"].endswith("Available: auto, low, medium, high, xhigh")
+    assert sessions._SESSIONS[sid]["thinking_effort"] == "max"
+    switched = client.patch(session_path, json={"model": older}).json()
+    assert switched["session"]["thinking_effort"] == "auto"
+    sessions._SESSIONS.pop(sid)
+    _session_meta_patch("effort-test", sid, {"thinking_effort": "off"})
+    assert sessions._ensure_session(sid)["thinking_effort"] == "low"

@@ -22,7 +22,7 @@ from ...agents.memory import ensure_agent_memory
 from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph
 from ...lang import t
-from ...models import normalize_effort
+from ...models import resolve_model_effort
 from ...server_shared import _SESSIONS, _log
 from ...session_meta import (
     _find_meta,
@@ -39,7 +39,6 @@ from ._base import (
     _build_model_with_fallback,
     _agent_icon,
     _default_title,
-    _stored_effort,
     router,
 )
 
@@ -137,13 +136,12 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
     return provider, model, (agent.id if agent else req.agent_id)
 
 
-def _resolve_thinking_effort(req: CreateSessionRequest) -> str:
+def _resolve_thinking_effort(req: CreateSessionRequest, model: str | None = None) -> str:
     """创建时档位解析链(§9 P1):显式请求 > agent 默认 > auto。"""
-    eff = normalize_effort(req.thinking_effort)
-    if eff:
-        return eff
+    if req.thinking_effort is not None:
+        return resolve_model_effort(model, req.thinking_effort, strict=True) or "auto"
     agent = _agent_lookup(req.agent_id)
-    return _stored_effort(agent.thinking_effort if agent else None)
+    return resolve_model_effort(model, agent.thinking_effort if agent else None) or "auto"
 
 
 # ---- sessions CRUD ----
@@ -154,7 +152,10 @@ async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
     # 思考档位(设计 §2):解析链显式 > agent 默认;落盘值恒 "auto"|档位,
     # build 时 "auto" 归 None(跟随 provider 配置)。
-    effort_stored = _resolve_thinking_effort(req)
+    try:
+        effort_stored = _resolve_thinking_effort(req, model_name)
+    except ValueError as e:
+        return {"error": str(e), "ok": False}
     effort = None if effort_stored == "auto" else effort_stored
     session_id = uuid.uuid4().hex
     try:

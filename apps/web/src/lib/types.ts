@@ -88,7 +88,11 @@ export interface AgentConfig {
   status: string;
 }
 
+export type ThinkingEffort = "auto" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ProviderConfig {
+  /** Model-specific options advertised by the runtime, excluding auto. */
+  model_thinking_efforts?: Record<string, Exclude<ThinkingEffort, "auto">[]>;
   enabled: boolean;
   protocol: "anthropic" | "openai" | "openai-compatible" | string;
   api_key: string;
@@ -199,7 +203,7 @@ export interface SessionMeta {
   model: string;
   /** 思考档位（thinking-effort-design §2）："auto"（缺省，跟随 provider 配置）
    *  或显式档位。运行中换档 = PATCH 热切（下一 superstep 生效）。 */
-  thinking_effort?: "auto" | "off" | "low" | "medium" | "high";
+  thinking_effort?: ThinkingEffort;
   created: number;
   updated: number;
   // Context folder mounts (docs/context-folders-design.md): library ids +
