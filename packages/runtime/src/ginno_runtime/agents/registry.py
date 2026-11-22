@@ -24,7 +24,7 @@ persona, model binding, tool allowlist, and (via memory.py) memory scope.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -365,12 +365,38 @@ _MEMORY_SEED: dict[str, str] = {
 }
 
 
+# 内置 agent 展示名双语（中文化尾巴 ③）：_SEED 里的英文名是稳定契约，
+# 本地表提供 zh 变体；_localized_seed 在写盘时刻按当前 locale 选边（模块
+# 级 t() 会在 import 时固化，首个测试/首个进程的语言会钉死后续所有写入，
+# 故求值必须在 seed 时机）。id/icon/tools 等机器字段不随 locale 漂移；
+# 老数据不迁移——ensure_seeded 只在 agents 目录为空时写，只影响新装默认。
+_SEED_NAMES_ZH: dict[str, str] = {
+    "dev": "开发助手",
+    "research": "调研助手",
+    "writer": "写作助手",
+    "workflow-dev": "工作流开发助手",
+}
+
+
+def _localized_seed(cfg: AgentConfig) -> AgentConfig:
+    """Seed 展示名按当前 locale 选边（en = 原名，zh-CN = 中文展示名）。"""
+    zh = _SEED_NAMES_ZH.get(cfg.id)
+    if not zh:
+        return cfg
+    from ..lang import current_locale
+
+    if current_locale() != "zh-CN":
+        return cfg
+    return replace(cfg, name=zh)
+
+
 def ensure_seeded() -> None:
     """Create default agent files if the registry is empty."""
     paths.agents_dir().mkdir(parents=True, exist_ok=True)
     if any(paths.agents_dir().glob("*.json")):
         return
     for cfg in _SEED:
+        cfg = _localized_seed(cfg)
         _write(cfg)
         ensure_agent_memory(cfg.id, cfg.name, _MEMORY_SEED.get(cfg.id, ""))
 
@@ -387,6 +413,7 @@ def ensure_workflow_dev() -> None:
     seed = next((c for c in _SEED if c.id == "workflow-dev"), None)
     if seed is None:
         return
+    seed = _localized_seed(seed)
     _write(seed)
     ensure_agent_memory(seed.id, seed.name, _MEMORY_SEED.get(seed.id, ""))
 

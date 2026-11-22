@@ -168,3 +168,47 @@ def test_seeded_todo_sync_titles_render_concise(isolated_home):
     run2 = store.create_run(pull, context_override={"provider": "dingtalk", "skill": "dws", "mcp": ""})
     assert run2["steps"][0]["title"] == "拉取 dingtalk 的未完成待办"
 
+
+
+def test_pr_triage_seed_is_bilingual(isolated_home, monkeypatch):
+    """中文化尾巴 ③：示例工作流 pr-triage 的展示文案（name/description/
+    step title）seed 时刻按 locale 选边落盘；id 与 steps[].id 等机器字段
+    不随 locale 漂移。老安装已落盘的不重写（pr-triage 非 system seed）。"""
+    monkeypatch.setenv("GINNO_LANGUAGE", "zh-CN")
+    store.ensure_seeded()
+    d = store.get_def("pr-triage")
+    assert d is not None
+    assert d["name"] == "PR 分诊"
+    assert d["description"] == "分诊开放的 Pull Request：列出、审查、汇总。"
+    titles = [s["title"] for s in d["steps"]]
+    assert titles == ["列出开放的 PR", "逐个审查 PR", "汇总发现"]
+    ids = [s["id"] for s in d["steps"]]
+    assert ids == ["s1", "s2", "s3"]
+    assert d["id"] == "pr-triage"
+
+
+def test_pr_triage_seed_defaults_to_english(isolated_home):
+    """en locale（含 CI 的 auto→en）保持英文原文，存量断言语义不变。"""
+    import os
+
+    os.environ.pop("GINNO_LANGUAGE", None)
+    store.ensure_seeded()
+    d = store.get_def("pr-triage")
+    assert d is not None
+    assert d["name"] == "PR Triage"
+    assert d["steps"][0]["title"] == "List open PRs"
+
+
+def test_pr_triage_seed_not_rewritten_once_landed(isolated_home):
+    """已落盘的 seed 不随 locale 变化重写——老数据不迁移（goal 红线）。"""
+    import os
+
+    store.ensure_seeded()  # 先以 en 落盘
+    os.environ["GINNO_LANGUAGE"] = "zh-CN"
+    try:
+        store.ensure_seeded()  # 再以 zh 调用：不得改写已存在的 def
+        d = store.get_def("pr-triage")
+        assert d is not None
+        assert d["name"] == "PR Triage"
+    finally:
+        os.environ.pop("GINNO_LANGUAGE", None)
