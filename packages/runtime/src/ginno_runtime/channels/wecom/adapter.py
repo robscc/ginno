@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
+from pathlib import Path
 
 import httpx
 
@@ -40,6 +42,30 @@ _BACKOFF_MAX_S = 60.0
 _ANSWER_REPLAY_WINDOW_S = 600.0
 
 
+def _last_chat_key_path() -> Path:
+    return paths.home() / "channels" / "wecom_last_chat_key"
+
+
+def _save_last_chat_key(chat_key: str) -> None:
+    """原子写（tmp+rename）；失败静默——镜像触达是尽力而为，绝不炸入站。"""
+    try:
+        p = _last_chat_key_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(chat_key, encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_last_chat_key() -> str | None:
+    try:
+        v = _last_chat_key_path().read_text(encoding="utf-8").strip()
+        return v or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class WeComChannelAdapter(ChannelAdapter):
     """企微智能机器人适配器：Connector(配置/状态) 与 Ginno 核心之间的桥。"""
 
@@ -56,7 +82,11 @@ class WeComChannelAdapter(ChannelAdapter):
         self._session_locks: dict[str, asyncio.Lock] = {}  # 在途 turn 串行
         # ask_relay（2026-11-21 企微异步人审）：最近活跃 chat_key（无人值守
         # 转发目的地）+ wecom 自己 tap 已发的 question id（镜像器防重复）。
-        self.last_chat_key: str | None = None
+        # 启动即恢复持久化的最近 chat_key（2026-11-23 修复：此前是纯内存态，
+        # sidecar 重启（含 dev-swap）后归零，重启后到用户下次企微说话之间的
+        # 桌面 ask_user 镜像因「无目的地」静默跳过——会话 4cacd4a4 00:10
+        # Codex 档位施工卡漏发实案）。
+        self.last_chat_key: str | None = _load_last_chat_key()
         from collections import deque
 
         self._own_question_ids: deque[str] = deque(maxlen=32)
@@ -162,7 +192,9 @@ class WeComChannelAdapter(ChannelAdapter):
             text = p.strip_mention_prefix(raw).strip()
             if not text:
                 return
-            self.last_chat_key = chat_key  # ask_relay 转发目的地
+            if self.last_chat_key != chat_key:
+                self.last_chat_key = chat_key  # ask_relay 转发目的地
+                _save_last_chat_key(chat_key)
             from ..ask_relay import _note_loop, try_answer_unattended
 
             _note_loop()
