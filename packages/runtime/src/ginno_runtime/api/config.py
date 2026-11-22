@@ -23,6 +23,7 @@ from ..api import env_settings as env_settings_api
 from ..agents.registry import AgentModelBindingError
 from ..lang import t
 from ..mcp.registry import MCPRegistry
+from ..models import codex_efforts
 from ..server_shared import _SESSIONS, _push_global_event
 from ..session_meta import _session_meta_list
 from ..skills.loader import SkillLoader
@@ -566,6 +567,11 @@ async def get_providers() -> dict:
     # SEC-01: same rule as GET /api/settings — keys never leave the process in
     # plaintext. PUT /api/providers restores masked ones from storage.
     for c in legacy.values():
+        models = [*(c.get("models") or []), c["default_model"]]
+        efforts = {model: levels for model in models if (levels := codex_efforts(model))}
+        c.pop("model_thinking_efforts", None)
+        if efforts:
+            c["model_thinking_efforts"] = efforts
         if c.get("api_key"):
             c["api_key"] = prov_mod.mask_secret(c["api_key"])
     return {
@@ -665,6 +671,7 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     providers: dict = {}
     for pid, cfg in (req.providers or {}).items():
         cfg = dict(cfg or {})
+        cfg.pop("model_thinking_efforts", None)
         if prov_mod.is_masked(cfg.get("api_key")):
             prev_key = (stored.get(pid) or {}).get("api_key")
             if not prev_key:

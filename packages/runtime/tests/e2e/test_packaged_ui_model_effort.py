@@ -214,3 +214,67 @@ def test_packaged_ui_model_effort_single_click_sticks(tmp_path):
             browser.close()
     finally:
         sc.stop_sidecar(proc)
+
+
+def test_codex_model_effort_is_model_specific_and_persists(tmp_path, monkeypatch):
+    import test_packaged_ui_tasks_overview as smoke
+    smoke._require_runtime()
+    from playwright.sync_api import expect, sync_playwright
+
+    port = smoke._free_port()
+    sol = "codex/gpt-6.2-sol"
+    older = "codex/gpt-5.3-codex"
+    settings = _settings()
+    settings["providers"]["custom"]["models"] = [MODEL, sol, older]
+    monkeypatch.setattr(smoke, "_settings", lambda: settings)
+    proc, log = smoke._spawn(tmp_path, port)
+    try:
+        smoke._wait_health(port)
+        with sync_playwright() as pw:
+            browser, page = smoke._new_page(pw)
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+            composer = page.locator("textarea").first
+            composer.fill("hello Codex effort menu")
+            composer.press("Enter")
+            chip = page.locator(f'button[title*="{CHIP_TITLE_FRAG}"]').first
+            expect(chip).to_contain_text(MODEL)
+            chip.click()
+
+            def expand(name):
+                row = page.get_by_role("button", name=name).filter(
+                    has=page.locator(f'[role="button"][title="{ARROW_TITLE}"]')
+                )
+                row.locator(f'[role="button"][title="{ARROW_TITLE}"]').click()
+
+            maximum = page.get_by_role("button", name="Maximum", exact=True)
+            extra_high = page.get_by_role("button", name="Extra high", exact=True)
+            expand(older)
+            expect(extra_high).to_be_visible()
+            expect(maximum).to_have_count(0)
+            expand(sol)
+            expect(maximum).to_be_visible()
+            expect(extra_high).to_be_visible()
+            expect(page.get_by_role("button", name=re.compile(r"^Off\b"))).to_have_count(0)
+            expect(page.get_by_role("button", name=re.compile(r"Ultra", re.I))).to_have_count(0)
+
+            sid = _sessions(port)[0]["id"]
+            path = f"/api/sessions/{sid}"
+            patches = []
+
+            def is_session_patch(request):
+                return request.method == "PATCH" and request.url.endswith(path)
+
+            page.on("request", lambda request: patches.append(request.post_data_json)
+                    if is_session_patch(request) else None)
+            with page.expect_response(lambda response: is_session_patch(response.request)) as result:
+                extra_high.click()
+            saved = result.value.json()
+            assert saved["session"]["thinking_effort"] == "xhigh"
+            expect(chip).to_contain_text("XHI")
+            page.reload(wait_until="load")
+            expect(chip).to_contain_text("XHI")
+            assert patches == [{"provider": "custom", "model": sol, "thinking_effort": "xhigh"}]
+            assert _sessions(port)[0]["thinking_effort"] == "xhigh"
+            browser.close()
+    finally:
+        smoke._stop(proc, log)

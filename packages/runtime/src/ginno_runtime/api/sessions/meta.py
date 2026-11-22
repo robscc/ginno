@@ -14,7 +14,7 @@ from ... import providers as prov_mod
 from ... import server_shared as shared
 from ...checkpointer import FileCheckpointer
 from ..messages_ui import _messages_to_ui
-from ...models import build_model
+from ...models import build_model, resolve_model_effort
 from ...server_shared import _SESSIONS, _log
 from ...session_meta import (
     _find_meta,
@@ -26,7 +26,7 @@ from ...session_meta import (
 )
 from ...session_unread import mark_session_seen as _mark_session_seen
 from ...session_unread import mark_session_unread as _session_unread_mark
-from ._base import _stored_effort, router
+from ._base import router
 
 
 # ── Session label/icon（session-label-icon-design.md §1/§2）──────────────────
@@ -143,7 +143,8 @@ class PatchSessionRequest(BaseModel):
 @router.patch("/api/sessions/{session_id}")
 async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     s = _SESSIONS.get(session_id)
-    slug = s["project_slug"] if s else "default"
+    stored = _find_meta(session_id) if s is None else None
+    slug = s["project_slug"] if s else stored[1] if stored else "default"
     patch = req.model_dump()
 
     # Per-session model switch (composer model chip): validate before touching
@@ -158,8 +159,6 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     # 缺省),归一成落盘值;与 provider/model 共用同一条热切路径。
     eff_raw = patch.get("thinking_effort")
     eff_changed = eff_raw is not None
-    if eff_changed:
-        patch["thinking_effort"] = _stored_effort(eff_raw)
     switched = (
         patch.get("provider") is not None
         or patch.get("model") is not None
@@ -171,7 +170,7 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
             (m for m in _session_meta_list(slug) if m.get("id") == session_id), None
         ) or {}
         provider = (
-            patch.get("provider") or (s or {}).get("provider") or cur_meta.get("provider")
+            patch.get("provider") or (s or {}).get("model_provider") or cur_meta.get("provider")
         )
         if patch.get("provider") is not None and patch.get("model") is None:
             # provider change without an explicit model → that provider's
@@ -183,14 +182,14 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
             # 只换档位/只换 provider 以外的组合:模型沿用会话现值(meta 名),
             # 不能回落 provider 默认把会话的钉选模型洗掉。
             patch["model"] = (s or {}).get("model_name") or cur_meta.get("model")
-        # 档位:patch 归一值 > 会话现值;build 参数 auto → None。
-        eff_stored = (
-            patch.get("thinking_effort")
-            or (s or {}).get("thinking_effort")
-            or str(cur_meta.get("thinking_effort") or "auto")
-        )
-        eff = None if eff_stored == "auto" else eff_stored
+        # Validate explicit choices against the destination model. An inherited
+        # choice can be unavailable after a model switch and rolls back to auto.
+        saved_effort = (s or {}).get("thinking_effort") or cur_meta.get("thinking_effort")
         try:
+            eff = resolve_model_effort(
+                patch.get("model"), eff_raw if eff_changed else saved_effort, strict=eff_changed
+            )
+            patch["thinking_effort"] = eff or "auto"
             new_model = build_model(
                 provider,
                 patch.get("model"),
@@ -250,7 +249,7 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
                 "model": patch.get("model"),
                 # 思考档位随事件同步(设计 §6):其它已打开同会话的客户端据此
                 # 更新 chip 角标;auto 也显式给,缺字段时前端保持旧值。
-                "thinking_effort": (s or {}).get("thinking_effort") or "auto",
+                "thinking_effort": patch["thinking_effort"],
                 "effective": "next_step",
             },
         )

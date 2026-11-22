@@ -52,7 +52,7 @@ describe("ModelChipMenu：远端会话整 chip 禁用", () => {
 
   it("远端态换机器图标、隐藏思考角标与下拉箭头（都是本地语义的控件）", () => {
     expect(CHIP).toMatch(/\{remotePeer \? \(\s*\n?\s*<Server/);
-    expect(CHIP).toContain("{!remotePeer && EFFORT_BADGE[thinkingEffort] && (");
+    expect(CHIP).toContain("{!remotePeer && EFFORT_BADGE[activeEffort] && (");
     expect(CHIP).toContain("{!remotePeer && <ChevronDown");
   });
 

@@ -30,7 +30,7 @@ from ... import server_shared as shared
 from ... import agents as agents_reg
 from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph
-from ...models import build_model, normalize_effort
+from ...models import build_model, normalize_effort, resolve_model_effort
 from ...server_shared import _SESSIONS
 from ...session_meta import _find_meta
 from ..config import _agent_lookup
@@ -141,7 +141,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         prov_mod.load_providers(), provider
     )
     # 思考档位随会话记录恢复(设计 §2):meta 落盘值 "auto"|档位,auto → None。
-    stored_eff = _stored_effort(meta.get("thinking_effort"))
+    stored_eff = resolve_model_effort(model_name, meta.get("thinking_effort")) or "auto"
     try:
         model = _build_model_with_fallback(
             provider,
