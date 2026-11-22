@@ -180,7 +180,7 @@
       "on": "On",
       "off": "Off",
       "refresh": "Re-check system registration state",
-      "hint": "The state mirrors the macOS login item (SMAppService). If you turn Ginno off in System Settings, this shows the truth and can re-register in one click.",
+      "hint": "State mirrors the real macOS login-item registration: packaged builds use SMAppService (manageable under System Settings → General → Login Items); legacy LaunchAgent registrations are migrated automatically. Dev/unpackaged builds still use LaunchAgent.",
       "errFailed": "Registration failed: blocked by policy, or needs approval under System Settings → General → Login Items."
     }
   }

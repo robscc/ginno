@@ -163,27 +163,32 @@ export async function setKeepAwake(enabled: boolean): Promise<boolean> {
 export async function getAutostartEnabled(): Promise<boolean | null> {
   if (!isDesktop()) return null;
   try {
-    const m = await import("@tauri-apps/plugin-autostart");
-    return await m.isEnabled();
+    // 2026-11-22 巡检 P1：插件 isEnabled 只查 LaunchAgent plist 文件存在
+    // （系统设置「允许在后台」禁用后仍恒 true，UI 恒显已开启）。改走自有
+    // command：SMAppService 注册态（系统登录项真源）|| legacy plist 存在
+    //（老版本注册的、自启真实在跑就显示开）。
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<boolean>("ginno_autostart_is_enabled");
   } catch {
     return null;
   }
 }
 
 /**
- * Register/unregister the login item via SMAppService. On failure returns the
- * message (e.g. policy-blocked or approval-required states surface as a
- * register error); on success callers should re-read getAutostartEnabled() to
- * confirm the system-side state rather than trusting a local flag.
+ * Register/unregister the login item. 2026-11-22 巡检 P1 修正：release 走
+ * SMAppService（系统登录项真源，可在 系统设置 → 通用 → 登录项 管理），
+ * dev/未打包/旧系统回退 LaunchAgent；老版本遗留的 LaunchAgent plist 在
+ * enable 时迁移清理、disable 时一并删除。On failure returns the message;
+ * on success callers should re-read getAutostartEnabled() to confirm the
+ * system-side state rather than trusting a local flag.
  */
 export async function setAutostart(
   enabled: boolean,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!isDesktop()) return { ok: false, error: "not desktop" };
   try {
-    const m = await import("@tauri-apps/plugin-autostart");
-    if (enabled) await m.enable();
-    else await m.disable();
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("ginno_autostart_set", { enabled });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
