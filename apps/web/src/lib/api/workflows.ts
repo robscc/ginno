@@ -3,7 +3,7 @@
  *
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
  */
-import { BASE, H, json } from "./core";
+import { BASE, H, json, jsonStrict } from "./core";
 
 // ---- workflows ----
 export async function listWorkflows() {
@@ -170,7 +170,10 @@ export async function updateWorkflow(
   id: string,
   data: Partial<import("../types").WorkflowDef> & { commit?: string },
 ) {
-  return json<{ ok: boolean; workflow?: import("../types").WorkflowDef }>(`${BASE}/workflows/${id}`, {
+  // jsonStrict（Q6）：PUT 是读改写型调用，非 2xx 必须抛错并保留服务端
+  // detail（如 400 的 DSL 校验原因），不能把错误体当业务文档返回——
+  // 否则调用方只见 ok:false，丢失「为什么被拒」。
+  return jsonStrict<{ ok: boolean; workflow?: import("../types").WorkflowDef }>(`${BASE}/workflows/${id}`, {
     method: "PUT",
     headers: H,
     body: JSON.stringify(data),

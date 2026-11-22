@@ -246,6 +246,7 @@
       "untouchedHint": "应用之前当前版本不受影响",
       "noDsl": "该工作流没有可编辑的 DSL",
       "saveRejected": "保存失败（服务端拒绝了这份 DSL）",
+      "saveRejectedDetail": "保存失败：{reason}",
       "invalidJson": "{field} 不是合法 JSON：{msg}",
       "notNumber": "{field} 必须是数字",
       "draftFailed": "草稿未通过试运行：{detail}",

@@ -106,6 +106,39 @@ describe("workflow 定义 CRUD", () => {
     expect(bodyOf(init)).toEqual(data);
   });
 
+  it("updateWorkflow：非 2xx 抛错并保留 body.detail + ginnoStatus（Q6，走 jsonStrict）", async () => {
+    // 服务端 400 的典型形态：{"detail": "<DSL 校验原因>"}。jsonStrict 必须抛错
+    // 而不是把错误体当业务文档返回——否则调用方只见 ok:false，丢「为什么被拒」。
+    const mock = vi.fn().mockImplementation(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ detail: "node s2: 'prompt' must be a non-empty string" }),
+    }));
+    vi.stubGlobal("fetch", mock);
+    const err = await updateWorkflow("wf1", { dsl: {} }).then(
+      () => { throw new Error("expected reject"); },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("node s2: 'prompt' must be a non-empty string");
+    expect((err as Error & { ginnoStatus?: number }).ginnoStatus).toBe(400);
+  });
+
+  it("updateWorkflow：409 并发冲突同样抛错带状态（将来 store 加 version CAS 时的分型依据）", async () => {
+    const mock = vi.fn().mockImplementation(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: "version conflict: 3 != 2" }),
+    }));
+    vi.stubGlobal("fetch", mock);
+    const err = await updateWorkflow("wf1", { dsl: {} }).then(
+      () => { throw new Error("expected reject"); },
+      (e: unknown) => e,
+    );
+    expect((err as Error & { ginnoStatus?: number }).ginnoStatus).toBe(409);
+    expect((err as Error).message).toBe("version conflict: 3 != 2");
+  });
+
   it("deleteWorkflow：DELETE /workflows/{id}", async () => {
     const mock = stubFetch({ ok: true });
     await expect(deleteWorkflow("wf1")).resolves.toEqual({ ok: true });
