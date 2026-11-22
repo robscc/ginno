@@ -27,6 +27,29 @@ export type ConnStatusKey =
   | "disabled"
   | "restarting";
 
+/** 查表翻译器（next-intl t 放宽为 string 键 + has 存在性判定，形态同
+ * ConfigEditor.A2aFieldLookup——卡片/详情的 name 与 description 是后端
+ * 下发的动态字符串，超出字面量 key 类型）。 */
+export type ConnTextLookup = {
+  (key: string): string;
+  has(key: string): boolean;
+};
+
+/** 连接器展示名：conn 域 card.name.<id> 优先（内置连接器双语文案），
+ * 缺 key（mod、a2a peer 动态实例、vibe-island 等专名）回落后端原值。
+ * 纯函数，node 环境可单测。 */
+export function connectorName(c: ConnectorInfo, t: ConnTextLookup): string {
+  const key = `card.name.${c.id}`;
+  return t.has(key) ? t(key) : c.name;
+}
+
+/** 连接器描述句：conn 域 card.desc.<id> 优先，缺 key 回落后端英文
+ * （builtin schema 描述是稳定兜底，同字段文案的回落策略）。 */
+export function connectorDesc(c: ConnectorInfo, t: ConnTextLookup): string {
+  const key = `card.desc.${c.id}`;
+  return t.has(key) ? t(key) : c.description;
+}
+
 export const STATUS_META: Record<
   string,
   { statusKey: ConnStatusKey; cls: string; Icon: typeof CheckCircle2 }

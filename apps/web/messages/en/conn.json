@@ -37,7 +37,20 @@
       "noSettings": "No settings",
       "settingsAvailable": "Settings available",
       "settings": "Settings",
-      "enable": "Enable"
+      "enable": "Enable",
+      "name": {
+        "chrome-extension": "Chrome Browser Extension",
+        "browser-profile": "Ginno Browser Profile",
+        "wecom-bot": "WeCom Smart Bot",
+        "dingtalk-bot": "DingTalk Bot"
+      },
+      "desc": {
+        "chrome-extension": "Let Ginno work in your own Chrome: shared logins, visible actions, always under your control.",
+        "browser-profile": "A Ginno-managed Chrome instance (a dedicated profile, isolated from your own browser logins). The fallback track when the extension isn't installed.",
+        "wecom-bot": "Chat with Ginno inside WeCom (企业微信) via a smart bot's long connection: streaming replies, text answers to agent questions, file and image exchange — your desktop Ginno stays the runtime.",
+        "dingtalk-bot": "Chat with Ginno inside DingTalk: stream replies as AI cards, answer agent questions with buttons, send and preview files — your desktop Ginno stays the runtime.",
+        "vibe-island": "Show Ginno sessions in the Vibe Island notch: working/idle status, the running tool, completion notices and approval reminders — one card per session."
+      }
     },
     "runtime": {
       "warning": "Claude Mods runtime is not ready — Node: {nodePath}. Mods will not load until this is fixed.",
@@ -259,6 +272,49 @@
           }
         }
       }
-    }
+    },
+    "field-chrome-extension-fallback-profile-mode-title": "Fallback browser when extension missing",
+    "field-chrome-extension-fallback-profile-mode-desc": "ask=prompt once before using / auto=silently use Ginno's built-in Chrome profile / off=extension track only",
+    "field-chrome-extension-tab-scope-title": "Tab visibility",
+    "field-chrome-extension-tab-scope-desc": "group=only tabs in the Ginno group (fenced; no personal tabs visible) / all=every tab (readable and controllable; mind your privacy)",
+    "field-chrome-extension-sensitive-domains-title": "Protected domains",
+    "field-chrome-extension-sensitive-domains-desc": "Browser actions on these domains require your confirmation (payments / email / cloud consoles)",
+    "field-chrome-extension-confirmed-domains-title": "Confirmed protected domains",
+    "field-chrome-extension-confirmed-domains-desc": "You've allowed the agent to operate on these protected domains (added here after the agent asks; one per line)",
+    "field-chrome-extension-auto-open-group-title": "Bring Chrome to front on new tabs",
+    "field-browser-profile-headless-title": "Headless mode",
+    "field-browser-profile-headless-desc": "Don't show a browser window (off by default: actions stay visible and interruptible)",
+    "field-wecom-bot-bot-id-title": "BotID",
+    "field-wecom-bot-bot-id-desc": "From the WeCom admin console: 智能机器人 → API 模式 → 长连接",
+    "field-wecom-bot-allowed-userids-title": "Allowed userids",
+    "field-wecom-bot-allowed-userids-desc": "Empty = everyone who can reach the bot can drive the agent",
+    "field-wecom-bot-admin-users-title": "Admin userids",
+    "field-wecom-bot-admin-users-desc": "userids allowed to run admin-only channel commands (/dev-swap). Fail-closed: empty list rejects everyone — find your userid in the channel mappings file (user_id) or sidecar inbound logs",
+    "field-wecom-bot-default-agent-id-title": "Default agent for this channel",
+    "field-wecom-bot-default-agent-id-desc": "Which agent answers messages here; empty = Ginno's default agent",
+    "field-wecom-bot-session-policy-title": "Session policy",
+    "field-wecom-bot-session-policy-desc": "per_user: each user gets their own session per chat; per_conversation: one shared session per chat (groups)",
+    "field-wecom-bot-ask-timeout-s-title": "ask_user timeout (seconds)",
+    "field-wecom-bot-ask-timeout-s-desc": "Auto-skip a parked question after this",
+    "field-wecom-bot-welcome-text-title": "Welcome message",
+    "field-wecom-bot-welcome-text-desc": "Sent when a user enters the chat (enter_chat event); empty = disabled",
+    "field-dingtalk-bot-robot-code-title": "robotCode",
+    "field-dingtalk-bot-robot-code-desc": "Needed for media upload; defaults to AppKey",
+    "field-dingtalk-bot-card-template-id-title": "AI card template id",
+    "field-dingtalk-bot-card-template-id-desc": "Template published on the DingTalk card platform; empty = plain markdown replies (no typewriter streaming)",
+    "field-dingtalk-bot-allowed-staff-ids-title": "Allowed staffIds",
+    "field-dingtalk-bot-allowed-staff-ids-desc": "Empty = everyone in the app's visibility scope can drive the agent",
+    "field-dingtalk-bot-admin-users-title": "Admin staffIds",
+    "field-dingtalk-bot-admin-users-desc": "staffIds allowed to run admin-only channel commands (/dev-swap). Fail-closed: empty list rejects everyone — find yours in the channel mappings file (user_id) or sidecar inbound logs",
+    "field-dingtalk-bot-default-agent-id-title": "Default agent for this channel",
+    "field-dingtalk-bot-default-agent-id-desc": "Which agent answers messages here; empty = Ginno's default agent",
+    "field-dingtalk-bot-session-policy-title": "Session policy",
+    "field-dingtalk-bot-session-policy-desc": "per_user (P0): each staffId maps to its own session; per_conversation (P1 groups): one shared session per conversation",
+    "field-dingtalk-bot-menus-title": "Menus / commands",
+    "field-dingtalk-bot-menus-desc": "trigger (exact or /prefix, case-insensitive), title, prompt template ({date}/{time}/{staff_name}), new_session",
+    "field-dingtalk-bot-ask-timeout-s-title": "ask_user timeout (seconds)",
+    "field-dingtalk-bot-ask-timeout-s-desc": "Auto-skip a parked question after this",
+    "field-dingtalk-bot-tool-policy-title": "Tool policy",
+    "field-dingtalk-bot-tool-policy-desc": "readonly=read-only tools only / confirm_highrisk=ask before dangerous tools / all=no restriction (not advised)"
   }
 }
