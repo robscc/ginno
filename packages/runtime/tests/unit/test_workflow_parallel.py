@@ -137,7 +137,10 @@ async def test_parallel_on_error_stop_fails_run(monkeypatch):
         _par_dsl(parallel={"max_concurrency": 1}), run_id="p-3", model=model,
         tools=[], project_slug="unit-par")]
     kinds = [e["kind"] for e in events]
-    assert kinds[-1] == "error"
+    # R3 巡检 Q10-②：error 之后紧跟失败节点的 node_exit(failed)（每个
+    # node_enter 配对 node_exit 的新契约；旧断言 kinds[-1] == "error"）。
+    assert "error" in kinds
+    assert kinds[-1] == "node_exit" and events[-1].get("status") == "failed"
     assert "loop_item_error" not in kinds
 
 

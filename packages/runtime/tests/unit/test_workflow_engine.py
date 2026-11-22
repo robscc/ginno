@@ -229,10 +229,12 @@ async def test_engine_error_attributes_failing_node_in_chain():
         events.append(ev)
 
     enters = [e["node_id"] for e in events if e["kind"] == "node_enter"]
-    exits = [e["node_id"] for e in events if e["kind"] == "node_exit"]
+    exits = [(e["node_id"], e.get("status")) for e in events if e["kind"] == "node_exit"]
     # node a completed fully; node b entered (footprint kept) then raised.
     assert enters == ["a", "b"]
-    assert exits == ["a"]
+    # R3 巡检 Q10-② 契约更新：失败节点也有配对 node_exit(failed)——每个
+    # node_enter 都必须有 node_exit，失败不是例外（旧断言 exits == ["a"]）。
+    assert exits == [("a", "done"), ("b", "failed")]
     err = next(e for e in events if e["kind"] == "error")
     assert err.get("node_id") == "b"
     assert "boom-b" in (err.get("error") or "")

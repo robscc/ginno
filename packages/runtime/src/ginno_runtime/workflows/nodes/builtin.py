@@ -884,21 +884,38 @@ class LoopNode(BaseNode):
 @register_node
 class HumanNode(BaseNode):
     """Human-in-the-loop checkpoint: suspends via ``interrupt`` and resumes with the
-    provided value (e.g. ``{"decision": "continue", "context_patch": {...}}``)."""
+    provided value (e.g. ``{"decision": "continue", "context_patch": {...}}``).
+
+    Event contract (R3 巡检 Q10):
+    * ``interrupt`` is appended ONLY on a real suspension (the GraphInterrupt
+      path). On resume, LangGraph re-executes this node from scratch — an
+      unconditional append would persist the interrupt event a SECOND time
+      into the run's event log (duplicate rows after every resume).
+    * after the resume value is delivered we emit ``resume`` AND a paired
+      ``node_exit(done)`` — the run driver's step-status writeback listens to
+      node_exit, and without it the human step stayed "running" forever.
+    """
 
     type = "human"
     params_schema = {"type": "object", "properties": {"question": {"type": "string"}}}
 
     @staticmethod
     async def execute(node, cctx, state, config, eff) -> dict:
+        from langgraph.errors import GraphInterrupt
         from langgraph.types import interrupt
 
         run_ctx = cctx["run_ctx"]
-        run_ctx["events"].append(
-            {"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "interrupt", "question": node.get("question")}
-        )
-        value = interrupt({"kind": "human", "node": node["id"], "question": node.get("question")})
+        try:
+            value = interrupt({"kind": "human", "node": node["id"], "question": node.get("question")})
+        except GraphInterrupt:
+            # Real suspension: only now does the interrupt event exist.
+            # (Re-raise so LangGraph persists the pending write as before.)
+            run_ctx["events"].append(
+                {"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "interrupt", "question": node.get("question")}
+            )
+            raise
         run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "resume"})
+        run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_exit", "status": "done"})
         update: dict = {"events": []}
         # a context_patch in the resume value merges into context
         if isinstance(value, dict) and isinstance(value.get("context_patch"), dict):
@@ -919,4 +936,8 @@ class PassNode(BaseNode):
     async def execute(node, cctx, state, config, eff) -> dict:
         run_ctx = cctx["run_ctx"]
         run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_enter", "node_type": "pass"})
+        # Paired exit (R3 巡检 Q10-①): the run driver's step writeback listens
+        # to node_exit — without it a pass step stayed "running" forever after
+        # the run finished.
+        run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_exit", "status": "done"})
         return {"events": [], "__output__": {}}

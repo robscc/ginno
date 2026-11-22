@@ -186,9 +186,12 @@ async def test_python_entry_failure_fails_run(monkeypatch):
     doc = _dsl([{"id": "p", "type": "python", "entry": "t_boom",
                  "writes": {"x": {"type": "object"}}}])
     events = await _run(doc)
-    assert events[-1]["kind"] in ("error", "done")
+    # R3 巡检 Q10-②：失败路径 error 事件后还会补 node_exit(failed)。
+    assert events[-1]["kind"] in ("error", "node_exit", "done")
     err = [e for e in events if e["kind"] == "error"]
     assert err and "kaboom" in str(err[0]), events
+    failed_exits = [e for e in events if e["kind"] == "node_exit" and e.get("status") == "failed"]
+    assert failed_exits and failed_exits[0]["node_id"] == "p", events
 
 
 async def test_python_node_timeout(monkeypatch):
