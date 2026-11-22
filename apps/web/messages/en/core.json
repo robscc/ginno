@@ -1,5 +1,9 @@
 {
   "errors": {
-    "generic": "Something went wrong. Please try again."
+    "generic": "Something went wrong. Please try again.",
+    "knowledgeVaultNotConfigured": "knowledge vault not configured",
+    "knowledgeNotConfigured": "knowledge not configured",
+    "searxngNotConfigured": "SearXNG base_url not configured",
+    "tavilyNotConfigured": "Tavily API key not configured"
   }
 }
