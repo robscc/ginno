@@ -11,7 +11,8 @@
       "validationErrors": "校验错误：{list}",
       "dryPassed": "试运行通过：{count} 个节点，校验 / 数据流 / 编译 / 可达性全部通过",
       "unreachable": "不可达节点：{list}",
-      "dryFailed": "试运行失败："
+      "dryFailed": "试运行失败：",
+      "cycles": "含循环依赖 {count} 处（branch 回边合法，不拒绝）；运行时仅靠 recursion_limit={limit} 兜底"
     },
     "diff": {
       "noChanges": "无差异"
