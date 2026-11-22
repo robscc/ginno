@@ -234,14 +234,21 @@ class WeComTap(ChannelTap):
             timeout_s, lambda: asyncio.create_task(self._ask_timeout()))
 
     async def _ask_timeout(self) -> None:
-        from ...api.stream.resume import resume_pending_interrupt
+        from ...api.stream.resume import resume_question
 
         await self.adapter.unregister_pending_question(self.chat_key)
-        resume_pending_interrupt(
-            self.session_id,
-            {"kind": "user_answer", "answer": "", "option_index": None,
-             "skip": True},
-        )
+        # 超时跳过同样走 resume_question 共享段（relay 墓碑统一收口）。
+        # 刻意不带 arm_from_checkpoint：计时器是兜底不是凭证——用户可能
+        # 刚在桌面答完（resume 任务在跑），宽松武装会把已答问题再拉起。
+        ok = await resume_question(
+            self.session_id, skip=True, answered_by="wecom_timeout")
+        if ok:
+            # 渠道墓碑：超时跳过也算「已答」，晚到的企微回复命中墓碑被
+            # 拒绝并告知，而不是回落成新 turn。
+            self.adapter.mark_question_answered(
+                self.chat_key, qid=self._question_id or "",
+                session_id=self.session_id, skip=True,
+                answered_by="wecom_timeout")
 
     def _cancel_ask_timer(self) -> None:
         if self._ask_timer is not None:
