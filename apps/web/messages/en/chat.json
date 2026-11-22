@@ -648,6 +648,7 @@
       "demoteMember": "Demote to member",
       "removeMemberConfirmTitle": "Remove member?",
       "removeMemberConfirmMsg": "\"{name}\" and all of its sessions will be deleted. This cannot be undone.",
+      "removeMemberRunningMsg": "\"{name}\" is still running: removing it will force-stop its turn and delete ALL of its sessions. This cannot be undone.",
       "togglePanel": "Show / hide the members panel",
       "closePanel": "Close members panel",
       "rollupExplainer": "Status rolls up: member → team row → sidebar badge. Only \"needs you\" and \"done · unread\" bubble up; working stays on the team row.",
