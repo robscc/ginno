@@ -141,7 +141,8 @@ export async function updateArtifact(
 // ---- files (upload / preview — docs/file-parsing-research.md §7) ----
 /** 上传/挂载响应里的稳定错误码。`file_too_large` = 超过 runtime 的
  *  UPLOAD_MAX_BYTES（100MB）——前端据此给出专门的可见报错，而不是把芯片
- *  静默移除（2026-11-22 R3 巡检 Q1）。 */
+ *  静默移除（2026-11-22 R3 巡检 Q1）。attach-path 超限时响应还带实际
+ *  文件 `size`（字节），供错误文案呈现（Q2）。 */
 export type FileOpErrorCode = "file_too_large";
 
 export async function uploadFile(sessionId: string, file: File) {
@@ -179,10 +180,15 @@ export async function listFiles(project_slug = "default", session_id?: string) {
 // expose dropped files to JS, so the shell forwards the path and the sidecar
 // copies + registers it). Returns the same shape as uploadFile.
 export async function attachFilePath(sessionId: string, path: string) {
-  return json<{ ok: boolean; error?: string; code?: FileOpErrorCode; file?: import("../types").FileEntry }>(
-    `${BASE}/files/attach-path`,
-    { method: "POST", headers: H, body: JSON.stringify({ session_id: sessionId, path }) },
-  );
+  return json<{
+    ok: boolean;
+    error?: string;
+    code?: FileOpErrorCode;
+    /** 超限拒绝时的实际文件大小（字节），attach-path 场景前端拿不到
+     *  本地 File 对象，文案里的 size 由后端提供。 */
+    size?: number;
+    file?: import("../types").FileEntry;
+  }>(`${BASE}/files/attach-path`, { method: "POST", headers: H, body: JSON.stringify({ session_id: sessionId, path }) });
 }
 
 // Register an existing absolute path (an attach_ref ref_id) in the file

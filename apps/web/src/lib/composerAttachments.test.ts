@@ -329,3 +329,21 @@ describe("Q1 超限可见报错：UploadError / uploadFailureNotice", () => {
     expect(fmtUploadSize(1048576 * 105.5)).toBe("105.5 MB");
   });
 });
+
+describe("Q2 attach-path 超限：size 缺省时的降级", () => {
+  it("超限但拿不到 size（attach-path 异常路径）→ 降级 failed 分支带后端 error 文本，不出残缺 tooLarge 文案", () => {
+    expect(uploadFailureNotice(new UploadError("File too large (max 100MB)", "file_too_large"), "big.iso")).toEqual({
+      key: "failed",
+      params: { name: "big.iso", error: "File too large (max 100MB)" },
+    });
+  });
+
+  it("attach-path 超限且后端带 size → tooLarge 文案（名字+大小+上限）", () => {
+    expect(
+      uploadFailureNotice(new UploadError("File too large (max 100MB)", "file_too_large"), "big.iso", 150 * 1024 * 1024),
+    ).toEqual({
+      key: "tooLarge",
+      params: { name: "big.iso", size: "150.0 MB", max: "100.0 MB" },
+    });
+  });
+});

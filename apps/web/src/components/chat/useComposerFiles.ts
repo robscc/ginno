@@ -83,11 +83,12 @@ export function useComposerFiles({
     }
   }
 
-  // 上传失败的可见反馈（R3 巡检 Q1）：超限拒绝与其它失败分别给明确 toast，
-  // 文件名+大小+上限都要呈现——此前 catch 只 debugLog + 芯片静默移除，用户
-  // 以为没拖上。dedupeKey 防同一文件反复拖入时堆叠多条；呈现决策抽在
-  // composerAttachments.uploadFailureNotice（纯函数，vitest 直测）。
-  function notifyUploadFailure(name: string, size: number, e: unknown) {
+  // 上传/挂载失败的可见反馈（R3 巡检 Q1/Q2）：超限拒绝与其它失败分别给
+  // 明确 toast，文件名+大小+上限都要呈现——此前 catch 只 debugLog + 芯片
+  // 静默移除，用户以为没拖上。dedupeKey 防同一文件反复拖入时堆叠多条；
+  // 呈现决策抽在 composerAttachments.uploadFailureNotice（纯函数，vitest
+  // 直测）。size 仅 attach-path 场景可缺省。
+  function notifyUploadFailure(name: string, size: number | undefined, e: unknown) {
     const { key, params } = uploadFailureNotice(e, name, size);
     pushNotice("error", t(key, params), {
       dedupeKey: `upload-${key}:${name}`,
@@ -201,11 +202,16 @@ export function useComposerFiles({
         return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
       } else {
         landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
+        // Q2：挂载失败同样给可见报错（超限走与上传一致的 tooLarge 文案，
+        // size 由后端超限响应提供；其余失败展示后端 error 文本）——
+        // 此前这里也是静默移芯片。
+        notifyUploadFailure(name, r.size, new UploadError(r.error || "attach failed", r.code));
         return null;
       }
     } catch (e) {
       void debugLog({ where: "attachPaths:error", name, error: String(e) });
       landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
+      notifyUploadFailure(name, undefined, e);
       return null;
     }
   }
