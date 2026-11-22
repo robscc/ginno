@@ -174,6 +174,41 @@ async def _drain(run_ctx: dict, ctr: dict):
         ctr["i"] += 1
 
 
+def _append_run_error(run_ctx: dict, run_id: str, exc: BaseException) -> None:
+    """Append the run-level ``error`` event + a paired ``node_exit(failed)``.
+
+    R3 巡检 Q10-②：失败路径此前只发 error 事件，节点没有配对的
+    node_exit——run driver 的 step 终态回写挂在 node_exit 上，缺了它失败
+    节点永远停在「运行中」（API 层的 error 兜底只在 driver 路径存在，
+    事件流本身不自洽：每个 node_enter 都应有 node_exit）。
+
+    顺序约束：node_exit 必须排在 error **之后**。API 层的 error 分支先把
+    run 标 failed；node_exit 随后到达时 update_step 只改 step。若顺序
+    反过来，最后一个 step 的 failed 终态会把仍为 "running" 的 run 在
+    update_step 里重算成 "done"，error 分支的 only_from=("running",
+    "paused") 就再也写不进 failed 了。
+    """
+    run_ctx["events"].append({
+        "run_id": run_id,
+        "kind": "error",
+        "error": f"{type(exc).__name__}: {exc}",
+        # current_node is stamped by BaseNode.make_node (None → dropped by
+        # append_event); traceback keeps error localization past the one-liner.
+        "node_id": run_ctx.get("current_node"),
+        "traceback": _trimmed_traceback(exc),
+    })
+    failed_node = run_ctx.get("current_node")
+    if failed_node:
+        run_ctx["events"].append({
+            "ts": time.time(),
+            "run_id": run_id,
+            "node_id": failed_node,
+            "kind": "node_exit",
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+
+
 async def _pump_events(graph, input_, config: dict, run_ctx: dict, ctr: dict):
     """Consume the graph stream while yielding ``run_ctx['events']`` at ≤1s
     latency (design B P2 observability fix, 2026-09-25).
@@ -267,16 +302,7 @@ async def run_workflow(
             _report_budget(run_ctx, budget_state_out)
         except Exception as exc:  # surface graph/step failures as an event, don't crash
             _report_budget(run_ctx, budget_state_out)
-            ev = {
-                "run_id": run_id,
-                "kind": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-                # current_node is stamped by BaseNode.make_node (None → dropped by
-                # append_event); traceback keeps error localization past the one-liner.
-                "node_id": run_ctx.get("current_node"),
-                "traceback": _trimmed_traceback(exc),
-            }
-            run_ctx["events"].append(ev)
+            _append_run_error(run_ctx, run_id, exc)
             async for ev in _drain(run_ctx, ctr):
                 yield ev
             return
@@ -388,14 +414,7 @@ async def resume_workflow(
             _report_budget(run_ctx, budget_state_out)
         except Exception as exc:
             _report_budget(run_ctx, budget_state_out)
-            ev = {
-                "run_id": run_id,
-                "kind": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-                "node_id": run_ctx.get("current_node"),
-                "traceback": _trimmed_traceback(exc),
-            }
-            run_ctx["events"].append(ev)
+            _append_run_error(run_ctx, run_id, exc)
             async for ev in _drain(run_ctx, ctr):
                 yield ev
             return
@@ -464,14 +483,7 @@ async def continue_workflow(
             _report_budget(run_ctx, budget_state_out)
         except Exception as exc:
             _report_budget(run_ctx, budget_state_out)
-            ev = {
-                "run_id": run_id,
-                "kind": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-                "node_id": run_ctx.get("current_node"),
-                "traceback": _trimmed_traceback(exc),
-            }
-            run_ctx["events"].append(ev)
+            _append_run_error(run_ctx, run_id, exc)
             async for ev in _drain(run_ctx, ctr):
                 yield ev
             return

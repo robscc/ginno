@@ -204,7 +204,9 @@ async def test_failed_node_not_cached(isolated_home):
     dsl = _dsl([_step(retry={"max_attempts": 1})])
     m1 = CountingModel(scripts=[script_raise(RuntimeError("boom"))])
     ev1 = await _run(dsl, "rc-15", m1, "wf-rc-fail")
-    assert [e["kind"] for e in ev1][-1] == "error"
+    # R3 巡检 Q10-②：error 后紧跟 node_exit(failed)（旧断言末位是 error）。
+    assert [e["kind"] for e in ev1][-1] == "node_exit"
+    assert [e["kind"] for e in ev1][-2] == "error"
 
     m2 = CountingModel(scripts=[script(text="ok now")])
     ev2 = await _run(dsl, "rc-16", m2, "wf-rc-fail")

@@ -52,7 +52,9 @@ async def test_retry_exhausted_stop_is_legacy_failure():
     assert len([e for e in events if e["kind"] == "node_retry"]) == 1
     err = [e for e in events if e["kind"] == "error"]
     assert err and not err[0].get("handled")
-    assert kinds[-1] == "error"  # run-level failure path unchanged (on_error=stop)
+    # run-level failure path unchanged (on_error=stop); R3 巡检 Q10-②
+    # 起 error 事件后还会补失败节点的 node_exit(failed)。
+    assert kinds[-1] == "node_exit" and events[-1].get("status") == "failed"
 
 
 @pytest.mark.asyncio
