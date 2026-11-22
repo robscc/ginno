@@ -234,6 +234,10 @@
       "noSkills": "no matching skills",
       "offShort": "off",
       "offN": "{n} off"
+    },
+    "attach": {
+      "tooLarge": "\"{name}\" ({size}) exceeds the {max} upload limit and was not attached.",
+      "failed": "Could not attach \"{name}\": {error}"
     }
   }
 }

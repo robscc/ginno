@@ -5,9 +5,18 @@
 // （landFile）与表格类自动预览（maybeAutoPreview）。
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { debugLog, attachFilePath } from "@/lib/runtime";
-import { readImage, uploadDoc, isImageFile } from "@/lib/composerAttachments";
+import { pushNotice } from "@/lib/notice";
+import {
+  readImage,
+  uploadDoc,
+  isImageFile,
+  MAX_UPLOAD_BYTES,
+  UploadError,
+  uploadFailureNotice,
+} from "@/lib/composerAttachments";
 import { TABLE_KINDS, type Attachment, type FileAttachment } from "./streamCore";
 import { HOME_SLOT } from "./useChatStreamEngine";
 import type { SessionMeta } from "@/lib/types";
@@ -44,6 +53,9 @@ export function useComposerFiles({
   setFileAttachments,
   refs,
 }: ComposerFilesDeps) {
+  // 错误文案走 composer 域 catalog（异步回调里闭包引用当次渲染的 t，
+  // locale 切换后下一次上传即用新语言）。
+  const t = useTranslations("composer.attach");
   // Images currently being read/compressed by readImage. The Attachment only
   // reaches `attachments` when that async read resolves, so a send fired in the
   // meantime would silently drop the picture. This counter gates the send.
@@ -71,6 +83,17 @@ export function useComposerFiles({
     }
   }
 
+  // 上传失败的可见反馈（R3 巡检 Q1）：超限拒绝与其它失败分别给明确 toast，
+  // 文件名+大小+上限都要呈现——此前 catch 只 debugLog + 芯片静默移除，用户
+  // 以为没拖上。dedupeKey 防同一文件反复拖入时堆叠多条；呈现决策抽在
+  // composerAttachments.uploadFailureNotice（纯函数，vitest 直测）。
+  function notifyUploadFailure(name: string, size: number, e: unknown) {
+    const { key, params } = uploadFailureNotice(e, name, size);
+    pushNotice("error", t(key, params), {
+      dedupeKey: `upload-${key}:${name}`,
+    });
+  }
+
   async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
     try {
       // The upload + response telemetry live in the shared composerAttachments
@@ -90,6 +113,7 @@ export function useComposerFiles({
     } catch (e) {
       void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
       landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
+      notifyUploadFailure(f.name, f.size, e);
       return null;
     }
   }
@@ -124,6 +148,13 @@ export function useComposerFiles({
       }
     }
     for (const f of docs) {
+      // 本地预检（Q1）：超限文件不必白传一遍再被后端拒——先给可见报错，
+      // 不放乐观芯片也不发请求。上限常量与 runtime 同步（见
+      // composerAttachments.MAX_UPLOAD_BYTES 的注释）；后端 code 兜底漂移。
+      if (f.size > MAX_UPLOAD_BYTES) {
+        notifyUploadFailure(f.name, f.size, new UploadError("file too large", "file_too_large"));
+        continue;
+      }
       // optimistic chip (uploading state) so the user gets instant feedback
       const tmpId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       setFileAttachments((a) => [

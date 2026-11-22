@@ -9,6 +9,53 @@
  * file on every step, so embedded images must stay small.
  */
 import { uploadFile, debugLog } from "@/lib/runtime";
+import type { FileOpErrorCode } from "@/lib/api/workspace";
+
+/**
+ * 上传上限，与 runtime `api/files.py` 的 `UPLOAD_MAX_BYTES`（100MB）保持
+ * 同步——前端在发起上传前先本地预检，超限文件不必白传一遍再被后端拒；
+ * 后端响应的 `code:"file_too_large"` 仍是权威兜底（两处常量若漂移，
+ * 兜底路径会接住）。改后端常量时务必同步这里。
+ */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/** 上传失败的可见错误：携带后端的稳定错误码（如超限），调用方据此选文案。 */
+export class UploadError extends Error {
+  readonly code?: FileOpErrorCode;
+  constructor(message: string, code?: FileOpErrorCode) {
+    super(message);
+    this.name = "UploadError";
+    this.code = code;
+  }
+}
+
+/** 人类可读的文件大小（错误文案用）：1 位小数的 MB / 整数 KB / B。 */
+export function fmtUploadSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+/** 上传上限的展示文案（如 "100 MB"）——从 MAX_UPLOAD_BYTES 派生，不硬编码。 */
+export function fmtUploadLimit(): string {
+  return fmtUploadSize(MAX_UPLOAD_BYTES);
+}
+
+/** 上传失败的呈现决定（纯函数，node 环境直测）：该用哪个文案 key、带哪些
+ *  参数。超限拒绝（code=file_too_large 或本地预检）→ tooLarge（文件名+
+ *  大小+上限）；其它失败 → failed（带后端 error 文本）。UI 层把它交给
+ *  pushNotice 弹可见错误——修复「>100MB 上传无声失败」（R3 巡检 Q1）。 */
+export function uploadFailureNotice(
+  e: unknown,
+  name: string,
+  size: number,
+): { key: "tooLarge" | "failed"; params: Record<string, string> } {
+  if (e instanceof UploadError && e.code === "file_too_large") {
+    return { key: "tooLarge", params: { name, size: fmtUploadSize(size), max: fmtUploadLimit() } };
+  }
+  const detail = e instanceof Error && e.message ? e.message : String(e || "unknown");
+  return { key: "failed", params: { name, error: detail } };
+}
 
 /** One image the user attached. `data` is the bare base64 payload (no data-url
  *  prefix) that the model-facing frame carries; `preview` is the full data URL
@@ -78,7 +125,9 @@ export function readImage(file: File): Promise<ComposerImage | null> {
 /** Upload a document to the session and return the registered entry. Throws on
  *  failure (transport error or a non-ok server response); the caller decides
  *  how to surface it. The response telemetry lives here so both windows emit
- *  the same diagnostic. */
+ *  the same diagnostic. Server rejections throw UploadError carrying the
+ *  backend's stable `code` (e.g. "file_too_large") so callers can tell a
+ *  size-limit rejection apart from other failures. */
 export async function uploadDoc(sessionId: string, file: File): Promise<ComposerFile> {
   const r = await uploadFile(sessionId, file);
   void debugLog({ where: "addFiles:upload-resp", name: file.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
@@ -86,5 +135,5 @@ export async function uploadDoc(sessionId: string, file: File): Promise<Composer
     const entry = r.file;
     return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
   }
-  throw new Error(r.error || "upload failed");
+  throw new UploadError(r.error || "upload failed", r.code);
 }

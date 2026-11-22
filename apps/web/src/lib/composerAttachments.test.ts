@@ -11,7 +11,16 @@ const { uploadFile, debugLog } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/runtime", () => ({ uploadFile, debugLog }));
 
-import { isImageFile, readImage, uploadDoc } from "@/lib/composerAttachments";
+import {
+  isImageFile,
+  readImage,
+  uploadDoc,
+  MAX_UPLOAD_BYTES,
+  UploadError,
+  fmtUploadSize,
+  fmtUploadLimit,
+  uploadFailureNotice,
+} from "@/lib/composerAttachments";
 
 /** 被测代码只读 file.name/type/size，_plain object 即可，无需真 File。 */
 function mkFile(name: string, type: string, size = 10): File {
@@ -250,5 +259,73 @@ describe("uploadDoc 文档上传", () => {
     uploadFile.mockResolvedValue(null);
     await expect(uploadDoc("s1", file)).rejects.toThrow(TypeError);
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ ok: undefined, hasFile: false }));
+  });
+});
+
+describe("Q1 超限可见报错：UploadError / uploadFailureNotice", () => {
+  const big = mkFile("big.bin", "application/octet-stream", 150 * 1024 * 1024);
+
+  it("上限常量钉在 100MB（与 runtime files.py UPLOAD_MAX_BYTES 同步，漂移即红）", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(100 * 1024 * 1024);
+    expect(fmtUploadLimit()).toBe("100.0 MB");
+  });
+
+  it("超限拒绝：uploadDoc 抛 UploadError 带 code=file_too_large；呈现决定走 tooLarge（名字+大小+上限）", async () => {
+    uploadFile.mockResolvedValue({
+      ok: false,
+      code: "file_too_large",
+      error: "File too large (max 100MB)",
+    });
+    const err = await uploadDoc("s1", big).catch((e) => e);
+    expect(err).toBeInstanceOf(UploadError);
+    expect(err.code).toBe("file_too_large");
+    expect(uploadFailureNotice(err, "big.bin", big.size)).toEqual({
+      key: "tooLarge",
+      params: { name: "big.bin", size: "150.0 MB", max: "100.0 MB" },
+    });
+  });
+
+  it("本地预检超限（不依赖后端）：手造 UploadError(code) 同样命中 tooLarge", () => {
+    const n = uploadFailureNotice(new UploadError("file too large", "file_too_large"), "x.iso", 101 * 1024 * 1024);
+    expect(n.key).toBe("tooLarge");
+    expect(n.params.size).toBe("101.0 MB");
+  });
+
+  it("其它服务端失败：code 缺失 → failed 分支带后端 error 文本", async () => {
+    uploadFile.mockResolvedValue({ ok: false, error: "磁盘满了" });
+    const err = await uploadDoc("s1", big).catch((e) => e);
+    expect(err).toBeInstanceOf(UploadError);
+    expect(err.code).toBeUndefined();
+    expect(uploadFailureNotice(err, "big.bin", big.size)).toEqual({
+      key: "failed",
+      params: { name: "big.bin", error: "磁盘满了" },
+    });
+  });
+
+  it("传输层普通 Error（非 UploadError）→ failed 分支取 message", () => {
+    expect(uploadFailureNotice(new Error("network down"), "a.pdf", 1024)).toEqual({
+      key: "failed",
+      params: { name: "a.pdf", error: "network down" },
+    });
+  });
+
+  it("非 Error 异常（字符串/null）→ failed 分支 String() 兜底不抛", () => {
+    expect(uploadFailureNotice("boom", "a.pdf", 1024)).toEqual({
+      key: "failed",
+      params: { name: "a.pdf", error: "boom" },
+    });
+    expect(uploadFailureNotice(null, "a.pdf", 0)).toEqual({
+      key: "failed",
+      params: { name: "a.pdf", error: "unknown" },
+    });
+  });
+
+  it("fmtUploadSize 三档：B / KB / MB（1 位小数）", () => {
+    expect(fmtUploadSize(0)).toBe("0 B");
+    expect(fmtUploadSize(999)).toBe("999 B");
+    expect(fmtUploadSize(1024)).toBe("1 KB");
+    expect(fmtUploadSize(1536)).toBe("2 KB"); // round(1.5)=2
+    expect(fmtUploadSize(1024 * 1024)).toBe("1.0 MB");
+    expect(fmtUploadSize(1048576 * 105.5)).toBe("105.5 MB");
   });
 });
