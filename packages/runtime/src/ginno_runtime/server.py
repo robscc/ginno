@@ -195,6 +195,15 @@ class RequestLocaleMiddleware:
 
 app.add_middleware(RequestLocaleMiddleware)
 
+# settings-integrity 硬线（2026-11-22 复核补强）：settings.json 损坏期间
+# 除「受限恢复 UI」白名单（/api/health、/api/settings* 读写面、静态资产）
+# 外的一切 HTTP → 503、一切 WebSocket → close(1013)——turn/调度/渠道/
+# A2A/文件操作全部拒发。动态判态，repair 落盘即自动解除。startup 侧的
+# 执行/恢复任务跳过线在 startup_tasks.py（skip_when_settings_corrupt）。
+from .settings_gate import SettingsIntegrityGate  # noqa: E402
+
+app.add_middleware(SettingsIntegrityGate)
+
 # P0-1 (security-audit 2026-11-12): loopback origin guard — outermost layer.
 # Blocks browser-driven requests (fetch/WS always carry a forge-proof Origin)
 # whose origin is not the app's own webview/sidecar/dev origins, while
@@ -237,6 +246,7 @@ from .api import badge as _badge_api  # noqa: E402
 from .api import code as _code_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
+from .api import env_settings as _env_settings_api  # noqa: E402
 from .api import connectors as _connectors_api  # noqa: E402
 from .api import devswap as _devswap_api  # noqa: E402
 from .api import doctor as _doctor_api  # noqa: E402
@@ -276,6 +286,7 @@ app.include_router(_badge_api.router)
 app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)
+app.include_router(_env_settings_api.router)
 app.include_router(_plans_api.router)
 app.include_router(_files_api.router)
 app.include_router(_tasks_overview_api.router)

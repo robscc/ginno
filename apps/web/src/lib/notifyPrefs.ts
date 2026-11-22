@@ -237,27 +237,30 @@ export function osGateOpen(kind: NotifyKind | "test", atMin = minutesOfDay()): b
  * next boot retries.
  */
 export async function loadNotifyPrefs(): Promise<NotifyPrefs> {
+  // 纯读（settings-integrity）：历史上这里会在 boot 期做「读整文档 → 改
+  // notifications 键 → PUT 整文档」的迁移播种。两个问题（v0.5.1 复现实测）：
+  // ① 与其它写入方并发互踩（整文档 read-modify-write 丢更新）；
+  // ② PUT 整文档会轮换 env 的 CAS version token，正在编辑 env 的窗口内
+  //    保存必吃 409。改为：迁移只在内存生效，落盘推迟到用户显式
+  //    saveNotifyPrefs；legacy localStorage 键保留到首次成功保存才移除。
   try {
     const legacy =
       typeof localStorage !== "undefined" ? localStorage.getItem(LEGACY_KEY) : null;
     const s = (await api.getSettings()) as Record<string, unknown>;
-    const existing = s.notifications;
-    if (existing === undefined && legacy === "0") {
-      prefs = { ...DEFAULT_PREFS, enabled: false };
-      s.notifications = toWire(prefs);
-      await api.putSettings(s);
-    } else {
-      const parsed = fromWire(existing);
-      // v1 持久化的 workflow:false 是死开关的默认值、不是用户选择——接真后
-      // 照抄会静默掉用户一直在收的通知，故迁移拉回 true（见 migrateKinds）。
-      prefs = migrateKinds(existing, parsed);
-      // 只有真的迁移了才回写，避免每次启动都写一遍 settings.json
-      if (prefs !== parsed) {
-        s.notifications = toWire(prefs);
-        await api.putSettings(s);
-      }
+    if (s.parseError !== undefined) {
+      // settings.json 损坏（契约 §4）：保持默认偏好，不迁移、不写。
+      return prefs;
     }
-    if (legacy !== null) localStorage.removeItem(LEGACY_KEY);
+    const existing = s.notifications;
+    const parsed = fromWire(existing);
+    // v1 持久化的 workflow:false 是死开关的默认值、不是用户选择——内存里
+    // 迁移拉回 true；落盘由用户下一次显式保存完成。
+    prefs = migrateKinds(existing, parsed);
+    // legacy 总开关（localStorage "0" = off）且从未持久化过 → 内存携带该
+    // 选择；legacy 键不动，等 saveNotifyPrefs 成功落盘后才移除。
+    if (existing === undefined && legacy === "0") {
+      prefs = { ...prefs, enabled: false };
+    }
   } catch {
     /* keep defaults until next boot/save */
   }
@@ -269,8 +272,15 @@ export async function loadNotifyPrefs(): Promise<NotifyPrefs> {
 export async function saveNotifyPrefs(next: Partial<NotifyPrefs>): Promise<NotifyPrefs> {
   const merged = { ...prefs, ...next };
   const s = (await api.getSettings()) as Record<string, unknown>;
+  if (s.parseError !== undefined) {
+    // 损坏态：不做写尝试，抛带 ginnoStatus 的错误让面板走损坏专属文案
+    // （后端对普通 PUT 也是 409 拒写——这里是前端侧的同一纪律）。
+    throw Object.assign(new Error("settings.json is corrupt"), { ginnoStatus: 409 });
+  }
   s.notifications = toWire(merged);
   await api.putSettings(s);
   prefs = merged;
+  // legacy 迁移此刻才算真正完成（选择已持久化），才允许移除旧键。
+  if (typeof localStorage !== "undefined") localStorage.removeItem(LEGACY_KEY);
   return prefs;
 }

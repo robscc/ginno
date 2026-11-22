@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -56,6 +57,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 from ginno_runtime import jsonx as json
 from ginno_runtime import paths
@@ -418,12 +421,11 @@ def _write_inbound_settings(policy: ExecPolicy) -> None:
     权限层与 guard 对齐后，语义才是「trust=normal 能在 exec_root 内真干活」。
     尊重已有 deny/ask（操作员显式收紧优先）。
     """
-    sp = paths.settings_path()
+    from .. import settings_store as _store
+
     try:
-        cfg = json.loads(sp.read_text() or "{}") if sp.exists() else {}
-    except (OSError, ValueError):
-        cfg = {}
-    if not isinstance(cfg, dict):
+        cfg = _store.read_settings()
+    except Exception:  # noqa: BLE001 — 读取失败按空配置走 fail-closed 补丁
         cfg = {}
     cfg["bypass_permissions"] = False
     ctx = dict(cfg.get("context") or {})
@@ -468,8 +470,14 @@ def _write_inbound_settings(policy: ExecPolicy) -> None:
             allow.append(name)
     perms["allow"] = allow
     cfg["permissions"] = perms
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 锁内原子落盘：损坏 → 拒写保留原字节（受限补丁不落盘，worker 以
+    # 内存态 fail-closed 运行），IO 失败 → log 后继续（补丁只是收紧）。
+    try:
+        _store.atomic_write(cfg)
+    except _store.SettingsCorruptError:
+        _LOG.warning("inbound_settings_patch_refused_corrupt")
+    except _store.SettingsWriteError:
+        _LOG.warning("inbound_settings_patch_write_failed", exc_info=True)
 
 
 # --------------------------------------------------------------------------- #

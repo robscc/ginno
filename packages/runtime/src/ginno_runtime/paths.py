@@ -284,6 +284,33 @@ def _migrate_mods(settings: dict) -> bool:
     return True
 
 
+def _atomic_write_settings(text: str) -> None:
+    """settings.json 的同目录原子写 + 0600（ensure_layout 专用最小实现；
+    运行时读写统一走 settings_store——它在 paths 之上，这里不能反向依赖）。"""
+    import os
+    import secrets as _secrets
+
+    p = home() / "settings.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.tmp-{os.getpid()}-{_secrets.token_hex(4)}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def ensure_layout() -> None:
     """Create the standard ~/.ginno directory tree with seed defaults."""
     from ginno_runtime import jsonx as json
@@ -311,7 +338,7 @@ def ensure_layout() -> None:
 
     settings = root / "settings.json"
     if not settings.exists() or settings.stat().st_size == 0:
-        settings.write_text(json.dumps(_DEFAULT_SETTINGS, indent=2, ensure_ascii=False))
+        _atomic_write_settings(json.dumps(_DEFAULT_SETTINGS, indent=2))
     else:
         # migrate old shape in place (preserves user keys)
         try:
@@ -323,9 +350,9 @@ def ensure_layout() -> None:
             lang_migrated = _migrate_language(data)
             mods_migrated = _migrate_mods(data)
             if not had_providers or lang_migrated or mods_migrated:
-                settings.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+                _atomic_write_settings(json.dumps(data, indent=2))
         except json.JSONDecodeError:
-            pass
+            pass  # corrupt: 拒写保留原字节（settings_store 契约）
 
     config = root / "config.json"
     if not config.exists() or config.stat().st_size == 0:

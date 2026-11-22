@@ -51,11 +51,27 @@ export const H = { "Content-Type": "application/json" };
 
 export async function json<T>(input: string | URL | Request, init?: RequestInit): Promise<T> {
   const r = await fetch(input, { ...init, headers: { "X-Ginno-Language": currentLocale(), ...(init?.headers ?? {}) } });
-  return (await r.json()) as T;
+  const body = (await r.json()) as T;
+  // 损坏降级闸门（settings_gate.py）的 503 体带 settings_corrupt_degraded
+  // 标记。绝不把它当业务文档返回——否则 AppShell 会对错误体 .map 白屏，
+  // 恢复横幅永远渲染不出来。抛错后各加载器走与「runtime 不可达」相同的
+  // catch/降级路径，壳存活、横幅可见（test_corrupt_recovery_banner_ui）。
+  if (
+    body &&
+    typeof body === "object" &&
+    (body as { error?: unknown }).error === "settings_corrupt_degraded"
+  ) {
+    const err = new Error("settings corrupt: runtime is in recovery-only mode");
+    (err as Error & { ginnoStatus?: number }).ginnoStatus = 503;
+    throw err;
+  }
+  return body;
 }
 
 // 严格版：非 2xx 直接抛错，绝不把错误体（如 FastAPI 的 {"detail": ...}）当业务文档返回。
 // 读改写型调用方（设置面板等）必须用这个，否则服务端故障窗口内会把错误体整份写回。
+// 抛出的 Error 挂 ginnoStatus（HTTP 状态码）供调用方细分结局——如 settings.json
+// 损坏时后端 409，通知面板据此显示「保存被拒：文件损坏」而非笼统的保存失败。
 export async function jsonStrict<T>(input: string | URL | Request, init?: RequestInit): Promise<T> {
   const r = await fetch(input, { ...init, headers: { "X-Ginno-Language": currentLocale(), ...(init?.headers ?? {}) } });
   // 测试桩可能不带 status；真实 fetch 恒有。仅在明确非 2xx 时抛错。
@@ -66,7 +82,9 @@ export async function jsonStrict<T>(input: string | URL | Request, init?: Reques
     } catch {
       /* 非 JSON 错误体 */
     }
-    throw new Error(detail || `HTTP ${r.status}`);
+    const err = new Error(detail || `HTTP ${r.status}`);
+    (err as Error & { ginnoStatus?: number }).ginnoStatus = r.status;
+    throw err;
   }
   return (await r.json()) as T;
 }

@@ -18,6 +18,7 @@ deny → ask → allow. Default is "ask".
 from __future__ import annotations
 
 import fnmatch
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -25,6 +26,9 @@ from typing import Literal
 from ginno_runtime import jsonx as json
 
 from .. import paths
+from .. import settings_store
+
+log = logging.getLogger(__name__)
 
 PermissionDecision = Literal["allow", "deny", "ask"]
 
@@ -58,9 +62,14 @@ class PermissionPolicy:
     @classmethod
     def from_settings(cls, settings: dict | None = None) -> "PermissionPolicy":
         if settings is None:
-            p = paths.settings_path()
-            settings = json.loads(p.read_text() or "{}") if p.exists() else {}
-        perms = settings.get("permissions", {})
+            # 三态读取：损坏 → 空权限（decide 默认 ask，fail-closed），
+            # 绝不 raise——graph.py 构建 session 时无 try 包裹，损坏的
+            # settings.json 不能把整个应用炸到不可用（settings-integrity）。
+            doc = settings_store.load_doc()
+            settings = doc.data
+        perms = settings.get("permissions", {}) if isinstance(settings, dict) else {}
+        if not isinstance(perms, dict):
+            perms = {}
         return cls(
             allow=[_parse_rule(s) for s in perms.get("allow", [])],
             deny=[_parse_rule(s) for s in perms.get("deny", [])],
@@ -84,11 +93,46 @@ def is_bypass_permissions(settings: dict | None = None) -> bool:
     """Privileged / "yolo" mode: when on, the permission node lets every tool
     call through without any tools_allow / hook / policy check (i.e. "allow all
     commands"). Defaults to ON. Read live from settings so a UI toggle applies to
-    the next tool call without rebuilding sessions."""
+    the next tool call without rebuilding sessions.
+
+    损坏 fail-closed（settings-integrity）：文件损坏读不出 bypass 位时返回
+    False（最严）。默认 ON 只适用于「文件不存在/键缺失」的可信缺省态；
+    损坏文档不是可信缺省，退成宽松可执行状态等于放大事故。
+    """
     if settings is None:
-        p = paths.settings_path()
-        settings = json.loads(p.read_text() or "{}") if p.exists() else {}
+        doc = settings_store.load_doc()
+        if doc.corrupt:
+            return False
+        settings = doc.data
     return bool(settings.get("bypass_permissions", True))
+
+
+def _append_allow(tools: tuple[str, ...]) -> None:
+    """幂等迁移（锁内读-改-写）：tools 中未被任何 bucket 提及的名字加进
+    permissions.allow。无 permissions 块 / 已提及 → no-op；损坏 → 静默
+    放弃本次迁移（与旧 JSONDecodeError 分支同一语义）——迁移是尽力而为
+    的加法，损坏文件必须留给用户修复，存储层的拒写保证原字节不动。"""
+    def _mut(settings: dict) -> dict | None:
+        perms = settings.get("permissions")
+        if not isinstance(perms, dict):
+            return None  # no permissions block: defaults apply, nothing to migrate
+        existing = " ".join(
+            str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
+        ).lower()
+        allow = list(perms.get("allow") or [])
+        added = [n for n in tools if n not in existing and n not in allow]
+        if not added:
+            return None
+        perms["allow"] = allow + added
+        settings["permissions"] = perms
+        return settings
+
+    try:
+        settings_store.update(_mut)
+    except settings_store.SettingsCorruptError:
+        return
+    except settings_store.SettingsWriteError:
+        log.warning("permission migration write failed", exc_info=True)
 
 
 _WEB_TOOL_NAMES = ("web_search", "web_fetch")
@@ -105,26 +149,7 @@ def ensure_web_permissions() -> None:
     at the prompt indefinitely. Add the two names to ``allow`` unless the user
     already mentions them in any bucket (a deliberate deny/ask is respected).
     """
-    p = paths.settings_path()
-    if not p.exists():
-        return
-    try:
-        settings = json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return
-    perms = settings.get("permissions")
-    if not isinstance(perms, dict):
-        return  # no permissions block: defaults apply, nothing to migrate
-    existing = " ".join(
-        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
-    ).lower()
-    allow = list(perms.get("allow") or [])
-    added = [n for n in _WEB_TOOL_NAMES if n not in existing and n not in allow]
-    if not added:
-        return
-    perms["allow"] = allow + added
-    settings["permissions"] = perms
-    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    _append_allow(_WEB_TOOL_NAMES)
 
 # Browser tools (browser-companion-extension-design.md §6): read tools and
 # visible action tools land in allow; browser_js (arbitrary code execution)
@@ -142,26 +167,7 @@ _BROWSER_ALLOW_TOOLS = (
 
 def ensure_browser_permissions() -> None:
     """Idempotent migration, same contract as ensure_web_permissions."""
-    p = paths.settings_path()
-    if not p.exists():
-        return
-    try:
-        settings = json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return
-    perms = settings.get("permissions")
-    if not isinstance(perms, dict):
-        return
-    existing = " ".join(
-        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
-    ).lower()
-    allow = list(perms.get("allow") or [])
-    added = [n for n in _BROWSER_ALLOW_TOOLS if n not in existing and n not in allow]
-    if not added:
-        return
-    perms["allow"] = allow + added
-    settings["permissions"] = perms
-    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    _append_allow(_BROWSER_ALLOW_TOOLS)
 
 # relay_answer (worker ask_user 中断透传, 2026-11-21): the tool the SUBSCRIBER's
 # agent calls to hand the user's answer back to a parked worker. It is gated by
@@ -174,23 +180,4 @@ _RELAY_ALLOW_TOOLS = ("relay_answer",)
 
 def ensure_relay_permissions() -> None:
     """Idempotent migration, same contract as ensure_web_permissions."""
-    p = paths.settings_path()
-    if not p.exists():
-        return
-    try:
-        settings = json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return
-    perms = settings.get("permissions")
-    if not isinstance(perms, dict):
-        return
-    existing = " ".join(
-        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
-    ).lower()
-    allow = list(perms.get("allow") or [])
-    added = [n for n in _RELAY_ALLOW_TOOLS if n not in existing and n not in allow]
-    if not added:
-        return
-    perms["allow"] = allow + added
-    settings["permissions"] = perms
-    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    _append_allow(_RELAY_ALLOW_TOOLS)

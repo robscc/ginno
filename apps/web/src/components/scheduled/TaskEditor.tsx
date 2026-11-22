@@ -205,16 +205,13 @@ export function TaskEditor({
       const r = initial
         ? await api.patchScheduleTask(initial.id, body)
         : await api.createScheduleTask(body);
-      // 400（间隔<5 / 必填缺失）→ {detail}；ok:false 兜底。
-      const msg = (r as { detail?: string; error?: string }).detail ?? (r as { error?: string }).error;
-      if ((r as { ok?: boolean }).ok === false || !(r as { id?: string }).id) {
-        setError(msg || tr("editor.errSaveFailed"));
-        return;
-      }
       onSaved();
       onClose();
-    } catch {
-      setError(tr("editor.errUnreachable"));
+    } catch (e) {
+      // jsonStrict（schedule-integrity）：4xx/5xx 抛 Error(detail)——间隔<5、
+      // 必填缺失等服务端校验信息直接展示；网络层失败显示不可达文案。
+      const msg = e instanceof Error && e.message && !(e instanceof TypeError) ? e.message : "";
+      setError(msg || tr("editor.errUnreachable"));
     } finally {
       setBusy(false);
     }

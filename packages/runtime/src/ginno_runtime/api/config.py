@@ -14,9 +14,12 @@ from pydantic import BaseModel
 from ginno_runtime import jsonx as json
 
 from .. import agents as agents_reg
+from .. import env_store
 from .. import paths
 from .. import providers as prov_mod
 from .. import server_shared as shared
+from .. import settings_store
+from ..api import env_settings as env_settings_api
 from ..agents.registry import AgentModelBindingError
 from ..lang import t
 from ..mcp.registry import MCPRegistry
@@ -222,27 +225,43 @@ async def reconnect_mcp_endpoint(server: str | None = None) -> dict:
 
 @router.get("/api/settings")
 async def get_settings() -> dict:
-    p = paths.settings_path()
-    if not p.exists():
-        return {}
-    try:
-        raw = json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
+    """三态呈现：missing → ``{}``；ok → 掩码后的文档；corrupt →
+    ``{"parseError": ...}``（与 mcp config 端点同一约定）。
+
+    corrupt 不得伪装成空文档返回——前端会把「空」当真值源做读改写，
+    一次 PUT 就洗掉用户原字节。parseError 键本身就是「锁写 + 横幅报警」
+    的信号；PUT 侧会剥掉该键。
+    """
+    doc = settings_store.load_doc()
+    if doc.corrupt:
+        return {"parseError": doc.error or "settings.json is corrupt"}
+    if doc.status == settings_store.STATUS_MISSING:
         return {}
     # SEC-01: never hand provider keys back in plaintext. PUT restores them.
-    return prov_mod.mask_settings(raw)
+    return prov_mod.mask_settings(doc.data)
 
 
 @router.put("/api/settings")
 async def put_settings(data: dict) -> dict:
     prev_use_proxy = prov_mod.use_system_proxy()  # reads the still-on-disk value
+    # 损坏拒写（settings-integrity）：previous 必须来自有效的在盘文档，
+    # 否则掩码无法还原 + 原字节被覆盖。corrupt → 409，保留原字节。
+    doc = settings_store.load_doc()
+    if doc.corrupt:
+        return env_settings_api.corrupt_response(
+            settings_store.SettingsCorruptError(
+                "settings.json is corrupt; PUT refused",
+                error=doc.error,
+                path=str(doc.path),
+            )
+        )
+    previous = doc.data if doc.status == settings_store.STATUS_OK else {}
+    # GET 的损坏标记键不落盘（前端若原样回传）
+    if isinstance(data, dict):
+        data.pop("parseError", None)
     # Undo the GET masking before writing: callers round-trip the whole
     # document (e.g. the proxy toggle), so a masked key must resolve back to
     # the stored secret instead of being persisted as "••••1234".
-    try:
-        previous = json.loads(paths.settings_path().read_text() or "{}")
-    except (OSError, json.JSONDecodeError):
-        previous = {}
     data = prov_mod.unmask_settings(data, previous)
     # 2026-10-29 review 定稿：残留掩码（草稿引用了存储里不存在的条目）=
     # 「未修改」占位，置空忽略而非报错；绝不把 •••• 写进 settings.json
@@ -252,7 +271,19 @@ async def put_settings(data: dict) -> dict:
     if cleared:
         log.warning("settings_put_mask_placeholder_ignored fields=%s",
                      ",".join(cleared[:10]))
-    paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    try:
+        settings_store.atomic_write(data)
+    except settings_store.SettingsCorruptError as e:
+        # 竞态窗口内损坏（读取后、落盘前被外部改坏）
+        return env_settings_api.corrupt_response(e)
+    except settings_store.SettingsWriteError as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "write_failed", "detail": str(e)},
+        )
+    # env 键集合可能随整文档变化：对齐每键 CAS 版本 token（env 未变则
+    # token 保留，打开中的编辑器不失效）。
+    env_store.after_full_document_write(data)
     new_use_proxy = prov_mod.use_system_proxy(data)
     if new_use_proxy != prev_use_proxy:
         # httpx clients freeze their proxy map at init — swap the lookup,
@@ -272,11 +303,8 @@ def _agent_lookup(agent_id: str | None):
 
 
 def _read_settings_file() -> dict:
-    return (
-        json.loads(paths.settings_path().read_text() or "{}")
-        if paths.settings_path().exists()
-        else {}
-    )
+    """宽容读（缺省/损坏 → {}）：消费型路径沿用；写路径必须走 settings_store。"""
+    return settings_store.read_settings()
 
 
 @router.get("/api/model_configs")
@@ -648,11 +676,21 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     saved = prov_mod.save_providers(providers)
     default = req.default_provider
     if default:
-        settings = _read_settings_file()
-        settings["default_config"] = default
-        paths.settings_path().write_text(
-            json.dumps(settings, indent=2, ensure_ascii=False)
-        )
+        # 读-改-写走统一存储层（锁 + 原子写 + 损坏拒写），不再直接
+        # write_text 整文件覆盖。
+        def _set_default(doc: dict) -> dict:
+            doc["default_config"] = default
+            return doc
+
+        try:
+            settings_store.update(_set_default)
+        except settings_store.SettingsCorruptError as e:
+            return env_settings_api.corrupt_response(e)
+        except settings_store.SettingsWriteError as e:
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "error": "write_failed", "detail": str(e)},
+            )
     else:
         default = prov_mod.get_default_provider()
     # Evict all cached session graphs so the next WS connection rebuilds

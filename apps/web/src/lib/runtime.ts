@@ -25,3 +25,4 @@ export * from "./api/tasks";
 export * from "./api/tasksOverview";
 export * from "./api/misc";
 export * from "./api/mcpApps";
+export * from "./api/settings";

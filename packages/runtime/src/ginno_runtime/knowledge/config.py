@@ -7,18 +7,12 @@ from typing import Any
 
 from ginno_runtime import jsonx as json
 
-from .. import paths
+from .. import settings_store
 from .types import KnowledgeConfig
 
 
 def _read_settings() -> dict[str, Any]:
-    p = paths.settings_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return {}
+    return settings_store.read_settings()
 
 
 def load_knowledge_config(settings: dict[str, Any] | None = None) -> KnowledgeConfig:
@@ -31,9 +25,12 @@ def load_knowledge_config(settings: dict[str, Any] | None = None) -> KnowledgeCo
 
 
 def save_knowledge_config(cfg: KnowledgeConfig) -> None:
-    """Persist the knowledge block back into settings.json (preserving other keys)."""
+    """Persist the knowledge block back into settings.json (锁内读-改-写，
+    保留其它键；损坏拒写保留原字节)."""
     from dataclasses import asdict
 
-    settings = _read_settings()
-    settings["knowledge"] = asdict(cfg)
-    paths.settings_path().write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    def _mut(settings: dict[str, Any]) -> dict[str, Any]:
+        settings["knowledge"] = asdict(cfg)
+        return settings
+
+    settings_store.update(_mut)

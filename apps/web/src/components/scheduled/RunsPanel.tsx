@@ -38,6 +38,8 @@ export function RunsPanel({
   refreshKey,
   dateFilter,
   onClearDateFilter,
+  taskFilter,
+  onClearTaskFilter,
   onSeenChange,
 }: {
   cfg: ScheduleConfig;
@@ -45,6 +47,10 @@ export function RunsPanel({
   /** 时间条点进来的单日过滤（YYYY-MM-DD）；null = 用范围选择。 */
   dateFilter: string | null;
   onClearDateFilter: () => void;
+  /** 任务过滤（复核缺口④）：run-now 回执丢失的「查看此任务运行记录」带
+   *  跳入——非空时列表锁定在该任务，chip 可清除恢复全部。 */
+  taskFilter: { id: string; name: string } | null;
+  onClearTaskFilter: () => void;
   /** 已读状态变化（单条/全部）：父级重拉 cfg（页签角标）+ bump 本面板。 */
   onSeenChange: () => void;
 }) {
@@ -117,6 +123,11 @@ export function RunsPanel({
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
   const [taskId, setTaskId] = useState("");
+  // 任务过滤（复核缺口④）：父级（run-now 对账跳转）注入时锁定 taskId；
+  // 清除 chip 恢复自由过滤。内部 select 改动仍以用户输入为准。
+  useEffect(() => {
+    setTaskId(taskFilter?.id ?? "");
+  }, [taskFilter?.id]);
   const [targetType, setTargetType] = useState("");
   const [status, setStatus] = useState("");
   const [seen, setSeen] = useState<"" | "unseen" | "seen">("");
@@ -285,6 +296,18 @@ export function RunsPanel({
             ))}
           </select>
         )}
+        {taskFilter ? (
+          <span
+            data-testid="runs-task-filter-chip"
+            className="flex items-center gap-1.5 rounded-lg border border-violet/50 bg-violet/10 px-2 py-1 text-violet"
+            title={taskFilter.id}
+          >
+            <span className="max-w-[10rem] truncate">{taskFilter.name}</span>
+            <button onClick={onClearTaskFilter} title={tr("runs.clearTask")} className="text-violet/70 hover:text-violet">
+              ✕
+            </button>
+          </span>
+        ) : null}
         <span className="ml-auto whitespace-nowrap text-[11px] text-faint">{tr("runs.count", { n: filtered.length })}</span>
       </div>
 

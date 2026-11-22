@@ -6,9 +6,11 @@ apps/web/out 静态导出；GINNO_E2E_STRICT=1 时环境缺失即 fail），随�
 + 临时 GINNO_HOME，绝不碰 8787 与真实设置。成功流走真实服务端（断言打在
 服务端终态），故障流用 page.route mock。
 
-覆盖五项（2026-11-21 UX 批次）：
-① 环境变量设置：首拉失败（断连/HTTP 503）→ 行锁定不 PUT；重试成功后
-   脏编辑可保存，PUT body 与服务端快照逐键相等、仅 env 被替换；
+覆盖五项（2026-11-21 UX 批次；① 于 settings-integrity 批次改为 env 每键
+CAS 契约）：
+① 环境变量设置：首拉失败（断连/HTTP 503）→ 行锁定不 PATCH；重试成功后
+   脏编辑可保存，PATCH /api/settings/env 的 body 是每键 CAS 载荷
+   （key+version+value），服务端终态仅 env 变化、其它设置原样；
 ② 工作流删除：自建走确认弹窗（标题带名称 + 正文说明）、内置行无删除
    按钮、删除被拒时行内反馈且服务端定义仍在；dry-run 校验节点顺序
    （顺序反转 → 服务端可达性检查抓到悬空节点）；
@@ -57,13 +59,15 @@ def app(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('failure', ['disconnect', 'http503', 'http503_json_body'])
 def test_env_read_failure_retry_dirty_save(app, failure):
-    """① 首拉失败 → 不 PUT；重试 → 脏编辑保存且 PUT body 只改 env。
+    """① 首拉失败 → 不 PATCH；重试 → 脏编辑保存且 PATCH 是每键 CAS 载荷。
 
-    三种失败形态：断连 / 503 非 JSON body / 503 JSON body（FastAPI 风格
-    {"detail": ...}）。设置读写走 jsonStrict（core.ts）：非 2xx 一律抛错，
-    JSON 错误体绝不会被当成设置文档——否则读改写窗口内会把错误体整份
-    PUT 回 settings.json。PUT 断言取「保存前服务端快照 + 仅替换 env」做
-    全文档逐键比较，钉死「不覆写其他设置」。
+    settings-integrity 新契约：env 视图/保存走专用端点 GET/PATCH
+    /api/settings/env（每键 version token CAS），不再整文档 PUT
+    /api/settings——「不覆写其他设置」由 PATCH 语义天然保证（updates 只含
+    变更键），断言打在 PATCH body 与服务端终态（env 只改 UX_SEED、
+    notifications 等其它设置原样保留）。
+    三种失败形态不变：断连 / 503 非 JSON body / 503 JSON body。GET env
+    非 2xx → 行锁定，绝不发 PATCH（错误体绝不会被当成视图重放）。
     """
     from playwright.sync_api import expect
 
@@ -72,7 +76,7 @@ def test_env_read_failure_retry_dirty_save(app, failure):
     settings['notifications'] = {'kinds_schema': 2}
     settings['env'] = {'UX_SEED': 'original'}
     smoke._api(port, 'PUT', '/api/settings', settings)
-    puts = []
+    patches = []
     broken = True
 
     def intercept(route):
@@ -80,38 +84,42 @@ def test_env_read_failure_retry_dirty_save(app, failure):
             if failure == 'disconnect':
                 route.abort()
             else:
-                body = '{"detail": "boom"}' if failure == 'http503_json_body' else 'settings unavailable'
+                body = '{"detail": "boom"}' if failure == 'http503_json_body' else 'env unavailable'
                 route.fulfill(status=503, body=body)
             return
-        if route.request.method == 'PUT':
-            puts.append(route.request.post_data_json)
+        if route.request.method == 'PATCH':
+            patches.append(route.request.post_data_json)
         route.continue_()
 
     page.goto(base + '/settings/security/hooks')
     env_tab = page.get_by_role('button', name='Env Vars', exact=True)
     expect(env_tab).to_be_visible()
-    page.route('**/api/settings', intercept)
+    page.route('**/api/settings/env', intercept)
     env_tab.click()
     save = page.get_by_test_id('env-save')
     expect(page.get_by_test_id('env-retry')).to_be_visible()
     expect(save).to_be_disabled()
     expect(page.get_by_test_id('env-add')).to_be_disabled()
-    assert puts == []
+    assert patches == []
     broken = False
     page.get_by_test_id('env-retry').click()
     value = page.get_by_test_id('env-value-0')
     expect(value).to_have_value('original')
     expect(save).to_be_disabled()
     value.fill('edited')
-    before = smoke._api(port, 'GET', '/api/settings')
+    # 重试成功后页面 GET env 拿到的 version token（无写入发生，测试侧同值）
+    token = smoke._api(port, 'GET', '/api/settings/env')['entries']['UX_SEED']['version']
+    assert isinstance(token, str) and token
     save.click()
     expect(page.get_by_test_id('env-status')).to_have_text('Saved')
     expect(save).to_be_disabled()
-    assert len(puts) == 1, '失败的首次加载绝不能触发 PUT；成功保存恰一次'
-    expected = dict(before)
-    expected['env'] = {'UX_SEED': 'edited'}
-    assert puts[0] == expected, 'PUT body 必须与保存前快照逐键相等、仅 env 被替换'
-    assert smoke._api(port, 'GET', '/api/settings')['env'] == {'UX_SEED': 'edited'}
+    assert len(patches) == 1, '失败的首次加载绝不能触发 PATCH；成功保存恰一次'
+    assert patches[0] == {'updates': [
+        {'key': 'UX_SEED', 'version': token, 'value': 'edited'},
+    ]}, 'PATCH 必须是每键 CAS 载荷（key+version+value）'
+    after = smoke._api(port, 'GET', '/api/settings')
+    assert after['env'] == {'UX_SEED': 'edited'}
+    assert after['notifications'] == {'kinds_schema': 2}, 'PATCH 只动 env，其它设置原样'
 
 
 def test_workflow_create_and_delete(app):

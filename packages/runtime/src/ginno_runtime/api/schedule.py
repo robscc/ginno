@@ -57,13 +57,20 @@ async def get_schedule() -> dict:
 
 @router.put("/api/schedule")
 async def put_schedule(data: dict) -> dict:
-    """整体更新 enabled/keep_awake（任务走粒度接口，§5.1）。"""
-    data = data or {}
+    """整体更新 enabled/keep_awake（任务走粒度接口，§5.1）。
+
+    严格校验（schedule-integrity）：字段类型不符直接 400——``bool("false")``
+    是 True，字符串/数字经 ``bool()`` 强转会把开关写反，这比拒绝更糟。"""
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    for key in ("enabled", "keep_awake"):
+        if key in data and not isinstance(data[key], bool):
+            raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
     cfg = store.load_config()
     if "enabled" in data:
-        cfg["enabled"] = bool(data["enabled"])
+        cfg["enabled"] = data["enabled"]
     if "keep_awake" in data:
-        cfg["keep_awake"] = bool(data["keep_awake"])
+        cfg["keep_awake"] = data["keep_awake"]
     store.save_config(cfg)
     _emit_task_updated({"_global": {"enabled": cfg["enabled"], "keep_awake": cfg["keep_awake"]}})
     return _schedule_payload()
@@ -94,6 +101,10 @@ def _validated_task(data: dict, *, partial: bool, current: dict | None = None) -
     for key in ("name", "target", "schedule", "enabled", "notify", "model", "thinking_effort"):
         if key in data:
             merged[key] = data[key]
+    # enabled 必须是布尔（schedule-integrity 严格校验）：字符串经 bool() 强转
+    # 会把「暂停」写成「启用」。
+    if "enabled" in merged and not isinstance(merged["enabled"], bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
     errs = store.validate_task(merged)
     if errs:
         raise HTTPException(status_code=400, detail="; ".join(errs))
@@ -101,9 +112,36 @@ def _validated_task(data: dict, *, partial: bool, current: dict | None = None) -
     return merged
 
 
+# 调度器回写的服务端字段（schedule-integrity 严格校验）：客户端不得伪造——
+# PATCH 带 next_run_at/last_* 会把「暂停未执行」伪造成「已完成」，带 id/created
+# 会破坏任务定位。老版本 PATCH 曾接受 next_run_at:null，但前后端均无调用方
+# （前端只 PATCH name/target/schedule/enabled/notify/model/thinking_effort），
+# 该分支是死代码，按严格校验收口。
+_SERVER_OWNED_TASK_FIELDS = (
+    "id",
+    "created",
+    "updated",
+    "next_run_at",
+    "last_run",
+    "last_success",
+    "last_scheduled",
+)
+
+
+def _reject_server_owned_fields(data: dict) -> None:
+    bad = [f for f in _SERVER_OWNED_TASK_FIELDS if f in data]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"read-only scheduler fields must not be sent: {', '.join(bad)}",
+        )
+
+
 @router.post("/api/schedule/tasks")
 async def create_task(data: dict) -> dict:
-    data = data or {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    _reject_server_owned_fields(data)
     merged = _validated_task(data, partial=False)
     now = time.time()
     task = {
@@ -120,6 +158,11 @@ async def create_task(data: dict) -> dict:
         "thinking_effort": _stored_task_effort(merged),
         "created": now,
         "updated": now,
+        # 显式落 last_scheduled:null（schedule-integrity）：新建任务「尚无按
+        # 计划事件」与老数据「无该字段」区分开——manual 立即执行只写
+        # last_run，不碰此键，前端据此把「手动成功后暂停」判为 paused 而
+        # 不是回退成旧数据的 Done。
+        "last_scheduled": None,
     }
     nxt = scheduler.compute_next(task, now)
     if nxt is not None:
@@ -134,7 +177,9 @@ async def patch_task(task_id: str, data: dict) -> dict:
     current = store.get_task(task_id)
     if not current:
         raise HTTPException(status_code=404, detail="task not found")
-    data = data or {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    _reject_server_owned_fields(data)
     merged = _validated_task(data, partial=True, current=current)
     patch = {
         k: merged[k]
@@ -146,9 +191,7 @@ async def patch_task(task_id: str, data: dict) -> dict:
         patch["thinking_effort"] = _stored_task_effort(merged)
     # 仅计划变更/启停重算 next_run_at（§5.1）；改名等无关字段不动它——interval
     # 的网格锚点若被重置，会让每次改名都把节拍平移到 now+间隔。
-    if "next_run_at" in data and data["next_run_at"] is None:
-        patch["next_run_at"] = None
-    elif "schedule" in data or "enabled" in data:
+    if "schedule" in data or "enabled" in data:
         probe = {**current, **patch}
         nxt = scheduler.compute_next(probe, time.time()) if probe.get("enabled") else None
         patch["next_run_at"] = nxt

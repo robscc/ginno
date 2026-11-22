@@ -133,25 +133,24 @@ def load_mods_settings() -> dict:
 
 
 def update_mods_settings(patch: dict) -> dict:
-    """Merge ``patch`` into settings.json's mods block (read-modify-write of
-    only that block — PUT /api/config owns the rest of the document)."""
-    from .. import paths
+    """Merge ``patch`` into settings.json's mods block (锁内读-改-写 + 原子
+    落盘；损坏拒写保留原字节 — PUT /api/config owns the rest of the
+    document)."""
+    from .. import settings_store
 
-    settings_path = paths.settings_path()
-    try:
-        settings = json.loads(settings_path.read_text() or "{}")
-    except (OSError, json.JSONDecodeError):
-        settings = {}
-    mods = settings.get("mods")
-    if not isinstance(mods, dict):
-        mods = dict(DEFAULT_MODS_SETTINGS)
-    for key, value in patch.items():
-        if value is None:
-            continue
-        mods[key] = value
-    settings["mods"] = mods
-    settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
-    return mods
+    def _mut(settings: dict) -> dict | None:
+        mods = settings.get("mods")
+        if not isinstance(mods, dict):
+            mods = dict(DEFAULT_MODS_SETTINGS)
+        for key, value in patch.items():
+            if value is None:
+                continue
+            mods[key] = value
+        settings["mods"] = mods
+        return settings
+
+    settings_store.update(_mut)
+    return load_mods_settings().get("mods") or {}
 
 
 def update_mod_item(name: str, patch: dict) -> dict:

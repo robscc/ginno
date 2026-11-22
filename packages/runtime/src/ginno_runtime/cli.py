@@ -253,7 +253,17 @@ def _write_exec_settings(world_state: bool) -> None:
     ctx["world_state"] = world_state
     ctx["external_agents_enabled"] = False  # 只跑内置 subagent，不委托外部 CLI
     cfg["context"] = ctx
-    settings_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    from .settings_store import SettingsCorruptError, atomic_write
+
+    try:
+        atomic_write(cfg)
+    except SettingsCorruptError as e:
+        # 损坏拒写（settings-integrity）：不静默覆盖用户的原字节——exec
+        # harness 需要显式修复（或换 GINNO_HOME）后再跑。
+        raise SystemExit(
+            f"settings.json is corrupt; ginno exec refuses to overwrite it "
+            f"({e.error}). Fix the file (or point GINNO_HOME elsewhere) and retry."
+        )
 
 
 async def _await_quiescence(session_id: str, slug: str, timeout_s: float) -> dict:

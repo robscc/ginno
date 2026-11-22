@@ -866,3 +866,107 @@ def test_reconcile_skips_live_run_in_flight(isolated_home):
         scheduler._RUNNING.clear()
     rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
     assert rows["sr-live"]["status"] == "running"  # 原行不动
+
+
+# ---- 结果记账（schedule-integrity）：last_scheduled 与 enabled/manual 分离 ----
+async def _drive_run(task: dict, trigger: str, monkeypatch, *, ok: bool = True) -> None:
+    """落盘任务 → 触发 → 等执行协程收尾。目标层 mock 成立即成功/失败。"""
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [task]})
+
+    async def fake_target(task, row):
+        return {"ok": ok, "error": None if ok else "boom", "text": "done" if ok else ""}
+
+    async def fake_summary(task, row, text):
+        return None
+
+    monkeypatch.setattr(scheduler, "_run_prompt_target", fake_target)
+    monkeypatch.setattr(scheduler, "_llm_summary", fake_summary)
+    rid = scheduler.trigger_task(task, trigger=trigger)
+    await scheduler._RUN_TASKS[rid]
+
+
+async def test_last_scheduled_written_for_scheduled_trigger(isolated_home, monkeypatch):
+    """schedule 触发：last_scheduled 随生命周期 running → ok，与 last_run 同步。"""
+    task = _task()
+    await _drive_run(task, "schedule", monkeypatch)
+    got = store.get_task("st-t1")
+    assert got["last_scheduled"]["status"] == "ok"
+    assert got["last_scheduled"]["trigger"] == "schedule"
+    assert got["last_scheduled"]["run_id"] == got["last_run"]["run_id"]
+    assert got["last_run"]["trigger"] == "schedule"
+    assert got["last_success"]["run_id"] == got["last_run"]["run_id"]
+
+
+async def test_manual_run_never_touches_last_scheduled(isolated_home, monkeypatch):
+    """manual（立即执行）成功：last_run/last_success 更新，last_scheduled 不写
+    ——手动成功不冒充按计划完成（once Done 判定只读 last_scheduled）。"""
+    task = _task()
+    await _drive_run(task, "manual", monkeypatch)
+    got = store.get_task("st-t1")
+    assert got["last_run"]["status"] == "ok"
+    assert got["last_run"]["trigger"] == "manual"
+    assert "last_scheduled" not in got  # 键完全不落（老任务兼容：无字段≠null）
+
+
+async def test_scheduled_failure_recorded_in_last_scheduled(isolated_home, monkeypatch):
+    """schedule 触发失败：last_scheduled.status=error（结果与 enabled 分开记账，
+    once「按计划失败」态的依据）。"""
+    task = _task()
+    await _drive_run(task, "schedule", monkeypatch, ok=False)
+    got = store.get_task("st-t1")
+    assert got["last_scheduled"]["status"] == "error"
+    assert got["last_run"]["status"] == "error"
+
+
+def test_scheduled_overlap_records_last_scheduled(isolated_home):
+    """按计划到点但上次仍在跑（skipped_overlap）：跳过也记 last_scheduled；
+    manual 触发的重叠跳过不写。行为（记行、不排队、返回 run_id）不变。"""
+    task = _task()
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [task]})
+    scheduler._RUNNING[task["id"]] = "sr-live"
+    try:
+        rid = scheduler.trigger_task(task, trigger="schedule")
+        assert rid.startswith("sr-")
+        rows = store.dedupe_runs(store.load_day(store._today()))
+        assert rows[0]["status"] == "skipped_overlap"  # 既有行为保持
+        got = store.get_task("st-t1")
+        assert got["last_scheduled"]["status"] == "skipped_overlap"
+        assert got["last_scheduled"]["trigger"] == "schedule"
+    finally:
+        scheduler._RUNNING.clear()
+    # manual 重叠跳过不写 last_scheduled（不冒充按计划事件）
+    scheduler._RUNNING[task["id"]] = "sr-live2"
+    try:
+        scheduler.trigger_task(task, trigger="manual")
+        got = store.get_task("st-t1")
+        assert got["last_scheduled"]["status"] == "skipped_overlap"  # 仍是 schedule 那条
+        assert got["last_scheduled"]["trigger"] == "schedule"
+    finally:
+        scheduler._RUNNING.clear()
+
+
+def test_missed_point_recorded_in_last_scheduled(isolated_home):
+    """错过记账（_record_missed）：missed/caught_up 也是按计划生命周期事件，
+    once 错过被自动停用后 UI 靠它显示「计划点已错过」而非「已完成」。"""
+    task = _task()
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [task]})
+    point = time.time() - 3600
+    scheduler._record_missed(task, point)
+    got = store.get_task("st-t1")
+    assert got["last_scheduled"]["status"] == "missed"
+    assert got["last_scheduled"]["trigger"] == "schedule"
+
+
+async def test_missed_once_task_marks_last_scheduled_missed(isolated_home, monkeypatch):
+    """once 错过自动停用：enabled=False 之外必须留 last_scheduled.missed——
+    「暂停未执行」与「错过停用」两种 !enabled 由元数据区分。"""
+    monkeypatch.setattr(scheduler, "trigger_task", lambda task, **k: None)
+    now = time.time()
+    yesterday = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now - 86400))
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [
+        _task(schedule={"kind": "once", "at": yesterday}, next_run_at=now - 86400),
+    ]})
+    await scheduler._tick()
+    task = store.get_task("st-t1")
+    assert task["enabled"] is False
+    assert task["last_scheduled"]["status"] == "missed"

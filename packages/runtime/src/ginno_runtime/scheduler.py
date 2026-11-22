@@ -14,6 +14,11 @@
   ``_spawn_run_task(_run_workflow_bg(...))``（即 POST /api/workflow_runs 的
   headless 内联版），5s 步进轮询 run 终态回写执行记录。
 * 同任务不重叠：上次仍在跑 → 记 skipped_overlap；任务间允许并行。
+* 结果记账（schedule-integrity）：任务级 ``last_run``（任意触发）与
+  ``last_scheduled``（仅 schedule/catch_up，manual 不写）分开落盘——成功/
+  失败/跳过/错过是执行结果，与 ``enabled`` 开关互不推导；once 任务的生命
+  周期结论（按计划完成/错过/失败）只读 ``last_scheduled``，老数据无该字段
+  由前端按 ``last_run`` 回退兼容。
 * 启动续跑（2026-10-17）：重启后发现窗口内（24h）被打断的孤儿 running 行，
   自动接回进程续跑——prompt 沿同一影子会话补一轮，workflow 从同一 checkpoint
   断点继续；超窗或任务已删/停用才记 error("interrupted")。
@@ -65,7 +70,7 @@ _RUN_TASKS: dict[str, asyncio.Task] = {}
 _LOOP_TASK: asyncio.Task | None = None
 
 # 跨进程调度租约（flock）。多个 sidecar 可能同时活着(dev uvicorn、打包应用、
-# 游离进程),它们共享 ~/.ginno 存储;若各自 tick,同一计划点会各记一笔
+# 游离进程),它们共享 ~/.ginno/存储;若各自 tick,同一计划点会各记一笔
 # missed/skipped_overlap(2026-10-06:单任务一天出 3 条 run 记录)。只有
 # 持有租约的实例 tick/对账;holder 退出锁由 OS 自动释放,其余实例在
 # 下一个 tick 尝试接管。
@@ -328,7 +333,9 @@ def _spawn_resumes(pairs: list[tuple[dict, dict]]) -> int:
         row2 = {**row, "status": "running", "error": None, "finished_at": None,
                 "summary": _("schedule.run_resuming")}
         store.record_run(row2)
-        store.patch_task(tid, {"last_run": {"run_id": rid, "status": "running", "started": row.get("started_at")}})
+        store.patch_task(tid, {
+            "last_run": _last_run_meta(rid, "running", row.get("started_at"), None, row.get("trigger") or ""),
+        })
         schedule_events().emit("run_started", {"run": row2})
         schedule_events().emit("task_updated", {"task": store.get_task(tid) or task})
         t = loop.create_task(_resume_run(task, row2))
@@ -418,6 +425,26 @@ def _run_row(task: dict, run_id: str, trigger: str, scheduled_at: float, started
     }
 
 
+def is_scheduled_trigger(trigger: str) -> bool:
+    """触发是否属于「按计划」生命周期（schedule 到点 / catch_up 补跑）。
+
+    manual（立即执行）不算：手动跑成功不能冒充按计划完成——once 任务的
+    Done 判定、任务卡的 last_scheduled 都以此分流（schedule-integrity）。
+    """
+    return trigger in ("schedule", "catch_up")
+
+
+def _last_run_meta(run_id: str, status: str, started: float | None, finished: float | None, trigger: str) -> dict:
+    """任务级执行结果冗余（last_run / last_scheduled 共用形状）。"""
+    return {
+        "run_id": run_id,
+        "status": status,
+        "started": started,
+        "finished": finished,
+        "trigger": trigger,
+    }
+
+
 def trigger_task(
     task: dict, *, trigger: str = "schedule", scheduled_at: float | None = None
 ) -> str:
@@ -431,6 +458,12 @@ def trigger_task(
         row["status"] = "skipped_overlap"
         row["finished_at"] = now
         store.record_run(row)
+        # 「跳过」也是按计划生命周期的一个结果（schedule-integrity）：重叠被
+        # 跳过的计划点要在任务上留痕，且 manual 触发的跳过不混入。
+        if is_scheduled_trigger(trigger):
+            store.patch_task(tid, {
+                "last_scheduled": _last_run_meta(row["run_id"], "skipped_overlap", scheduled_at, now, trigger),
+            })
         schedule_events().emit("run_finished", {"run": row})
         return row["run_id"]
 
@@ -439,8 +472,13 @@ def trigger_task(
     store.record_run(row)
     _RUNNING[tid] = run_id
     schedule_events().emit("run_started", {"run": row})
-    # 任务级 last_run 冗余展示字段 + next_run_at 推进（fire-and-forget 之前落盘）
-    store.patch_task(tid, {"last_run": {"run_id": run_id, "status": "running", "started": now}})
+    # 任务级 last_run 冗余展示字段 + next_run_at 推进（fire-and-forget 之前落盘）。
+    # last_scheduled 只记按计划触发（schedule/catch_up）；manual 成功不冒充
+    # 按计划完成（schedule-integrity）。
+    patch: dict[str, Any] = {"last_run": _last_run_meta(run_id, "running", now, None, trigger)}
+    if is_scheduled_trigger(trigger):
+        patch["last_scheduled"] = _last_run_meta(run_id, "running", now, None, trigger)
+    store.patch_task(tid, patch)
     if trigger == "schedule":
         _advance_next(task, scheduled_at)
     schedule_events().emit("task_updated", {"task": store.get_task(tid) or task})
@@ -573,11 +611,17 @@ async def _finish_run(task: dict, row: dict, final: dict) -> None:
     }
     store.record_run(row2)
     patch: dict[str, Any] = {
-        "last_run": {
-            "run_id": run_id, "status": row2["status"],
-            "started": row["started_at"], "finished": now,
-        },
+        "last_run": _last_run_meta(
+            run_id, row2["status"], row["started_at"], now, row.get("trigger") or "",
+        ),
     }
+    # 结果记账与启用开关分离（schedule-integrity）：按计划生命周期的最近结果
+    # 单独落在 last_scheduled——manual 触发只更新 last_run，绝不冒充按计划完成；
+    # once 任务「Done / 已错过 / 按计划失败」的判定全部读它，不再从 enabled 推导。
+    if is_scheduled_trigger(row.get("trigger") or ""):
+        patch["last_scheduled"] = _last_run_meta(
+            run_id, row2["status"], row["started_at"], now, row.get("trigger") or "",
+        )
     if ok:
         # P0-1: "上次成功" is what the user cares about — last_run flips to a
         # failure and hides the last good day otherwise.
@@ -1070,6 +1114,13 @@ def _record_missed(
     row["finished_at"] = point
     row["summary"] = summary or _("schedule.missed")
     store.record_run(row)
+    # missed / caught_up 是按计划生命周期的真实事件（schedule-integrity）：
+    # once 任务错过被自动停用后，任务卡靠 last_scheduled.status="missed" 显示
+    # 「计划点已错过」，而不是从 enabled 误推出「已完成」。
+    if task.get("id"):
+        store.patch_task(task["id"], {
+            "last_scheduled": _last_run_meta(row["run_id"], status, point, point, "schedule"),
+        })
     schedule_events().emit("missed" if status == "missed" else "run_finished", {"run": row, "task_id": task.get("id")})
 
 

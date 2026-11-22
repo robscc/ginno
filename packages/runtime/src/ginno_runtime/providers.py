@@ -37,6 +37,7 @@ from typing import Any
 from ginno_runtime import jsonx as json
 
 from . import paths
+from . import settings_store
 from ._version import ginno_user_agent
 from .lang import t
 
@@ -296,11 +297,14 @@ def save_configs(
     (decision Q1: frozen for read-only compat with old binaries).
     """
     normalized = validate_configs(configs)
-    settings = _read_settings()
-    settings["model_configs"] = normalized
-    if default_config is not None:
-        settings["default_config"] = default_config
-    _write_settings(settings)
+
+    def _mut(settings: dict[str, Any]) -> dict[str, Any]:
+        settings["model_configs"] = normalized
+        if default_config is not None:
+            settings["default_config"] = default_config
+        return settings
+
+    settings_store.update(_mut)
     return normalized
 
 
@@ -464,19 +468,13 @@ def apply_system_proxy(enabled: bool) -> None:
 
 
 def _read_settings() -> dict[str, Any]:
-    p = paths.settings_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return {}
+    return settings_store.read_settings()
 
 
 def _write_settings(settings: dict[str, Any]) -> None:
-    paths.settings_path().write_text(
-        json.dumps(settings, indent=2, ensure_ascii=False)
-    )
+    """原子写（同目录 tmp + 0600 + replace）；损坏时抛 SettingsCorruptError
+    拒写保留原字节（由调用方决定错误呈现）。"""
+    settings_store.atomic_write(settings)
 
 
 # ---- connectivity verify ----------------------------------------------------
@@ -818,6 +816,15 @@ def mask_secret(value: Any) -> Any:
     return MASK_PREFIX + s[-4:] if len(s) > 4 else MASK_PREFIX
 
 
+# 值形态敏感判定：带 userinfo 的 URL（scheme://user[:pass]@host）——认证
+# 连接串。键名不含 SECRET/TOKEN 的 DSN（DATABASE_URL 等）靠它兜住。
+_URL_USERINFO_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^\s/@]+:[^\s/@]*@")
+
+
+def _value_has_url_credentials(value: str) -> bool:
+    return bool(_URL_USERINFO_RE.match(value))
+
+
 def is_masked(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(MASK_PREFIX)
 
@@ -877,7 +884,13 @@ def mask_settings(settings: dict[str, Any]) -> dict[str, Any]:
     env = out.get("env")
     if isinstance(env, dict):
         for k, v in list(env.items()):
-            if isinstance(v, str) and v and _SECRET_NAME.search(str(k)):
+            if not isinstance(v, str) or not v:
+                continue
+            # 敏感判定 = 键名模式 ∪ 值形态（带 userinfo 的 URL = 认证连接串，
+            # 如 postgres://user:pass@host——键名 DATABASE_URL 不含 SECRET/
+            # TOKEN，纯键名判定会明文回传凭据）。往返还原靠 _restore_masked
+            # 的同路径回填（env 是 dict，逐键还原天然成立）。
+            if _SECRET_NAME.search(str(k)) or _value_has_url_credentials(v):
                 env[k] = mask_secret(v)
     _mask_config_list(out.get("model_configs"))
     provs = out.get("providers")

@@ -296,17 +296,26 @@ async def connector_action(cid: str, body: dict) -> Any:
         if not domain:
             return JSONResponse({"ok": False, "error": "domain required"}, status_code=400)
         reg.write_config("chrome-extension", {})  # ensure section exists
-        settings_path = paths.settings_path()
-        from ginno_runtime import jsonx as _json
+        from .. import settings_store
 
-        settings = _json.loads(settings_path.read_text() or "{}")
-        conns = settings.setdefault("connectors", {})
-        ce = conns.setdefault("chrome-extension", {})
-        confirmed = ce.setdefault("confirmed_domains", [])
-        if domain not in confirmed:
+        def _mut(settings: dict) -> dict | None:
+            conns = settings.setdefault("connectors", {})
+            ce = conns.setdefault("chrome-extension", {})
+            confirmed = ce.setdefault("confirmed_domains", [])
+            if domain in confirmed:
+                return None
             confirmed.append(domain)
-        settings_path.write_text(_json.dumps(settings, ensure_ascii=False, indent=2))
-        return {"ok": True, "confirmedDomains": confirmed}
+            return settings
+
+        try:
+            settings_store.update(_mut)
+        except settings_store.SettingsCorruptError:
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": "settings_corrupt",
+                         "detail": "settings.json is corrupt; write refused"},
+            )
+        return {"ok": True, "confirmedDomains": reg.read_config("chrome-extension").get("confirmed_domains", [])}
     if action == "profile_start":
         from ..browser.executor import get_profile_backend
 

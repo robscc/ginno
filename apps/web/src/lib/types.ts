@@ -941,12 +941,15 @@ export type SchedulePlan =
   | { kind: "weekly"; weekdays?: number[]; weekday?: number; at: string }
   | { kind: "once"; at: string };
 
-/** 冗余展示字段：最近一次执行的摘要（§4.1 last_run）。 */
+/** 冗余展示字段：最近一次执行的摘要（§4.1 last_run）。trigger 是该次执行
+ *  的触发来源（schedule/manual/catch_up）——判断「按计划 vs 手动」用；
+ *  老数据无此字段（undefined），按未知处理。 */
 export interface ScheduleLastRun {
   run_id: string;
   status: string;
   started?: number | null;
   finished?: number | null;
+  trigger?: string;
 }
 
 export interface ScheduleTask {
@@ -968,6 +971,12 @@ export interface ScheduleTask {
   last_run?: ScheduleLastRun | null;
   /** P0-1：最近一次成功（失败不会覆盖它），任务卡展示「上次成功」。 */
   last_success?: { run_id: string; finished: number } | null;
+  /** 按计划生命周期的最近结果（schedule-integrity）：只记 schedule/catch_up
+   *  触发（manual 立即执行不写）与 missed/caught_up 记账——「成功/失败/跳过/
+   *  错过」是与 enabled 开关独立的执行事实。once 任务的生命周期结论（完成/
+   *  错过/按计划失败）只读这里。undefined = 无元数据的老任务（前端按
+   *  last_run 回退兼容）；null = 新任务尚无按计划事件。 */
+  last_scheduled?: ScheduleLastRun | null;
 }
 
 /** 未读执行结果统计（schedule-unseen）：侧栏红点 + 执行记录页签角标。 */
