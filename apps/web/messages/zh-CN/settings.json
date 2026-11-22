@@ -180,7 +180,7 @@
       "on": "已开启",
       "off": "已关闭",
       "refresh": "重新检测系统注册态",
-      "hint": "状态以 macOS 登录项（SMAppService）注册为准；在系统设置里手动关闭后这里会如实显示，可一键重新开启。",
+      "hint": "状态以 macOS 登录项注册真源为准：正式版走系统登录项（SMAppService），可在 系统设置 → 通用 → 登录项 管理；旧版 LaunchAgent 注册会自动迁移。dev/未打包模式仍用 LaunchAgent。",
       "errFailed": "注册失败：可能被系统策略禁用，或需在 系统设置 → 通用 → 登录项 中允许。"
     }
   }

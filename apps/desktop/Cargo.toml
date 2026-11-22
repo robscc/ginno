@@ -29,6 +29,7 @@ tauri-plugin-opener = "2"
 # capabilities/default.json — no ask/message/confirm/save surface.
 tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
+auto-launch = "0.6"
 # Quit gate (lib.rs ExitRequested → quit_check.rs): one localhost HTTP GET to
 # the sidecar's /api/running before quitting. http-only (127.0.0.1, no TLS)
 # — default features off keeps the tree rustls-free.

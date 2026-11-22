@@ -38,6 +38,7 @@
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
 
+mod autostart;
 mod badge;
 mod code_cmds;
 mod common;
@@ -124,17 +125,21 @@ pub fn run() {
         // `dialog:allow-open`, so the page can pick directories but cannot
         // spawn ask/message/confirm dialogs.
         .plugin(tauri_plugin_dialog::init())
-        // Login-item autostart (reboot-resume foundation, docs pending):
-        // macOS 13+ registers via SMAppService (visible & manageable under
-        // System Settings → General → Login Items). LaunchAgent launcher keeps
-        // it in the user domain — no daemon, no root. The enable/disable/
-        // is_enabled commands come from the plugin and are surfaced to the
-        // Settings → General toggle (apps/web desktop.ts bridge).
+        // Login-item autostart (2026-11-22 巡检 P1 修正)：此前注释声称
+        // 「macOS 13+ 走 SMAppService」，实际 tauri-plugin-autostart 只透出
+        // LaunchAgent/AppleScript，真源是 ~/Library/LaunchAgents 的 plist
+        //（isEnabled=文件存在）——系统设置「允许在后台」禁用后 plist 仍在，
+        // 设置页恒显「已开启」。现改走自有 command（autostart.rs，直接用
+        // 依赖树里 auto-launch 0.6.0 的 MacOSLaunchMode::SMAppService，dev
+        // /未打包/旧系统回退 LaunchAgent，legacy plist 自动迁移/清理）；
+        // 插件保留注册（dev 兼容与渐进迁移），前端已切换到新 command。
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .invoke_handler(tauri::generate_handler![
+            autostart::ginno_autostart_is_enabled,
+            autostart::ginno_autostart_set,
             pin::pin_toggle,
             pin::pin_set_mode,
             pin::pin_get_mode,
