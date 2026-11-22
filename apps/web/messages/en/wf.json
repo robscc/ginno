@@ -11,7 +11,8 @@
       "validationErrors": "Validation errors: {list}",
       "dryPassed": "Dry run passed: {count} nodes, validation / dataflow / compile / reachability all pass",
       "unreachable": "Unreachable nodes: {list}",
-      "dryFailed": "Dry run failed:"
+      "dryFailed": "Dry run failed:",
+      "cycles": "Contains {count} cycle(s) (branch back-edges are legal, not rejected); at run time only recursion_limit={limit} bounds it"
     },
     "diff": {
       "noChanges": "No differences"

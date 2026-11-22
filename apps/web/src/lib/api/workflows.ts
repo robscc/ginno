@@ -210,6 +210,10 @@ export interface DryRunResult {
   doctor_errors: DryRunFinding[];
   warnings: DryRunFinding[];
   unreachable: string[];
+  /** Unbounded routing cycles (branch back-edges etc.); >0 → run is only
+   *  bounded by recursion_limit (quick-fix D3). Absent on old runtimes. */
+  cycles?: number;
+  recursion_limit?: number;
   node_count?: number;
 }
 export async function dryRunWorkflow(dsl: Record<string, unknown>) {

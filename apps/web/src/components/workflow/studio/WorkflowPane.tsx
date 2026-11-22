@@ -163,6 +163,14 @@ export function WorkflowPane({
                   {tCommon("unreachable", { list: dry.result.unreachable.join(", ") })}
                 </div>
               )}
+              {(dry.result.cycles ?? 0) > 0 && (
+                <div className="selectable pl-5 text-yellow">
+                  {tCommon("cycles", {
+                    count: dry.result.cycles ?? 0,
+                    limit: dry.result.recursion_limit ?? 0,
+                  })}
+                </div>
+              )}
             </>
           ) : (
             <>
