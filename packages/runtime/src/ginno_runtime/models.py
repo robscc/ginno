@@ -401,16 +401,34 @@ def thinking_budgets(cfg: dict) -> dict[str, int]:
 
 
 def thinking_dialect(cfg: dict, model: str | None) -> str:
-    """openai-compat 的思考方言:qwen / glm / deepseek / generic(按模型名 +
-    base_url 判别;判别不出 → generic 尽力透传 reasoning_effort)。"""
+    """openai-compat 的思考方言:qwen / zhipu / glm / deepseek / generic
+    (按模型名 + base_url 判别;判别不出 → generic 尽力透传 reasoning_effort)。
+
+    路由前缀（2026-11-22 会话 1821ce8 报障实案）：magpie 等网关用
+    ``pool/model`` 名（zhipu/glm-5.3、bailian-token-plan-2/qwen3.8-max），
+    整串 startswith 会被池名遮蔽误判 generic——取 ``/`` 末段（leaf）判别，
+    全名仅作补充命中。zhipu 判定优先于 glm：zhipu 池的 leaf 也是 glm 开头，
+    但上游（Zhipu 官方兼容层）吃 reasoning_effort 且值域特有
+    （none/minimal/low/medium/high/xhigh/max，1210 报错实证）——旧 thinking
+    开关在它那儿只减不关（disabled 实测仍回 19 字思考）。
+    """
     m = (model or "").lower()
-    if m.startswith(("qwen", "qwq")):
+    # leaf 优先于全名：qwen-token-plan/glm-5.3 的模型是 glm，全名 startswith
+    # ("qwen") 会误判（实测踩坑）——只有 leaf 判不出时才看全名。
+    leaf = m.rsplit("/", 1)[-1] if "/" in m else m
+    base = str(cfg.get("base_url") or "").lower()
+    if leaf.startswith(("qwen", "qwq")):
         return "qwen"
-    if "dashscope" in str(cfg.get("base_url") or "").lower():
+    if "dashscope" in base:
         return "qwen"
-    if m.startswith(("glm", "chatglm")) or "bigmodel" in str(cfg.get("base_url") or "").lower():
+    if m.startswith("zhipu/") or "zhipu" in base:
+        # 仅网关 zhipu 池（模型名 zhipu/ 前缀或 base_url 含 zhipu）——
+        # bigmodel 直连端点仍走 glm 老开关（GLM-4.x 系原生参数，存量
+        # 契约）；GLM-5 系新值域 reasoning_effort 只在 zhipu 池实测过。
+        return "zhipu"
+    if leaf.startswith(("glm", "chatglm")) or "bigmodel" in base:
         return "glm"
-    if "deepseek" in m:
+    if "deepseek" in leaf:
         return "deepseek"
     return "generic"
 
@@ -738,10 +756,11 @@ def build_model(
     es = cfg.get("enable_search") if enable_search is None else enable_search
     if es:
         extra_body["enable_search"] = True
+    # 方言提前判定（auto 分支也要用）：见下方 zhipu 的 enable_thinking=False 处理。
+    dialect = thinking_dialect(cfg, model)
     if effort:
         # 会话档位覆盖 provider 配置(设计 §3):有档位时 cfg.enable_thinking
         # 不再参与;方言决定参数形状。
-        dialect = thinking_dialect(cfg, model)
         if dialect == "qwen":
             # DashScope 兼容模式:开关 + 预算(商业版 qwen3 系)。
             if effort == "off":
@@ -749,6 +768,11 @@ def build_model(
             else:
                 extra_body["enable_thinking"] = True
                 extra_body["thinking_budget"] = thinking_budgets(cfg)[effort]
+        elif dialect == "zhipu":
+            # Zhipu 官方兼容层：reasoning_effort 形状，值域含 none（真关）。
+            # off 绝不能落 minimal——实测 minimal 仍回 38 字思考，「关不掉」
+            # 正是 2026-11-22 会话 1821ce8 报障；none 实测 0 字。
+            chat_kw["reasoning_effort"] = "none" if effort == "off" else effort
         elif dialect == "glm":
             # GLM(bigmodel)只有开关,无预算概念:off=关,其余全落开。
             extra_body["thinking"] = {
@@ -760,6 +784,11 @@ def build_model(
             chat_kw["reasoning_effort"] = "minimal" if effort == "off" else effort
     elif cfg.get("enable_thinking"):
         extra_body["enable_thinking"] = True
+    elif dialect == "zhipu" and cfg.get("enable_thinking") is False:
+        # auto 跟随配置（2026-11-22 补）：zhipu 上游默认开思考，配置
+        # enable_thinking=false 的意图是关——显式落 none，否则 auto 档
+        # 发不出任何参数、上游照常思考，与 off 一样「改了没反应」。
+        chat_kw["reasoning_effort"] = "none"
     if extra_body:
         chat_kw["extra_body"] = extra_body
     # Same gateway-identity override as the anthropic branch above: the
