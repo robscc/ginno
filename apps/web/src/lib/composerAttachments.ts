@@ -88,6 +88,35 @@ export function isImageFile(file: File): boolean {
 }
 
 /**
+ * Parse the intrinsic pixel size of an SVG from its data URL: prefers
+ * numeric width/height attributes, falls back to the viewBox. Returns null
+ * when neither yields usable numbers (caller keeps the original bytes).
+ */
+export function svgIntrinsicSize(dataUrl: string): [number, number] | null {
+  try {
+    const m = /^data:[^;]*;base64,(.*)$/.exec(dataUrl);
+    const text = m ? atob(m[1]) : dataUrl;
+    const tag = /<svg\b[^>]*>/.exec(text)?.[0] ?? "";
+    const attr = (name: string): number | null => {
+      const a = new RegExp(`\\b${name}\\s*=\\s*["'](\\d+(?:\\.\\d+)?)["']`).exec(tag);
+      return a ? Number(a[1]) : null;
+    };
+    const w = attr("width");
+    const h = attr("height");
+    if (w && h) return [w, h];
+    const vb = /\bviewBox\s*=\s*["']\s*[\d.eE+-]+\s+[\d.eE+-]+\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s*["']/.exec(tag);
+    if (vb) {
+      const vw = Number(vb[1]);
+      const vh = Number(vb[2]);
+      if (vw > 0 && vh > 0) return [vw, vh];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read an image file as a data URL. Files over ~400KB are re-encoded through a
  * canvas (max 1600px, JPEG 0.85) — the checkpointer rewrites the whole session
  * file on every step, so keeping embedded images small matters.
@@ -108,14 +137,35 @@ export function readImage(file: File): Promise<ComposerImage | null> {
       const img = new Image();
       img.onload = () => {
         const MAX = 1600;
-        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
+        // SVG without intrinsic width/height (viewBox-only) reports a small
+        // default size in `Image` (Chrome: viewBox ratio clamped into a
+        // 300×150 box — recon 2026-11-22: 2000×1000 → 300×150, crushed by
+        // re-encode). For SVGs always trust the source-declared size instead;
+        // fall back to the browser-reported size, else pass through raw.
+        let iw = img.width;
+        let ih = img.height;
+        const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
+        if (isSvg) {
+          const parsed = svgIntrinsicSize(src);
+          if (!parsed && (!iw || !ih)) return finish(src);
+          if (parsed) {
+            iw = parsed[0];
+            ih = parsed[1];
+          }
+        }
+        const scale = Math.min(1, MAX / Math.max(iw, ih));
+        const w = Math.max(1, Math.round(iw * scale));
+        const h = Math.max(1, Math.round(ih * scale));
         const canvas = document.createElement("canvas");
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         if (!ctx) return finish(src);
+        // JPEG has no alpha — transparent regions would composite to BLACK
+        // (recon 2026-11-22: half-transparent PNG → solid black half). Paint
+        // a white base first so transparency degrades to white instead.
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
         finish(canvas.toDataURL("image/jpeg", 0.85));
       };

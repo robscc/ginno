@@ -14,6 +14,7 @@ vi.mock("@/lib/runtime", () => ({ uploadFile, debugLog }));
 import {
   isImageFile,
   readImage,
+  svgIntrinsicSize,
   uploadDoc,
   MAX_UPLOAD_BYTES,
   UploadError,
@@ -60,8 +61,15 @@ class FakeImage {
 
 // ---- canvas / document 桩 ----
 const drawImage = vi.fn();
+const fillRect = vi.fn();
 const toDataURL = vi.fn(() => "data:image/jpeg;base64,RECODED");
-const getContext = vi.fn((): { drawImage: typeof drawImage } | null => ({ drawImage }));
+const getContext = vi.fn(
+  (): { drawImage: typeof drawImage; fillRect: typeof fillRect; fillStyle: string } | null => ({
+    drawImage,
+    fillRect,
+    fillStyle: "",
+  }),
+);
 const canvas = { width: 0, height: 0, getContext, toDataURL };
 const createElement = vi.fn(() => canvas);
 
@@ -197,6 +205,94 @@ describe("readImage 大图压缩（>400KB → canvas JPEG 0.85）", () => {
     const out = await readImage(big());
     expect(out).toEqual({ data: "AAAA", mediaType: "image/png", preview: PNG_URL, name: "big.png" });
     expect(createElement).not.toHaveBeenCalled();
+  });
+
+  it("重编码前先铺白底：JPEG 无 alpha，透明区不再合成纯黑（D9）", async () => {
+    imageState.width = 800;
+    imageState.height = 600;
+    await readImage(big());
+    expect(fillRect).toHaveBeenCalledWith(0, 0, 800, 600);
+    expect(getContext.mock.results[0].value.fillStyle).toBe("#ffffff");
+  });
+});
+
+describe("readImage 无固有尺寸 SVG（viewBox 兜底，D9）", () => {
+  // viewBox-only SVG（无 width/height 属性）——Image 报 0×0，侦察实测会被
+  // 压成 200×150 微缩图；修后走 svgIntrinsicSize 解析宽高比再压缩。
+  const svgUrl = (svg: string) => `data:image/svg+xml;base64,${btoa(svg)}`;
+  const viewBoxOnly = svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1000"><rect width="2000" height="1000"/></svg>',
+  );
+
+  it("viewBox 2000×1000 + Image 报 0×0 → 按解析宽高缩到 1600×800", async () => {
+    readerState.result = viewBoxOnly;
+    imageState.width = 0;
+    imageState.height = 0;
+    const out = await readImage(mkFile("big.svg", "image/svg+xml", 500_000));
+    expect(canvas.width).toBe(1600);
+    expect(canvas.height).toBe(800);
+    expect(drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 800]);
+    expect(out?.mediaType).toBe("image/jpeg");
+  });
+
+  it("Chrome 真实行为复刻：viewBox 2000×1000 的 SVG，Image 报按比例夹进 300×150 框的 300×150 → 仍按源码宽高缩到 1600×800", async () => {
+    readerState.result = viewBoxOnly;
+    imageState.width = 300; // 侦察实测：Chrome 对无尺寸 SVG 报 viewBox 比例 fit 默认框
+    imageState.height = 150;
+    await readImage(mkFile("big.svg", "image/svg+xml", 500_000));
+    expect(canvas.width).toBe(1600);
+    expect(canvas.height).toBe(800);
+  });
+
+  it("解析失败（无 viewBox 无数字宽高）→ 原样透传，绝不缩成微缩图", async () => {
+    readerState.result = svgUrl('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+    imageState.width = 0;
+    imageState.height = 0;
+    const out = await readImage(mkFile("big.svg", "image/svg+xml", 500_000));
+    expect(out?.mediaType).toBe("image/svg+xml");
+    expect(createElement).not.toHaveBeenCalled();
+  });
+
+  it("带数字 width/height 属性的 SVG 优先取属性（即使 Image 报 0）", async () => {
+    readerState.result = svgUrl(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="1000" viewBox="0 0 4000 1000"/>',
+    );
+    imageState.width = 0;
+    imageState.height = 0;
+    await readImage(mkFile("big.svg", "image/svg+xml", 500_000));
+    expect(canvas.width).toBe(1600);
+    expect(canvas.height).toBe(400);
+  });
+
+  it("解析失败但 Image 报出有效尺寸（如带 % 宽高的 SVG）→ 用 Image 尺寸，不透传", async () => {
+    readerState.result = svgUrl('<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="50%"/>');
+    imageState.width = 800;
+    imageState.height = 600;
+    await readImage(mkFile("big.svg", "image/svg+xml", 500_000));
+    expect(canvas.width).toBe(800);
+    expect(canvas.height).toBe(600);
+  });
+});
+
+describe("svgIntrinsicSize 解析", () => {
+  const url = (svg: string) => `data:image/svg+xml;base64,${btoa(svg)}`;
+
+  it("width/height 数字属性 → [w, h]", () => {
+    expect(svgIntrinsicSize(url('<svg width="800" height="600"/>'))).toEqual([800, 600]);
+  });
+
+  it("height 在前也能解析（属性顺序无关）", () => {
+    expect(svgIntrinsicSize(url('<svg height="600" width="800"/>'))).toEqual([800, 600]);
+  });
+
+  it("仅 viewBox → 取 w/h", () => {
+    expect(svgIntrinsicSize(url('<svg viewBox="0 0 1200 300"/>'))).toEqual([1200, 300]);
+  });
+
+  it("无可用信息 → null", () => {
+    expect(svgIntrinsicSize(url('<svg viewBox="0 0 100 0"/>'))).toBeNull(); // h=0 无效
+    expect(svgIntrinsicSize(url("<svg/>"))).toBeNull();
+    expect(svgIntrinsicSize("data:image/svg+xml;base64,!!!not-base64!!!")).toBeNull();
   });
 });
 
