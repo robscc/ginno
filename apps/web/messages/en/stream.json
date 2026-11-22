@@ -23,6 +23,7 @@
     "compact_started": "Compaction started; you'll be notified when it finishes",
     "error_channel_readonly": "Channel sessions (WeCom/DingTalk) converse in the IM app; read-only here",
     "remote_accepted": "Remote {peer} accepted the task",
-    "remote_state": "Remote state: {state}"
+    "remote_state": "Remote state: {state}",
+    "error_text_too_long": "Text too long (max {limit}MB) — message not sent"
   }
 }

@@ -215,6 +215,7 @@ function DrawerStream({
       userBlocks: [{ kind: "text", text }],
       notReadyLabel: () => t("notReady"),
       failedLabel: () => t("sendFailed"),
+      tooLongLabel: () => t("textTooLong"),
       onSent: () => {
         setInput("");
         requestAnimationFrame(() => {

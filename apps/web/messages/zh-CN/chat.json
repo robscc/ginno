@@ -166,7 +166,8 @@
       "title": "发送失败：{reason}",
       "ariaRetry": "发送失败，点击重试",
       "editResend": "编辑重发",
-      "delete": "删除"
+      "delete": "删除",
+      "textTooLong": "文本过长（上限 1MB），消息未发送"
     },
     "permission": {
       "title": "需要权限",

@@ -33,6 +33,13 @@ from .steer import (
 
 router = APIRouter()
 
+#: 单条入站 WS 文本帧上限（字节）。uvicorn 默认 ws_max_size=16MB，超限直接
+#: 1009 断连（侦察 2026-11-22 实测：17MB 帧 → MESSAGE_TOO_BIG，前端只见
+#: 断连重连、无任何提示）。在协议层先以 1MB 拒超大文本并回 error 事件
+#: （连接保持打开），把「静默接受 / 协议断连」都变成明确报错。
+#: ⚠️ 与 apps/web/src/lib/limits.ts 的 MAX_SEND_TEXT_BYTES 同值，改要同步。
+MAX_INBOUND_TEXT_BYTES = 1_048_576
+
 
 @router.websocket("/api/ws/sessions/{session_id}")
 async def session_ws(ws: WebSocket, session_id: str) -> None:
@@ -52,6 +59,23 @@ async def run_receive_loop(conn: WsConn) -> None:
     session_id = conn.session_id
     while True:
         raw = await ws.receive_text()
+        if len(raw.encode("utf-8", "surrogatepass")) > MAX_INBOUND_TEXT_BYTES:
+            await ws.send_text(
+                _ev(
+                    "error",
+                    {
+                        "message": (
+                            "text frame exceeds "
+                            f"{MAX_INBOUND_TEXT_BYTES // 1024 // 1024}MB limit"
+                        ),
+                        "i18n_key": "stream.error_text_too_long",
+                        "params": {
+                            "limit": MAX_INBOUND_TEXT_BYTES // 1024 // 1024
+                        },
+                    },
+                )
+            )
+            continue
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
