@@ -18,6 +18,10 @@ under a node-level timeout.
 :mod:`..expr`): a string that is exactly one ``{{expr}}`` placeholder is
 evaluated to its RAW value (so arrays/objects flow through); any other
 string is rendered as a template; non-strings pass through untouched.
+A placeholder that fails to resolve (missing context key / bad nesting)
+raises immediately with the node id, the arg name and the available keys —
+it must NOT silently become ``None`` (R3 inspection Q9: the failure used
+to surface later and vaguer, from deep inside the entry).
 
 ``writes`` declares the output contract like on ``step`` nodes; the compiler
 therefore injects a ``<id>__extract`` node after us — we put a
@@ -47,6 +51,11 @@ _SINGLE_PLACEHOLDER = re.compile(r"^\s*\{\{(.*?)\}\}\s*$")
 
 
 def _resolve_args(node: dict, render_ctx: dict) -> dict:
+    node_id = str(node.get("id") or "?")
+    # 错误信息里带可用 key 名（截断）——报错点从「entry 深处的 None」拉回到
+    # 「哪个节点的哪个 arg 引用了哪个不存在的 key」，一眼可修（R3 巡检 Q9）。
+    _keys = sorted(str(k) for k in render_ctx)
+    avail = ", ".join(_keys[:12]) + ("…" if len(_keys) > 12 else "") or "(none)"
     out: dict = {}
     for key, val in (node.get("args") or {}).items():
         if isinstance(val, str):
@@ -55,8 +64,11 @@ def _resolve_args(node: dict, render_ctx: dict) -> dict:
                 # Raw object passthrough: {{context.aliyun_records}} etc.
                 try:
                     out[key] = wf_expr.eval_expr(m.group(1), render_ctx)
-                except Exception:
-                    out[key] = None
+                except Exception as exc:
+                    raise ValueError(
+                        f"node '{node_id}': arg '{key}' = {val.strip()!r} does not "
+                        f"resolve ({exc}); available keys: {avail}"
+                    ) from exc
             else:
                 out[key] = wf_expr.render(val, render_ctx)
         else:
