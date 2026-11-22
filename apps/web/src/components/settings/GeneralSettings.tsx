@@ -11,6 +11,7 @@ import * as api from "@/lib/runtime";
 import { useLocaleCtx, setLocale } from "@/i18n/provider";
 import type { LanguageSetting } from "@/i18n/config";
 import { readMermaidPref, writeMermaidPref } from "@/lib/mermaidPrefs";
+import { initialTheme } from "@/lib/themeInit";
 import {
   FONT_DEFAULT,
   FONT_FAMILY_ORDER,
@@ -22,9 +23,13 @@ import {
   type FontPrefs,
 } from "@/lib/fontPrefs";
 
-export function applyTheme(t: string) {
+/** 应用主题到 DOM。``persist=false`` 只切 class 不写 localStorage——
+ *  启动时按系统偏好解析出的值不应落盘（落盘就成了“手动选择”，
+ *  系统以后切深浅色就不跟了）；只有用户手动切换走默认 persist=true。 */
+export function applyTheme(t: string, persist = true) {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("light", t === "light");
+  if (!persist) return;
   try {
     localStorage.setItem("ginno-theme", t);
   } catch {
@@ -370,14 +375,11 @@ export function GeneralSettings() {
   const tSettings = useTranslations("settings");
 
   useEffect(() => {
-    let t = "dark";
-    try {
-      t = localStorage.getItem("ginno-theme") || "dark";
-    } catch {
-      /* ignore */
-    }
+    // Quick-fix D6：与 AppShell 同一裁决（本地手动选择 > 系统偏好 > dark），
+    // 且初始化不落盘——面板里显示的是解析结果，手动点选才持久化。
+    const t = initialTheme();
     setTheme(t);
-    applyTheme(t);
+    applyTheme(t, false);
     setMermaid(readMermaidPref());
     setFont(readFontPrefs());
     api
