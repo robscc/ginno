@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -388,6 +389,7 @@ class FakeAdapter:
         self.config = config or {"ask_timeout_s": 600}
         self.client = FakeClient()
         self.pending: dict[str, dict] = {}
+        self.answered: dict[str, dict] = {}
 
     async def register_pending_question(self, chat_key, session_id, qid, options):
         self.pending[chat_key] = {
@@ -395,6 +397,14 @@ class FakeAdapter:
 
     async def unregister_pending_question(self, chat_key):
         self.pending.pop(chat_key, None)
+
+    def mark_question_answered(self, chat_key, *, qid="", session_id="",
+                               answer="", skip=False, raw="", answered_by="user"):
+        self.answered[chat_key] = {
+            "qid": qid, "session_id": session_id, "answer": answer,
+            "skip": skip, "raw": raw, "answered_by": answered_by,
+            "answered_at": time.time(),
+        }
 
 
 def _frame(event: str, **data) -> str:
@@ -493,6 +503,10 @@ async def test_tap_question_registers_pending_and_timeout_skip(monkeypatch):
         await asyncio.sleep(0.12)  # 超过 ask_timeout_s
         assert resumed and resumed[0][1]["skip"] is True
         assert "u1" not in ad.pending
+        # 超时跳过 = 已答（wecom_timeout）：渠道墓碑落地，晚到的企微
+        # 回复将命中墓碑被消化而非开新 turn。
+        assert ad.answered["u1"]["answered_by"] == "wecom_timeout"
+        assert ad.answered["u1"]["skip"] is True
     finally:
         shared._PENDING_RESUME.discard("sess1")
         shared._PENDING_KIND.pop("sess1", None)
@@ -795,6 +809,162 @@ def test_adapter_pending_question_short_circuits(tmp_path: Path, monkeypatch):
     assert resumed and resumed[0][0] == "sess1"
     assert resumed[0][1]["option_index"] == 1
     assert ad.client.responds == []  # 作答不开新 turn，也不发占位帧
+
+
+# ------------------------------------------- F4b 直答 resume_question 语义
+# （relay-question 范式对齐：qid 一次性凭证 + 墓碑重放防线 + 守卫/
+# checkpoint 双信号拒绝；四分支——重放恰好一次 / 过期 qid / 无待答 /
+# 已答再答——见 tests/api/test_relay_question.py 的同款幂等写法。）
+
+
+def _arm_pending(ad, chat_key="zhang", sid="sess1", qid="q1",
+                 options=("A", "B")):
+    """武装一条待答登记 + 内存守卫（_spawn 由各测试自行 patch 捕获）。"""
+    import ginno_runtime.server_shared as shared
+
+    ad._pending_q[chat_key] = {"session_id": sid, "question_id": qid,
+                               "options": list(options)}
+    shared._PENDING_RESUME.add(sid)
+    shared._PENDING_KIND[sid] = "user_question"
+
+
+def _disarm(sid="sess1"):
+    import ginno_runtime.server_shared as shared
+
+    shared._PENDING_RESUME.discard(sid)
+    shared._PENDING_KIND.pop(sid, None)
+
+
+def _capture_resumes(monkeypatch):
+    import ginno_runtime.api.stream.resume as resume_mod
+
+    resumed: list[tuple[str, dict]] = []
+    monkeypatch.setattr(resume_mod, "_spawn_resume_task",
+                        lambda sid, val, cfg: resumed.append((sid, val)))
+    return resumed
+
+
+def _fake_turn_sink(monkeypatch, turns):
+    """把 ensure_channel_session / run_channel_turn 换成最小捕获桩。"""
+    import ginno_runtime.channels.wecom.adapter as adapter_mod
+
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
+        return ({"session_id": "sess1", "project_slug": "default"}, None)
+
+    async def fake_run(session, text, tap, **kw):
+        turns.append({"text": text, "tap": tap, **kw})
+
+    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
+    monkeypatch.setattr(adapter_mod, "run_channel_turn", fake_run)
+
+
+async def test_wecom_answer_replay_executes_once(tmp_path: Path, monkeypatch):
+    """四分支①（重放恰好执行一次）：首答经 resume_question 恰一次（qid
+    一次性凭证：先弹登记再恢复）；企微 at-least-once 重放同文本 → 命中
+    渠道墓碑被消化 + 告知，不二次 resume、不开新 turn。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    _arm_pending(ad)
+    resumed = _capture_resumes(monkeypatch)
+    try:
+        await ad.handle_msg(_msg_body("2"), _frame_of())
+        assert len(resumed) == 1
+        assert resumed[0][0] == "sess1"
+        assert resumed[0][1]["option_index"] == 1
+        assert resumed[0][1]["answer"] == "B"
+        tb = ad._answered_q["zhang"]
+        assert tb["qid"] == "q1" and tb["answer"] == "B"
+        assert tb["answered_by"] == "wecom" and tb["raw"] == "2"
+        # 重放同一回调文本：消化 + 告知，零二次执行
+        await ad.handle_msg(_msg_body("2"), _frame_of())
+        assert len(resumed) == 1
+        assert ad.client.responds == []  # 无新 turn / 无占位帧
+        assert any("未重复执行" in c for _, c in ad.client.pushes)
+    finally:
+        _disarm()
+
+
+async def test_wecom_answer_expired_qid_rejected(tmp_path: Path, monkeypatch):
+    """四分支②（过期 qid 拒绝）：登记还在、但守卫与 checkpointer 双信号
+    都说「没在等」（超时已跳过 / turn 已死 / 重启丢守卫且无 parked 事实）
+    → 拒绝 + 告知，不 resume、不开新 turn、登记即销。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    ad._pending_q["zhang"] = {"session_id": "sess-dead",
+                              "question_id": "q-old", "options": ["A", "B"]}
+    resumed = _capture_resumes(monkeypatch)
+    # 守卫未武装；isolated_home 已清 _SESSIONS → arm 无从以 checkpoint 武装
+    await ad.handle_msg(_msg_body("2"), _frame_of())
+    assert resumed == []
+    assert "zhang" not in ad._pending_q  # 一次性凭证：登记已销
+    assert ad.client.responds == []       # 不回落成新 turn
+    assert any("已结束" in c for _, c in ad.client.pushes)
+
+
+async def test_wecom_answer_no_pending_dispatches_new_turn(
+        tmp_path: Path, monkeypatch):
+    """四分支③（无待答问题拒绝）：无登记无墓碑 → 不 resume，按普通消息
+    开新 turn（既有路由行为保持，正常聊天不被误吞）。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    resumed = _capture_resumes(monkeypatch)
+    turns: list[dict] = []
+    _fake_turn_sink(monkeypatch, turns)
+    await ad.handle_msg(_msg_body("帮我看下天气"), _frame_of())
+    assert resumed == []
+    assert turns and turns[0]["text"] == "帮我看下天气"
+    assert ad.client.responds  # 正常 turn：占位首帧已发
+
+
+async def test_wecom_answer_after_desktop_answer_rejected(
+        tmp_path: Path, monkeypatch):
+    """四分支④（已答再答拒绝）：桌面先答（resume_question 真跑，守卫即
+    销 + relay 墓碑收口）→ 企微晚到回复（渠道登记未及清理的竞态窗口）
+    被守卫/checkpoint 双信号拒绝：恰一次 resume、不开新 turn、只提示。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    _arm_pending(ad, sid="sess-raced", qid="q-raced")
+    resumed = _capture_resumes(monkeypatch)
+    try:
+        from ginno_runtime.api.stream.resume import resume_question
+
+        ok = await resume_question(
+            "sess-raced", answer="A", option_index=0, answered_by="user")
+        assert ok is True and len(resumed) == 1
+        # 企微回复晚到（wecom tap 尚未收尾，登记还在）
+        await ad.handle_msg(_msg_body("1"), _frame_of())
+        assert len(resumed) == 1        # 恰一次，未二次执行
+        assert ad.client.responds == []  # 未 dispatch
+        assert "zhang" not in ad._pending_q
+        assert any("已结束" in c for _, c in ad.client.pushes)
+    finally:
+        _disarm("sess-raced")
+
+
+async def test_wecom_timeout_tombstone_late_reply_and_window(
+        tmp_path: Path, monkeypatch):
+    """超时墓碑的两面：窗口内晚到回复命中 wecom_timeout 墓碑 → 「已超时
+    自动跳过」告知，不 resume、不开新 turn；窗口过期后墓碑惰性清理，
+    消息照常回落 dispatch——TTL 只做内存卫生，正确性不依赖它。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    resumed = _capture_resumes(monkeypatch)
+    ad.mark_question_answered(
+        "zhang", qid="q-t", session_id="sess-t", skip=True, raw="2",
+        answered_by="wecom_timeout")
+    await ad.handle_msg(_msg_body("2"), _frame_of())
+    assert resumed == []
+    assert ad.client.responds == []
+    assert any("已超时自动跳过" in c for _, c in ad.client.pushes)
+    # 窗口过期：放行成新消息
+    turns: list[dict] = []
+    _fake_turn_sink(monkeypatch, turns)
+    ad._answered_q["zhang"]["answered_at"] = time.time() - 3600
+    ad.client.pushes.clear()
+    await ad.handle_msg(_msg_body("2"), _frame_of())
+    assert "zhang" not in ad._answered_q  # 惰性清理
+    assert turns and turns[0]["text"] == "2"
 
 
 def test_adapter_whitelist_and_channel_gate(tmp_path: Path):

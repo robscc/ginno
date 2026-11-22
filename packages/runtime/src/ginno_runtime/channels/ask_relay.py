@@ -13,8 +13,8 @@ graph 不打断、无需 resume 机制。
 ``on_turn_event`` 挂在 ``_push_session_event``（与 vibe_island 同型）
 ——user.question 事件且该 turn 无渠道 tap 时，用 push_only tap 复用
 ``_send_question``（发卡片 + register pending + 超时 resume）——企微
-回复走 wecom adapter 现成的 ``_try_answer`` → resume 管线，近零新
-机制。
+回复走 wecom adapter 现成的 ``_try_answer`` → resume_question 统一
+段（qid 一次性凭证 + 墓碑重放防线），近零新机制。
 
 开关：settings.json ``"ask_relay_wecom": true``（默认关；无 UI）。
 fail-safe：wecom 未连接/无活跃 chat_key → A 直接回退现状回执、B 静默

@@ -33,6 +33,11 @@ from .tap import WeComTap
 
 _PLACEHOLDER = "⏳ 已收到，正在处理…"
 _BACKOFF_MAX_S = 60.0
+# 答案墓碑的重放窗口（对齐 ask_timeout_s 默认 600s）：企微回调是
+# at-least-once 投递，窗口内同 chat 同文本视为重放；窗口外一律放行当
+# 新消息——TTL 只做内存卫生，正确性不依赖它（过期由 resume_question
+# 的守卫/checkpointer 双信号拒绝，见 _try_answer）。
+_ANSWER_REPLAY_WINDOW_S = 600.0
 
 
 class WeComChannelAdapter(ChannelAdapter):
@@ -58,6 +63,9 @@ class WeComChannelAdapter(ChannelAdapter):
         # chat_key → {session_id, question_id, options}：ask_user 停车时，
         # 该会话的下一条文本消息按「作答」处理而不是开新 turn
         self._pending_q: dict[str, dict] = {}
+        # chat_key → 答案墓碑（relay-question 范式）：qid 作答即销后记录
+        # 答案与原文，用于拦截企微消息重放（同文本重投不二次执行）。
+        self._answered_q: dict[str, dict] = {}
 
     # ---- 生命周期 -----------------------------------------------------------
 
@@ -194,10 +202,16 @@ class WeComChannelAdapter(ChannelAdapter):
                 pass
 
     async def _try_answer(self, req_id: str, chat_key: str, text: str) -> bool:
-        """ask_user 停车中的会话：该消息按作答 resume，而非新 turn。"""
+        """ask_user 停车中的会话：该消息按作答 resume，而非新 turn。
+
+        resume_question 语义（relay-question 范式对齐，2026-11-22）：
+        qid 一次性凭证（先弹登记再恢复）、守卫丢失时以 checkpointer
+        事实武装（arm_from_checkpoint，f5af1e9 竞态的渠道侧补齐）、
+        过期/已答拒绝并告知（不再回落成新 turn）。
+        """
         pending = self._pending_q.get(chat_key)
         if pending is None:
-            return False
+            return await self._replay_answer_guard(chat_key, text)
         if pending.get("kind") == "devswap":
             # y/n → api.devswap.mark_unattended；非 y/n 提示后继续等。
             ans = text.strip().lower()
@@ -224,19 +238,86 @@ class WeComChannelAdapter(ChannelAdapter):
                 except Exception:  # noqa: BLE001
                     pass
             return True
-        if pending.get("ts", 0) and time.time() - pending["ts"] > 600:
-            self._pending_q.pop(chat_key, None)
-            return False
-        if pending["session_id"] not in shared._PENDING_RESUME:
-            # 问题已超时/已被消费：清登记，按普通消息继续
-            self._pending_q.pop(chat_key, None)
-            return False
-        from ...api.stream.resume import resume_pending_interrupt
-
+        # —— 直答统一走 resume_question（共享段：payload 组装 + 守卫武装
+        # + resume + relay 墓碑收口，与桌面 WS / steer / relay_answer 同源）。
+        # 一次性凭证：先弹登记再恢复——之后任何重放只可能命中墓碑或被
+        # 守卫/checkpointer 双信号拒绝，不存在二次执行路径。
+        sid = str(pending.get("session_id") or "")
         self._pending_q.pop(chat_key, None)
-        resume_pending_interrupt(
-            pending["session_id"], p.parse_answer(text, pending["options"]))
+        value = p.parse_answer(text, list(pending.get("options") or []))
+        from ...api.stream.resume import resume_question
+
+        ok = await resume_question(
+            sid,
+            answer=str(value.get("answer") or ""),
+            option_index=value.get("option_index"),
+            skip=bool(value.get("skip")),
+            arm_from_checkpoint=True,
+            answered_by="wecom",
+        )
+        if ok:
+            self.mark_question_answered(
+                chat_key, qid=str(pending.get("question_id") or ""),
+                session_id=sid, answer=str(value.get("answer") or ""),
+                skip=bool(value.get("skip")), raw=text, answered_by="wecom")
+            return True
+        # 过期 qid / 已答（守卫空且 checkpoint 无 parked）：拒绝并告知。
+        # 不再像旧 resume 管线那样回落成新 turn——迟到的「2」开新 turn
+        # 只会产出一轮困惑输出。
+        shared._log.info(
+            "wecom_answer_rejected chat=%s qid=%s sid=%s reason=not_parked",
+            chat_key, pending.get("question_id"), sid)
+        await self._send_answer_notice(chat_key, self._answered_q.get(chat_key))
         return True
+
+    async def _replay_answer_guard(self, chat_key: str, text: str) -> bool:
+        """无待答登记时的重放防线（relay 墓碑范式）：同 chat 在重放窗口内
+        已答过、且文本与作答原文一致 → 消化并告知（不二次执行、不开新
+        turn）。命不中（正常新消息 / 窗口已过）返回 False 照常 dispatch。"""
+        tb = self._answered_q.get(chat_key)
+        if not tb:
+            return False
+        if time.time() - float(tb.get("answered_at") or 0) > _ANSWER_REPLAY_WINDOW_S:
+            self._answered_q.pop(chat_key, None)  # TTL 惰性清理（内存卫生）
+            return False
+        if text.strip() != str(tb.get("raw") or "").strip():
+            return False
+        await self._send_answer_notice(chat_key, tb)
+        return True
+
+    def mark_question_answered(
+        self, chat_key: str, *, qid: str = "", session_id: str = "",
+        answer: str = "", skip: bool = False, raw: str = "",
+        answered_by: str = "user",
+    ) -> None:
+        """渠道侧答案墓碑（对齐 worker_bus.relay.mark_answered）：qid 作答
+        即销后记录溯源，供重放防线与「晚到回复」判定。每 chat 至多一条
+        （新问题覆盖旧墓碑），无 TTL 依赖——窗口过期只是放行成新消息。"""
+        self._answered_q[chat_key] = {
+            "qid": str(qid or ""), "session_id": str(session_id or ""),
+            "answer": str(answer or ""), "skip": bool(skip),
+            "raw": str(raw or ""), "answered_by": str(answered_by or ""),
+            "answered_at": time.time(),
+        }
+
+    async def _send_answer_notice(self, chat_key: str, tb: dict | None) -> None:
+        """拒绝/重放回执（尽力送达，失败静默——消息本身已消化）。"""
+        if self.client is None:
+            return
+        if tb is not None and tb.get("answered_by") == "wecom_timeout":
+            msg = ("⏱️ 该提问已超时自动跳过，本次回复未注入；"
+                   "如需继续请直接说明。")
+        elif tb is not None:
+            shown = "（跳过）" if tb.get("skip") else str(tb.get("answer") or "")
+            msg = (f"✅ 该提问已作答（答案：{shown}），本次重复回复未重复"
+                   "执行；如需继续请直接说明。")
+        else:
+            msg = ("⏱️ 该提问已结束（可能已在桌面端作答或超时自动跳过），"
+                   "本次回复未注入；如需继续请重新描述。")
+        try:
+            await self.client.send_markdown(chat_key, msg)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def handle_event(self, body: dict, frame: dict) -> None:
         """aibot_event_callback：enter_chat 欢迎语（5s 内）；其余 P2 忽略。"""
@@ -515,6 +596,8 @@ class WeComChannelAdapter(ChannelAdapter):
             "session_id": session_id, "question_id": question_id,
             "options": options,
         }
+        # 新问题作废旧墓碑：之后的拒绝提示不得误引上一问的答案
+        self._answered_q.pop(chat_key, None)
 
     async def unregister_pending_question(self, chat_key: str) -> None:
         self._pending_q.pop(chat_key, None)
