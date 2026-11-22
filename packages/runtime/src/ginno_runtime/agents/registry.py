@@ -32,6 +32,7 @@ from ginno_runtime import jsonx as json
 
 from .. import paths
 from .. import providers as prov_mod
+from .. import settings_store
 from .memory import ensure_agent_memory
 
 
@@ -517,19 +518,16 @@ def _order_from_settings() -> list[str]:
 
 
 def set_agent_order(order: list[str]) -> None:
-    """读-改-写 settings.json 的 agents.order。
+    """读-改-写 settings.json 的 agents.order（锁内原子写；损坏拒写）。
 
     只在本模块的 reorder 端点里调用（专用的读改写，避开前端
     PUT /settings 的整文件覆盖与其它设置页并发互踩）；集合校验在 API 层。
     """
-    p = paths.settings_path()
-    try:
-        data = json.loads(p.read_text() or "{}")
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    data["agents"] = {**(data.get("agents") or {}), "order": list(order)}
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    def _mut(data: dict) -> dict | None:
+        data["agents"] = {**(data.get("agents") or {}), "order": list(order)}
+        return data
+
+    settings_store.update(_mut)
 
 
 def list_agents() -> list[AgentConfig]:

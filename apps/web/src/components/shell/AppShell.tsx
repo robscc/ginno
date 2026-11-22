@@ -10,6 +10,7 @@ import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { applyTheme } from "@/components/settings/GeneralSettings";
+import { SettingsCorruptBanner } from "@/components/settings/SettingsCorruptBanner";
 import { filterByText } from "@/lib/sessionTextFilter";
 import { applyFontPrefs, readFontPrefs } from "@/lib/fontPrefs";
 import { TopBar } from "@/components/shell/TopBar";
@@ -1054,6 +1055,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </button>
               </div>
             )}
+            {/* settings.json 损坏（契约 §1 health 三态）：app 级紧凑提示——
+                主页不弹恢复流程全文，给「保存已锁定 + 查看恢复步骤」入口即可；
+                完整流程在设置页顶部（SettingsView 的 panel 横幅）。 */}
+            <SettingsCorruptBanner variant="app" />
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} context={contextState} />
             )}

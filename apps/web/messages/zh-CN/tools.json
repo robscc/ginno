@@ -93,7 +93,8 @@
       "privacyHelp": "仅标题可防投屏/锁屏时横幅泄露内容。",
       "dndLabel": "免打扰时段",
       "dndWrapNote": "可跨午夜",
-      "dndHelp": "时段内不弹横幅不响铃（默认 22:00 → 08:00）。"
+      "dndHelp": "时段内不弹横幅不响铃（默认 22:00 → 08:00）。",
+      "saveBlockedCorrupt": "保存被拒绝：settings.json 已损坏。请按设置页顶部的恢复横幅操作。"
     },
     "floating": {
       "title": "悬浮窗",
@@ -1250,7 +1251,44 @@
       "saving": "保存中…",
       "retry": "重试",
       "noChanges": "没有需要保存的修改",
-      "pathNote": "PATH 会被追加到现有值之后（不覆盖）；值支持字符串/数字/布尔。"
+      "pathNote": "PATH 会被追加到现有值之后（不覆盖）；值支持字符串/数字/布尔。",
+      "conflict": {
+        "title": "部分变量在别处（如另一窗口）被修改：{keys}",
+        "body": "你的修改已保留为草稿，尚未保存任何内容。请选择处理方式。",
+        "reload": "放弃我的修改并刷新",
+        "overwrite": "用我的修改覆盖新版本"
+      },
+      "secretSet": "已设置（值已隐藏）",
+      "secretNewValue": "新值（替换已保存的值）",
+      "replace": "替换",
+      "cancelReplace": "取消替换",
+      "secretKeyLocked": "已保存的密钥不能重命名（值不会回显）。如需改名请删除后重新添加。",
+      "corruptLine": "settings.json 已损坏，本面板只读、保存被拒绝。请按设置页顶部横幅的恢复步骤操作——损坏的文件会被保留，不会自动重置。",
+      "saveInvalid": "无法保存：{detail}",
+      "saveWriteFailed": "保存失败（磁盘或权限）：{detail}"
+    },
+    "corrupt": {
+      "title": "settings.json 已损坏——保存已锁定",
+      "appLine": "设置文件已损坏。为保护原文件，所有保存请求均被拒绝。",
+      "appAction": "查看恢复步骤",
+      "dismiss": "关闭",
+      "detail": "错误：{error}",
+      "pathLabel": "文件：{path}",
+      "kept": "损坏的文件已逐字节保留，不会自动重置或覆盖。",
+      "backupTitle": "1. 先备份原文件（推荐）",
+      "backup": "立即备份",
+      "backupDone": "已备份到 {path}",
+      "backupFailed": "备份失败：{error}",
+      "manualTitle": "2a. 手动修复",
+      "manualBody": "打开上方文件、按错误提示修正 JSON，然后重启 Ginno。备份文件就在旁边，需要回滚时可用。",
+      "repairTitle": "2b. 在这里修复",
+      "repairHint": "粘贴一份完整、合法的设置文档（JSON 对象）。落盘前服务端会先自动备份当前文件。",
+      "repairPlaceholder": "粘贴完整设置 JSON…",
+      "repair": "替换设置文件",
+      "repairInvalid": "不是合法的 JSON 对象。",
+      "repairDone": "已修复。原文件备份：{path}",
+      "repairRestart": "重启 Ginno 后，权限、hooks 与环境变量注入才会恢复生效。",
+      "repairFailed": "修复失败：{error}"
     }
   }
 }

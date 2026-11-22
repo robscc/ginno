@@ -26,6 +26,7 @@ import { UsageSettings } from "./UsageSettings";
 import { ToolLabelsSettings } from "./ToolLabelsSettings";
 import { SynthesisQualitySettings } from "./SynthesisQualitySettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { SettingsCorruptBanner } from "./SettingsCorruptBanner";
 
 // 按 (group, sub) 渲染对应面板；sub 缺省取分组默认 tab，非法 sub 走 unknownTab 兜底。
 function TabPanel({ tab }: { tab: string }) {
@@ -76,6 +77,9 @@ export function SettingsView({ group, sub }: { group: string; sub?: string }) {
     <div className="flex min-w-0 flex-1">
       <SettingsNav active={group} />
       <div className="min-w-0 flex-1 overflow-y-auto">
+        {/* settings.json 损坏（health 三态探测）：所有分组顶部统一挂恢复横幅——
+            锁写期间用户在这里拿到备份/手动修复/UI 修复的可操作步骤（契约 §5）。 */}
+        <SettingsCorruptBanner variant="panel" />
         {!g ? (
           <div className="px-8 py-10 text-sm text-faint">{t("unknownTab", { tab: group })}</div>
         ) : g.id === "general" ? (

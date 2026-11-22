@@ -6,7 +6,8 @@
  *
  * 重点分支：listScheduleRuns 八字段的 falsy 守卫（page=0 / 空串被跳过）、
  * encodeURIComponent、写操作双头 vs 无 body 操作的 locale 单头、
- * 400 信封透传（json() 不抛错）、wsScheduleUrl 的 window/https/OVERRIDE_PORT。
+ * 写操作 4xx/5xx 抛 Error(detail)（jsonStrict，schedule-integrity）、
+ * 桩无 status 时不抛（测试桩兼容）、wsScheduleUrl 的 window/https/OVERRIDE_PORT。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -103,6 +104,53 @@ describe("listSchedule / putSchedule（全局开关）", () => {
     expectGet(`${API}/schedule`);
   });
 
+  // ---- listSchedule 严格化（schedule-integrity 收口复核①）------------------
+  // 旧版走 json()：500 的 JSON 错误体 {"detail":...} 会被原样当配置返回，
+  // 页面 setCfg(错误体) 后 tasks 是 undefined，渲染层直接崩且 loadedRef=true
+  // 后不再重试。以下用**真实 Response 对象**（undici 全局，非裸桩）钉住：
+  // 非 2xx 抛错、畸形 200 抛错、shape 不符抛错——三条路都必须交给调用方
+  // 的重试/退避，不得伪装成成功。
+  it("listSchedule：500 JSON 错误体 → 抛 Error(detail)，不把错误体当配置", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "scheduler store corrupted" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(listSchedule()).rejects.toThrow("scheduler store corrupted");
+    expectGet(`${API}/schedule`);
+  });
+
+  it("listSchedule：200 但 body 非 JSON（畸形/代理错误页）→ r.json() 抛错传播", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    await expect(listSchedule()).rejects.toThrow();
+  });
+
+  it("listSchedule：200 JSON 但 shape 不符（无 tasks 数组）→ 抛 shape 错误", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "not a schedule config" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(listSchedule()).rejects.toThrow("tasks[] missing");
+  });
+
+  it("listSchedule：200 JSON tasks 非数组 → 同样抛 shape 错误", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, tasks: "nope" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(listSchedule()).rejects.toThrow("tasks[] missing");
+  });
+
   it("putSchedule：PUT /schedule，enabled+keep_awake 双字段", async () => {
     const body = { enabled: false, keep_awake: true };
     reply({ ...CONFIG, ...body, ok: true });
@@ -146,10 +194,9 @@ describe("任务 CRUD", () => {
     expectWrite("POST", `${API}/schedule/tasks`, TASK);
   });
 
-  it("createScheduleTask：400 信封 {ok:false, detail} 透传不抛错（json() 约定）", async () => {
-    const envelope = { ok: false, detail: "间隔不得小于 5 分钟" };
-    reply(envelope);
-    await expect(createScheduleTask({ name: "x" })).resolves.toEqual(envelope);
+  it("createScheduleTask：400 → jsonStrict 抛 Error(detail)（schedule-integrity：错误体不再伪装成业务文档）", async () => {
+    fetchMock.mockResolvedValue({ status: 400, json: async () => ({ detail: "间隔不得小于 5 分钟" }) });
+    await expect(createScheduleTask({ name: "x" })).rejects.toThrow("间隔不得小于 5 分钟");
     expectWrite("POST", `${API}/schedule/tasks`, { name: "x" });
   });
 
@@ -167,6 +214,11 @@ describe("任务 CRUD", () => {
     expectWrite("PATCH", `${API}/schedule/tasks/t1`, {});
   });
 
+  it("patchScheduleTask：500 → 抛错（行内反馈的信号源；不再把 {detail} 当任务返回）", async () => {
+    fetchMock.mockResolvedValue({ status: 500, json: async () => ({ detail: "Internal Server Error" }) });
+    await expect(patchScheduleTask("t1", { enabled: false })).rejects.toThrow("Internal Server Error");
+  });
+
   it("deleteScheduleTask：DELETE，无 body、locale 单头（不带 Content-Type）", async () => {
     reply({ ok: true, removed: true });
     await expect(deleteScheduleTask("t1")).resolves.toEqual({ ok: true, removed: true });
@@ -179,10 +231,20 @@ describe("任务 CRUD", () => {
     expectWriteNoContentType("DELETE", `${API}/schedule/tasks/a%20b%26c`);
   });
 
+  it("deleteScheduleTask：500 → 抛错（删除失败必须可见，行保留可对账）", async () => {
+    fetchMock.mockResolvedValue({ status: 500, json: async () => ({ detail: "boom" }) });
+    await expect(deleteScheduleTask("t1")).rejects.toThrow("boom");
+  });
+
   it("runScheduleTaskNow：POST .../run，无 body，返回 run_id", async () => {
     reply({ ok: true, run_id: "r-42" });
     await expect(runScheduleTaskNow("t1")).resolves.toEqual({ ok: true, run_id: "r-42" });
     expectWriteNoContentType("POST", `${API}/schedule/tasks/t1/run`);
+  });
+
+  it("putSchedule：500 → 抛错（全局开关写失败的反馈信号）", async () => {
+    fetchMock.mockResolvedValue({ status: 502, json: async () => ({ detail: "Bad Gateway" }) });
+    await expect(putSchedule({ enabled: true })).rejects.toThrow("Bad Gateway");
   });
 });
 

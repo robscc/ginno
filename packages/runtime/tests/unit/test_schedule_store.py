@@ -352,3 +352,89 @@ def test_fork_run_idempotent_when_already_forked(
         assert r.get("session_id") == sid
         # run 行未被改写（末行仍指向同一副本）
         assert store.get_run(rid)["forked_session_id"] == sid
+
+
+# ---- 接口严格校验（schedule-integrity）----------------------------------------
+def _client():
+    from fastapi.testclient import TestClient
+
+    from ginno_runtime import server
+
+    return TestClient(server.app)
+
+
+def _seed_task(**kw) -> str:
+    t = _task(**kw)
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [t]})
+    return t["id"]
+
+
+def test_put_schedule_rejects_non_bool_switch(isolated_home):
+    """PUT /api/schedule 类型严格：字符串/数字经 bool() 强转会把开关写反，
+    必须 400（如 "false" → True、1 → True）。合法布尔照常。"""
+    with _client() as client:
+        for bad in ("false", "true", 1, 0, None):
+            r = client.put("/api/schedule", json={"enabled": bad})
+            assert r.status_code == 400, (bad, r.status_code)
+            assert "boolean" in r.json()["detail"]
+        r = client.put("/api/schedule", json={"enabled": False, "keep_awake": "yes"})
+        assert r.status_code == 400
+        # 合法写 + 读回
+        assert client.put("/api/schedule", json={"enabled": False}).status_code == 200
+        cfg = client.get("/api/schedule").json()
+        assert cfg["enabled"] is False
+        # 非对象 body（FastAPI dict 注解下 JSON 数组 → 422；直接函数语义再防一层）
+        assert client.put("/api/schedule", json=[1, 2]).status_code in (400, 422)
+
+
+def test_patch_task_rejects_server_owned_fields(isolated_home):
+    """PATCH/POST 不得伪造调度器回写字段：next_run_at/last_run/last_success/
+    last_scheduled/id/created/updated 一律 400——客户端写 last_scheduled 会把
+    「暂停未执行」伪造成「已完成」。"""
+    tid = _seed_task()
+    with _client() as client:
+        for field, value in (
+            ("next_run_at", None),
+            ("last_run", {"run_id": "x", "status": "ok"}),
+            ("last_scheduled", {"run_id": "x", "status": "ok"}),
+            ("last_success", {"run_id": "x", "finished": 1.0}),
+            ("id", "st-fake"),
+            ("created", 1.0),
+            ("updated", 1.0),
+        ):
+            r = client.patch(f"/api/schedule/tasks/{tid}", json={field: value})
+            assert r.status_code == 400, (field, r.status_code, r.text)
+            assert field in r.json()["detail"]
+        # 磁盘状态未被污染
+        got = store.get_task(tid)
+        assert "last_scheduled" not in got and got["id"] == tid
+        # 合法 PATCH（启停）不受影响
+        r = client.patch(f"/api/schedule/tasks/{tid}", json={"enabled": False})
+        assert r.status_code == 200 and r.json()["enabled"] is False
+
+
+def test_post_task_rejects_server_owned_fields(isolated_home):
+    body = {
+        "name": "x",
+        "target": {"type": "prompt", "prompt": "p"},
+        "schedule": {"kind": "interval", "minutes": 30},
+    }
+    with _client() as client:
+        r = client.post("/api/schedule/tasks", json={**body, "last_scheduled": {"status": "ok"}})
+        assert r.status_code == 400 and "last_scheduled" in r.json()["detail"]
+        r = client.post("/api/schedule/tasks", json={**body, "enabled": "false"})
+        assert r.status_code == 400  # enabled 必须布尔（"false" 强转是 True）
+        r = client.post("/api/schedule/tasks", json=body)
+        assert r.status_code == 200
+        # 新建任务显式落 last_scheduled:null（与老数据「无字段」区分），
+        # onceOutcome 据此把「manual 成功后暂停」判为 paused 而非旧数据回退。
+        assert r.json()["last_scheduled"] is None
+
+
+def test_patch_task_non_bool_enabled_rejected(isolated_home):
+    """PATCH enabled 类型严格：'off'/0 等强转会写成启用/暂停的反面。"""
+    tid = _seed_task()
+    with _client() as client:
+        r = client.patch(f"/api/schedule/tasks/{tid}", json={"enabled": "off"})
+        assert r.status_code == 400
+        assert store.get_task(tid)["enabled"] is True  # 磁盘未动

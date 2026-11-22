@@ -225,23 +225,21 @@ def _load_hub() -> dict:
 
 
 def _save_hub(effective: dict) -> None:
-    """合并写入枢纽块（保留 audit_enabled 等其它键；照 registry 写法）。"""
-    settings_path = paths.settings_path()
-    try:
-        settings = json.loads(settings_path.read_text() or "{}")
-    except (OSError, ValueError):
-        settings = {}
-    if not isinstance(settings, dict):
-        settings = {}
-    conns = settings.get("connectors") or {}
-    hub = conns.get("a2a") or {}
-    if not isinstance(hub, dict):
-        hub = {}
-    hub.update(effective)
-    conns["a2a"] = hub
-    settings["connectors"] = conns
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+    """合并写入枢纽块（保留 audit_enabled 等其它键；锁内读-改-写 + 原子
+    落盘 + 损坏拒写，与 settings_store 契约一致）。"""
+    from .. import settings_store
+
+    def _mut(settings: dict) -> dict:
+        conns = settings.get("connectors") or {}
+        hub = conns.get("a2a") or {}
+        if not isinstance(hub, dict):
+            hub = {}
+        hub.update(effective)
+        conns["a2a"] = hub
+        settings["connectors"] = conns
+        return settings
+
+    settings_store.update(_mut)
 
 
 def _normalize_policy(hub: dict) -> tuple[str, list[str]]:

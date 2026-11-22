@@ -3,7 +3,7 @@
 // 用户可见文案经 i18n/schedText（sched 域 catalog + locale 镜像）读取，
 // 与 useTranslations("sched") 同名同源。
 
-import type { SchedulePlan, ScheduleRun } from "@/lib/types";
+import type { SchedulePlan, ScheduleRun, ScheduleTask } from "@/lib/types";
 import { schedText } from "@/i18n/schedText";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -130,4 +130,97 @@ export function runReplayable(r: ScheduleRun): boolean {
 /** YYYY-MM-DD（本地时区）——timeline/runs 接口的 date 参数。 */
 export function dateStr(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// ---- 任务生命周期判定（schedule-integrity）-----------------------------------
+//
+// 核心纪律：**执行结果与 enabled 开关互不推导**。旧版把「once && !enabled」
+// 当「已完成」，于是「用户暂停一个还没执行的 once 任务」也挂绿色 Done 徽标；
+// 且 manual（立即执行）的成功会写 last_run，同样被误读为按计划完成。
+// 后端现已把按计划生命周期（schedule/catch_up 触发 + missed/caught_up 记账）
+// 单独落在 last_scheduled，这里只做读侧判定：
+//
+//   done          按计划成功（once 显示「已完成」的唯一依据）
+//   catchingUp    计划点错过且已**排队**补跑——scheduler._consume_missed 对
+//                 窗口内的错过点先记 status="caught_up"（这是「正在补跑」
+//                 的排队标记，不是结果），真正结论由随后的 trigger_task →
+//                 _finish_run 写成 running/ok/error。进程在两步之间停摆时
+//                 last_scheduled 会停在 caught_up：它只说明「该点已进入补跑
+//                 队列」，**没有任何成功证据**，绝不显示 Done。
+//   missed        计划点错过（once 被自动停用 → 「已停用 · 计划点已错过」）
+//   failed        按计划执行失败（自动停用 → 红字，不算完成）
+//   skipped       按计划触发时重叠被跳过（不算完成）
+//   running       按计划执行进行中（此刻任务已自动停用）
+//   paused        无按计划事件——手动暂停/未执行/manual 触发（绝不是 Done）
+//   legacyDone    **老数据回退**：调度器从未写过 last_scheduled（undefined）
+//                 但 last_run 带 trigger=schedule 且 status=ok——来源与成功
+//                 证据齐全才算（2026-11-22 收口：此前 trigger 缺失也放行，
+//                 无来源的 last_run 被渲染成绿色 Done）。
+//   unknownSource 老数据 last_run 存在但无来源（trigger 缺失）或非成功——
+//                 无从证明是按计划成功，显示「已暂停 · 来源未知」，不绿。
+
+export type OnceOutcome =
+  | "done"
+  | "catchingUp"
+  | "missed"
+  | "failed"
+  | "skipped"
+  | "running"
+  | "paused"
+  | "legacyDone"
+  | "unknownSource";
+
+export function onceOutcome(t: Pick<ScheduleTask, "schedule" | "last_run" | "last_scheduled">): OnceOutcome {
+  if (t.schedule.kind !== "once") return "paused";
+  const sched = t.last_scheduled;
+  if (sched !== undefined) {
+    if (!sched) return "paused"; // 显式 null：新任务尚无按计划事件（manual 不写此键）
+    switch (sched.status) {
+      case "ok":
+        return "done";
+      case "missed":
+        return "missed";
+      case "caught_up":
+        // 排队补跑 ≠ 成功（见上）：等待调度恢复，结果未知，不抢「已完成」。
+        return "catchingUp";
+      case "error":
+        return "failed";
+      case "skipped_overlap":
+        return "skipped";
+      case "running":
+        return "running"; // 按计划执行进行中（此刻任务已自动停用）
+      default:
+        return "paused"; // 其他未知中间态：不抢结论
+    }
+  }
+  // 老数据无 last_scheduled：按 last_run 回退，但必须「来源 + 成功证据」
+  // 齐全才认按计划完成——trigger=manual 是明确的手动（不算完成）；trigger
+  // 缺失/未知（老版本 schema）无从证明是计划触发，一律来源未知（不绿）。
+  if (!t.last_run) return "paused";
+  if (t.last_run.trigger === "schedule" && t.last_run.status === "ok") return "legacyDone";
+  if (t.last_run.trigger === "manual") return "paused";
+  return "unknownSource";
+}
+
+/** 计划点是否已过期（schedule-integrity「旧数据过期提示」）：启用中的任务
+ *  next_run_at 落在过去超过 GRACE+一个 tick（60s+30s=90s）→ 调度器理应已
+ *  触发/记账却仍是旧值（如 sidecar 长时间未跑），显示「已过期·等待对账」
+ *  而不是倒拼出一个过去时点的「下次：昨天 09:30」。 */
+export function isNextRunOverdue(nextRunAt: number | null | undefined, now = Date.now() / 1000): boolean {
+  if (!nextRunAt) return false;
+  return now - nextRunAt > 90;
+}
+
+/** 首载失败的有界退避间隔（schedule-integrity 收口）：第 attempt 次失败后
+ *  下一次自动重试等 1s×2^(attempt-1)，封顶 30s；attempt > MAX_AUTO_RETRIES
+ *  返回 0 = 停止自动重试（只留手动按钮）。
+ *
+ *  取代旧实现：旧版 retrying 布尔在第二次失败时 setRetrying(true) 是同值
+ *  no-op，effect 依赖不变不重排，setTimeout 全生命周期只排过一次——注释
+ *  宣称的「2s 间隔无限重试」从未成立（schedule-integrity 复核缺口③）。 */
+export const MAX_AUTO_RETRIES = 8;
+
+export function nextRetryDelayMs(attempt: number): number {
+  if (attempt <= 0 || attempt > MAX_AUTO_RETRIES) return 0;
+  return Math.min(1000 * 2 ** (attempt - 1), 30000);
 }

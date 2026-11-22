@@ -36,6 +36,7 @@ from typing import Any, Literal
 from ginno_runtime import jsonx as json
 
 from .. import paths
+from .. import settings_store
 from .grants import SETTINGS_HOOK_MOD, classic_grant_for, classify_hook_command
 
 log = logging.getLogger("ginno.hooks")
@@ -76,10 +77,16 @@ class HookDispatcher:
 
     @classmethod
     def from_settings(cls) -> "HookDispatcher":
-        p = paths.settings_path()
-        if not p.exists():
+        # 损坏 fail-closed（settings-integrity）：hooks 是任意 shell，损坏
+        # 文档不可信——返回空 dispatcher（不执行任何 hook），绝不 raise
+        # 炸掉 startup（startup_tasks 在无 try 包裹下调用此处）。
+        doc = settings_store.load_doc()
+        if doc.corrupt:
+            log.warning(
+                "hooks_disabled_settings_corrupt error=%s", doc.error
+            )
             return cls(settings={})
-        return cls(settings=json.loads(p.read_text() or "{}"))
+        return cls(settings=doc.data if doc.status == settings_store.STATUS_OK else {})
 
     def _hooks_for(
         self, event: HookEventName, matcher: str | None, *, include_plugin: bool = True

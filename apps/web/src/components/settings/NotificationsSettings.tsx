@@ -36,9 +36,11 @@ export function NotificationsSettings() {
       const p = await saveNotifyPrefs(patch);
       setPrefs(p);
       setMsg(t("saved"));
-    } catch {
+    } catch (e) {
       setPrefs(prefs);
-      setMsg(t("saveFailed"));
+      // settings-integrity：损坏态保存被后端 409 拒绝（文件逐字节保留）——
+      // 给专属文案指向设置页顶部的恢复横幅，而非笼统「保存失败」。
+      setMsg((e as { ginnoStatus?: number }).ginnoStatus === 409 ? t("saveBlockedCorrupt") : t("saveFailed"));
     }
   }
 

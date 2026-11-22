@@ -2,37 +2,57 @@
  * Scheduled tasks.
  *
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
+ *
+ * 读操作走 json()；**写操作一律 jsonStrict**（schedule-integrity）：非 2xx
+ * 直接抛 Error(detail)，绝不把 FastAPI 的 {"detail": ...} 错误体当业务文档
+ * 返回——否则 500/400 的「暂停/删除/立即执行」被调用方误判为成功，失败
+ * 无从反馈（core.ts 对读改写型调用的既定纪律）。唯一例外是 listSchedule：
+ * 它是全页状态源（cfg 直接进 setState），同样必须严格——错误体伪装成配置
+ * 会让页面崩在渲染层且 loadedRef=true 后永远不再重试。
  */
-import { BASE, H, json, OVERRIDE_PORT } from "./core";
+import { BASE, H, json, jsonStrict, OVERRIDE_PORT } from "./core";
 
 // ---- scheduled tasks（docs/scheduled-tasks-design.md §5.1；路由/字段名是契约）----
 
+/** 读全量调度配置。严格版（schedule-integrity 收口）：GET /schedule 的
+ *  错误体是 JSON（如 500 的 {"detail": ...}），旧的 json() 会把它原样当
+ *  配置返回——页面把错误体 set 成 cfg 后 tasks 是 undefined，直接崩在
+ *  渲染层且不再重试。这里走 jsonStrict（非 2xx 抛错）+ shape 守卫
+ *  （tasks 必须是数组），畸形 200 / 错误体 / 断连统一抛错交给调用方重试。 */
 export async function listSchedule(): Promise<import("../types").ScheduleConfig> {
-  return json(`${BASE}/schedule`);
+  const r = await jsonStrict<import("../types").ScheduleConfig>(`${BASE}/schedule`);
+  if (!r || typeof r !== "object" || !Array.isArray(r.tasks)) {
+    throw new Error("malformed schedule config: tasks[] missing");
+  }
+  return r;
 }
 
 // 全局开关 / 保持唤醒。keep_awake 的唯一真值在 runtime（§3.3），前端拿到返回后
-// 再同步 Tauri 壳的 caffeinate。
+// 再同步 Tauri 壳的 caffeinate。类型错（如字符串）会被 runtime 400 拒掉。
 export async function putSchedule(body: {
   enabled?: boolean;
   keep_awake?: boolean;
 }): Promise<import("../types").ScheduleConfig & { ok?: boolean; error?: string }> {
-  return json(`${BASE}/schedule`, { method: "PUT", headers: H, body: JSON.stringify(body) });
+  return jsonStrict(`${BASE}/schedule`, { method: "PUT", headers: H, body: JSON.stringify(body) });
 }
 
-/** 新建任务。间隔 <5 分钟 / workflow 必填输入缺失 → HTTP 400 {detail}
- *  （json() 不抛错，按 summarizeSessionToDsl 的约定透出 detail）。 */
+/** 新建任务。间隔 <5 分钟 / workflow 必填输入缺失 → 抛 Error(detail)
+ *  （jsonStrict；调用方 catch 后展示 detail）。 */
 export async function createScheduleTask(
   task: Partial<import("../types").ScheduleTask>,
 ): Promise<import("../types").ScheduleTask & { ok?: boolean; error?: string; detail?: string }> {
-  return json(`${BASE}/schedule/tasks`, { method: "POST", headers: H, body: JSON.stringify(task) });
+  return jsonStrict(`${BASE}/schedule/tasks`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(task),
+  });
 }
 
 export async function patchScheduleTask(
   id: string,
   patch: Partial<import("../types").ScheduleTask>,
 ): Promise<import("../types").ScheduleTask & { ok?: boolean; error?: string; detail?: string }> {
-  return json(`${BASE}/schedule/tasks/${encodeURIComponent(id)}`, {
+  return jsonStrict(`${BASE}/schedule/tasks/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: H,
     body: JSON.stringify(patch),
@@ -40,14 +60,16 @@ export async function patchScheduleTask(
 }
 
 export async function deleteScheduleTask(id: string): Promise<{ ok?: boolean; removed?: boolean }> {
-  return json(`${BASE}/schedule/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return jsonStrict(`${BASE}/schedule/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-/** 立即执行（manual 触发，不计入计划），返回 run_id。 */
+/** 立即执行（manual 触发，不计入计划），返回 run_id。
+ *  网络层异常 = 回执丢失（请求可能已生效）：调用方按「结果未知」处理，
+ *  不得盲目重发。 */
 export async function runScheduleTaskNow(
   id: string,
 ): Promise<{ ok?: boolean; run_id?: string; detail?: string }> {
-  return json(`${BASE}/schedule/tasks/${encodeURIComponent(id)}/run`, { method: "POST" });
+  return jsonStrict(`${BASE}/schedule/tasks/${encodeURIComponent(id)}/run`, { method: "POST" });
 }
 
 export async function listScheduleRuns(

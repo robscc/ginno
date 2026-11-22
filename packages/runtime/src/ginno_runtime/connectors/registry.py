@@ -107,15 +107,15 @@ class Connector:
         base = dict(self.default_config())
         base.update(stored)
         base.update({k: v for k, v in (cfg or {}).items() if v is not None})
-        settings_path = paths.settings_path()
-        try:
-            settings = json.loads(settings_path.read_text() or "{}")
-        except (OSError, json.JSONDecodeError):
-            settings = {}
-        conns = settings.get("connectors") or {}
-        conns[self.id] = base
-        settings["connectors"] = conns
-        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+        from .. import settings_store
+
+        def _mut(settings: dict) -> dict:
+            conns = settings.get("connectors") or {}
+            conns[self.id] = base
+            settings["connectors"] = conns
+            return settings
+
+        settings_store.update(_mut)
 
     def enabled_from_config(self, config: dict) -> bool:
         """列表里的 enabled。默认看合并后配置;mod 适配器改看 settings item。"""

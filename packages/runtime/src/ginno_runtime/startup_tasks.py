@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import agents as agents_reg
-from . import paths, usage_store
+from . import paths, settings_gate, settings_store, usage_store
 from . import server_shared as shared
 from . import workflows as wf_store
 from .hooks.dispatcher import HookDispatcher
@@ -93,6 +93,12 @@ class PhaseTask:
     :param depends_on: 声明性依赖（仅守卫校验，不参与排序——表序即执行序）。
     :param timeout_s: 可选超时；非空时任务体被 :func:`asyncio.wait_for`
         包裹，超时即取消并按 fail_policy 分流。
+    :param skip_when_settings_corrupt: 损坏降级硬线（settings-integrity）：
+        startup 检测到 settings.json 损坏时跳过本任务。只给**执行/恢复/
+        外部进程型**任务打标——对账收尾类（delegation/subagent/run
+        reconcile）不标：它们把幽灵 running 态翻成 error，是防卡死而非
+        执行工作。跳过的任务仍计入 completed（depends_on 守卫与 shutdown
+        对账不炸），运行期入口由 settings_gate 的 ASGI 闸门兜底。
     """
 
     name: str
@@ -101,6 +107,7 @@ class PhaseTask:
     fail_policy: str = FAIL_CONTINUE
     depends_on: tuple[str, ...] = ()
     timeout_s: float | None = None
+    skip_when_settings_corrupt: bool = False
 
 
 async def execute_phase(
@@ -117,7 +124,24 @@ async def execute_phase(
     * ``abort`` 失败原样 re-raise（startup 段 = lifespan 向上抛、
       不进 yield/finally；shutdown 段 = finally 内抛出，替换在途
       异常——均与原平铺语义一致）。
+
+    损坏降级硬线（settings-integrity，2026-11-22 复核补强）：startup
+    阶段开始时读一次 settings.json 三态，损坏则跳过所有
+    ``skip_when_settings_corrupt`` 任务（记 warning、仍计 completed），
+    并置 settings_gate 的 startup 降级标记（修复后 health/repair 响应
+    会提示重启补启这些组件）。健康文件零影响——判定只在 startup 做一次，
+    运行期损坏由 settings_gate ASGI 闸门动态兜底。shutdown 阶段无此逻辑。
     """
+    settings_corrupt = (
+        phase == PHASE_STARTUP and settings_store.load_doc().corrupt
+    )
+    settings_gate.reset_startup_degraded()
+    if settings_corrupt:
+        settings_gate.note_startup_degraded()
+        _log.warning(
+            "startup_degraded_settings_corrupt: execution/recovery tasks "
+            "will be skipped until restart (see settings_gate)"
+        )
     completed: list[str] = []
     done: set[str] = set()
     for task in tasks:
@@ -133,6 +157,15 @@ async def execute_phase(
                 "completed — list order IS the execution order; fix the "
                 "table, do not reorder it."
             )
+        if settings_corrupt and task.skip_when_settings_corrupt:
+            # 跳过仍计 completed：depends_on 守卫与「表序=执行序」语义
+            # 不被降级态破坏（被跳任务当前无人依赖；见字段 docstring）。
+            _log.warning(
+                "startup_task_skipped_settings_corrupt task=%s", task.name
+            )
+            completed.append(task.name)
+            done.add(task.name)
+            continue
         try:
             outcome = task.run(handles)
             if inspect.isawaitable(outcome):
@@ -612,6 +645,27 @@ def _task_lastwords_recover(handles: LifespanHandles) -> None:
 #: 一一对应（见各任务体「原块 N」注释）；任何插入/删除/重排都必须同步
 #: tests/unit/test_startup_tasks.py 的快照断言。
 #:
+#: 损坏降级跳过名单（``skip_when_settings_corrupt=True``，settings-integrity
+#: 2026-11-22 复核补强；守卫快照见 test_settings_gate.py）：settings.json
+#: 损坏时**不启动执行/恢复/外部进程型**后台任务——
+#:
+#: * ``plan_watcher_recovery`` — 恢复 active 清单 watcher = 续跑执行；
+#: * ``team_recovery`` — 恢复型结构变更（建 leader 会话/删孤儿会话）；
+#: * ``requeue_pending_titles`` — 后台 LLM 标题生成；
+#: * ``connector_seed`` — 渠道注册（配置在损坏文件里，注册即照错误配置营业）；
+#: * ``mcp_background_connect`` — 连外部 MCP 进程；
+#: * ``scheduler_start`` — 定时执行 + 孤儿 running 行**自动续跑**（最重的
+#:   执行面）；
+#: * ``tasks_registry_start`` — 后台任务恢复设施（detached 认领 + reaper）；
+#: * ``lastwords_recover`` — auto 模式 headless 续跑恢复。
+#:
+#: **不跳过**的对账收尾类（delegation/subagent/run_reconciliation）：它们把
+#: 幽灵 running 态翻成 error——是防卡死，不是执行工作；跳过反而留下一堆
+#: 永远 running 的幽灵行。devswap/shell watch 是 watchdog（本职是活着），
+#: browser_connector_setup 半安装态误杀排障成本高（与不加闸白名单同理）。
+#: 健康文件零影响：判定只在 startup 做一次；运行期损坏由 settings_gate
+#: 的 ASGI 闸门动态兜底；修复后需重启补启（health/repair 提示）。
+#:
 #: timeout 档位（P1-2 逐任务加闸，值 = 预算声明 + async 任务体的真实闸）：
 #:
 #: * 60s — 纯内存/确定性瞬时（构造对象、mkdir、读单个配置/seed、
@@ -679,6 +733,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         run=_task_plan_watcher_recovery,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="team_recovery",
@@ -686,6 +741,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         run=_task_team_recovery,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="i18n_health_check",
@@ -722,6 +778,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         depends_on=("set_main_loop",),
         run=_task_requeue_pending_titles,
         timeout_s=120.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="apply_system_proxy",
@@ -786,6 +843,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         run=_task_connector_seed,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="browser_connector_setup",
@@ -855,6 +913,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_ABORT,
         depends_on=("mcp_registry_init",),
         run=_task_mcp_background_connect,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="scheduler_start",
@@ -862,6 +921,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         run=_task_scheduler_start,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="tasks_registry_start",
@@ -869,6 +929,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_CONTINUE,
         run=_task_tasks_registry_start,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
     PhaseTask(
         name="devswap_watch",
@@ -888,6 +949,7 @@ STARTUP_TASKS: tuple[PhaseTask, ...] = (
         fail_policy=FAIL_ABORT,
         run=_task_lastwords_recover,
         timeout_s=60.0,
+        skip_when_settings_corrupt=True,
     ),
 )
 
@@ -908,11 +970,18 @@ def _task_lastwords_mark_shutdown(handles: LifespanHandles) -> None:
 
 def _task_cancel_background_tasks(handles: LifespanHandles) -> None:
     # 原块 S-2（无 try → abort，与原 finally 行为一致）。
-    if not handles.mcp_connect_task.done():
+    # None 防御（settings-integrity）：损坏降级启动会跳过
+    # mcp_background_connect / lastwords_recover（句柄保持 None）——
+    # 没起来的任务没有要收的东西，与「abort 后不进 shutdown」的旧语义
+    # 对齐（那些路径下句柄同样可能是 None）。
+    if handles.mcp_connect_task is not None and not handles.mcp_connect_task.done():
         handles.mcp_connect_task.cancel()
-    handles.devswap_watch_task.cancel()
-    handles.shell_watch_task.cancel()
-    handles.lastwords_recover_task.cancel()
+    if handles.devswap_watch_task is not None:
+        handles.devswap_watch_task.cancel()
+    if handles.shell_watch_task is not None:
+        handles.shell_watch_task.cancel()
+    if handles.lastwords_recover_task is not None:
+        handles.lastwords_recover_task.cancel()
 
 
 def _task_lastwords_write_signal(handles: LifespanHandles) -> None:

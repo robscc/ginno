@@ -93,7 +93,8 @@
       "privacyHelp": "Title-only hides content from banners — screen-share / lock-screen caution.",
       "dndLabel": "Do-not-disturb window",
       "dndWrapNote": "may wrap midnight",
-      "dndHelp": "Inside the window nothing is fired (banners and sounds). Default 22:00 → 08:00."
+      "dndHelp": "Inside the window nothing is fired (banners and sounds). Default 22:00 → 08:00.",
+      "saveBlockedCorrupt": "Saving was refused: settings.json is corrupt. See the recovery banner at the top of the settings page."
     },
     "floating": {
       "title": "Floating Window",
@@ -1250,7 +1251,44 @@
       "saving": "Saving…",
       "retry": "Retry",
       "noChanges": "No changes to save",
-      "pathNote": "PATH is appended after the existing value (not replaced); values accept string/number/boolean."
+      "pathNote": "PATH is appended after the existing value (not replaced); values accept string/number/boolean.",
+      "conflict": {
+        "title": "Some keys were changed elsewhere (e.g. another window): {keys}",
+        "body": "Your edits are kept as a draft and nothing was saved. Choose how to proceed.",
+        "reload": "Discard my edits and reload",
+        "overwrite": "Save over the newer version"
+      },
+      "secretSet": "Set (value hidden)",
+      "secretNewValue": "New value (replaces the stored one)",
+      "replace": "Replace",
+      "cancelReplace": "Cancel replacing",
+      "secretKeyLocked": "Stored secrets cannot be renamed (the value is never shown back). Remove and re-add the key instead.",
+      "corruptLine": "settings.json is corrupt, so this panel is read-only and saves are refused. Follow the recovery steps in the banner at the top of the settings page — the damaged file is preserved and nothing is reset automatically.",
+      "saveInvalid": "Cannot save: {detail}",
+      "saveWriteFailed": "Save failed (disk or permission): {detail}"
+    },
+    "corrupt": {
+      "title": "settings.json is corrupt — saving is locked",
+      "appLine": "The settings file is damaged. All saves are refused to protect the original file.",
+      "appAction": "Open recovery steps",
+      "dismiss": "Dismiss",
+      "detail": "Error: {error}",
+      "pathLabel": "File: {path}",
+      "kept": "The damaged file is preserved byte-for-byte. Nothing is reset or overwritten automatically.",
+      "backupTitle": "1. Back up the original file (recommended)",
+      "backup": "Back up now",
+      "backupDone": "Backup written to {path}",
+      "backupFailed": "Backup failed: {error}",
+      "manualTitle": "2a. Fix it manually",
+      "manualBody": "Open the file above, fix the JSON error shown, then restart Ginno. The backup stays beside it if you need to roll back.",
+      "repairTitle": "2b. Repair from here",
+      "repairHint": "Paste a complete, valid settings document (a JSON object). Before writing it, the server saves another backup of the current bytes.",
+      "repairPlaceholder": "Paste the full settings JSON…",
+      "repair": "Replace settings file",
+      "repairInvalid": "That is not a valid JSON object.",
+      "repairDone": "Repaired. Backup of the previous file: {path}",
+      "repairRestart": "Restart Ginno so permissions, hooks and env injection take effect again.",
+      "repairFailed": "Repair failed: {error}"
     }
   }
 }
