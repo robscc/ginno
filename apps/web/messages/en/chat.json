@@ -287,6 +287,7 @@
       "chars": "{count} chars"
     },
     "sources": {
+      "dismissAria": "Dismiss",
       "title": "Sources · {count}",
       "notIndexed": "Not indexed"
     },
@@ -325,8 +326,23 @@
       "foldExpand": "Show all ({n} chars)",
       "foldCollapse": "Collapse"
     },
+    "diff": {
+      "viewUnified": "unified",
+      "viewSplit": "split",
+      "unchangedLines": "{n} unchanged",
+      "truncatedNote": "Truncated — diff capped at 200 lines; see CodePanel / git diff for the full content"
+    },
     "taskCard": {
       "stop": "Stop",
+      "copied": "copied",
+      "badge": {
+        "running": "Running",
+        "muted": "Muted",
+        "stopped": "Stopped",
+        "timeout": "Timeout",
+        "interrupted": "Interrupted",
+        "failedToStart": "Failed to start"
+      },
       "remove": "Remove",
       "removed": "Background task removed, logs deleted",
       "truncated": "log truncated",
@@ -344,6 +360,7 @@
     "subagent": {
       "fallbackTitle": "Subtask",
       "forkTitle": "fork: a parallel branch split from the parent session's full context",
+      "forkBadge": "fork",
       "forkInheritedTitle": "A parallel branch split from the parent session; has inherited the parent's full context",
       "typeTitle": "Subagent type: {type}",
       "viewConversation": "View conversation",
@@ -579,6 +596,7 @@
         "title": "New Agent",
         "hint": "An independently configured agent: persona, model, color. Pick it as lead or member right after; advanced options (tool allowlist, …) live in Settings → Agents.",
         "idLabel": "ID (unique, lowercase)",
+        "idPlaceholder": "e.g. reviewer",
         "idInvalid": "ID: lowercase letters, digits, - and _ only",
         "nameLabel": "Display name",
         "namePlaceholder": "Code Reviewer",

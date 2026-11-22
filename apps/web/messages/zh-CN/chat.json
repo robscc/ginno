@@ -287,6 +287,7 @@
       "chars": "{count} 字符"
     },
     "sources": {
+      "dismissAria": "关闭",
       "title": "来源 · {count}",
       "notIndexed": "未收录"
     },
@@ -325,8 +326,23 @@
       "foldExpand": "展开全文（{n} 字）",
       "foldCollapse": "收起"
     },
+    "diff": {
+      "viewUnified": "统一",
+      "viewSplit": "分栏",
+      "unchangedLines": "{n} 行未更改",
+      "truncatedNote": "已截断 — diff 限 200 行，完整内容见 CodePanel / git diff"
+    },
     "taskCard": {
       "stop": "停止",
+      "copied": "已复制",
+      "badge": {
+        "running": "运行中",
+        "muted": "已静音",
+        "stopped": "已停止",
+        "timeout": "超时",
+        "interrupted": "已中断",
+        "failedToStart": "启动失败"
+      },
       "remove": "删除",
       "removed": "后台任务已删除，日志已清理",
       "truncated": "日志已截断",
@@ -344,6 +360,7 @@
     "subagent": {
       "fallbackTitle": "子任务",
       "forkTitle": "fork：从父会话完整上下文分出的并行分支",
+      "forkBadge": "分身",
       "forkInheritedTitle": "从父会话分出的并行分支；已继承父会话的完整上下文",
       "typeTitle": "子代理类型：{type}",
       "viewConversation": "查看对话",
@@ -579,6 +596,7 @@
         "title": "新建 Agent",
         "hint": "独立配置的 Agent：persona、模型、颜色。建完即可选为 Lead 或成员；进阶配置（工具白名单等）在 设置 → 智能体 里精调。",
         "idLabel": "ID（唯一，小写）",
+        "idPlaceholder": "如 reviewer",
         "idInvalid": "ID 只能是小写字母、数字、-、_",
         "nameLabel": "显示名",
         "namePlaceholder": "代码评审官",

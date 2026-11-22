@@ -291,7 +291,7 @@ export function LinkedSessionsChip({ session }: { session: SessionMeta | null })
                 />
                 {search && (
                   <button
-                    aria-label="clear"
+                    aria-label={tr("links.clearAria")}
                     onClick={() => {
                       setSearch("");
                       setResults([]);

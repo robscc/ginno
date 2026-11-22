@@ -287,7 +287,7 @@ export function SupervisorConsole({
                       <span className={DECISION_COLOR[dec] || "text-muted"}>{dec}</span>
                       {e.mode === "auto" && (
                         <span className="rounded bg-card2 px-1 py-px text-[9.5px] text-muted">
-                          conf {fmtConf(e.confidence)}
+                          {t("conf", { v: fmtConf(e.confidence) })}
                         </span>
                       )}
                     </>
@@ -295,9 +295,9 @@ export function SupervisorConsole({
                     <>
                       <span className="w-[96px] shrink-0 text-faint">sup_eval</span>
                       <span className={lowConf ? "text-yellow" : "text-muted"}>
-                        conf {fmtConf(e.confidence)} / ≥{" "}
+                        {t("conf", { v: fmtConf(e.confidence) })} / ≥{" "}
                         {fmtConf(e.confidence_min ?? CONF_MIN_DEFAULT)}
-                        {lowConf ? " · low confidence" : ""}
+                        {lowConf ? ` · ${t("lowConfidence")}` : ""}
                       </span>
                     </>
                   ) : isFallback ? (

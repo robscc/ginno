@@ -87,6 +87,7 @@ function splitDrawioPages(xml: string): { name: string; shell: string }[] {
 /** .drawio preview: fetch the raw XML via the download URL and render it
  *  with the embedded GraphViewer inside a sandboxed srcdoc iframe. */
 function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void }) {
+  const t = useTranslations("composer");
   const [doc, setDoc] = useState<string | null>(null);
   // 多页 drawio：每页一个 shell + 页签切换（单页文件 pages.length === 1
   // 且 name 为空 → 不渲染页签，行为与之前完全一致）。
@@ -162,7 +163,7 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
       </div>
     );
   }
-  if (!doc) return <div className="px-4 py-6 text-center text-sm text-faint">Loading…</div>;
+  if (!doc) return <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>;
   return (
     <iframe
       srcDoc={doc}

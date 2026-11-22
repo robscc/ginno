@@ -108,7 +108,7 @@ export function NewAgentModal({
               autoFocus
               value={id}
               onChange={(e) => setId(e.target.value.toLowerCase())}
-              placeholder="reviewer"
+              placeholder={tc("team.agent.idPlaceholder")}
               className="mt-1 w-full rounded-lg border border-line2 bg-base px-2.5 py-1.5 text-sm text-txt outline-none focus:border-violet/50"
             />
             {id && !slugOk && (

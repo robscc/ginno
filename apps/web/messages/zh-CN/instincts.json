@@ -1,6 +1,12 @@
 {
   "instincts": {
     "title": "本能",
+    "betaBadge": "测试版",
+    "state": {
+      "pending": "待定",
+      "active": "生效",
+      "pruned": "已修剪"
+    },
     "subtitle": "行为规则沉淀：权限被拒/用户纠偏/重试自救自动生成，按置信度注入新会话",
     "create": "新建",
     "refresh": "刷新",
