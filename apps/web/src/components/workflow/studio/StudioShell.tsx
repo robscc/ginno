@@ -258,7 +258,7 @@ export function StudioShell() {
           <div className="text-[12.5px] font-semibold text-txt">{t("aboutVersions")}</div>
           <p>
             {t("versionsP1a")}
-            <b>immutable</b>
+            <b>{t("immutable")}</b>
             {t("versionsP1b")}
           </p>
           <p className="text-faint">{t("versionsP2", { version: wf.version ?? 1 })}</p>

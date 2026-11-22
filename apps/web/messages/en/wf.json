@@ -210,6 +210,7 @@
       "importSessionTitle": "Summarize a session (or a message range within it) into a workflow: create a new one, or merge into the current one as a new version",
       "importSession": "Import from session",
       "aboutVersions": "About versions",
+      "immutable": "immutable",
       "versionsP1a": "Every change (inspector edit, dev session apply, rollback) appends an ",
       "versionsP1b": " version. A run always pins the dsl_version it started with, so old runs stay reproducible.",
       "versionsP2": "Currently v{version}. Rollback never deletes history — it writes the old content as the next new version.",
@@ -303,6 +304,8 @@
       "interventionLimit": "Per-run intervention limit",
       "tokenBudget": "Token budget",
       "confidenceMin": "Auto fallback threshold",
+      "conf": "conf {v}",
+      "lowConfidence": "low confidence",
       "judgeModel": "Adjudicator model",
       "layersNote": "Three config layers: workflow DSL defaults → pre-run override (P2.5) → live switching mid-run (P2.5). Each checkpoint eval and decision lands in sup_eval / sup_decision events — auditable and replayable.",
       "timeline": "Decision timeline",
@@ -381,7 +384,10 @@
       "createNew": "Create new workflow",
       "mergeTitle": "Apply the draft to \"{name}\" as v{version}",
       "mergeInto": "Merge into current workflow → v{version}",
-      "noText": "(no text)"
+      "noText": "(no text)",
+      "roleUser": "user",
+      "roleAgent": "agent",
+      "roleSys": "sys"
     }
   }
 }

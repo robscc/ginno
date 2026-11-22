@@ -338,13 +338,13 @@ export function ContextFoldersChip({
                       <button
                         onClick={() => toggleAuto(f)}
                         title={tr("folders.autoTitle")}
-                        className="shrink-0 rounded border px-1 py-px font-mono text-[10px]"
+                        className="shrink-0 rounded border px-1 py-px text-[10px]"
                         style={{
                           color: f.auto_mount ? "#34d399" : "#52525b",
                           borderColor: f.auto_mount ? "#34d39955" : "var(--line2)",
                         }}
                       >
-                        auto
+                        {tr("folders.autoShort")}
                       </button>
                       <button
                         onClick={() => mountPath(f.path)}

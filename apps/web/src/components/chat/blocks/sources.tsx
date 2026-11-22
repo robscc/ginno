@@ -122,6 +122,7 @@ export function ContextBlocks({
   onDismiss?: (index: number) => void;
 }) {
   const evText = useEventI18nText();
+  const { tc } = useChatT();
   if (!blocks.length) return null;
   return (
     <div className="flex flex-col items-center gap-1">
@@ -135,7 +136,7 @@ export function ContextBlocks({
           {onDismiss && (
             <button
               onClick={() => onDismiss(i)}
-              aria-label="dismiss"
+              aria-label={tc("sources.dismissAria")}
               className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-line bg-base text-[9px] leading-none text-faint hover:text-txt group-hover:flex"
             >
               ×

@@ -1,6 +1,7 @@
 {
   "shell": {
     "remote-badge": "远端 · {name}",
+    "betaBadge": "测试版",
     "remote-badge-title": "本会话在远端节点 {name}（{endpoint}）上执行，使用对端的模型与记忆体系，中途不可切换执行方。",
     "remote-badge-title-noendpoint": "本会话在远端节点 {name} 上执行，使用对端的模型与记忆体系，中途不可切换执行方。",
     "runtimeStale": {
@@ -133,6 +134,7 @@
       "errMount": "挂载失败",
       "libraryTitle": "目录库",
       "autoTitle": "新建会话时自动挂载（预填首页）",
+      "autoShort": "自动",
       "quickAddTitle": "挂载此目录",
       "browseTitle": "浏览选择目录…",
       "errBrowse": "系统目录选择器打开失败",
@@ -235,6 +237,7 @@
       "usageCalls": "模型调用"
     },
     "links": {
+      "clearAria": "清除搜索",
       "chipTitle": "关联会话",
       "header": "关联会话",
       "liveCount": "{n} 个在跑",

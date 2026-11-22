@@ -37,25 +37,28 @@ function fmtElapsed(startedAt: number | null | undefined, now = Date.now() / 100
   return `${sec}s`;
 }
 
-function badgeOf(t: TaskRecord | null): { text: string; color: string; bg: string; spin?: boolean } {
+function badgeOf(
+  t: TaskRecord | null,
+  tc: ReturnType<typeof useChatT>["tc"],
+): { text: string; color: string; bg: string; spin?: boolean } {
   if (!t) return { text: "…", color: "var(--st-skipped)", bg: "transparent" };
   switch (t.status) {
     case "running":
       return t.watch_muted
-        ? { text: "MUTED", color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" }
-        : { text: "RUNNING", color: "var(--st-running)", bg: "color-mix(in srgb, var(--st-running) 12%, transparent)", spin: true };
+        ? { text: tc("taskCard.badge.muted"), color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" }
+        : { text: tc("taskCard.badge.running"), color: "var(--st-running)", bg: "color-mix(in srgb, var(--st-running) 12%, transparent)", spin: true };
     case "finished":
       return t.exit_code === 0
         ? { text: `EXIT 0`, color: "var(--st-ok)", bg: "color-mix(in srgb, var(--st-ok) 12%, transparent)" }
         : { text: `EXIT ${t.exit_code ?? "?"}`, color: "var(--st-error)", bg: "color-mix(in srgb, var(--st-error) 12%, transparent)" };
     case "stopped":
-      return { text: "STOPPED", color: "var(--st-skipped)", bg: "rgb(var(--card2))" };
+      return { text: tc("taskCard.badge.stopped"), color: "var(--st-skipped)", bg: "rgb(var(--card2))" };
     case "timeout":
-      return { text: "TIMEOUT", color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" };
+      return { text: tc("taskCard.badge.timeout"), color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" };
     case "interrupted":
-      return { text: "INTERRUPTED", color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" };
+      return { text: tc("taskCard.badge.interrupted"), color: "var(--st-missed)", bg: "color-mix(in srgb, var(--st-missed) 12%, transparent)" };
     default:
-      return { text: "FAILED TO START", color: "var(--st-error)", bg: "color-mix(in srgb, var(--st-error) 12%, transparent)" };
+      return { text: tc("taskCard.badge.failedToStart"), color: "var(--st-error)", bg: "color-mix(in srgb, var(--st-error) 12%, transparent)" };
   }
 }
 
@@ -133,7 +136,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
     );
   }
 
-  const b = badgeOf(task);
+  const b = badgeOf(task, tc);
   const running = !!task && !TASK_TERMINAL.has(task.status);
   const elapsed = task?.dur || (task?.started_at ? fmtElapsed(task.started_at) : "");
   const expanded = open ?? !running;
@@ -173,7 +176,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
                 data-testid="bg-task-copy-cmd"
               >
                 {copied
-                  ? <span className="px-0.5 text-[10px] text-emerald-500">已复制</span>
+                  ? <span className="px-0.5 text-[10px] text-emerald-500">{tc("taskCard.copied")}</span>
                   : <ClipboardCopy className="h-3 w-3" />}
               </button>
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all px-2.5 py-1.5 pr-14 font-mono text-[11px] leading-relaxed text-faint select-text">

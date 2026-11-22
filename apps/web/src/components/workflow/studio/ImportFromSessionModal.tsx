@@ -324,15 +324,15 @@ export function ImportFromSessionModal({
                         }`}
                       >
                         <span className="w-6 shrink-0 pt-px text-right font-mono text-[10px] text-faint">{row.i}</span>
-                        {row.role === "user" && <span className="shrink-0 rounded bg-card2 px-1 text-[9px] uppercase text-muted">user</span>}
-                        {row.role === "assistant" && <span className="shrink-0 rounded bg-violet/15 px-1 text-[9px] uppercase text-violet">agent</span>}
+                        {row.role === "user" && <span className="shrink-0 rounded bg-card2 px-1 text-[9px] uppercase text-muted">{t("roleUser")}</span>}
+                        {row.role === "assistant" && <span className="shrink-0 rounded bg-violet/15 px-1 text-[9px] uppercase text-violet">{t("roleAgent")}</span>}
                         {row.role === "tool" && (
                           <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-yellow">
                             <Wrench className="h-3 w-3" />
                             {row.name}
                           </span>
                         )}
-                        {row.role === "system" && <span className="shrink-0 text-[9px] uppercase text-faint">sys</span>}
+                        {row.role === "system" && <span className="shrink-0 text-[9px] uppercase text-faint">{t("roleSys")}</span>}
                         <span className="min-w-0 flex-1 truncate text-muted">
                           {row.role === "assistant" && row.tools?.length ? `[${row.tools.join(", ")}] ` : ""}
                           {row.text || t("noText")}

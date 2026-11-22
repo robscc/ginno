@@ -289,7 +289,7 @@ export function TaskEditor({
                   className="field"
                   value={projectSlug}
                   onChange={(e) => setProjectSlug(e.target.value)}
-                  placeholder="default"
+                  placeholder={tr("editor.projectPlaceholder")}
                 />
               </div>
             </div>

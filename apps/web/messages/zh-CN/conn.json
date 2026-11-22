@@ -156,7 +156,7 @@
       },
       "permissions": {
         "warning": "权限管的是经 mod broker 的能力调用（$ 调用），不是进程沙箱——mod 内部的代码仍可直接 import Node API。",
-        "grantTitle": "Classic hooks",
+        "grantTitle": "经典钩子（Classic hooks）",
         "grantHint": "控制危险 classic hook 类别（安装软件包、改写宿主 settings）。",
         "ask": "拦截并提示（默认）",
         "deny": "拦截",

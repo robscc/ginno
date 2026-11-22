@@ -1,6 +1,12 @@
 {
   "instincts": {
     "title": "Instincts",
+    "betaBadge": "BETA",
+    "state": {
+      "pending": "pending",
+      "active": "active",
+      "pruned": "pruned"
+    },
     "subtitle": "Behavioral rules distilled from denials, corrections & retries, injected by confidence",
     "create": "New",
     "refresh": "Refresh",

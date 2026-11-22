@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import type { EditDiffPayload } from "./types";
+import { useChatT } from "./i18n";
 
 export type DiffLine =
   | { t: "hunk"; text: string }
@@ -83,6 +84,7 @@ export function foldContextSpans(lines: DiffLine[]): FoldSpan[] {
 }
 
 export function DiffView({ diff }: { diff: EditDiffPayload }) {
+  const { tc } = useChatT();
   const [unfolded, setUnfolded] = useState<Set<number>>(new Set());
   const [view, setView] = useState<"u" | "s">("u");
   const lines = parseDiffLines(diff.text);
@@ -95,13 +97,13 @@ export function DiffView({ diff }: { diff: EditDiffPayload }) {
           onClick={() => setView("u")}
           className={`rounded px-1.5 py-0.5 text-[10px] ${view === "u" ? "bg-muted/15 text-txt" : "text-faint hover:text-muted"}`}
         >
-          unified
+          {tc("diff.viewUnified")}
         </button>
         <button
           onClick={() => setView("s")}
           className={`rounded px-1.5 py-0.5 text-[10px] ${view === "s" ? "bg-muted/15 text-txt" : "text-faint hover:text-muted"}`}
         >
-          split
+          {tc("diff.viewSplit")}
         </button>
       </div>
       {view === "u" ? (
@@ -118,7 +120,7 @@ export function DiffView({ diff }: { diff: EditDiffPayload }) {
                   onClick={() => setUnfolded((prev) => new Set(prev).add(i))}
                   className="flex w-full items-center gap-2 bg-muted/5 px-3 py-0.5 text-left text-[10.5px] text-faint hover:text-muted"
                 >
-                  <span className="tracking-widest">⋯</span> {s.n} unchanged
+                  <span className="tracking-widest">⋯</span> {tc("diff.unchangedLines", { n: s.n })}
                 </button>
               )
             ) : (
@@ -133,7 +135,7 @@ export function DiffView({ diff }: { diff: EditDiffPayload }) {
       )}
       {diff.truncated && (
         <div className="border-t border-dashed border-line px-3 py-1 text-[10.5px] text-faint">
-          ⌄ 已截断 — diff 限 200 行，完整内容见 CodePanel / git diff
+          {tc("diff.truncatedNote")}
         </div>
       )}
     </div>

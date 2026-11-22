@@ -36,7 +36,7 @@ export function SubagentKindBadges({
           className="shrink-0 rounded-md border border-violet/40 bg-violet/10 px-1 py-px text-[10px] leading-4 text-violet"
           title={tc("subagent.forkTitle")}
         >
-          fork
+          {tc("subagent.forkBadge")}
         </span>
       )}
       {typeof agentType === "string" && agentType && (
@@ -592,7 +592,7 @@ export function SubagentBriefCard({
             className="rounded-md border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet"
             title={tc("subagent.forkInheritedTitle")}
           >
-            fork
+            {tc("subagent.forkBadge")}
           </span>
         )}
       </div>

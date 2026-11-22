@@ -210,6 +210,7 @@
       "importSessionTitle": "把一个会话（或其中的消息区间）总结成工作流：可新建，也可作为新版本并入当前工作流",
       "importSession": "从会话导入",
       "aboutVersions": "关于版本",
+      "immutable": "不可变",
       "versionsP1a": "每次变更（检查器编辑、开发会话应用、回滚）都会追加一个",
       "versionsP1b": " 版本。运行始终固定它启动时的 dsl_version，旧运行因此可以复现。",
       "versionsP2": "当前 v{version}。回滚从不删除历史——它把旧内容写成下一个新版本。",
@@ -303,6 +304,8 @@
       "interventionLimit": "单次运行干预上限",
       "tokenBudget": "token 预算",
       "confidenceMin": "自动转人工阈值",
+      "conf": "置信 {v}",
+      "lowConfidence": "置信度低",
       "judgeModel": "裁决模型",
       "layersNote": "三层配置：工作流 DSL 默认值 → 运行前覆盖（P2.5）→ 运行中实时切换（P2.5）。每次检查点评估与决策都会落入 sup_eval / sup_decision 事件——可审计、可回放。",
       "timeline": "决策时间线",
@@ -381,7 +384,10 @@
       "createNew": "创建新工作流",
       "mergeTitle": "把草稿作为 v{version} 应用到「{name}」",
       "mergeInto": "并入当前工作流 → v{version}",
-      "noText": "（无文本）"
+      "noText": "（无文本）",
+      "roleUser": "用户",
+      "roleAgent": "助手",
+      "roleSys": "系统"
     }
   }
 }

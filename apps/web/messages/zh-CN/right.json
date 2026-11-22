@@ -46,7 +46,7 @@
       "waitingTitle": "{n} 个运行等待你的输入",
       "runningTitle": "{n} 个运行正在执行或已暂停",
       "failedTitle": "{n} 个运行失败，点击查看",
-      "modPaneTitle": "Mods panes",
+      "modPaneTitle": "Mods 面板",
       "modPaneClose": "关闭 pane"
     },
     "badges": {

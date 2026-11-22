@@ -111,7 +111,7 @@ export function InstinctsPage() {
         <h1 className="text-base font-semibold">
           {t("title")}{" "}
           <span className="ml-1 rounded bg-violet/15 px-1 py-px align-middle text-[10px] font-medium text-violet">
-            BETA
+            {t("betaBadge")}
           </span>
         </h1>
         <p className="ml-2 flex-1 truncate text-xs text-faint">{t("subtitle")}</p>
@@ -545,9 +545,9 @@ function Editor({
                 onChange={(e) => setStatus(e.target.value)}
                 className="w-full rounded-md border border-line bg-panel px-2 py-1.5"
               >
-                <option value="pending">pending</option>
-                <option value="active">active</option>
-                <option value="pruned">pruned</option>
+                <option value="pending">{t("state.pending")}</option>
+                <option value="active">{t("state.active")}</option>
+                <option value="pruned">{t("state.pruned")}</option>
               </select>
             </div>
             {!base && (

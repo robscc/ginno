@@ -1,5 +1,6 @@
 {
   "shell": {
+    "betaBadge": "Beta",
     "remote-badge": "Remote · {name}",
     "remote-badge-title": "This session runs on remote node {name} ({endpoint}) with the node's own models and memory — the executor cannot be switched mid-session.",
     "remote-badge-title-noendpoint": "This session runs on remote node {name} with the node's own models and memory — the executor cannot be switched mid-session.",
@@ -133,6 +134,7 @@
       "errMount": "Failed to mount",
       "libraryTitle": "Library",
       "autoTitle": "Auto-mount on new session (pre-fills the home composer)",
+      "autoShort": "auto",
       "quickAddTitle": "Mount this folder",
       "browseTitle": "Browse for a folder…",
       "errBrowse": "Could not open the system folder picker",
@@ -235,6 +237,7 @@
       "usageCalls": "Model calls"
     },
     "links": {
+      "clearAria": "Clear search",
       "chipTitle": "Linked sessions",
       "header": "Linked sessions",
       "liveCount": "{n} live",
