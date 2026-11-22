@@ -38,6 +38,7 @@ import {
   requestComposerFocus,
   type PinStreamStatus,
 } from "@/components/pin/PinStream";
+import { pinShortcutAction } from "@/components/pin/pinShortcuts";
 
 type WinMode = "pill" | "mini";
 type SessMode = "quick" | "follow";
@@ -288,14 +289,17 @@ export function PinApp() {
   }, [switchSessMode, createQuickSession]);
 
   // Window-level shortcuts: Esc → collapse to pill, ⌘↵ → hand off to main.
+  // IME guard (Q8): Esc during CJK composition cancels the candidate window,
+  // not the pin window — pinShortcutAction swallows composing keydowns.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
+      const action = pinShortcutAction(e);
+      if (action === "collapse") {
         e.preventDefault();
         setMode("pill");
         return;
       }
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      if (action === "open-main") {
         e.preventDefault();
         openMain();
       }
@@ -335,6 +339,7 @@ export function PinApp() {
   if (winMode === "pill") {
     return (
       <div
+        data-testid="pin-pill-root"
         className="flex h-screen w-screen cursor-pointer select-none items-center justify-center transition-opacity duration-200"
         style={{ opacity }}
       >
@@ -372,6 +377,7 @@ export function PinApp() {
   // ── mini shape ──────────────────────────────────────────────────────
   return (
     <div
+      data-testid="pin-mini-root"
       className="flex h-screen w-screen flex-col overflow-hidden rounded-xl border border-line2 bg-panel/95 shadow-2xl backdrop-blur-md transition-opacity duration-200"
       style={{ opacity }}
     >
