@@ -13,6 +13,7 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { SettingsCorruptBanner } from "@/components/settings/SettingsCorruptBanner";
 import { filterByText } from "@/lib/sessionTextFilter";
 import { applyFontPrefs, readFontPrefs } from "@/lib/fontPrefs";
+import { initialTheme } from "@/lib/themeInit";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { rememberMessageTarget } from "@/components/shell/searchShared";
@@ -328,13 +329,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // apply persisted theme as early as the shell mounts
   useEffect(() => {
-    let theme = "dark";
-    try {
-      theme = localStorage.getItem("ginno-theme") || "dark";
-    } catch {
-      /* ignore */
-    }
-    applyTheme(theme);
+    // Quick-fix D6: 无本地手动选择时初始默认跟随 prefers-color-scheme；
+    // 解析出的系统默认不落盘（applyTheme persist=false），系统日后切换
+    // 深浅色下次启动仍跟随；手动切换仍走 applyTheme 默认路径持久化。
+    applyTheme(initialTheme(), false);
     // 字体族 + 字号偏好（纯前端 localStorage，与 theme 同范式）：首帧即应用。
     applyFontPrefs(readFontPrefs());
   }, []);
