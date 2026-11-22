@@ -241,6 +241,22 @@ def member_row(team: dict, member: dict, client: str = "main") -> dict:
     status, detail = member_status(
         slug, member.get("session_id") or "", member, client
     )
+    # 并发闸排队呈现（2026-11-22 巡检 P1）：排队成员语义态 idle，但
+    # _idle_detail 刻意无视 stored detail（probe 2026-10-24 防御），投递
+    # 时写入的「排队中」被覆盖成「空闲」→ 用户重复投递。队列是 deliver
+    # 私有 _QUEUES（文本锚不可靠），这里出只读位次查询；drain 后自然归零。
+    if status == "idle":
+        from .deliver import queued_position
+
+        _q = queued_position(
+            str((team or {}).get("id") or ""),
+            str(member.get("instance_id") or ""),
+        )
+        if _q:
+            detail = t(
+                f"Queued (#{_q} — team concurrency is full)",
+                f"排队中（第 {_q} 位，团队并发已满）",
+            )
     last_active = float(member.get("last_active") or member.get("created") or 0)
     # 总览状态卡（设计稿视图 2）展示用：活跃会话的模型。
     try:
