@@ -20,12 +20,25 @@ vi.mock("@tauri-apps/api/event", () => ({ emit }));
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-const { isEnabled, enable, disable } = vi.hoisted(() => ({
-  isEnabled: vi.fn(async () => false),
-  enable: vi.fn(async () => {}),
-  disable: vi.fn(async () => {}),
-}));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ isEnabled, enable, disable }));
+// 2026-11-22 巡检 P1 后 autostart 走自有 command（SMAppService 真源 +
+// legacy plist 迁移），不再用 plugin-autostart；断言按命令名过滤 invoke
+// 调用（invoke 是整文件共享 mock，其他功能也在用）。
+const autostartCalls = (cmd: string) =>
+  invoke.mock.calls.filter((c: unknown[]) => c[0] === cmd);
+const autostartNext: Record<string, unknown[]> = {};
+const stubAutostart = (cmd: string, value: unknown) => {
+  (autostartNext[cmd] ??= []).push(value);
+};
+beforeEach(() => {
+  for (const k of Object.keys(autostartNext)) delete autostartNext[k];
+});
+const invokeAutostart = async (cmd: string) => {
+  const q = autostartNext[cmd];
+  const v = q?.shift();
+  if (v instanceof Error) throw v;
+  if (q && q.length === 0 && autostartNext[cmd]) delete autostartNext[cmd];
+  return v;
+};
 
 // notifyPrefs 的偏好缓存只能经 loadNotifyPrefs 写入，而它读 ./runtime 的
 // getSettings——桩掉它就能精确控制偏好（与 desktopNotifyGate.test.ts 同范式）。
@@ -222,77 +235,84 @@ describe("setKeepAwake", () => {
 });
 
 describe("getAutostartEnabled", () => {
-  it("非桌面 → null（设置页开关据此隐藏），不读插件", async () => {
+  it("非桌面 → null（设置页开关据此隐藏），不调 command", async () => {
     stubBrowserWindow("Mozilla/5.0 Chrome/120 Safari/537.36");
     await expect(getAutostartEnabled()).resolves.toBeNull();
-    expect(isEnabled).not.toHaveBeenCalled();
+    expect(autostartCalls("ginno_autostart_is_enabled").length).toBe(0);
   });
 
   it("桌面：SMAppService 已注册 → true", async () => {
     stubDesktopWindow();
-    isEnabled.mockResolvedValueOnce(true);
+    stubAutostart("ginno_autostart_is_enabled", true);
+    invoke.mockImplementation(((cmd: string) => invokeAutostart(cmd)) as never);
     await expect(getAutostartEnabled()).resolves.toBe(true);
-    expect(isEnabled).toHaveBeenCalledTimes(1);
+    expect(autostartCalls("ginno_autostart_is_enabled").length).toBe(1);
   });
 
   it("桌面：未注册 → false", async () => {
     stubDesktopWindow();
-    isEnabled.mockResolvedValueOnce(false);
+    stubAutostart("ginno_autostart_is_enabled", false);
+    invoke.mockImplementation(((cmd: string) => invokeAutostart(cmd)) as never);
     await expect(getAutostartEnabled()).resolves.toBe(false);
   });
 
-  it("isEnabled 抛错 → null（与浏览器环境不可区分，开关隐藏）", async () => {
+  it("command 抛错 → null（与浏览器环境不可区分，开关隐藏）", async () => {
     stubDesktopWindow();
-    isEnabled.mockRejectedValueOnce(new Error("plugin missing"));
+    stubAutostart("ginno_autostart_is_enabled", new Error("command missing"));
+    invoke.mockImplementation(((cmd: string) => invokeAutostart(cmd)) as never);
     await expect(getAutostartEnabled()).resolves.toBeNull();
   });
 
   it("无本地缓存：每次调用都重读系统注册态（用户在系统设置里关掉能如实反映）", async () => {
     stubDesktopWindow();
-    isEnabled.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    stubAutostart("ginno_autostart_is_enabled", true);
+    stubAutostart("ginno_autostart_is_enabled", false);
+    invoke.mockImplementation(((cmd: string) => invokeAutostart(cmd)) as never);
     await expect(getAutostartEnabled()).resolves.toBe(true);
     await expect(getAutostartEnabled()).resolves.toBe(false);
-    expect(isEnabled).toHaveBeenCalledTimes(2);
+    expect(autostartCalls("ginno_autostart_is_enabled").length).toBe(2);
   });
 });
 
 describe("setAutostart", () => {
-  it("非桌面 → {ok:false, error:'not desktop'}，不碰插件", async () => {
+  it("非桌面 → {ok:false, error:'not desktop'}，不调 command", async () => {
     stubBrowserWindow("Mozilla/5.0 Chrome/120 Safari/537.36");
     await expect(setAutostart(true)).resolves.toEqual({
       ok: false,
       error: "not desktop",
     });
-    expect(enable).not.toHaveBeenCalled();
-    expect(disable).not.toHaveBeenCalled();
+    expect(autostartCalls("ginno_autostart_set").length).toBe(0);
   });
 
-  it("桌面：enabled=true 只调 enable", async () => {
+  it("桌面：enabled=true 发 ginno_autostart_set {enabled:true}", async () => {
     stubDesktopWindow();
     await expect(setAutostart(true)).resolves.toEqual({ ok: true });
-    expect(enable).toHaveBeenCalledTimes(1);
-    expect(disable).not.toHaveBeenCalled();
+    expect(autostartCalls("ginno_autostart_set").length).toBe(1);
+    expect(invoke).toHaveBeenCalledWith("ginno_autostart_set", {
+      enabled: true,
+    });
   });
 
-  it("桌面：enabled=false 只调 disable", async () => {
+  it("桌面：enabled=false 同样发 set（Rust 侧双途径清理）", async () => {
     stubDesktopWindow();
     await expect(setAutostart(false)).resolves.toEqual({ ok: true });
-    expect(disable).toHaveBeenCalledTimes(1);
-    expect(enable).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("ginno_autostart_set", {
+      enabled: false,
+    });
   });
 
-  it("enable 抛错 → ok:false 且 error 是 String(e)（策略拦截等场景）", async () => {
+  it("command 抛错 → ok:false 且 error 是 String(e)（策略拦截等场景）", async () => {
     stubDesktopWindow();
-    enable.mockRejectedValueOnce(new Error("SMAppService policy blocked"));
+    invoke.mockRejectedValueOnce(new Error("SMAppService policy blocked"));
     await expect(setAutostart(true)).resolves.toEqual({
       ok: false,
       error: "Error: SMAppService policy blocked",
     });
   });
 
-  it("disable 抛非 Error 值 → String(e) 原样透传", async () => {
+  it("command 抛非 Error 值 → String(e) 原样透传", async () => {
     stubDesktopWindow();
-    disable.mockRejectedValueOnce("approval required");
+    invoke.mockRejectedValueOnce("approval required");
     await expect(setAutostart(false)).resolves.toEqual({
       ok: false,
       error: "approval required",
