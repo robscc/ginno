@@ -5,6 +5,8 @@ import {
   subagentPlanCancelFrame,
   subagentPlanConfirmFrame,
 } from "@/lib/runtime";
+import { pushNotice } from "@/lib/notice";
+import { uiText } from "@/i18n/uiText";
 import type { SubagentPlanSubtask } from "@/lib/types";
 import type { EngineCtx } from "./ctx";
 import { requeueSteersOnResume } from "./steer";
@@ -73,33 +75,64 @@ export function retryError(ctx: EngineCtx, msgId: string) {
 /** Retry from checkpoint: resume the failed turn from its latest checkpoint
  * instead of re-executing from the start. Preserves tool calls and
  * intermediate results. */
+// Retry from checkpoint 断线窗去重：同一张卡只挂一个「等连接」轮询，等待
+// 期间（不占 busy 锁）重复点击直接忽略——否则每次点击都会再起一个 60s
+// 轮询，重连后重复补发 resume 帧。
+const _ckptRetryWaiting = new Set<string>();
+
 export function retryFromCheckpoint(ctx: EngineCtx, msgId: string) {
   const sid = ctx.curSessionIdRef.current;
   if (!sid || ctx.busyBySessionRef.current[sid]) return;
   const list = ctx.storeRef.current[sid] ?? [];
   const card = list.find((m) => m.id === msgId);
   if (!card?.error) return;
-  // Remove the error card
-  ctx.storeRef.current[sid] = list.filter((m) => m.id !== msgId);
-  ctx.syncDisplay(sid);
-  // Mark as busy
-  ctx.busyBySessionRef.current[sid] = true;
+  if (_ckptRetryWaiting.has(msgId)) return;
   const turnId = card.turnId || crypto.randomUUID();
-  const sock = ctx.socketsRef.current[sid];
-  if (!sock || sock.readyState !== WebSocket.OPEN) {
-    ctx.busyBySessionRef.current[sid] = false;
-    return;
-  }
-  try {
-    sock.send(
-      JSON.stringify({
-        type: "retry_from_checkpoint",
-        turn_id: turnId,
-      }),
-    );
-  } catch {
-    ctx.busyBySessionRef.current[sid] = false;
-  }
+  const send = (): boolean => {
+    const sock = ctx.socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) return false;
+    try {
+      sock.send(
+        JSON.stringify({
+          type: "retry_from_checkpoint",
+          turn_id: turnId,
+        }),
+      );
+    } catch {
+      return false; // socket flipped CLOSING/CLOSED between check and send
+    }
+    // 帧已发出才移除错误卡（失败记录）并置忙——顺序反了会把卡白删。
+    ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).filter((m) => m.id !== msgId);
+    ctx.syncDisplay(sid);
+    ctx.busyBySessionRef.current[sid] = true;
+    return true;
+  };
+  if (send()) return;
+  // 断线窗口（R3 巡检 Q3，2026-11-22）：此前「删卡」先于 socket 检查，
+  // 断线内点重试会静默把错误卡删掉、什么都不发生；send 抛错同样丢卡。
+  // 现在与 attemptSend 同款 60s 重连宽限：socket 未开时先轮询等待（卡保留
+  // 可再点、不占 busy，重复点击按卡去重；先弹一条可见提示），期间连上
+  // 则以原 turnId 补发，超时恢复原状并弹可见错误——卡始终是可重试入口。
+  _ckptRetryWaiting.add(msgId);
+  pushNotice("warn", uiText("net.resumeWaiting"), { dedupeKey: `ckpt-retry-wait:${msgId}` });
+  const deadline = Date.now() + 60_000;
+  const waitOpen = (): Promise<boolean> => {
+    const s = ctx.socketsRef.current[sid];
+    if (s?.readyState === WebSocket.OPEN) return Promise.resolve(true);
+    if (Date.now() >= deadline) return Promise.resolve(false);
+    return new Promise((res) => setTimeout(() => void waitOpen().then(res), 400));
+  };
+  void waitOpen().then((open) => {
+    _ckptRetryWaiting.delete(msgId);
+    if (!open) {
+      // 超时：卡保留（重试入口还在），给可见错误反馈
+      pushNotice("error", uiText("net.resumeOffline"), { dedupeKey: `ckpt-retry-offline:${msgId}` });
+      return;
+    }
+    // 卡可能已被移除（刷新/数据源切换）——不在就不补发
+    if (!(ctx.storeRef.current[sid] ?? []).some((m) => m.id === msgId)) return;
+    send();
+  });
 }
 
 export function respond(ctx: EngineCtx, decision: "allow" | "deny") {

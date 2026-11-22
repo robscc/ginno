@@ -8,7 +8,9 @@
     "net": {
       "unreachable": "Cannot reach the runtime",
       "downloadFailed": "Download failed (HTTP {status})",
-      "updateFailed": "Update failed"
+      "updateFailed": "Update failed",
+      "resumeWaiting": "Connection lost — waiting to reconnect to resume this turn…",
+      "resumeOffline": "Cannot reach the runtime — the error card is kept. Retry from checkpoint after reconnecting."
     },
     "trigger": {
       "failed": "Trigger failed"

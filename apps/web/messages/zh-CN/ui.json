@@ -8,7 +8,9 @@
     "net": {
       "unreachable": "无法连接运行时服务",
       "downloadFailed": "下载失败（HTTP {status}）",
-      "updateFailed": "更新失败"
+      "updateFailed": "更新失败",
+      "resumeWaiting": "连接已断开——正在等待重连以恢复该回合……",
+      "resumeOffline": "无法连接 runtime——错误卡已保留，重连后可再次从检查点恢复。"
     },
     "trigger": {
       "failed": "触发失败"
