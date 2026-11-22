@@ -100,11 +100,43 @@ async def on_turn_settled(session_id: str, turn_id: str = "") -> None:
 
         # 传**真正跑完 turn 的那条会话**（backlog P2-21）：多会话成员在 turn
         # 期间切换活跃会话后，回帖必须读原会话的产出，不能张冠李戴。
-        await post_reply(team_id, instance_id, source_session_id=session_id)
+        posted = await post_reply(team_id, instance_id, source_session_id=session_id)
+        if not posted:
+            # Quick-fix D10：post_reply 返回 False（团队/成员已删、主会话
+            # 缺失、checkpoint 写失败——post_reply 绝不抛，失败只记日志）时，
+            # 绝不能照旧置 done——那会把投递失败静默成「已回帖」，且
+            # last_reply_turn 去重会焊死同一 turn 的重试窗口。改为：
+            #   · 不写 last_completed / last_reply_turn（保住收件箱语义与重试）；
+            #   · 写 sticky 的 last_reply_error，聚合层（status.py）判 error；
+            #   · 推 notice 到主会话广场——失败可见，用户可重新投递重试；
+            #   · 成员 turn 本身已结束，并发闸照常放行（失败只影响回帖）。
+            detail = t(
+                "Reply delivery failed — the member's output is intact in its "
+                "workspace; re-deliver to retry",
+                "回帖投递失败——成员产出仍完整保存在其工作台，可重新投递重试",
+            )
+            store.patch_member(team_id, instance_id, {
+                "last_reply_error": detail,
+                "status_detail": detail,
+            })
+            team_status.refresh_team(team_id)
+            await _broadcast_status(team_id)
+            from ..server_shared import _push_session_event
+
+            main_sid = str(_team.get("main_session_id") or "")
+            await _push_session_event(main_sid, "notice", {"message": detail})
+            await _drain_queue(team_id)
+            _log.warning(
+                "team_reply_settle_failed team=%s instance=%s session=%s turn=%s",
+                team_id, instance_id, session_id, turn_id,
+            )
+            return
         store.patch_member(team_id, instance_id, {
             "status": "done",
             "last_completed": time.time(),
             "last_reply_turn": turn_id or "",
+            # 清 sticky 回帖失败（quick-fix D10）：成功即恢复。
+            "last_reply_error": "",
             "status_detail": t("Reply posted", "已回帖"),
         })
         team_status.refresh_team(team_id)
