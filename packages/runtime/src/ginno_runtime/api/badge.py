@@ -7,7 +7,8 @@ macOS Dock。纪律与 /api/teams/badge 相同：零刷新直读已持久化状�
 - sessions   session_unread.unread_count()（直读各 project _index.json）
 - schedule_runs schedule_store.unseen_summary()（mtime 键控 memo）
 - teams      teams/status.rollup（roster 持久化语义态，blocked + done 未读）
-- running    len(server_shared._RUNNING_TURNS)（进程内登记表，纯内存直读）
+- running    live_running_turns()（进程内登记表经三信号活性验证直读：
+  leaked 条目就地 heal——纯内存 O(n)，n=并发 turn 数，无磁盘 IO）
 - pinned_sessions session_unread.pinned_sessions()（同源 _index.json 直读，
   ≤8 条 id+title，menubar 托盘「置顶会话」快速导航区专用——见 desktop tray.rs）
 
@@ -51,7 +52,9 @@ async def badge() -> dict:
         "blocked": blocked,
         "done_unread": done_unread,
         # 正在流式的 turn 数（跨 session 可并发）；sidecar 进程内真源，无落盘。
-        "running": len(server_shared._RUNNING_TURNS),
+        # 经活性验证读（2026-11-22 僵死 turn 事故）：泄漏条目就地 heal，
+        # 僵死 turn 不再永久计入 menubar「运行中」。O(n) 纯内存，无磁盘 IO。
+        "running": len(server_shared.live_running_turns(via="badge")),
         # 置顶会话（id+title ≤8 条）：托盘菜单快速导航用；老壳不认识该字段，
         # serde 端 default 兼容。见 session_unread.pinned_sessions。
         "pinned_sessions": session_unread.pinned_sessions(8),

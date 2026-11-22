@@ -69,12 +69,13 @@ def test_badge_empty_home_is_zero(client):
                  "pinned_sessions": []}
 
 
-# ---- running：menubar 状态（_RUNNING_TURNS 直读）------------------------------
+# ---- running：menubar 状态（经活性验证读，2026-11-22 僵死 turn 修复）--------
 
 def test_badge_running_counts_streaming_turns(client):
-    """running = len(_RUNNING_TURNS)：无流式 → 0；登记后随之增长（跨 session
-    并发 >1 是正常值），且不影响 needs 等既有字段。根 conftest autouse
-    fixture 每测试前 clear()——这里只往同一 dict 里塞条目，不 setattr 替换。"""
+    """running = 活跃 turn 数（live_running_turns）：无流式 → 0；登记后随之
+    增长（跨 session 并发 >1 是正常值），且不影响 needs 等既有字段。根
+    conftest autouse fixture 每测试前 clear()——这里只往同一 dict 里塞
+    条目，不 setattr 替换。无 AT 时间戳 = 刚 arm 起步中 → 保守计活。"""
     from ginno_runtime import server_shared
 
     assert _get_badge(client)["running"] == 0
@@ -87,6 +88,65 @@ def test_badge_running_counts_streaming_turns(client):
     assert _get_badge(client)["running"] == 1
     server_shared._RUNNING_TURNS.pop("sid-b")
     assert _get_badge(client)["running"] == 0
+
+
+def test_badge_running_heals_stale_zombie_entry(client, caplog):
+    """僵死条目（超 STALE 窗口、无活 task）不再计入 running，且读路径就地
+    heal（摘除 + warning 日志可追）——侧栏/menubar「运行中」不再永久悬挂。
+    2026-11-22 真机：子代理 turn 僵死 4 小时，_RUNNING_TURNS 永不摘除。"""
+    import logging
+    import time as _t
+
+    from ginno_runtime import server_shared
+
+    # 僵死条目：有 AT 心跳但远超 20min 窗口，无活 task、非 parked
+    server_shared._RUNNING_TURNS["sid-zombie"] = "turn-dead"
+    server_shared._RUNNING_TURNS_AT["sid-zombie"] = (
+        _t.time() - server_shared.RUNNING_TURN_STALE_S - 10
+    )
+    # 正常条目：心跳新鲜
+    server_shared._RUNNING_TURNS["sid-live"] = "turn-live"
+    server_shared._RUNNING_TURNS_AT["sid-live"] = _t.time() - 30
+    try:
+        with caplog.at_level(logging.WARNING, logger="ginno.turn"):
+            b = _get_badge(client)
+        assert b["running"] == 1  # 僵死的不计，正常的不误伤
+        # 就地 heal：登记表摘除（下一次读也不计）
+        assert "sid-zombie" not in server_shared._RUNNING_TURNS
+        assert "sid-zombie" not in server_shared._RUNNING_TURNS_AT
+        assert "sid-live" in server_shared._RUNNING_TURNS
+        assert _get_badge(client)["running"] == 1
+        heals = [
+            r for r in caplog.records if "running_turn_stale_healed" in r.message
+        ]
+        assert heals and "session=sid-zombie" in heals[0].getMessage()
+    finally:
+        server_shared._RUNNING_TURNS.pop("sid-zombie", None)
+        server_shared._RUNNING_TURNS_AT.pop("sid-zombie", None)
+        server_shared._RUNNING_TURNS.pop("sid-live", None)
+        server_shared._RUNNING_TURNS_AT.pop("sid-live", None)
+
+
+def test_badge_running_keeps_parked_and_tasked_turns(client):
+    """不误伤两类合法「活」：parked（ask_user 等应答）与刚 arm 无时间戳。"""
+    import time as _t
+
+    from ginno_runtime import server_shared
+
+    server_shared._RUNNING_TURNS["sid-parked"] = "turn-p"
+    server_shared._RUNNING_TURNS_AT["sid-parked"] = (
+        _t.time() - server_shared.RUNNING_TURN_STALE_S * 3
+    )
+    server_shared._PENDING_RESUME.add("sid-parked")
+    server_shared._RUNNING_TURNS["sid-armed"] = "turn-a"  # 无 AT：起步中
+    try:
+        assert _get_badge(client)["running"] == 2
+        assert "sid-parked" in server_shared._RUNNING_TURNS  # parked 不 heal
+    finally:
+        server_shared._PENDING_RESUME.discard("sid-parked")
+        server_shared._RUNNING_TURNS.pop("sid-parked", None)
+        server_shared._RUNNING_TURNS_AT.pop("sid-parked", None)
+        server_shared._RUNNING_TURNS.pop("sid-armed", None)
 
 
 # ---- 置顶会话列表（menubar 托盘快速导航）---------------------------------------
