@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import server_shared as shared
@@ -379,9 +380,26 @@ async def get_team_endpoint(team_id: str, client: str = "main") -> dict:
 
 
 @router.patch("/api/teams/{team_id}")
-async def patch_team_endpoint(team_id: str, data: dict) -> dict:
+async def patch_team_endpoint(team_id: str, data: dict):
+    """改名 / 换 leader / 改共享 workspace。
+
+    校验失败的分支返回 JSONResponse(422)（带 ok/error 体，前端 json() 兼容），
+    故不写返回注解——FastAPI 会把 ``dict | JSONResponse`` 联合当 response model。"""
     allowed = {k: v for k, v in (data or {}).items()
                if k in ("name", "leader_instance_id", "shared_workspace", "archived")}
+    # 防呆（R3 巡检 Q4）：显式带 name 时服务端校验非空非空白。UI 的输入框
+    # 只是第一道闸——直连 API / 未来新前端都不该能把队名改没（空名团队在
+    # 侧栏/投递菜单/徽标里全都显示成无名行）。只拦显式提供 name 的请求，
+    # 不影响其它字段的 PATCH。
+    if "name" in allowed:
+        raw_name = allowed["name"]
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return JSONResponse(
+                status_code=422,
+                content={"ok": False, "error": t("Team name cannot be empty", "团队名不能为空")},
+            )
+        # 与建队路径对齐：落库的是 strip 后的名字。
+        allowed["name"] = raw_name.strip()
     team = team_store.update_team(team_id, allowed)
     if team is None:
         return {"ok": False, "error": "not found"}
