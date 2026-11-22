@@ -15,6 +15,7 @@ use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::common::shell_log;
+use crate::shell_ui::{pick, shell_lang};
 use crate::sidecar::sidecar_port;
 
 #[derive(Debug, Deserialize)]
@@ -54,26 +55,43 @@ fn fetch_running() -> Option<RunningReport> {
 }
 
 /// 确认框正文:计数句 + 至多 4 行明细(会话标题在前,命令缺标题时退化为
-/// 命令首段 + 任务 id),溢出折成「+N more」。
-fn confirm_body(r: &RunningReport) -> String {
+/// 命令首段 + 任务 id),溢出折成「+N more」。文案走 shell_ui 的 en/zh
+/// 二选一(壳不持 catalog,i18n-design.md §7)。
+fn confirm_body(r: &RunningReport, lang: &str) -> String {
     let ns = r.sessions.len();
     let nt = r.tasks.len();
+    let zh = lang == "zh";
     let mut parts: Vec<String> = Vec::new();
     if ns > 0 {
-        parts.push(format!("{ns} session{}", if ns == 1 { "" } else { "s" }));
+        parts.push(
+            pick(
+                lang,
+                &format!("{ns} session{}", if ns == 1 { "" } else { "s" }),
+                &format!("{ns} 个会话"),
+            )
+            .to_string(),
+        );
     }
     if nt > 0 {
-        parts.push(format!(
-            "{nt} background command{}",
-            if nt == 1 { "" } else { "s" }
-        ));
+        parts.push(
+            pick(
+                lang,
+                &format!("{nt} background command{}", if nt == 1 { "" } else { "s" }),
+                &format!("{nt} 个后台命令"),
+            )
+            .to_string(),
+        );
     }
     // count 恒 >0 才会进对话框;0 分支纯防御。
-    let head = match parts.len() {
-        1 => format!("{} is", parts[0]),
-        _ => format!("{} are", parts.join(" and ")),
+    let mut body = if zh {
+        format!("{}仍在运行。现在退出会中断它们。", parts.join("和"))
+    } else {
+        let be = if parts.len() == 1 { "is" } else { "are" };
+        format!(
+            "{} {be} still running. Quitting now will interrupt them.",
+            parts.join(" and ")
+        )
     };
-    let mut body = format!("{head} still running. Quitting now will interrupt them.");
     let mut lines: Vec<String> = r
         .sessions
         .iter()
@@ -98,7 +116,11 @@ fn confirm_body(r: &RunningReport) -> String {
         body.push_str("\n\n");
         body.push_str(&lines.iter().take(4).cloned().collect::<Vec<_>>().join("\n"));
         if lines.len() > 4 {
-            body.push_str(&format!("\n+{} more", lines.len() - 4));
+            body.push_str(&pick(
+                lang,
+                &format!("\n+{} more", lines.len() - 4),
+                &format!("\n+{} 项", lines.len() - 4),
+            ));
         }
     }
     body
@@ -132,15 +154,16 @@ pub(crate) fn confirm_quit_or_proceed(
             report.tasks.len()
         ),
     );
-    let body = confirm_body(&report);
+    let lang = shell_lang(&app);
+    let body = confirm_body(&report, lang);
     let app_cb = app.clone();
     app.dialog()
         .message(body)
-        .title("Quit Ginno?")
+        .title(pick(lang, "Quit Ginno?", "退出 Ginno？"))
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "Quit Anyway".to_string(),
-            "Cancel".to_string(),
+            pick(lang, "Quit Anyway", "仍然退出").to_string(),
+            pick(lang, "Cancel", "取消").to_string(),
         ))
         .show(move |confirmed| {
             if !confirmed {
