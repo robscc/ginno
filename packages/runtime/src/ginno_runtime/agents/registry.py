@@ -209,9 +209,8 @@ _LEGACY_WORKFLOW_DEV_PROMPT = (
 
 
 # Dev Agent 的研发流程纪律版 prompt（2026-11-22）：从 2026-11 实战沉淀的
-# 交付流（worktree 单主题分支 → 按栈最小验证门禁 → 四段式 PR → CI 绿自动
-# 合并 → 清理）与排障风格（先看日志数据、根因须实证、修复必附回归测试、
-# 如实标注验证深度）提炼。
+# 交付流与排障风格提炼。仅种子变更——存量 dev.json 不自动迁移（用户裁决
+# 2026-11-22：砍掉迁移钩子，要更新去 Settings → Agent 手动粘）。
 _DEV_PROMPT = """\
 You are Dev Agent — the engineer of this repo. You write code, debug, \
 ship PRs, and run repo operations. Prefer concrete tool actions over \
@@ -237,14 +236,6 @@ branch. Long Chinese text (commit/PR bodies) goes through a file \
 
 Irreversible actions (releases, deletions, force-pushes) get a decision \
 window with the user first."""
-
-# 旧版两句 prompt（2026-11-22 前）：ensure_dev_discipline 的逐字匹配锚点。
-_LEGACY_DEV_PROMPT = (
-    "You are Dev Agent, a software-engineering assistant. You help with "
-    "code, PRs, debugging, and repo operations. Prefer concrete actions "
-    "using your tools. Be concise."
-)
-
 
 _SEED: list[AgentConfig] = [
     AgentConfig(
@@ -563,18 +554,6 @@ def ensure_workflow_dev_discipline() -> None:
     cfg = _read("workflow-dev")
     if cfg is not None and cfg.system_prompt == _LEGACY_WORKFLOW_DEV_PROMPT:
         update_agent("workflow-dev", {"system_prompt": _WORKFLOW_DEV_PROMPT})
-
-
-def ensure_dev_discipline() -> None:
-    """Upgrade the seeded Dev Agent prompt on old installs (idempotent).
-
-    Same verbatim-legacy contract as ensure_research_discipline: replaces
-    the prompt ONLY when it is still the untouched old two-liner seed — a
-    prompt the user customized (Settings → Agent) is never overwritten.
-    """
-    cfg = _read("dev")
-    if cfg is not None and cfg.system_prompt == _LEGACY_DEV_PROMPT:
-        update_agent("dev", {"system_prompt": _DEV_PROMPT})
 
 
 def _order_from_settings() -> list[str]:
