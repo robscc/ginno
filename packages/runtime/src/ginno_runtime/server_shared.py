@@ -268,10 +268,41 @@ _RUNNING_TURNS_AT: dict[str, float] = {}
 # turn 16:41 完成、16:43 /fork 仍报「AI 正在回复」).
 RUNNING_TURN_STALE_S = 20 * 60.0
 
+# Which reader healed a stale entry away — appended to the warning so the
+# leak can be traced from the log without knowing which poll happened to
+# trip first (gate = /fork /clear 命令；badge = Dock 轮询；report =
+# /api/running 退出确认).
+_STALE_HEAL_VIA = {
+    "gate": "/fork /clear unblocked",
+    "badge": "badge running recount",
+    "report": "running report recount",
+}
 
-def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
-    """Busy judgement for user commands (/fork /clear …): is a turn REALLY
-    live on this session?  Three signals, weakest to strongest:
+
+def heal_stale_running_turn(session_id: str, age: float, via: str = "gate") -> None:
+    """Drop a leaked ``_RUNNING_TURNS`` entry + warn loudly (shared by every
+    liveness reader). Pure in-memory: O(1), no disk IO — safe on the badge
+    hot path."""
+    import logging
+
+    logging.getLogger("ginno.turn").warning(
+        "running_turn_stale_healed session=%s turn=%s age=%.0fs "
+        "(no live task — leaked flag, %s)",
+        session_id,
+        _RUNNING_TURNS.get(session_id),
+        age,
+        _STALE_HEAL_VIA.get(via, via),
+    )
+    _RUNNING_TURNS.pop(session_id, None)
+    _RUNNING_TURNS_AT.pop(session_id, None)
+
+
+def running_turn_alive(
+    session_id: str, *, _heal: bool = True, via: str = "gate"
+) -> bool:
+    """Is a turn REALLY live on this session? Three signals, weakest to
+    strongest (the judgement core behind :func:`turn_gate_busy` and the
+    read paths — badge / /api/running):
 
     1. ``_TURN_TASKS[sid]`` alive — desktop invoke/resume task (definitive);
     2. ``sid in _PENDING_RESUME`` — parked at an interrupt awaiting an answer
@@ -283,7 +314,11 @@ def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
        every real execution passes): NO timestamp = freshly armed, still in
        the preamble → conservatively busy; timestamped but silent past
        RUNNING_TURN_STALE_S with no live task ⇒ leaked ⇒ heal (drop the flag)
-       and report not-busy, logging loudly so the leaking path can be traced.
+       and report not-alive, logging loudly so the leaking path can be traced.
+
+    O(1) dict probes + one time.time() — no disk IO (badge polls this every
+    5s). ``_heal=False`` turns it into a pure probe (leave the registries
+    untouched).
     """
     import time as _time
 
@@ -299,18 +334,38 @@ def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
         age = _time.time() - since
         if age > RUNNING_TURN_STALE_S:
             if _heal:
-                import logging
-
-                logging.getLogger("ginno.turn").warning(
-                    "running_turn_stale_healed session=%s turn=%s age=%.0fs "
-                    "(no live task — leaked flag, /fork /clear unblocked)",
-                    session_id, _RUNNING_TURNS.get(session_id), age,
-                )
-                _RUNNING_TURNS.pop(session_id, None)
-                _RUNNING_TURNS_AT.pop(session_id, None)
+                heal_stale_running_turn(session_id, age, via)
             return False
         return True
     return False
+
+
+def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
+    """Busy judgement for user commands (/fork /clear …) — thin wrapper over
+    :func:`running_turn_alive` (same semantics since the 2026-10-31 leak
+    self-heal; the core was extracted so the READ paths (badge, /api/running)
+    verify liveness too instead of trusting a leaked registration forever
+    (2026-11-22 真机：僵死 subagent turn 挂「运行中」4 小时，侧栏永久
+    running，读路径无自愈)."""
+    return running_turn_alive(session_id, _heal=_heal, via="gate")
+
+
+def live_running_turns(*, via: str = "report") -> dict[str, str]:
+    """Snapshot of the LIVE running turns (``{session_id: turn_id}``) — the
+    liveness-verified read entry for badge ``running`` and
+    ``/api/running``. Leaked entries (past RUNNING_TURN_STALE_S, no live
+    task, not parked) are healed away in place as a side effect, so a zombie
+    registration can no longer outlive its turn on any read path.
+
+    O(n) in the registered turn count (个位数), pure memory — no disk IO.
+    Iterate over the SNAPSHOT keys (``list(_RUNNING_TURNS)``): healing pops
+    from the live dict mid-iteration.
+    """
+    live: dict[str, str] = {}
+    for sid in list(_RUNNING_TURNS):
+        if running_turn_alive(sid, via=via):
+            live[sid] = _RUNNING_TURNS.get(sid, "")
+    return live
 
 # Sessions whose CURRENTLY streaming turn was started by the subagent scheduler
 # (_run_managed_turn: child brief / result-injection wake), not by a socket

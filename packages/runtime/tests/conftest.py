@@ -62,8 +62,11 @@ _ORIG_BUILD_MODEL = {
 def _clean_running_turns():
     """每测试前清空运行中 turn 全局（e2e 段残留会污染后跑的 unit/api 断言
     ——test_running_work 曾因此整组 4≠0）。用 clear() 保持对象同一性：
-    tasks/inject.py 与 running_work.py 都持有同一 dict 的引用。"""
+    tasks/inject.py 与 running_work.py 都持有同一 dict 的引用。
+    ``_RUNNING_TURNS_AT`` 同清：活性读路径把它当心跳时间戳，残留同名
+    条目会把下一个测试里刚 arm 的 turn 误判成 stale。"""
     server_shared._RUNNING_TURNS.clear()
+    server_shared._RUNNING_TURNS_AT.clear()
     yield
 
 

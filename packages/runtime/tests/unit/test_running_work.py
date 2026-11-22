@@ -46,6 +46,41 @@ def test_report_counts_running_turns_with_titles(seeded_home, monkeypatch):
     assert rep["sessions"] == [{"id": "sess-a", "title": "AMS 迁移"}]
 
 
+def test_report_excludes_and_heals_stale_turns(seeded_home, monkeypatch, caplog):
+    """僵死条目（超 STALE 窗口、无活 task）不再报成「在跑」拦退出，且读路径
+    就地 heal + warning 日志（2026-11-22 僵死 turn 事故）。新鲜条目不误伤。"""
+    import logging
+    import time as _t
+
+    _session_meta_upsert(
+        "default",
+        {"id": "sess-z", "title": "僵尸", "type": "subagent", "updated": 1.0},
+    )
+    server_shared._RUNNING_TURNS["sess-z"] = "turn-zombie"
+    server_shared._RUNNING_TURNS_AT["sess-z"] = (
+        _t.time() - server_shared.RUNNING_TURN_STALE_S - 5
+    )
+    server_shared._RUNNING_TURNS["sess-ok"] = "turn-ok"
+    server_shared._RUNNING_TURNS_AT["sess-ok"] = _t.time() - 10
+    _use_records(monkeypatch, [])
+    try:
+        with caplog.at_level(logging.WARNING, logger="ginno.turn"):
+            rep = running_work_report()
+        assert [s["id"] for s in rep["sessions"]] == ["sess-ok"]
+        assert rep["count"] == 1
+        assert "sess-z" not in server_shared._RUNNING_TURNS
+        assert "sess-ok" in server_shared._RUNNING_TURNS
+        assert any(
+            "running_turn_stale_healed" in r.message and "session=sess-z" in r.getMessage()
+            for r in caplog.records
+        )
+    finally:
+        server_shared._RUNNING_TURNS.pop("sess-z", None)
+        server_shared._RUNNING_TURNS_AT.pop("sess-z", None)
+        server_shared._RUNNING_TURNS.pop("sess-ok", None)
+        server_shared._RUNNING_TURNS_AT.pop("sess-ok", None)
+
+
 def test_report_title_falls_back_empty_for_unknown_session(seeded_home, monkeypatch):
     monkeypatch.setitem(server_shared._RUNNING_TURNS, "sess-ghost", "turn-2")
     _use_records(monkeypatch, [])

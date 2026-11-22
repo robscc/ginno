@@ -1,7 +1,8 @@
 """「现在有什么在跑」聚合(桌面壳退出前确认 /api/running 的事实源)。
 
-信号全部现成:运行中 turn 看 ``_RUNNING_TURNS``(含调度器 managed turn,
-见 server_shared 注释),后台命令看任务中心 registry 的 running 记录。
+信号全部现成:运行中 turn 看 ``live_running_turns()``(经三信号活性验证的
+``_RUNNING_TURNS`` 快照,含调度器 managed turn,泄漏条目就地 heal,
+见 server_shared),后台命令看任务中心 registry 的 running 记录。
 刻意**不算**的两类:
 
 - 停等恢复的会话(``_PENDING_RESUME``,ask_user/权限卡)——那是泊着的
@@ -12,7 +13,11 @@
 
 from __future__ import annotations
 
-from .server_shared import _PENDING_KIND, _PENDING_RESUME, _RUNNING_TURNS
+from .server_shared import (
+    _PENDING_KIND,
+    _PENDING_RESUME,
+    live_running_turns,
+)
 from .session_meta import _resolve_session_meta
 from .tasks import get_registry
 from .tasks import store as task_store
@@ -25,7 +30,10 @@ def running_work_report() -> dict:
     取标题。标题/任务列表读取失败一律兜底空值——这个报告服务退出确认,
     查不出来不能拦着用户退出,更不能抛 500。"""
     sessions: list[dict] = []
-    for sid in list(_RUNNING_TURNS):  # 快照:turn 收尾会并发 pop
+    # 经活性验证读（2026-11-22 僵死 turn 事故）：泄漏的 _RUNNING_TURNS 条目
+    # （超 STALE 窗口、无活 task、非 parked）就地 heal，不再把僵死 turn 报成
+    # 「在跑」拦退出。O(n) 纯内存；snapshot 语义同旧 list() 快照。
+    for sid in live_running_turns(via="report"):
         title = ""
         try:
             meta = _resolve_session_meta(sid) or {}
