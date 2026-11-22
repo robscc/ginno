@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+
+import { apiErrorText } from "@/i18n/errorText";
 import * as api from "@/lib/runtime";
 import { Globe, Save, FlaskConical } from "lucide-react";
 
@@ -117,7 +119,7 @@ export function WebSearchSettings() {
     setMsg("");
     try {
       const r = await api.testWebSearch(form.default_engine);
-      setMsg(r.ok ? t("testOk", { engine: form.default_engine, count: r.results ?? 0 }) : t("testFail", { error: r.error || t("searchFailed") }));
+      setMsg(r.ok ? t("testOk", { engine: form.default_engine, count: r.results ?? 0 }) : t("testFail", { error: apiErrorText(r.error) || t("searchFailed") }));
       reloadUsage();
     } catch (e) {
       setMsg(t("testFailed", { error: String(e) }));

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+
+import { apiErrorText } from "@/i18n/errorText";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type {
@@ -146,7 +148,7 @@ export default function KnowledgeBasePage() {
         setSearched(true);
         setView("search");
       } else {
-        setNote(r.error || tKb("search.failed"));
+        setNote(apiErrorText(r.error) || tKb("search.failed"));
       }
     } catch {
       setNote(tKb("search.failedNoRuntime"));
@@ -229,7 +231,7 @@ export default function KnowledgeBasePage() {
                 hasIndex: r.has_index ? "yes" : "no",
               })
             : tKb("import.noWikiDir", { total: r.total_md ?? 0 })
-          : r.error || tKb("import.detectFailed"),
+          : apiErrorText(r.error) || tKb("import.detectFailed"),
       );
     } catch {
       setImportProbe(tKb("import.detectFailedNoRuntime"));
@@ -246,7 +248,7 @@ export default function KnowledgeBasePage() {
     try {
       const probe = await api.kbWikiProbe(importPath.trim());
       if (!probe.ok) {
-        setImportProbe(probe.error || tKb("import.invalidPath"));
+        setImportProbe(apiErrorText(probe.error) || tKb("import.invalidPath"));
         return;
       }
       const d = probe.detected;
@@ -364,7 +366,7 @@ export default function KnowledgeBasePage() {
                 </Link>
               ),
             })}
-            {stats?.error ? <span className="ml-1">{stats.error}</span> : null}
+            {stats?.error ? <span className="ml-1">{apiErrorText(stats.error)}</span> : null}
           </div>
         </div>
       )}

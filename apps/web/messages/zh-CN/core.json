@@ -1,5 +1,9 @@
 {
   "errors": {
-    "generic": "出错了，请重试。"
+    "generic": "出错了，请重试。",
+    "knowledgeVaultNotConfigured": "知识库 Vault 未配置——请在设置里填写知识库路径",
+    "knowledgeNotConfigured": "知识库未配置——请在设置里填写 Vault 路径后再使用知识库功能",
+    "searxngNotConfigured": "SearXNG 未配置 base_url——请在「设置 → Web 搜索」里填写",
+    "tavilyNotConfigured": "Tavily 未配置 API key——请在「设置 → Web 搜索」里填写"
   }
 }

@@ -37,6 +37,7 @@ import {
 } from "next-intl";
 import { getSettings, putSettings } from "@/lib/runtime";
 import { setToolLabelsLocale } from "@/lib/toolLabels";
+import { setErrorTextLocale } from "./errorText";
 import { setUiTextLocale } from "./uiText";
 import { setSchedTextLocale } from "./schedText";
 import { setTasksTextLocale } from "./tasksText";
@@ -255,8 +256,9 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
   // 模块级镜像：渲染期同步赋值（幂等），保证非 hook 的 t() 从首帧起读到正确 locale
   _currentLocale = locale;
-  // ui / sched 域非 hook 读取器的 locale 镜像，同一时机同步
+  // ui / sched / errors 域非 hook 读取器的 locale 镜像，同一时机同步
   setUiTextLocale(locale);
+  setErrorTextLocale(locale);
   setSchedTextLocale(locale);
   setTasksTextLocale(locale);
 
