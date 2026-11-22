@@ -112,6 +112,25 @@ async def create_workflow_endpoint(data: dict) -> dict:
     return {"ok": True, "workflow": wf}
 
 
+@router.get("/api/workflows/python-entries")
+async def list_python_entries_endpoint() -> dict:
+    """Read-only whitelist of ``python`` node entries (方案 D2).
+
+    The Studio NodeInspector uses this to render the ``entry`` dropdown — the
+    same :data:`ENTRY_REGISTRY` ``python_node`` validates against, so the UI
+    can never offer an entry the DSL validator would reject. Entries carry
+    their docstring's first line as a human hint. No side effects, no LLM;
+    offline callers (UI without sidecar) fall back to a plain text input.
+    """
+    from ..workflows.scripts import ENTRY_REGISTRY
+
+    entries = []
+    for name in sorted(ENTRY_REGISTRY):
+        doc = (ENTRY_REGISTRY[name].__doc__ or "").strip().splitlines()
+        entries.append({"name": name, **({"doc": doc[0]} if doc else {})})
+    return {"entries": entries}
+
+
 @router.put("/api/workflows/{wf_id}")
 async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
     try:
