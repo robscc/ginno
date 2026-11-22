@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 from ....checkpointer import ABANDONED_TURNS
 from ....goals import store as goal_store
 from ....server_shared import (
+    _MANAGED_TURNS,
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
+    _RUNNING_TURNS_AT,
     _TURN_STOP,
     _TURN_TASKS,
     _log,
@@ -81,6 +84,103 @@ async def handle_plan_cancel(conn: WsConn, msg: dict) -> None:
     )
 
 
+# How long after a cooperative stop before the force-convergence watchdog
+# fires. Generous on purpose: a healthy turn unwinds through its stream
+# drain + heal + settle within seconds; only a turn wedged past this line
+# gets cancelled. Module constant so tests can monkeypatch it down.
+STOP_FORCE_DELAY_S = 60.0
+
+
+def _stop_arm_force_watchdog(session: dict, session_id: str) -> None:
+    """Arm the one-shot delayed convergence check for a just-stopped turn.
+
+    Snapshot the turn's identity NOW (turn_id + task object): when the
+    watchdog fires it only acts if that SAME turn is still registered — a
+    turn that converged, or was replaced by a NEW invoke, is left alone
+    (the successor must never be cancelled by its predecessor's stop)."""
+    turn_id = _RUNNING_TURNS.get(session_id) or ""
+    task = _TURN_TASKS.get(session_id)
+    parked = session_id in _PENDING_RESUME
+    if not turn_id and not parked and (task is None or task.done()):
+        return  # idle stop: nothing to watch
+    spawn_bg(_stop_force_watchdog(session, session_id, turn_id, task))
+
+
+async def _stop_force_watchdog(
+    session: dict, session_id: str, turn_id: str, task_at_stop: Any
+) -> None:
+    """Delayed backstop for a cooperative stop that went unanswered.
+
+    Fires STOP_FORCE_DELAY_S after the user pressed ⏹. If the same turn
+    (by identity) has since converged — its task finished, its
+    registration popped, or a successor took over — this is a no-op. If
+    it is STILL registered (wedged on a dead await, or a scheduler-managed
+    subagent turn with no _TURN_TASKS entry that never observed the
+    event), converge it by force:
+
+    * ``task.cancel()`` — CancelledError is a BaseException, so the job's
+      ``except Exception`` never turns it into an error card; the job's
+      finally still runs its registry cleanup (identity-checked);
+    * ``ABANDONED_TURNS.add(turn_id)`` BEFORE the cancel — the same
+      late-write guard the stall watchdog uses, so the unwinding (or a
+      gateway that finally answers an hour later) cannot persist
+      checkpoints that would race a retry turn;
+    * pop the registration + the stale SET stop event (a wedged turn
+      never reached the finally that pops it; the next legitimate turn
+      must not setdefault onto a poisoned pre-set event and insta-die);
+    * broadcast the SAME terminal event the cooperative path emits
+      (``turn.stopped`` {}, carried on the stopped turn_id) so every tab
+      leaves the running state;
+    * finalize a subagent session as stopped (``on_turn_stopped`` — no-op
+      for main conversations) so its meta doesn't read running forever.
+    """
+    await asyncio.sleep(STOP_FORCE_DELAY_S)
+    cur_task = _TURN_TASKS.get(session_id)
+    task_live = (
+        task_at_stop is not None
+        and cur_task is task_at_stop
+        and not task_at_stop.done()
+    )
+    reg_live = bool(turn_id) and _RUNNING_TURNS.get(session_id) == turn_id
+    if not task_live and not reg_live:
+        return  # converged on its own, or a new turn took over
+    _log.warning(
+        "turn_stop_watchdog_forced session=%s turn=%s task_live=%s "
+        "(cooperative stop unanswered after %.0fs — cancelling)",
+        session_id, turn_id, task_live, STOP_FORCE_DELAY_S,
+    )
+    if turn_id:
+        # Late-write guard BEFORE the cancel: the unwinding turn (or a
+        # gateway answering late) must not commit checkpoints that race
+        # a retry turn (same protocol as the stall watchdog).
+        ABANDONED_TURNS.add(turn_id)
+    if reg_live:
+        _RUNNING_TURNS.pop(session_id, None)
+        _RUNNING_TURNS_AT.pop(session_id, None)
+    if _MANAGED_TURNS.get(session_id) == turn_id:
+        _MANAGED_TURNS.pop(session_id, None)
+    # A wedged turn never reaches its finally — drop the pre-set stop
+    # event here or the NEXT turn setdefaults onto it and insta-dies.
+    evt = _TURN_STOP.get(session_id)
+    if evt is not None and evt.is_set():
+        _TURN_STOP.pop(session_id, None)
+    if task_live:
+        task_at_stop.cancel()
+    try:
+        await _push_session_event(session_id, "turn.stopped", {}, turn_id or None)
+    except Exception:  # noqa: BLE001 — broadcast is best-effort
+        _log.exception("stop_watchdog_event_failed session=%s", session_id)
+    # Subagent (incl. scheduler-managed) terminal state: main sessions
+    # no-op here; the cancelled job's own settle hook (finally) re-runs
+    # the gate for every session kind.
+    try:
+        from ....subagent_scheduler import on_turn_stopped
+
+        await on_turn_stopped(session_id)
+    except Exception:  # noqa: BLE001
+        _log.exception("stop_watchdog_subagent_hook_failed session=%s", session_id)
+
+
 async def handle_stop(conn: WsConn, msg: dict) -> None:
     session_id = conn.session_id
     session = conn.session
@@ -89,6 +189,16 @@ async def handle_stop(conn: WsConn, msg: dict) -> None:
     # blocks its late writes); streamed text + completed steps are
     # kept; state is healed so the next turn starts clean.
     slug = session.get("project_slug")
+    # Force-convergence watchdog (2026-11-22 僵死 turn 事故): the
+    # cooperative cascade below assumes the turn eventually observes
+    # the stop event and finalizes itself — a turn wedged on a dead
+    # await (hung gateway, stuck lock, subagent scheduler turn with
+    # no _TURN_TASKS entry) never does, and the registration then
+    # reads "running" forever (badge, busy gates, quit check). Arm a
+    # ONE-SHOT delayed check while the stop is being served: if the
+    # SAME turn (identity: turn_id + task object snapshot) is still
+    # registered when it fires, converge it by force.
+    _stop_arm_force_watchdog(session, session_id)
     # An active goal would auto-continue ~3s after the stopped
     # turn unwinds — pause it first so "stop" means stop. Do NOT
     # cancel the driver task: it awaits the goal turn inline, and
