@@ -22,7 +22,7 @@ import { A2aPeersPane } from "./A2aPeersPane";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { ConfigEditor } from "./ConfigEditor";
 import { InstallWizard } from "./InstallWizard";
-import { connectorIcon, connectorKind, sourceOf, statusMeta } from "./meta";
+import { connectorDesc, connectorIcon, connectorKind, connectorName, sourceOf, statusMeta, type ConnTextLookup } from "./meta";
 import {
   Loader2,
   RefreshCw,
@@ -95,6 +95,7 @@ export function ConnectorDetail({
 }) {
   const t = useTranslations("conn");
   const tr = t as unknown as TFn;
+  const tCard = t as unknown as ConnTextLookup;
 
   const [detail, setDetail] = useState<ConnectorInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -314,7 +315,7 @@ export function ConnectorDetail({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label={current.name}
+        aria-label={connectorName(current, tCard)}
       >
         {/* header */}
         <div className="flex items-center gap-3 border-b border-line px-5 pb-3 pt-4">
@@ -323,7 +324,7 @@ export function ConnectorDetail({
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="truncate text-sm font-semibold text-txt">{current.name}</span>
+              <span className="truncate text-sm font-semibold text-txt">{connectorName(current, tCard)}</span>
               <span className={`inline-flex items-center gap-1 text-[11px] ${status.cls}`}>
                 <StatusIcon
                   className={`h-3 w-3 ${current.status === "installing" || current.status === "restarting" ? "animate-spin" : ""}`}
@@ -579,6 +580,7 @@ function DetailPane({
   onSaved: () => void;
 }) {
   const t = useTranslations("conn");
+  const tCard = t as unknown as ConnTextLookup;
 
   if (activeTab === "overview") {
     const extraRows = Object.entries(current.extra || {}).filter(([k, v]) => {
@@ -596,7 +598,7 @@ function DetailPane({
           : null;
     return (
       <div className="space-y-5">
-        <p className="text-[12.5px] leading-relaxed text-muted">{current.description}</p>
+        <p className="text-[12.5px] leading-relaxed text-muted">{connectorDesc(current, tCard)}</p>
 
         {/* A2A 枢纽：入站控制卡 + 出站接入入口（a2a-connector-design.md §5） */}
         {current.id === "a2a" && (

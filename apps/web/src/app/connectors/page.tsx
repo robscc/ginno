@@ -16,7 +16,16 @@ import type {
   PushedPage,
 } from "@/lib/runtime";
 import { ConnectorDetail } from "@/components/connectors/ConnectorDetail";
-import { connectorIcon, connectorKind, metaLine, sourceOf, statusMeta } from "@/components/connectors/meta";
+import {
+  connectorDesc,
+  connectorIcon,
+  connectorKind,
+  connectorName,
+  metaLine,
+  sourceOf,
+  statusMeta,
+  type ConnTextLookup,
+} from "@/components/connectors/meta";
 import { ModStoreDrawer } from "@/components/settings/ModStoreDrawer";
 import {
   Cable,
@@ -185,6 +194,10 @@ export default function ConnectorsPage() {
     const src = sourceOf(c);
     const summary = c.configSummary;
     const version = c.version ? `v${c.version}` : "";
+    // 卡片名/描述：conn 域 card.name/desc.<id> 双语优先，缺 key 回落原值
+    const tConnLookup = tConn as unknown as ConnTextLookup;
+    const name = connectorName(c, tConnLookup);
+    const desc = connectorDesc(c, tConnLookup);
     const sourceLabel =
       src === "global"
         ? tConn("source.global")
@@ -215,7 +228,7 @@ export default function ConnectorsPage() {
           />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="truncate text-sm font-medium text-txt">{c.name}</span>
+              <span className="truncate text-sm font-medium text-txt">{name}</span>
               <span className={`inline-flex items-center gap-1 text-[11px] ${meta.cls}`}>
                 <meta.Icon
                   className={`h-3 w-3 ${
@@ -247,7 +260,7 @@ export default function ConnectorsPage() {
                   : tConn("card.noSettings")}
               </span>
             </div>
-            <p className="mt-1.5 text-xs leading-relaxed text-faint">{c.description}</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-faint">{desc}</p>
           </div>
         </div>
 

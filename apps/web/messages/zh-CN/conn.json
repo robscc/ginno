@@ -37,7 +37,20 @@
       "noSettings": "无可配置项",
       "settingsAvailable": "有可配置项",
       "settings": "设置",
-      "enable": "启用"
+      "enable": "启用",
+      "name": {
+        "chrome-extension": "Chrome 浏览器扩展",
+        "browser-profile": "Ginno 托管浏览器",
+        "wecom-bot": "企业微信智能机器人",
+        "dingtalk-bot": "钉钉机器人"
+      },
+      "desc": {
+        "chrome-extension": "让 Ginno 在你自己的 Chrome 里干活：共享登录态、操作全程可见，始终由你掌控。",
+        "browser-profile": "Ginno 托管的 Chrome 实例（独立 profile，与你自己的浏览器登录隔离）。未安装扩展时的兜底轨道。",
+        "wecom-bot": "在企业微信里通过智能机器人长连接和 Ginno 对话：流式回复、以文本回答 agent 提问、收发文件与图片——桌面端 Ginno 始终是运行时。",
+        "dingtalk-bot": "在钉钉里和 Ginno 对话：AI 卡片流式回复、按钮回答 agent 提问、发送与预览文件——桌面端 Ginno 始终是运行时。",
+        "vibe-island": "在 Vibe Island 刘海里展示 Ginno 会话：工作中/空闲状态、正在运行的工具、完成通知与审批提醒——每个会话一张卡片。"
+      }
     },
     "runtime": {
       "warning": "Claude Mods 运行时未就绪——Node：{nodePath}。修复前 mod 不会加载。",
@@ -259,6 +272,49 @@
           }
         }
       }
-    }
+    },
+    "field-chrome-extension-fallback-profile-mode-title": "扩展缺失时的兜底浏览器",
+    "field-chrome-extension-fallback-profile-mode-desc": "ask=使用前询问一次 / auto=静默使用 Ginno 内置 Chrome profile / off=仅扩展轨",
+    "field-chrome-extension-tab-scope-title": "标签页可见范围",
+    "field-chrome-extension-tab-scope-desc": "group=仅 Ginno 分组内的标签页（有围栏，看不到个人标签页）/ all=全部标签页（可读可控，注意隐私）",
+    "field-chrome-extension-sensitive-domains-title": "受保护域名",
+    "field-chrome-extension-sensitive-domains-desc": "在这些域名上的浏览器操作需要你确认（支付 / 邮箱 / 云控制台）",
+    "field-chrome-extension-confirmed-domains-title": "已确认的受保护域名",
+    "field-chrome-extension-confirmed-domains-desc": "你已允许 agent 在这些受保护域名上操作（agent 询问确认后写入此处；每行一个）",
+    "field-chrome-extension-auto-open-group-title": "新开标签页时把 Chrome 带到前台",
+    "field-browser-profile-headless-title": "无头模式",
+    "field-browser-profile-headless-desc": "不显示浏览器窗口（默认关闭：操作保持可见、可随时打断）",
+    "field-wecom-bot-bot-id-title": "BotID",
+    "field-wecom-bot-bot-id-desc": "来自企业微信管理后台：智能机器人 → API 模式 → 长连接",
+    "field-wecom-bot-allowed-userids-title": "允许的 userid",
+    "field-wecom-bot-allowed-userids-desc": "留空 = 所有能触达机器人的人都能驱动 agent",
+    "field-wecom-bot-admin-users-title": "管理员 userid",
+    "field-wecom-bot-admin-users-desc": "允许执行管理员专属渠道命令（/dev-swap）的 userid。默认拒绝：列表为空时所有人都不允许——可在渠道映射文件（user_id）或 sidecar 入站日志里找到你的 userid",
+    "field-wecom-bot-default-agent-id-title": "本渠道的默认 agent",
+    "field-wecom-bot-default-agent-id-desc": "由哪个 agent 应答此渠道的消息；留空 = Ginno 默认 agent",
+    "field-wecom-bot-session-policy-title": "会话策略",
+    "field-wecom-bot-session-policy-desc": "per_user=每个用户在每个会话各有独立 session；per_conversation=每个会话共享一个 session（群聊）",
+    "field-wecom-bot-ask-timeout-s-title": "ask_user 超时（秒）",
+    "field-wecom-bot-ask-timeout-s-desc": "超过该时长自动跳过挂起的提问",
+    "field-wecom-bot-welcome-text-title": "欢迎消息",
+    "field-wecom-bot-welcome-text-desc": "用户进入会话时发送（enter_chat 事件）；留空 = 不发送",
+    "field-dingtalk-bot-robot-code-title": "robotCode",
+    "field-dingtalk-bot-robot-code-desc": "媒体上传需要；默认取 AppKey",
+    "field-dingtalk-bot-card-template-id-title": "AI 卡片模板 ID",
+    "field-dingtalk-bot-card-template-id-desc": "发布在钉钉开放平台卡片平台的模板；留空 = 纯 markdown 回复（无打字机流式效果）",
+    "field-dingtalk-bot-allowed-staff-ids-title": "允许的 staffId",
+    "field-dingtalk-bot-allowed-staff-ids-desc": "留空 = 应用可见范围内的所有人都能驱动 agent",
+    "field-dingtalk-bot-admin-users-title": "管理员 staffId",
+    "field-dingtalk-bot-admin-users-desc": "允许执行管理员专属渠道命令（/dev-swap）的 staffId。默认拒绝：列表为空时所有人都不允许——可在渠道映射文件（user_id）或 sidecar 入站日志里找到你的 staffId",
+    "field-dingtalk-bot-default-agent-id-title": "本渠道的默认 agent",
+    "field-dingtalk-bot-default-agent-id-desc": "由哪个 agent 应答此渠道的消息；留空 = Ginno 默认 agent",
+    "field-dingtalk-bot-session-policy-title": "会话策略",
+    "field-dingtalk-bot-session-policy-desc": "per_user=每个 staffId 各自独立 session；per_conversation=每个会话共享一个 session（群聊）",
+    "field-dingtalk-bot-menus-title": "菜单 / 命令",
+    "field-dingtalk-bot-menus-desc": "trigger（精确或 /前缀，不区分大小写）、title、prompt 模板（{date}/{time}/{staff_name}）、new_session",
+    "field-dingtalk-bot-ask-timeout-s-title": "ask_user 超时（秒）",
+    "field-dingtalk-bot-ask-timeout-s-desc": "超过该时长自动跳过挂起的提问",
+    "field-dingtalk-bot-tool-policy-title": "工具策略",
+    "field-dingtalk-bot-tool-policy-desc": "readonly=仅允许只读工具 / confirm_highrisk=危险工具先询问 / all=不限制（不推荐）"
   }
 }
