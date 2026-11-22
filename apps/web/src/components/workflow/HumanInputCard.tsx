@@ -10,7 +10,8 @@ import { Markdown } from "@/components/chat/Markdown";
  * In-run answer card for a paused human node (workflow-ux-redesign P1).
  * Renders inside LiveRunBlock when `run.status === "paused"` and the run's
  * `pending_interrupt.kind === "human"`: shows the node's question, an optional
- * free-text reply, and 确认继续 / 跳过 / 中止运行.
+ * free-text reply, and 确认继续 / 跳过 / 中止运行. 跳过 is NOT a gate — see
+ * the skipHint line (quick-fix D5).
  */
 export function HumanInputCard({
   runId,
@@ -98,6 +99,7 @@ export function HumanInputCard({
         <button
           onClick={() => void submit("skip")}
           disabled={!!busy}
+          title={t("skipTitle")}
           className="btn-press flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs text-muted hover:bg-card2 hover:text-txt disabled:opacity-50"
         >
           {busy === "skip" ? <Loader2 className="h-3 w-3 animate-spin" /> : <SkipForward className="h-3 w-3" />}
@@ -112,6 +114,10 @@ export function HumanInputCard({
           {t("abort")}
         </button>
       </div>
+      {/* Quick-fix D5: “跳过”易被读成门禁（跳过=放行/拦截）。它其实只是
+          “不等这个人”：resume 以空答案继续，下游节点照常执行。一句话钉死语义，
+          避免用户误以为这里能拦住流程或打回上游。 */}
+      <div className="mt-1.5 text-[10.5px] leading-relaxed text-faint">{t("skipHint")}</div>
     </div>
   );
 }
