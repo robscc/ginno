@@ -314,3 +314,61 @@ def test_artifact_metadata_and_user_corrections(client, sid):
     bad = client.put(f"/api/artifacts/{art['id']}", json={"name": "   "}).json()
     assert bad["ok"] is False
     assert client.get(f"/api/artifacts/{art['id']}/metadata").json()["artifact"]["name"] == "2026销售报表"
+
+
+# ---- 大小限额（R3 巡检 Q1/Q2）：upload 与 attach-path 同一口径 ----
+
+
+def test_upload_too_large_returns_code(client, sid):
+    """upload 超限：ok:false + code=file_too_large（前端据此弹专门文案）。"""
+    r = client.post(
+        "/api/files",
+        data={"session_id": sid},
+        files={"file": ("big.bin", b"x" * (100 * 1024 * 1024 + 1), "application/octet-stream")},
+    ).json()
+    assert r["ok"] is False
+    assert r["code"] == "file_too_large"
+    assert "100MB" in r["error"]
+    # 未落盘、未注册
+    assert client.get(f"/api/files?session_id={sid}").json() == []
+
+
+def test_attach_path_too_large_rejected_without_copy(client, sid, tmp_path):
+    """attach-path（原生拖拽）超限：与 upload 同一常量拒绝，不 copyfile、
+    不注册——修复原生拖拽绕过 100MB 限额（Q2）。sparse 文件省时省盘。"""
+    big = tmp_path / "原生大文件.iso"
+    with big.open("wb") as f:
+        f.truncate(100 * 1024 * 1024 + 1)
+
+    r = client.post(
+        "/api/files/attach-path", json={"session_id": sid, "path": str(big)}
+    ).json()
+    assert r["ok"] is False
+    assert r["code"] == "file_too_large"
+    assert r["size"] == 100 * 1024 * 1024 + 1  # 前端文案呈现实际大小
+    assert "100MB" in r["error"]
+    # 未落盘（uploads 目录无新文件）、未注册
+    from ginno_runtime import paths as gpaths
+
+    uploads = gpaths.session_uploads_dir("default", sid)
+    assert not uploads.exists() or list(uploads.iterdir()) == []
+    assert client.get(f"/api/files?session_id={sid}").json() == []
+
+
+def test_attach_path_normal_file_lands_and_registers(client, sid, tmp_path):
+    """attach-path 正常路径回归：小文件 copyfile 落盘 + 注册 + artifact。"""
+    src = tmp_path / "说明.md"
+    src.write_text("# 说明\n", encoding="utf-8")
+
+    r = client.post(
+        "/api/files/attach-path", json={"session_id": sid, "path": str(src)}
+    ).json()
+    assert r["ok"] is True, r
+    f = r["file"]
+    assert f["name"] == "说明.md"
+    assert f["size"] == src.stat().st_size
+    assert f"/sessions/{sid}/uploads/" in f["path"]
+    assert Path(f["path"]).is_file()  # 真的拷贝落盘了
+    assert f["artifact_id"]
+    listed = client.get(f"/api/files?session_id={sid}").json()
+    assert [x["id"] for x in listed] == [f["id"]]

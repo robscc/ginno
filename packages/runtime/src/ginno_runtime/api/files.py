@@ -352,6 +352,18 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     p = Path(src).expanduser()
     if not p.is_file():
         return {"ok": False, "error": f"File not found: {src}"}
+    # Q2（R3 巡检）：与 upload 端点同一上限——原生拖拽（Tauri shell 转发
+    # 路径）此前无大小检查直接 copyfile，绕过了 100MB 限额。同一常量、
+    # 同一错误码口径，前端据此给与上传一致的可见报错（响应带实际 size，
+    # 文案需要呈现文件大小）。
+    src_size = p.stat().st_size
+    if src_size > UPLOAD_MAX_BYTES:
+        return {
+            "ok": False,
+            "code": "file_too_large",
+            "size": src_size,
+            "error": f"File too large (max {UPLOAD_MAX_BYTES // 1024 // 1024}MB)",
+        }
     name = p.name
     dest_dir = paths.session_uploads_dir(slug, session_id)
     dest_dir.mkdir(parents=True, exist_ok=True)

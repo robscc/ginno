@@ -44,13 +44,18 @@ export function fmtUploadLimit(): string {
 /** 上传失败的呈现决定（纯函数，node 环境直测）：该用哪个文案 key、带哪些
  *  参数。超限拒绝（code=file_too_large 或本地预检）→ tooLarge（文件名+
  *  大小+上限）；其它失败 → failed（带后端 error 文本）。UI 层把它交给
- *  pushNotice 弹可见错误——修复「>100MB 上传无声失败」（R3 巡检 Q1）。 */
+ *  pushNotice 弹可见错误——修复「>100MB 上传无声失败」（R3 巡检 Q1）。
+ *  size 仅 attach-path 场景可缺省（前端无本地 File 对象；超限但拿不到
+ *  大小时降级 failed 分支展示后端 error 文本，不产残缺的 tooLarge 文案）。 */
 export function uploadFailureNotice(
   e: unknown,
   name: string,
-  size: number,
+  size?: number,
 ): { key: "tooLarge" | "failed"; params: Record<string, string> } {
   if (e instanceof UploadError && e.code === "file_too_large") {
+    if (size == null) {
+      return { key: "failed", params: { name, error: e.message || "file too large" } };
+    }
     return { key: "tooLarge", params: { name, size: fmtUploadSize(size), max: fmtUploadLimit() } };
   }
   const detail = e instanceof Error && e.message ? e.message : String(e || "unknown");

@@ -67,7 +67,9 @@ def _pick_file(page, path: Path):
 
 
 def _error_toast(page):
-    return page.get_by_role("alert")
+    # NoticeHost 的 error 卡片是 role=alert；排除 Next.js 常驻的 sr-only
+    # 路由播报器（__next-route-announcer__ 也是 role=alert，空文本会误报）。
+    return page.locator('[role="alert"]:not(#__next-route-announcer__)')
 
 
 def test_oversized_local_precheck_rejects_without_upload(app, tmp_path):
@@ -125,3 +127,39 @@ def test_backend_too_large_code_surfaces_visible_error(app, tmp_path):
         assert page.locator("text=Uploading").count() == 0
     finally:
         page.unroute("**/api/files")
+
+
+def test_native_drop_oversized_file_rejected_visibly(app, tmp_path):
+    """③ 原生拖拽（Q2）：>100MB 路径经 __ginnoFileDrop 桥挂载 → 真实后端
+    按同一常量拒绝，前端弹同一 tooLarge 可见文案（名字+大小+上限）。"""
+    page, port = app
+    _enter_session(page, port)
+
+    big = tmp_path / "原生大文件.iso"
+    with big.open("wb") as f:
+        f.truncate(150 * 1024 * 1024)
+
+    page.evaluate("(p) => window.__ginnoFileDrop && window.__ginnoFileDrop([p])", str(big))
+
+    toast = _error_toast(page).first
+    toast.wait_for(state="visible", timeout=10_000)
+    text = toast.inner_text()
+    assert "原生大文件.iso" in text, text
+    assert "150.0 MB" in text, text
+    assert TOO_LARGE_SNIPPET in text, text
+
+
+def test_native_drop_normal_file_attaches(app, tmp_path):
+    """④ 原生拖拽正常路径回归：小文件落盘注册成功，无错误 toast。"""
+    page, port = app
+    _enter_session(page, port)
+
+    src = tmp_path / "说明.md"
+    src.write_text("# e2e attach ok\n", encoding="utf-8")
+
+    page.evaluate("(p) => window.__ginnoFileDrop && window.__ginnoFileDrop([p])", str(src))
+
+    # 芯片从「上传中」翻转为就绪（文件名常驻 composer），且无 error toast
+    page.locator("text=说明.md").first.wait_for(state="visible", timeout=10_000)
+    page.wait_for_timeout(500)
+    assert _error_toast(page).count() == 0
