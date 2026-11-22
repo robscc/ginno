@@ -249,6 +249,7 @@
       "untouchedHint": "The current version is untouched until you apply",
       "noDsl": "This workflow has no editable DSL",
       "saveRejected": "Save failed (the server rejected this DSL)",
+      "saveRejectedDetail": "Save failed: {reason}",
       "invalidJson": "{field} is not valid JSON: {msg}",
       "notNumber": "{field} must be a number",
       "draftFailed": "Draft failed the dry run: {detail}",

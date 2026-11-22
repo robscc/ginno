@@ -234,8 +234,22 @@ export function NodeInspector({
       setEditing(false);
       setDiff(null);
       onSaved();
-    } catch {
-      setErr(tCommon("runtimeUnreachable"));
+    } catch (e) {
+      // Q6：updateWorkflow 走 jsonStrict，非 2xx 抛的 Error 带 ginnoStatus
+      // （HTTP 状态码）且 message=服务端 body.detail。对照设置页/TasksPanel
+      // 的分型范式：服务端明确拒绝（4xx，含将来的 409 并发冲突；5xx 同为
+      // 已送达的明确响应）→ 「保存失败：{服务端原因}」行内透传，不再丢
+      // detail 只显泛型文案；断连/超时（TypeError）→ 中性「无法连接
+      // runtime」，不漏浏览器技术串。
+      const st = (e as { ginnoStatus?: number } | null)?.ginnoStatus;
+      if (typeof st === "number") {
+        const reason = e instanceof Error && e.message ? e.message : `HTTP ${st}`;
+        setErr(t("saveRejectedDetail", { reason }));
+      } else if (e instanceof TypeError) {
+        setErr(tCommon("runtimeUnreachable"));
+      } else {
+        setErr(t("saveRejected"));
+      }
     } finally {
       setBusy(false);
     }
