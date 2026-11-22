@@ -112,6 +112,72 @@ async def test_python_node_args_raw_placeholder_and_template(monkeypatch):
     assert captured["label"] == "n=2"
 
 
+# ---- R3 巡检 Q9：args 占位符解析失败必须当场报错，不得静默 None ----------
+
+
+def _err_text(events) -> str:
+    errs = [e for e in events if e["kind"] == "error"]
+    assert errs, f"expected an error event, got {[e['kind'] for e in events]}"
+    return str(errs[0].get("error") or "") + str(errs[0].get("traceback") or "")
+
+
+async def test_missing_context_key_fails_with_pointing_error(monkeypatch):
+    """顶层 key 不存在：错误点名 node id、arg 名、缺失表达式与可用 keys。"""
+    monkeypatch.setitem(ENTRY_REGISTRY, "t_echo", lambda args: {"echo": args})
+    doc = _dsl(
+        [{"id": "p", "type": "python", "entry": "t_echo",
+          "args": {"records": "{{usage_records}}"},
+          "writes": {"echo": {"type": "object"}}}],
+        initial={"model_name": "m"},
+    )
+    events = await _run(doc)
+    assert events[-1]["kind"] == "error", events
+    text = _err_text(events)
+    assert "'p'" in text, text                      # 节点 id
+    assert "'records'" in text, text                # arg 名
+    assert "usage_records" in text, text            # 缺失的 key
+    assert "model_name" in text, text               # 当前可用 keys 点名
+    assert "available keys" in text, text
+
+
+async def test_nested_missing_key_fails_too(monkeypatch):
+    """嵌套缺失：中途掉进非映射（缺子键 → None 再下钻）同样当场报错，
+    而不是把 None 塞给 entry、把报错点后移到 entry 深处。"""
+    monkeypatch.setitem(ENTRY_REGISTRY, "t_echo", lambda args: {"echo": args})
+    doc = _dsl(
+        [{"id": "pn", "type": "python", "entry": "t_echo",
+          "args": {"records": "{{context.usage.deep.rows}}"},
+          "writes": {"echo": {"type": "object"}}}],
+        initial={"usage": {"shallow": 1}},
+    )
+    events = await _run(doc)
+    assert events[-1]["kind"] == "error", events
+    text = _err_text(events)
+    assert "'pn'" in text and "context.usage.deep.rows" in text, text
+    assert "cannot access 'rows' on non-mapping" in text, text  # 根因可见
+    assert "available keys: usage" in text, text                 # 顶层可用 keys
+
+
+async def test_normal_resolution_still_passes_raw_objects(monkeypatch):
+    """正常解析三态之「正常」：entry 收到的仍是原始对象，非字符串渲染。"""
+    captured = {}
+
+    def echo(args):
+        captured.update(args)
+        return {"echo": args}
+
+    monkeypatch.setitem(ENTRY_REGISTRY, "t_echo", echo)
+    doc = _dsl(
+        [{"id": "p", "type": "python", "entry": "t_echo",
+          "args": {"recs": "{{context.records}}"},
+          "writes": {"echo": {"type": "object"}}}],
+        initial={"records": [{"n": 1}]},
+    )
+    events = await _run(doc)
+    assert events[-1]["kind"] == "done", events
+    assert captured["recs"] == [{"n": 1}]
+
+
 async def test_python_entry_failure_fails_run(monkeypatch):
     def boom(args):
         raise ValueError("kaboom")
