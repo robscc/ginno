@@ -301,6 +301,8 @@ async def upload_file_endpoint(
     if len(data) > UPLOAD_MAX_BYTES:
         return {
             "ok": False,
+            # code 让前端可靠区分「超限拒绝」与其它失败（error 文本仅展示用）
+            "code": "file_too_large",
             "error": f"File too large (max {UPLOAD_MAX_BYTES // 1024 // 1024}MB)",
         }
     dest_dir = paths.session_uploads_dir(slug, session_id)

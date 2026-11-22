@@ -234,6 +234,10 @@
       "noSkills": "没有匹配的技能",
       "offShort": "已关",
       "offN": "已关 {n}"
+    },
+    "attach": {
+      "tooLarge": "“{name}”（{size}）超出 {max} 上传上限，未能添加。",
+      "failed": "“{name}” 添加失败：{error}"
     }
   }
 }
