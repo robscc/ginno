@@ -392,6 +392,9 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     store.patch_member(team_id, instance_id, {
         "status": "working",
         "status_detail": t("Delivering", "正在处理投递"),
+        # 新投递开始即清 sticky 回帖失败标记（quick-fix D10）——
+        # 这次投递自带的终态钩子会重新裁决成功/失败。
+        "last_reply_error": "",
     })
     await _broadcast_status(team_id)
     try:

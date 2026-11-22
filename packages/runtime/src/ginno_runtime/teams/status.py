@@ -15,7 +15,7 @@
 | ``done``    | turn 结束且**该客户端尚未 seen**（§3.3 收件箱语义） |
 | ``idle``    | 无 turn、无 pending、无子代、已 seen |
 | ``unknown`` | 状态不可判定：进程重启后 turn 未愈合（``stop_reason`` 缺失/running） |
-| ``error``   | 重试耗尽（``stop_reason == "error"``） |
+| ``error``   | 重试耗尽（``stop_reason == "error"``）；或回帖投递失败（``last_reply_error``，quick-fix D10） |
 
 ``status_detail`` 是**纯展示**文本（§3.4），绝不参与任何判断——它会随每个
 工具调用变化，若进逻辑状态机会抖动。
@@ -108,6 +108,13 @@ def member_status(
     meta = _found[0] if _found else {}
     if meta.get("last_error"):
         return "error", t("Retries exhausted", "重试耗尽")
+    # Quick-fix D10：turn 成功但回帖投递失败（post_reply 返回 False：主会话
+    # 缺失 / checkpoint 写失败等）。on_turn_settled 写入 sticky 的
+    # last_reply_error，这里判 error（红点 + detail 直读该文本），下一次
+    # 成功回帖或新投递开始时清除。必须排在「working→unknown」检查之前：
+    # 回帖失败的成员 stored status 仍是 working，先判 unknown 会把它吞掉。
+    if str(member.get("last_reply_error") or ""):
+        return "error", str(member["last_reply_error"])
     # 进程重启后 turn 未愈合：编制还写着 working，但没有任何活 turn。
     # → 状态不可判定。绝不 fallback 到 idle（§3.3，herdr 同款纪律：
     #   unknown = present but unclassifiable, not proof of completion）。
