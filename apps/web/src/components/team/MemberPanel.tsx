@@ -708,11 +708,18 @@ export function MemberPanel({
       </div>
 
       {/* P1-14：移除成员二次确认（复用仓库 ConfirmModal；级联删会话是
-          不可逆动作，必须点名成员）。Esc 由上方 useEscClose 承接。 */}
+          不可逆动作，必须点名成员）。Esc 由上方 useEscClose 承接。
+          R3 巡检 Q5：成员有活 turn（working，或 parked 等输入的 blocked）
+          时确认框必须说明后果——强停 turn + 全部会话不可恢复，对照「解散
+          团队」的活 turn 防呆范式；空闲成员保持原文案。 */}
       {confirmRemove && (
         <ConfirmModal
           title={tc("team.removeMemberConfirmTitle")}
-          message={tc("team.removeMemberConfirmMsg", { name: confirmRemove.display_name })}
+          message={
+            confirmRemove.status === "working" || confirmRemove.status === "blocked"
+              ? tc("team.removeMemberRunningMsg", { name: confirmRemove.display_name })
+              : tc("team.removeMemberConfirmMsg", { name: confirmRemove.display_name })
+          }
           confirmLabel={tc("team.removeMember")}
           onConfirm={() => void removeMember(confirmRemove)}
           onCancel={() => setConfirmRemove(null)}

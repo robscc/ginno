@@ -648,6 +648,7 @@
       "demoteMember": "降为成员",
       "removeMemberConfirmTitle": "移除成员？",
       "removeMemberConfirmMsg": "将删除「{name}」及其全部会话，不可恢复。",
+      "removeMemberRunningMsg": "「{name}」正在运行：移除将强停其 turn，并删除其全部会话（不可恢复）。",
       "togglePanel": "显示 / 隐藏成员面板",
       "closePanel": "关闭成员面板",
       "rollupExplainer": "状态上卷：成员 → 团队行 → 侧栏徽标。只有「等你回答 / 完成未读」会冒泡到全局徽标，工作中止于团队行。",
