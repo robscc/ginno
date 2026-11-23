@@ -284,6 +284,9 @@ export function TaskEventBand({ block }: { block: Extract<Block, { kind: "task_e
     : block.ev === "finished" ? tc("taskCard.evFinished", { exit: block.exit ?? "?" })
     : block.ev === "stopped" ? tc("taskCard.evStopped")
     : block.ev === "timeout" ? tc("taskCard.evTimeout")
+    : block.ev === "failed_to_start" ? tc("taskCard.badge.failedToStart")
+    : block.ev === "interrupted" ? tc("taskCard.badge.interrupted")
+    : block.ev === "watch_muted" ? tc("taskCard.badge.muted")
     : block.ev === "lastwords" ? tc("taskCard.evLastwords")
     : block.ev;
   const showCard = hover && !!task?.command;

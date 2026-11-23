@@ -1030,7 +1030,12 @@ def _messages_to_ui(
             task_kw = (getattr(m, "additional_kwargs", None) or {}).get(
                 "ginno_task_event"
             )
-            if isinstance(task_kw, dict) and task_kw.get("task"):
+            # Old batches only stamped the last event. Preserve the full raw
+            # batch for the history client to recover every legacy receipt.
+            legacy_task_batch = isinstance(content_raw, str) and re.match(
+                r"^[1-9]\d* background task events arrived:\n\n", content_raw,
+            )
+            if isinstance(task_kw, dict) and task_kw.get("task") and not legacy_task_batch:
                 blk = {
                     "kind": "task_event",
                     "taskId": str(task_kw.get("task") or ""),
