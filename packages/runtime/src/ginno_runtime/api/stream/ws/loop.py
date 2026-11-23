@@ -15,7 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .... import jsonx as json
 from ....server_shared import _RUNNING_TURNS, _ev, _log
-from ..reasoning_summary import active_summaries
+from ..reasoning_summary import active_summaries, active_summary
 from .control import (
     handle_plan_cancel,
     handle_plan_confirm,
@@ -115,7 +115,10 @@ async def run_receive_loop(conn: WsConn) -> None:
 
             compaction = _COMPACTING.get(session_id)
             turn_id = _RUNNING_TURNS.get(session_id, "")
-            summaries = active_summaries(session_id, turn_id)
+            summaries = (
+                active_summaries(session_id, turn_id)
+                if msg.get("include_reasoning_summaries", True) else []
+            )
             try:
                 await ws.send_text(
                     _ev(
@@ -131,6 +134,18 @@ async def run_receive_loop(conn: WsConn) -> None:
                 )
             except Exception:
                 return  # socket died between recv and send
+        elif kind == "reasoning_summary_state":
+            request_id = msg.get("requestId")
+            if isinstance(request_id, str):
+                turn_id = _RUNNING_TURNS.get(session_id, "")
+                summary = active_summary(session_id, turn_id, request_id)
+                if summary:
+                    try:
+                        await ws.send_text(_ev("reasoning.summary", {
+                            "frame_session": session_id, "summary": summary, "recovery": True,
+                        }, turn_id))
+                    except Exception:
+                        return
         elif kind == "mod.ui.press":
             # Mod band button (design §7.2): forward to the mods channel;
             # the broker validates the generation against its current

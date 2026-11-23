@@ -202,10 +202,22 @@ def test_codex_reasoning_summary_reaches_websocket_once(
     assert not events_of(events, "error")
     summaries = events_of(events, "reasoning.summary")
     assert summaries and not events_of(events, "thinking.delta")
-    snapshot = summaries[-1]["summary"]
+    snapshot, = events_of(events, "message.end")[0]["reasoning_summaries"]
     parts = snapshot["parts"]
     assert [p["text"] for p in parts] == ["Compare choices.", "**Verify**"]
-    assert {frame["summary"]["requestId"] for frame in summaries} == {snapshot["requestId"]}
+    received = {part["id"]: "" for part in parts}
+    revision = 0
+    for frame in summaries:
+        assert "summary" not in frame
+        delta = frame["summaryDelta"]
+        assert delta["requestId"] == snapshot["requestId"]
+        assert delta["baseRevision"] == revision
+        revision = delta["revision"]
+        for part in delta["parts"]:
+            received[part["id"]] += part["text"]
+    assert list(received.values()) == [part["text"] for part in parts]
+    assert summaries[-1]["summaryDelta"]["receiving"] is False
+    assert revision == snapshot["revision"]
     history = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     assert [b for m in history for b in m["blocks"] if b["kind"] == "reasoning_summary"] == [
         {"kind": "reasoning_summary", "requestId": snapshot["requestId"], "parts": parts},
@@ -245,8 +257,8 @@ def test_request_summaries_keep_order_after_a_tool_and_reconnect(client, create_
         original.invoke("Compare")
         tool_events = original.recv_until("tool.end", "error")
         assert tool_events[-1]["event"] == "tool.end"
-        first = events_of(tool_events, "reasoning.summary")[-1]["summary"]
-        second = original.recv_until("reasoning.summary", "error")[-1]["summary"]
+        first = events_of(tool_events, "reasoning.summary")[-1]["summaryDelta"]
+        second = original.recv_until("reasoning.summary", "error")[-1]["summaryDelta"]
         assert not first["receiving"] and second["receiving"]
         assert first["requestId"] == tool_events[-1]["requestId"]
         assert first["requestId"] != second["requestId"]
@@ -254,11 +266,21 @@ def test_request_summaries_keep_order_after_a_tool_and_reconnect(client, create_
             try:
                 reconnected.send({"type": "turn_state"})
                 probe = reconnected.recv_until("turn.state")[-1]
-                assert probe["running"] and probe["reasoning_summaries"] == [first, second]
+                assert probe["running"]
+                first_snapshot, second_snapshot = probe["reasoning_summaries"]
+                assert first_snapshot["revision"] == first["revision"]
+                assert second_snapshot["revision"] == second["revision"]
+                assert [p["text"] for p in first_snapshot["parts"]] == ["First request"]
+                assert [p["text"] for p in second_snapshot["parts"]] == ["Second request"]
+                reconnected.send({"type": "reasoning_summary_state", "requestId": second["requestId"]})
+                recovery = reconnected.recv_until("reasoning.summary")[-1]
+                assert recovery["recovery"] and recovery["summary"] == second_snapshot
+                reconnected.send({"type": "turn_state", "include_reasoning_summaries": False})
+                assert "reasoning_summaries" not in reconnected.recv_until("turn.state")[-1]
             finally:
                 release.set()
             final = reconnected.recv_until("message.end", "error")[-1]
-            assert final["reasoning_summaries"][0] == first
+            assert final["reasoning_summaries"][0] == first_snapshot
             second_final = final["reasoning_summaries"][1]
             assert not second_final["receiving"]
             assert [p["text"] for p in second_final["parts"]] == ["Second request", "Finish checking"]

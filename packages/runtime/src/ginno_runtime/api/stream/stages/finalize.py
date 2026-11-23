@@ -259,7 +259,7 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
     await ctx._coal.flush()
     request = ctx.reasoning_summary.current
     if request is not None and request.receiving:
-        request.finish_receiving()
+        request.take_delta(receiving=False)
     summaries = ctx.reasoning_summary.snapshots()
     await ctx.safe_send(
         ctx.emit(

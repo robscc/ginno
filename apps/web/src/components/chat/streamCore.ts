@@ -314,18 +314,24 @@ function appendStreamDelta(
 }
 
 function applyReasoningSummary(blocks: Block[], raw: unknown): Block[] {
-  const snapshot = raw as Extract<Block, { kind: "reasoning_summary" }> | undefined;
+  const snapshot = raw as (Extract<Block, { kind: "reasoning_summary" }> & { baseRevision?: number }) | undefined;
   if (!snapshot || !Array.isArray(snapshot.parts) || typeof snapshot.revision !== "number") return blocks;
-  const { requestId, revision, receiving } = snapshot;
+  const { requestId, baseRevision, revision, receiving } = snapshot;
   const previous = blocks.find(
     (block): block is Extract<Block, { kind: "reasoning_summary" }> =>
       block.kind === "reasoning_summary" && block.requestId === requestId,
   );
   if (previous?.revision !== undefined && previous.revision >= revision) return blocks;
 
-  const parts = new Map(previous?.parts.map(part => [part.id, part]));
+  const isDelta = baseRevision !== undefined;
+  if (isDelta && baseRevision !== (previous?.revision ?? 0)) return blocks;
+
+  const parts = new Map(isDelta ? previous?.parts.map(part => [part.id, part]) : undefined);
   for (const part of snapshot.parts) {
-    if (part && typeof part.id === "string" && typeof part.text === "string") parts.set(part.id, part);
+    if (part && typeof part.id === "string" && typeof part.text === "string") {
+      const prefix = parts.get(part.id)?.text ?? "";
+      parts.set(part.id, { id: part.id, text: prefix + part.text });
+    }
   }
   if (!parts.size) return blocks;
   const next: Block = { kind: "reasoning_summary", requestId, parts: [...parts.values()], revision, receiving };
@@ -349,7 +355,7 @@ switch (ev.event) {
   case "thinking.delta":
     return appendStreamDelta(blocks, "thinking", (ev.content as string) || "");
   case "reasoning.summary":
-    return applyReasoningSummary(blocks, ev.summary);
+    return applyReasoningSummary(blocks, ev.summaryDelta ?? ev.summary);
   case "turn.state":
   case "message.end":
     return Array.isArray(ev.reasoning_summaries)

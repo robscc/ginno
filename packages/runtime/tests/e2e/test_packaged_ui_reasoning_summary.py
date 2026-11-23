@@ -47,6 +47,31 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
         with sync_playwright() as pw:
             browser, page = smoke._new_page(pw)
             try:
+                dropped = []
+                probes = []
+
+                def intercept(ws):
+                    server = ws.connect_to_server()
+
+                    def receive(raw):
+                        frame = json.loads(raw)
+                        delta = frame.get("summaryDelta")
+                        if delta and not dropped:
+                            assert delta["baseRevision"] == 0
+                            dropped.append(delta["requestId"])
+                            return
+                        ws.send(raw)
+
+                    def send(raw):
+                        frame = json.loads(raw)
+                        if frame.get("type") == "reasoning_summary_state":
+                            probes.append(frame["requestId"])
+                        server.send(raw)
+
+                    server.on_message(receive)
+                    ws.on_message(send)
+
+                page.route_web_socket("**/api/ws/sessions/**", intercept)
                 page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
                 ta = page.locator("textarea").first
                 ta.fill("Compare two options")
@@ -95,6 +120,7 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
                     assert removed.bounding_box()["y"] == added.bounding_box()["y"]
 
                 check_transcript()
+                assert dropped and dropped[0] in probes
                 page.reload(wait_until="load")
                 check_transcript()
             finally:

@@ -1129,3 +1129,70 @@ def test_model_list_recommendations_require_capability_metadata(client, monkeypa
         "alias": {"tag": "codex", "max_effort": "ultra"}, "unknown": {"tag": "codex"},
     }
     assert len(r["models"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_verify_draft_keeps_event_loop_available(monkeypatch):
+    import asyncio
+    import threading
+
+    from ginno_runtime.api.config import verify_model_config_endpoint
+
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def probe(_draft):
+        probe_started.set()
+        assert release_probe.wait(2)
+        return {"ok": False, "error": "probe rejected"}
+
+    monkeypatch.setattr(prov_mod, "verify_config_draft", probe)
+    verifying = asyncio.create_task(verify_model_config_endpoint({"api_key": "fixture-key"}))
+    try:
+        assert await asyncio.to_thread(probe_started.wait, 2)
+        assert not verifying.done()
+    finally:
+        release_probe.set()
+        result = await verifying
+    assert result["error"] == "probe rejected"
+
+
+def test_provider_refresh_serializes_index_read_and_write(isolated_home, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from ginno_runtime import session_meta
+    from ginno_runtime.api.config import _refresh_session_metas
+
+    providers = {"p": {"enabled": True, "models": ["new"], "default_model": "new"}}
+    monkeypatch.setattr(prov_mod, "load_providers", lambda _settings: providers)
+    monkeypatch.setattr(prov_mod, "get_default_provider", lambda _settings: "p")
+    session_meta._session_meta_upsert("default", {
+        "id": "s", "title": "before", "provider": "p", "model": "old",
+    })
+    read_index = session_meta._session_meta_list
+    snapshot_read = Event()
+    title_write_started = Event()
+
+    def read_during_refresh(slug):
+        rows = read_index(slug)
+        if not snapshot_read.is_set():
+            assert session_meta._IDX_LOCK._is_owned()
+            snapshot_read.set()
+            assert title_write_started.wait(2)
+        return rows
+
+    def rename():
+        assert snapshot_read.wait(2)
+        title_write_started.set()
+        session_meta._session_meta_patch("default", "s", {"title": "renamed"}, touch=False)
+
+    monkeypatch.setattr(session_meta, "_session_meta_list", read_during_refresh)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        renaming = pool.submit(rename)
+        _refresh_session_metas()
+        renaming.result()
+
+    row, = read_index("default")
+    assert row["model"] == "new"
+    assert row["title"] == "renamed"

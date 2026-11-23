@@ -335,7 +335,7 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
       });
       if (probe) {
         probeSeqRef.current = ++ioSeqRef.current;
-        socket.send({ type: "turn_state" });
+        socket.send({ type: "turn_state", include_reasoning_summaries: false });
       }
     }, SOCKET_TIMING.WATCH_TICK_MS);
     return () => clearInterval(iv);

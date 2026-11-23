@@ -3,6 +3,7 @@ MCP server config, and skills management."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -463,7 +464,7 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
                 "API Key 仍是掩码占位值，请重新填写真实 Key",
             ),
         }
-    result = prov_mod.verify_config_draft(draft)
+    result = await asyncio.to_thread(prov_mod.verify_config_draft, draft)
     if not result.get("ok"):
         return {
             "ok": False,
@@ -607,7 +608,7 @@ def _refresh_session_metas(previous: dict[str, dict] | None = None) -> dict[str,
     enabled global default.
     """
     from ..agents.registry import provider_is_deliberate
-    from ..session_meta import _session_meta_rewrite_all
+    from ..session_meta import _session_meta_update_all
 
     settings = _read_settings_file()
     providers = prov_mod.load_providers(settings)
@@ -621,47 +622,42 @@ def _refresh_session_metas(previous: dict[str, dict] | None = None) -> dict[str,
         allowed = (providers.get(pid) or {}).get("models") or []
         return bool(model) and (not allowed or model in allowed)
 
-    projects_root = paths.home() / "projects"
-    if not projects_root.is_dir():
-        return refreshed
-    for slug_dir in sorted(projects_root.iterdir()):
-        if not slug_dir.is_dir():
-            continue
-        slug = slug_dir.name
-        metas = _session_meta_list(slug)
-        changed = False
-        for m in metas:
-            cur_pid = m.get("provider")
-            cur_model = m.get("model")
-            provider, model = cur_pid, cur_model
-            if not enabled(cur_pid) or not allows(cur_pid, cur_model):
-                ag = _agent_lookup(m.get("agent_id"))
-                agent_pid = ag.provider if provider_is_deliberate(ag) else None
-                provider = agent_pid if enabled(agent_pid) else default_pid
-                agent_model = ag.model if ag and allows(provider, ag.model) else None
-                model = agent_model or prov_mod.model_for_provider(providers, provider)
+    def refresh_binding(m: dict) -> dict:
+        cur_pid = m.get("provider")
+        cur_model = m.get("model")
+        provider, model = cur_pid, cur_model
+        if not enabled(cur_pid) or not allows(cur_pid, cur_model):
+            ag = _agent_lookup(m.get("agent_id"))
+            agent_pid = ag.provider if provider_is_deliberate(ag) else None
+            provider = agent_pid if enabled(agent_pid) else default_pid
+            agent_model = ag.model if ag and allows(provider, ag.model) else None
+            model = agent_model or prov_mod.model_for_provider(providers, provider)
 
-            saved_effort = m.get("thinking_effort")
-            target_cfg = providers.get(provider)
-            if previous is None and (provider, model) == (cur_pid, cur_model):
-                eff = resolve_model_effort(target_cfg, model, saved_effort)
-            else:
-                source_cfg = (previous if previous is not None else providers).get(cur_pid)
-                eff = inherit_model_effort(source_cfg, cur_model, target_cfg, model, saved_effort)
-            effort = eff or "auto"
-            binding_changed = (provider, model) != (cur_pid, cur_model)
-            effort_changed = saved_effort is not None and effort != saved_effort
-            if binding_changed or effort_changed:
-                m.update(provider=provider, model=model, thinking_effort=effort)
-                changed = True
-            if m.get("id") in _SESSIONS:
-                refreshed[m["id"]] = {
-                    "provider": provider, "model": model, "thinking_effort": effort,
-                    "binding_changed": binding_changed, "effort_changed": effort_changed,
-                    "effort_reset": effort_changed and effort == "auto",
-                }
-        if changed:
-            _session_meta_rewrite_all(slug, metas)
+        saved_effort = m.get("thinking_effort")
+        target_cfg = providers.get(provider)
+        if previous is None and (provider, model) == (cur_pid, cur_model):
+            eff = resolve_model_effort(target_cfg, model, saved_effort)
+        else:
+            source_cfg = (previous if previous is not None else providers).get(cur_pid)
+            eff = inherit_model_effort(source_cfg, cur_model, target_cfg, model, saved_effort)
+        effort = eff or "auto"
+        binding_changed = (provider, model) != (cur_pid, cur_model)
+        effort_changed = saved_effort is not None and effort != saved_effort
+        if m.get("id") in _SESSIONS:
+            refreshed[m["id"]] = {
+                "provider": provider, "model": model, "thinking_effort": effort,
+                "binding_changed": binding_changed, "effort_changed": effort_changed,
+                "effort_reset": effort_changed and effort == "auto",
+            }
+        if binding_changed or effort_changed:
+            return {"provider": provider, "model": model, "thinking_effort": effort}
+        return {}
+
+    projects_root = paths.home() / "projects"
+    if projects_root.is_dir():
+        for slug_dir in sorted(projects_root.iterdir()):
+            if slug_dir.is_dir():
+                _session_meta_update_all(slug_dir.name, refresh_binding)
     return refreshed
 
 
@@ -750,7 +746,7 @@ async def put_providers(req: PutProvidersRequest) -> dict:
 
 @router.post("/api/providers/{provider_id}/verify")
 async def verify_provider(provider_id: str) -> dict:
-    return prov_mod.verify(provider_id)
+    return await asyncio.to_thread(prov_mod.verify, provider_id)
 
 
 @router.post("/api/providers/{provider_id}/search_probe")

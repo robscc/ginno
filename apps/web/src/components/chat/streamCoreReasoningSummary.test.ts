@@ -49,3 +49,17 @@ it("restores missing summaries before their own surviving tool or text blocks", 
     { kind: "text", requestId: next.requestId, text: "Next answer" },
   ]);
 });
+
+it("appends each delta once and recovers a missing revision before continuing", () => {
+  const first = snapshot("request", 1, "Check ");
+  const sendDelta = (blocks: Block[], baseRevision: number, summary: ReturnType<typeof snapshot>) =>
+    applyBlock(blocks, { event: "reasoning.summary", summaryDelta: { ...summary, baseRevision } });
+  const current = sendDelta([], 0, first);
+  const late = snapshot(first.requestId, 3, "carefully");
+  expect(sendDelta(current, 2, late)).toBe(current);
+  const recovered = applySummary(current, snapshot(first.requestId, 2, "Check inputs "));
+  const appended = sendDelta(recovered, 2, late);
+  const final = sendDelta(appended, 3, { ...late, revision: 4, parts: [], receiving: false });
+  expect(sendDelta(final, 2, late)).toBe(final);
+  expect(final[0]).toMatchObject({ receiving: false, parts: [{ text: "Check inputs carefully" }] });
+});
