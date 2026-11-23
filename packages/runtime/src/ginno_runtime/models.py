@@ -352,6 +352,44 @@ def _responses_chat_openai() -> type:
         _RESPONSES_CLS = ResponsesReasoningChatOpenAI
     return _RESPONSES_CLS
 
+
+def _glm_anthropic_payload(payload: dict) -> dict:
+    """Use portable Anthropic messages for GLM-5.3 and its gateway aliases."""
+    model = str(payload.get("model") or "").rsplit("/", 1)[-1].lower()
+    if model != "glm-5.3" and not model.startswith("glm-5.3-"):
+        return payload
+
+    def clean_blocks(blocks: Any) -> Any:
+        if not isinstance(blocks, list):
+            return blocks
+        cleaned = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                cleaned.append(block)
+                continue
+            kind = block.get("type")
+            if kind in ("thinking", "redacted_thinking"):
+                continue
+            item = {key: value for key, value in block.items() if key != "cache_control"}
+            if kind == "tool_result" and "content" in item:
+                item["content"] = clean_blocks(item["content"])
+            cleaned.append(item)
+        return cleaned
+
+    cleaned = {key: value for key, value in payload.items() if key != "cache_control"}
+    messages = []
+    for message in payload["messages"]:
+        content = clean_blocks(message["content"])
+        if content == [] and message["content"] and message["role"] == "assistant":
+            continue
+        messages.append({**message, "content": content})
+    cleaned["messages"] = messages
+    for key in ("system", "tools"):
+        if key in cleaned:
+            cleaned[key] = clean_blocks(cleaned[key])
+    return cleaned
+
+
 # Lazily-built Anthropic class (same pattern as ReasoningChatOpenAI): the
 # provider needs the same dangling-tool_call repair as the OpenAI path.
 _ANTHROPIC_CLS: type | None = None
@@ -371,7 +409,8 @@ def _healing_chat_anthropic() -> type:
             messages = _with_interrupted_tool_results(
                 self._convert_input(input_).to_messages()
             )
-            return super()._get_request_payload(messages, stop=stop, **kwargs)
+            payload = super()._get_request_payload(messages, stop=stop, **kwargs)
+            return _glm_anthropic_payload(payload)
 
     _ANTHROPIC_CLS = HealingChatAnthropic
     return _ANTHROPIC_CLS

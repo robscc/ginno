@@ -15,10 +15,14 @@ same ``(interrupted)`` ToolMessages the stop-path heal uses.
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ginno_runtime import providers as prov_mod
-from ginno_runtime.models import _with_interrupted_tool_results, build_model
+from ginno_runtime.models import (
+    _healing_chat_anthropic,
+    _with_interrupted_tool_results,
+    build_model,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -173,3 +177,44 @@ def test_invalid_tool_calls_also_get_answers():
     out = _with_interrupted_tool_results([HumanMessage("go"), msg])
     assert [m.type for m in out] == ["human", "ai", "tool"]
     assert out[2].tool_call_id == "bad1"
+
+
+@pytest.mark.parametrize(
+    "model,normalize",
+    [
+        ("zhipu/GLM-5.3", True),
+        ("GLM-5.3", True),
+        ("gateway/gLm-5.3-flash", True),
+        ("glm-5.30", False),
+        ("claude-sonnet-4-6", False),
+    ],
+)
+def test_anthropic_glm_53_payload_normalized_before_send(model, normalize):
+    client = _healing_chat_anthropic()(model=model, api_key="test")
+    mark = {"cache_control": {"type": "ephemeral"}}
+    thinking = {"type": "thinking", "thinking": "test", "signature": "opaque"}
+    assistant = _ai("call_example").model_copy(update={"content": [thinking]})
+    tool_text = {"type": "text", "text": "ok", **mark}
+    payload = client._get_request_payload(
+        [
+            SystemMessage(content=[{"type": "text", "text": "instructions", **mark}]),
+            HumanMessage("go"),
+            assistant,
+            ToolMessage(content=[tool_text], tool_call_id="call_example"),
+        ],
+        stream=True,
+    )
+
+    assert payload["model"] == model
+    assert payload["stream"] is True
+    assert assistant.content == [thinking]
+    assistant_blocks = payload["messages"][1]["content"]
+    (tool_result,) = payload["messages"][2]["content"]
+    assert assistant_blocks[-1]["id"] == tool_result["tool_use_id"] == "call_example"
+    assert tool_result["content"] == [{"type": "text", "text": "ok"}]
+    if normalize:
+        assert [block["type"] for block in assistant_blocks] == ["tool_use"]
+        assert payload["system"] == [{"type": "text", "text": "instructions"}]
+    else:
+        assert [block["type"] for block in assistant_blocks] == ["thinking", "tool_use"]
+        assert payload["system"][0]["cache_control"] == mark["cache_control"]
