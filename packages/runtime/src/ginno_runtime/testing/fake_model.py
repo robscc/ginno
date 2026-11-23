@@ -50,7 +50,7 @@ def script_tool_call(name: str, args: dict[str, Any] | None = None, call_id: str
 
 
 def script(
-    text: str = "",
+    text: str | list[str | dict] = "",
     tool_calls: list[dict] | None = None,
     msg_id: str | None = None,
     usage: dict | None = None,
@@ -222,10 +222,9 @@ class ScriptedChatModel(BaseChatModel):
                     )
                 )
         else:
-            content = msg.content if isinstance(msg.content, str) else ""
             yield ChatGenerationChunk(
                 message=AIMessageChunk(
-                    content=content,
+                    content=msg.content,
                     id=cid,
                     **({"usage_metadata": usage} if usage else {}),
                 )

@@ -21,6 +21,7 @@ from .. import workflows as wf_store
 from ..api import server_tools
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
+from ..models import responses_reasoning_summary
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ..tools.render_tools import RENDER_TOOL_NAMES, split_attach_tags, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
@@ -1171,9 +1172,11 @@ def _messages_to_ui(
             for blk in step:
                 if blk.get("kind") == "sources" and blk.get("items"):
                     blk["items"] = _resolve_source_items(blk["items"], ref_map)
-            rk = (getattr(m, "additional_kwargs", None) or {}).get("reasoning_content")
-            if rk:
-                step.insert(0, {"kind": "thinking", "text": rk})
+            reasoning = responses_reasoning_summary(m) or (
+                getattr(m, "additional_kwargs", None) or {}
+            ).get("reasoning_content")
+            if reasoning:
+                step.insert(0, {"kind": "thinking", "text": reasoning})
             for tc in getattr(m, "tool_calls", None) or []:
                 nm = tc.get("name")
                 args = tc.get("args") or {}

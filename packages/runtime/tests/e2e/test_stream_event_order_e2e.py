@@ -10,14 +10,17 @@ Network-free：FakeModel 驱动真实 engine + WS 链路（hermetic suite rule�
 
 from __future__ import annotations
 
+import httpx
 import pytest
-from conftest import event_names
+from conftest import event_names, events_of
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult, ChatGeneration
+from openai import AsyncOpenAI
 from pydantic import PrivateAttr
 
 from ginno_runtime import jsonx as json
+from ginno_runtime import models
 from ginno_runtime.api.stream import delta_coalesce
 
 pytestmark = pytest.mark.e2e
@@ -149,3 +152,51 @@ def test_thinking_does_not_overtake_buffered_text(create_session, ws_conv):
     assert before == "正文尾片", (
         f"thinking 插队到缓冲文本前: thinking.delta 前只收到 {before!r}"
     )
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+def test_codex_reasoning_summary_reaches_websocket_once(
+    protocol, client, create_session, ws_conv, monkeypatch,
+):
+    name = "codex/gpt-6.2-sol"
+    cfg = {
+        "enabled": True,
+        "protocol": protocol,
+        "api_key": "fixture-key",
+        "base_url": "https://responses.example.test/v1",
+        "default_model": name,
+    }
+    monkeypatch.setattr(models.prov_mod, "load_providers", lambda: {"fixture": cfg})
+    model = models.build_model("fixture")
+    wire_events = [
+        {"type": "response.reasoning_summary_text.delta", "delta": text,
+         "output_index": 0, "summary_index": 0, "item_id": "rs_test", "sequence_number": i}
+        for i, text in enumerate(("Compare ", "choices."))
+    ]
+    wire_events.append({
+        "type": "response.output_text.delta", "delta": "Choose B.",
+        "output_index": 1, "content_index": 0, "item_id": "msg_test", "sequence_number": 2,
+    })
+    requests = []
+
+    def provider(request):
+        requests.append(request.url.path)
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in wire_events)
+        return httpx.Response(200, content=body, headers={"Content-Type": "text/event-stream"})
+
+    transport = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+    model.root_async_client = AsyncOpenAI(
+        base_url=cfg["base_url"], api_key=cfg["api_key"], http_client=transport,
+    )
+    try:
+        sid = create_session(model, title="Summary transport test")
+        with ws_conv(sid) as conv:
+            conv.invoke("Select an option.")
+            events = conv.recv_until("message.end", "error")
+    finally:
+        client.portal.call(transport.aclose)
+
+    assert requests == ["/v1/responses"]
+    assert not events_of(events, "error")
+    assert "".join(e["content"] for e in events_of(events, "thinking.delta")) == "Compare choices."
+    assert "".join(e["content"] for e in events_of(events, "token.delta")) == "Choose B."
