@@ -101,6 +101,7 @@ if [ "${#extras[@]}" -gt 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   echo "✅ tray_anim 12 帧（frame_00..frame_11）齐全且均为 PNG"
+else
+  echo "在仓库根目录运行 make tray-frames 修复后重试。" >&2
 fi
-echo "（判据：缺失/错名/坏内容即失败；修复用 apps/desktop/scripts/gen_tray_rainbow.py --only <帧名...>）" >&2
 exit "$status"
