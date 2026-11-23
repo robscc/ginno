@@ -250,6 +250,8 @@ runtime: web
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
+  --exclude-module pandas.tests --exclude-module 'pandas.tests.*' \
+  --exclude-module pandas.conftest --exclude-module pandas.util._test_decorators \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
 	  --add-data "$(RUNTIME)/build-info.json:." \
@@ -283,6 +285,11 @@ runtime: web
 	@# ginno_runtime（mods/ops.py version("ginno-runtime")）同款地雷——
 	@# 三者 import 顶层查元数据且无兜底，白名单保留，其余照剥。
 	@# 防回归：tests/e2e/test_packaged_import_health.py 实测两条懒加载链。
+	@# 2026-11-24 瘦身：--collect-all pandas 会把 pandas/tests 整棵子包连同
+	@# 数据文件收进来（_internal/pandas/tests 15M + PYZ 里 7.46M 含 _pytest），
+	@# 运行时零引用。上面 --exclude-module 挡 PYZ 模块；数据文件不走模块
+	@# 分析，这里物理剥除（与 dist-info 剥除同款零风险通道）。
+	@rm -rf $(RUNTIME)/dist/ginno-runtime/_internal/pandas/tests
 	@find $(RUNTIME)/dist/ginno-runtime/_internal -maxdepth 1 -name '*.dist-info' \
 	  ! -name 'mcp-*' ! -name 'httpx2-*' ! -name 'httpcore2-*' ! -name 'ginno_runtime-*' \
 	  -exec rm -rf {} + 2>/dev/null || true
