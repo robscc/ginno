@@ -5,7 +5,7 @@ import { foldTaskEventBlocks } from "./taskEventParse";
 // 样例取自 runtime tasks/inject.py STATUS_TEXT 的真实格式（2026-11-07 会话
 // dev-swap-retry-120s 任务的 #keep 消息原文）。
 describe("foldTaskEventBlocks", () => {
-  it("finished 带解析出 taskId/exit/dur，tail 保留为 text block", () => {
+  it("finished 带解析出 taskId/exit/dur，tail 作为可展开日志保留", () => {
     const src = [
       {
         kind: "text" as const,
@@ -13,14 +13,14 @@ describe("foldTaskEventBlocks", () => {
       },
     ];
     const out = foldTaskEventBlocks(src);
-    expect(out).toHaveLength(2);
+    expect(out).toHaveLength(1);
     const tev = out[0] as { kind: string; taskId: string; ev: string; exit: number; dur: string };
     expect(tev.kind).toBe("task_event");
     expect(tev.taskId).toBe("t_1218152f");
     expect(tev.ev).toBe("finished");
     expect(tev.exit).toBe(2);
     expect(tev.dur).toBe("2m 00s");
-    expect((out[1] as { text: string }).text).toContain('{"ok":true}');
+    expect(out[0]).toMatchObject({ log: expect.stringContaining('{"ok":true}') });
   });
 
   it("failed to start 带（无 exit/dur）折为 failed_to_start", () => {

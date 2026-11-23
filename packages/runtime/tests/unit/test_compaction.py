@@ -136,6 +136,21 @@ def test_copy_with_new_id_preserves_content_and_changes_id():
     assert tm2.tool_call_id == "c1" and tm2.id != "oldt"
 
 
+@pytest.mark.parametrize("key,value", [
+    ("ginno_task_event", {"task": "t_compact", "kind": "finished"}),
+    ("ginno_subagent_result", "plan-demo"),
+    ("ginno_team_delivery", {"team_id": "team-demo", "instance_id": "member-demo"}),
+    ("ginno_steer", {"steer_id": "steer-demo"}),
+])
+def test_copy_with_new_id_preserves_human_message_markers(key, value):
+    message = HumanMessage(content="synthetic input", id="original", additional_kwargs={key: value})
+    copied = _copy_with_new_id(message)
+
+    assert copied.id != message.id
+    assert copied.additional_kwargs == {key: value}
+    assert copied.additional_kwargs is not message.additional_kwargs
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end (graph level, no server)
 # --------------------------------------------------------------------------- #

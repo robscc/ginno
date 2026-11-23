@@ -125,7 +125,7 @@ export type Block =
   // 同 transcript 里 bg_run 的常驻 TaskCard 承载（toolBlocks 特判渲染）。
   // ev: finished|stopped|timeout|interrupted|failed_to_start|healthy|watch。
   | { kind: "task_event"; taskId: string; ev: string; title?: string;
-      exit?: number | null; dur?: string }
+      exit?: number | null; dur?: string; log?: string }
   // 拆分方案卡片（P2 共享契约 1/2）：由 subagent.plan WS 事件驱动（live 追加，
   // 不持久化——未确认的方案没有落 checkpoint 的意义）。组件本体在
   // subagentPlanCard.tsx（本文件已超 1600 行，卡片不再往里塞）。

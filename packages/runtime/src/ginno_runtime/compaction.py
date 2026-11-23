@@ -196,7 +196,7 @@ def find_split_index(messages: list[BaseMessage], keep_turns: int) -> int:
 def _copy_with_new_id(m: BaseMessage) -> BaseMessage:
     new_id = f"keep_{uuid.uuid4().hex[:10]}"
     if isinstance(m, HumanMessage):
-        return HumanMessage(content=m.content, id=new_id)
+        return m.model_copy(update={"id": new_id, "additional_kwargs": dict(m.additional_kwargs)})
     if isinstance(m, ToolMessage):
         return ToolMessage(
             content=m.content,
