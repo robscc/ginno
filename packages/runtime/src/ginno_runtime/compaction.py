@@ -353,8 +353,7 @@ async def maybe_compact_history(
         return None
     old, keep = messages[:split], messages[split:]
 
-    model = session.get("model")
-    if model is None:
+    if session.get("model") is None:
         return None
 
     # Mods tap (claude-code-mods-design.md §5.3 session.compact, P2): a chain
@@ -380,6 +379,13 @@ async def maybe_compact_history(
         return None
     turn_id = (config.get("configurable") or {}).get("turn_id")
     async with compaction_activity(session_id, turn_id) as writing:
+        # The model can change while waiting for the hook or publishing the status.
+        model = session.get("model")
+        if model is None:
+            return None
+        provider = session.get("model_provider") or ""
+        model_name = session.get("model_name") or ""
+        agent_id = session.get("agent_id") or None
         started = time.perf_counter()
         summary_input = [
             _summary_system_message(),
@@ -421,25 +427,18 @@ async def maybe_compact_history(
 
             u = extract_usage(summary_resp)
             if u:
-                _sreg: dict = {}
-                try:
-                    from .server_shared import _SESSIONS
-
-                    _sreg = _SESSIONS.get(session_id) or {}
-                except Exception:  # noqa: BLE001 — 注册表不可用也照记（缺 provider）
-                    pass
                 _cfg_slug = (config.get("configurable") or {}).get("project_slug") or "default"
                 usage_store.record(
                     input_tokens=u["input_tokens"],
                     output_tokens=u["output_tokens"],
                     cache_read_tokens=u["cache_read_tokens"],
                     cache_creation_tokens=u["cache_creation_tokens"],
-                    provider=_sreg.get("model_provider") or "",
-                    model=_sreg.get("model_name") or "",
+                    provider=provider,
+                    model=model_name,
                     source="compaction",
                     session_id=session_id or None,
                     project_slug=_cfg_slug,
-                    agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
+                    agent_id=agent_id,
                 )
                 log.info(
                     "compaction_usage_recorded session=%s in=%d out=%d",

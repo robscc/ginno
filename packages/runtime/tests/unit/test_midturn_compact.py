@@ -18,7 +18,8 @@ def _mk_node(model=None, settings=None, est_ret=None, boost=1.0):
     """构造 compact_check 节点 + 可控依赖。"""
     from ginno_runtime import graph as gmod
 
-    factory = gmod._compact_check_node_factory(model or AsyncMock())
+    model = model or AsyncMock()
+    factory = gmod._compact_check_node_factory(lambda: model)
     node = factory
     return node
 
@@ -41,7 +42,7 @@ async def test_under_soft_limit_passthrough(monkeypatch):
     from ginno_runtime.graph import _compact_check_node_factory
 
     model = AsyncMock()
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
 
     def fake_settings():
         return {"compact_mid_turn": True, "compact_mid_headroom_tokens": 32768}
@@ -74,7 +75,7 @@ async def test_over_soft_limit_compacts_with_tail_kept(monkeypatch):
 
     model = AsyncMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="SUMMARY-TEXT"))
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
 
     def fake_settings():
         return {"compact_mid_turn": True}
@@ -113,7 +114,7 @@ async def test_summary_failure_passthrough(monkeypatch):
 
     model = AsyncMock()
     model.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
 
     def fake_settings():
         return {"compact_mid_turn": True}
@@ -201,6 +202,7 @@ async def test_integration_long_turn_triggers_midcompact(isolated_home, monkeypa
     import ginno_runtime.compaction as cmod
     import ginno_runtime.world_state as ws
     from ginno_runtime.graph import build_graph
+    from ginno_runtime.server_shared import _SESSIONS, make_session_model_getter
     from ginno_runtime.testing.fake_model import script_tool_call
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
@@ -238,8 +240,11 @@ async def test_integration_long_turn_triggers_midcompact(isolated_home, monkeypa
     )
     from ginno_runtime.tools.skill_tools import build_skill_tools
 
+    old_model = ScriptedChatModel(scripts=[])
+    sid = "t-midcompact"
     graph = build_graph(
-        model=model,
+        model=old_model,
+        model_getter=make_session_model_getter(sid, old_model),
         project_slug="default",
         workspace="/tmp",
         mcp_tools=[],
@@ -247,11 +252,12 @@ async def test_integration_long_turn_triggers_midcompact(isolated_home, monkeypa
     )
     cfg = {
         "configurable": {
-            "thread_id": "t-midcompact",
+            "thread_id": sid,
             "project_slug": "default",
             "agent_id": "dev",
         }
     }
+    monkeypatch.setitem(_SESSIONS, sid, {"model": model})
     result = await graph.ainvoke(
         {
             "messages": (
@@ -303,7 +309,7 @@ async def test_tail_boundary_backs_off_orphan_toolmessage(monkeypatch):
 
     model = AsyncMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="SUM"))
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
     monkeypatch.setattr(cmod, "estimate_messages_tokens", lambda m: 900_000)
     monkeypatch.setattr(cmod, "_effective_compact_threshold", lambda s, sess: 500_000)
     monkeypatch.setattr(
@@ -349,7 +355,7 @@ async def test_all_tool_chain_skips_compaction(monkeypatch):
     from ginno_runtime.graph import _compact_check_node_factory
 
     model = AsyncMock()
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
     monkeypatch.setattr(cmod, "estimate_messages_tokens", lambda m: 900_000)
     monkeypatch.setattr(cmod, "_effective_compact_threshold", lambda s, sess: 500_000)
     monkeypatch.setattr(
@@ -385,7 +391,7 @@ async def test_throttle_persists_across_node_calls_and_resets(monkeypatch):
 
     model = AsyncMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="SUM"))
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
     monkeypatch.setattr(cmod, "estimate_messages_tokens", lambda m: 900_000)
     monkeypatch.setattr(cmod, "_effective_compact_threshold", lambda s, sess: 500_000)
     monkeypatch.setattr(ws, "context_settings", lambda: _mid_settings())
@@ -433,7 +439,7 @@ async def test_events_routed_by_thread_id(monkeypatch):
 
     model = AsyncMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="SUM"))
-    node = _compact_check_node_factory(model)
+    node = _compact_check_node_factory(lambda: model)
     monkeypatch.setattr(cmod, "estimate_messages_tokens", lambda m: 900_000)
     monkeypatch.setattr(cmod, "_effective_compact_threshold", lambda s, sess: 500_000)
     monkeypatch.setattr(ws, "context_settings", lambda: _mid_settings())
@@ -465,10 +471,20 @@ async def test_midcompact_records_usage_and_baseline(monkeypatch):
     import ginno_runtime.usage_store as ustore
     import ginno_runtime.world_state as ws
     from ginno_runtime.graph import _compact_check_node_factory
+    from ginno_runtime.server_shared import _SESSIONS, make_session_model_getter
 
+    sid = "t-usage"
+    old_model = AsyncMock()
     model = AsyncMock()
-    model.ainvoke = AsyncMock(
-        return_value=AIMessage(
+    session = {"model": old_model, "model_provider": "old", "model_name": "old"}
+    monkeypatch.setitem(_SESSIONS, sid, session)
+    node = _compact_check_node_factory(make_session_model_getter(sid, old_model))
+    session.update(model=model, model_provider="current", model_name="summarizer")
+
+    async def summarize(_messages):
+        # In-flight requests are billed to the model they started with.
+        session.update(model=old_model, model_provider="other", model_name="replacement")
+        return AIMessage(
             content="SUM",
             usage_metadata={
                 "input_tokens": 120,
@@ -476,8 +492,8 @@ async def test_midcompact_records_usage_and_baseline(monkeypatch):
                 "total_tokens": 127,
             },
         )
-    )
-    node = _compact_check_node_factory(model)
+
+    model.ainvoke = AsyncMock(side_effect=summarize)
     orig_est = cmod.estimate_messages_tokens
     msgs = (
         [SystemMessage(content="world facts")]
@@ -517,7 +533,11 @@ async def test_midcompact_records_usage_and_baseline(monkeypatch):
     assert len(compaction_rows) == 1
     assert compaction_rows[0]["input_tokens"] == 120
     assert compaction_rows[0]["output_tokens"] == 7
-    assert compaction_rows[0]["session_id"] == "t-usage"
+    assert compaction_rows[0]["session_id"] == sid
+    assert compaction_rows[0]["provider"] == "current"
+    assert compaction_rows[0]["model"] == "summarizer"
+    model.ainvoke.assert_awaited_once()
+    old_model.ainvoke.assert_not_called()
     assert len(baseline_rows) == 1
     assert baseline_rows[0]["input_tokens"] == expected_baseline
     assert baseline_rows[0]["session_id"] == "t-usage"

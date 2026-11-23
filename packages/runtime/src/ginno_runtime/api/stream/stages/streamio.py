@@ -24,7 +24,10 @@ def make_emit(ctx: StreamTurnCtx):
         if event in ("reasoning.summary", "token.delta", "tool.start", "tool.end", "user.question"):
             if request := ctx.reasoning_summary.current:
                 if event == "reasoning.summary":
-                    data = {**data, "summary": request.snapshot()}
+                    data = {
+                        **data,
+                        "summaryDelta": request.take_delta(receiving=bool(data["content"])),
+                    }
                 else:
                     data = {**data, "requestId": request.request_id}
         # Vibe Island notch 状态收口(engine 的 safe_send 不走
@@ -192,7 +195,6 @@ async def finish_reasoning_summary(ctx: StreamTurnCtx) -> None:
     if request is None or not request.receiving:
         return
     await ctx._coal.flush_kind("reasoning.summary")
-    request.finish_receiving()
     await ctx.safe_send(ctx.emit("reasoning.summary", {"content": ""}))
 
 

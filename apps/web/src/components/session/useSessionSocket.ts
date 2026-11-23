@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { openSessionSocket } from "@/lib/runtime";
+import { trackReasoningSummaries } from "@/lib/reasoningSummaryStream";
 import { SOCKET_TIMING, type SessionFrame } from "./sessionBlocks";
 
 export type SocketStatus = "connecting" | "live" | "reconnecting";
@@ -56,6 +57,7 @@ export function useSessionSocket(opts: UseSessionSocketOpts) {
     setStatus("connecting");
     const sid = optsRef.current.sessionId;
     const sock = openSessionSocket(sid);
+    const acceptSummaryFrame = trackReasoningSummaries((frame) => sock.send(JSON.stringify(frame)));
     sockRef.current = sock;
     sock.onopen = () => {
       if (sockRef.current !== sock) return;
@@ -115,7 +117,7 @@ export function useSessionSocket(opts: UseSessionSocketOpts) {
           clearTimeout(reconcileRef.current);
           reconcileRef.current = null;
         }
-        optsRef.current.onEvent(ev);
+        if (acceptSummaryFrame(ev)) optsRef.current.onEvent(ev);
       } catch {
         /* malformed frame — ignore */
       }

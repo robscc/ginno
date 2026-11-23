@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 
 from ginno_runtime import jsonx as json
 
@@ -64,6 +65,20 @@ def _session_meta_list(slug: str) -> list[dict]:
         return json.loads(p.read_text() or "[]")
     except json.JSONDecodeError:
         return []
+
+
+def _session_meta_update_all(slug: str, update: Callable[[dict], dict]) -> None:
+    """Apply per-session field updates to the latest index in one transaction."""
+    with _IDX_LOCK:
+        items = _session_meta_list(slug)
+        changed = False
+        for item in items:
+            patch = update(item)
+            if patch:
+                item.update(patch)
+                changed = True
+        if changed:
+            _write_index(slug, items)
 
 
 def _session_meta_upsert(slug: str, entry: dict) -> None:

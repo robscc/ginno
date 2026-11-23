@@ -542,11 +542,7 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
     imports inside the branches). Never raises.
     """
     proto = cfg.get("protocol")
-    # Interactive settings-page probe: bounded independently of the chat
-    # timeout — this runs synchronously inside the asyncio event loop
-    # (api/config.py verify_model_config_endpoint), so the P2 default of 300s
-    # against a black-holed base_url would freeze EVERY session for 5 minutes.
-    # 60s preserves the pre-P2 effective bound.
+    # Bound the interactive settings-page probe independently of chat requests.
     timeout = min(float(cfg.get("timeout_s") or 300), 60.0)
     t0 = time.time()
 

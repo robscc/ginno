@@ -1132,7 +1132,7 @@ def reset_mid_compact_state(session_id: str) -> None:
         _MID_STATE.pop(sid, None)
 
 
-def _compact_check_node_factory(model):
+def _compact_check_node_factory(model_getter):
     """turn 中压缩检查节点（P1，2026-11-21 mid-turn compaction 方案）。
 
     接在 tools→agent 之间，每轮工具循环直通检查（本地 token 估算 <1ms）；
@@ -1150,6 +1150,8 @@ def _compact_check_node_factory(model):
 
     from langchain_core.messages import HumanMessage
     from langchain_core.messages import RemoveMessage, ToolMessage
+
+    from .server_shared import _SESSIONS
 
     _mclog = _logging.getLogger("ginno_runtime.midcompact")
 
@@ -1182,13 +1184,7 @@ def _compact_check_node_factory(model):
         # 审计 G①（P3）：软限阈值按本会话模型窗口收紧（与 turn 外
         # maybe_compact_history 同口径）——惰性取 server_shared 注册表，
         # 取不到回退 None（全局默认模型，原行为）。
-        session_reg: dict | None = None
-        try:
-            from .server_shared import _SESSIONS
-
-            session_reg = _SESSIONS.get(session_id) or None
-        except Exception:  # noqa: BLE001 — 注册表不可用回退全局默认
-            session_reg = None
+        session_reg = _SESSIONS.get(session_id) or None
         threshold = _effective_compact_threshold(settings, session_reg)
         headroom = int(settings.get("compact_mid_headroom_tokens", 32768))
         count, boost = _MID_STATE.get(session_id, (0, 1.0))
@@ -1223,6 +1219,11 @@ def _compact_check_node_factory(model):
 
         try:
             async with compaction_activity(session_id, _cfg.get("turn_id")):
+                model = model_getter()
+                binding = _SESSIONS.get(session_id) or {}
+                provider = binding.get("model_provider") or ""
+                model_name = binding.get("model_name") or ""
+                agent_id = binding.get("agent_id") or None
                 summary = await model.ainvoke(
                     [
                         _summary_system_message(),
@@ -1265,18 +1266,17 @@ def _compact_check_node_factory(model):
 
             u = extract_usage(summary)
             if u:
-                _sreg = session_reg or {}
                 usage_store.record(
                     input_tokens=u["input_tokens"],
                     output_tokens=u["output_tokens"],
                     cache_read_tokens=u["cache_read_tokens"],
                     cache_creation_tokens=u["cache_creation_tokens"],
-                    provider=_sreg.get("model_provider") or "",
-                    model=_sreg.get("model_name") or "",
+                    provider=provider,
+                    model=model_name,
                     source="compaction",
                     session_id=session_id or None,
                     project_slug=str(_cfg.get("project_slug") or "default"),
-                    agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
+                    agent_id=agent_id,
                 )
         except Exception:  # noqa: BLE001
             _mclog.debug("mid_compact_usage_record_failed", exc_info=True)
@@ -1512,7 +1512,7 @@ def build_graph(
     # like bg_run spawned duplicate tasks — 2026-11-03 session 1a0c1d77,
     # four pytest/cargo spawns from two calls). Verified by
     # test_permission_block_does_not_fork_lanes.
-    g.add_node("compact_check", _compact_check_node_factory(model))
+    g.add_node("compact_check", _compact_check_node_factory(resolve_model))
     # turn 中压缩（P1）：工具循环每轮回 agent 前过一遍软限检查——
     # 未超时直通零开销（本地估算 <1ms），超软限做「摘要旧轮次 + 保留
     # 当前 turn 尾窗」的部分压缩（全量重建仍归 turn 边界 E3）。

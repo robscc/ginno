@@ -1,7 +1,7 @@
 """Visible Responses summaries grouped by model request in an active turn.
 
-Each snapshot carries a revision so stream delivery and turn-state probes
-can arrive in either order. Completed history comes from AI messages.
+A delta advances the last emitted revision. Snapshots can recover missed
+deltas when a client reconnects. Completed history comes from AI messages.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ _revisions = count(1)
 class RequestReasoningSummary:
     def __init__(self, request_id: str):
         self.request_id = request_id
-        self.parts: dict[str, str] = {}
+        self.parts: dict[str, list[str]] = {}
+        self._pending: dict[str, list[str]] = {}
         self.revision = 0
         self.receiving = False
 
@@ -22,25 +23,37 @@ class RequestReasoningSummary:
         delta = []
         for part in parts:
             key, text = part["id"], part["text"]
-            if self.parts and key not in self.parts:
+            if (self.parts or self._pending) and key not in self.parts and key not in self._pending:
                 delta.append("\n\n")
-            self.parts[key] = self.parts.get(key, "") + text
+            self._pending.setdefault(key, []).append(text)
             delta.append(text)
-        self.receiving = True
-        self.revision = next(_revisions)
         return "".join(delta)
+
+    def take_delta(self, *, receiving: bool) -> dict:
+        base_revision = self.revision
+        parts = []
+        for key, fragments in self._pending.items():
+            text = "".join(fragments)
+            self.parts.setdefault(key, []).append(text)
+            parts.append({"id": key, "text": text})
+        self._pending.clear()
+        self.receiving = receiving
+        self.revision = next(_revisions)
+        return {
+            "requestId": self.request_id,
+            "baseRevision": base_revision,
+            "revision": self.revision,
+            "receiving": self.receiving,
+            "parts": parts,
+        }
 
     def snapshot(self) -> dict:
         return {
             "requestId": self.request_id,
             "revision": self.revision,
             "receiving": self.receiving,
-            "parts": [{"id": key, "text": text} for key, text in self.parts.items()],
+            "parts": [{"id": key, "text": "".join(parts)} for key, parts in self.parts.items()],
         }
-
-    def finish_receiving(self) -> None:
-        self.receiving = False
-        self.revision = next(_revisions)
 
 
 class TurnReasoningSummary:
@@ -57,7 +70,11 @@ class TurnReasoningSummary:
             self.current = self._requests[request_id]
 
     def snapshots(self) -> list[dict]:
-        return [request.snapshot() for request in self._requests.values()]
+        return [request.snapshot() for request in self._requests.values() if request.revision]
+
+    def snapshot_for(self, request_id: str) -> dict | None:
+        request = self._requests.get(request_id)
+        return request.snapshot() if request and request.revision else None
 
 
 _active: dict[str, TurnReasoningSummary] = {}
@@ -77,3 +94,7 @@ def end_summary(session_id: str, summary: TurnReasoningSummary) -> None:
 def active_summaries(session_id: str, turn_id: str) -> list[dict]:
     summary = _active.get(session_id)
     return summary.snapshots() if summary and summary.turn_id == turn_id else []
+
+def active_summary(session_id: str, turn_id: str, request_id: str) -> dict | None:
+    summary = _active.get(session_id)
+    return summary.snapshot_for(request_id) if summary and summary.turn_id == turn_id else None

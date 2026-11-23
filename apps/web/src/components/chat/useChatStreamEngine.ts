@@ -26,6 +26,7 @@ import {
 } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
+import { trackReasoningSummaries } from "@/lib/reasoningSummaryStream";
 import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
 import { useEventI18nText, type Block } from "@/components/chat/blocks";
 import { registerModPanePressSender } from "@/components/chat/mod/paneBus";
@@ -470,6 +471,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     statusRef.current[sid] = "connecting";
     syncDisplay(sid);
     const sock = openSessionSocket(sid);
+    const acceptSummaryFrame = trackReasoningSummaries((frame) => sock.send(JSON.stringify(frame)));
     socketsRef.current[sid] = sock;
     // socket-ready promise: lazy creation (home → first send) must be able to
     // await the socket instead of racing it into a "连接未就绪" failed bubble.
@@ -549,7 +551,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
           if (s?.readyState === WebSocket.OPEN) {
             try {
               probeSeqRef.current[sid] = ++ioSeqRef.current;
-              s.send(JSON.stringify({ type: "turn_state" }));
+              s.send(JSON.stringify({ type: "turn_state", include_reasoning_summaries: false }));
             } catch { /* ignore */ }
           }
         }
@@ -576,7 +578,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
           } catch { /* socket may be closing */ }
           return;
         }
-        handle(sid, ev);
+        if (acceptSummaryFrame(ev)) handle(sid, ev);
       } catch { /* ignore */ }
     };
     sock.onerror = () => {
