@@ -18,6 +18,8 @@ import {
   LastwordsCard,
   type Block,
 } from "@/components/chat/blocks";
+import { TaskEventBand } from "../TaskCard";
+import { PlanUpdateCard } from "../blocks/subagentCards";
 import { SubagentPlanCard } from "../subagentPlanCard";
 import { TeamReplyCard, requestOpenMemberWorkspace } from "../TeamReplyCard";
 import { stashOpenMemberIntent } from "@/components/team/openMemberIntent";
@@ -43,6 +45,18 @@ import {
   sliceResetNeeded,
   sliceStart,
 } from "@/lib/transcriptSlices";
+
+function isIndependentEvent(block: Block): block is Extract<Block, { kind: "task_event" | "plan_update" }> {
+  return block.kind === "task_event" || block.kind === "plan_update";
+}
+
+function IndependentEvents({ blocks }: { blocks: Block[] }) {
+  return blocks.filter(isIndependentEvent).map((block, index) => (
+    block.kind === "task_event"
+      ? <TaskEventBand key={`task-${block.taskId}-${index}`} block={block} />
+      : <PlanUpdateCard key={`plan-${block.planId}-${index}`} block={block} />
+  ));
+}
 
 export function TranscriptList({
   messages,
@@ -382,6 +396,7 @@ export function TranscriptList({
                 任何一方的气泡，是事件驱动的系统行。subagent_spawn 卡已停渲染
                 （顶部 SubagentBoard 接管，见文件头注释）。 */}
             <div className="flex w-full max-w-[85%] flex-col gap-2">
+              <IndependentEvents blocks={m.blocks} />
               {m.blocks
                 .filter((b): b is Extract<Block, { kind: "subagent_plan" }> => b.kind === "subagent_plan")
                 .map((b) => (
@@ -406,6 +421,10 @@ export function TranscriptList({
                 )}
               />
             </div>
+          </div>
+        ) : m.role === "user" && m.blocks.every(isIndependentEvent) && m.blocks.length > 0 ? (
+          <div key={m.id} className="mx-auto flex w-full max-w-[85%] flex-col gap-2">
+            <IndependentEvents blocks={m.blocks} />
           </div>
         ) : m.role === "user" &&
           m.blocks.some(

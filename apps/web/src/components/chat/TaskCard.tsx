@@ -20,6 +20,7 @@ import {
   TASK_TERMINAL,
   type TaskRecord,
 } from "@/lib/runtime";
+import type { Block } from "./blocks/types";
 import { useChatT } from "./blocks/i18n";
 
 /** bg_run 结果文本的机器头：``task=t_xxxxxxxx status=running pid=123``。 */
@@ -264,7 +265,7 @@ function fetchTaskOnce(tid: string): Promise<TaskRecord | null> {
   return p;
 }
 
-export function TaskEventBand({ block }: { block: { taskId: string; ev: string; title?: string; exit?: number | null; dur?: string } }) {
+export function TaskEventBand({ block }: { block: Extract<Block, { kind: "task_event" }> }) {
   const { tc } = useChatT();
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [hover, setHover] = useState(false);
@@ -287,41 +288,49 @@ export function TaskEventBand({ block }: { block: { taskId: string; ev: string; 
     : block.ev;
   const showCard = hover && !!task?.command;
   return (
-    <div
-      ref={cardRef}
-      className="relative my-1 flex items-center gap-1.5 border-l-2 py-0.5 pl-2 text-[11px]"
-      style={{ borderColor: color, color: "rgb(var(--muted))", background: "color-mix(in srgb, currentColor 4%, transparent)" }}
-      onMouseEnter={() => {
-        setHover(true);
-        if (REAL_TID_RE.test(block.taskId)) {
-          void fetchTaskOnce(block.taskId).then((t) => {
-            // 缓存可能来自更早的轮询（任务那时还 running）——终态字段以
-            // 事件行为准展示，这里只取 command/cwd，不覆盖行内状态。
-            if (t) setTask(t);
-          });
-        }
-      }}
-      onMouseLeave={() => setHover(false)}
-    >
-      <span style={{ color }}>▸</span>
-      <span className="truncate">
-        {label} · <span className="font-mono">{block.title || block.taskId}</span>
-        {block.dur ? ` · ${block.dur}` : ""}
-      </span>
-      {showCard && (
-        <div
-          className="absolute left-2 top-full z-30 mt-1 w-max max-w-xl overflow-hidden rounded-lg border border-line bg-card shadow-lg"
-          data-testid={`task-event-cmd-${block.taskId}`}
-        >
-          <div className="select-text whitespace-pre-wrap break-all px-3 py-2 font-mono text-[11px] leading-relaxed text-txt">
-            $ {task!.command}
-          </div>
-          {task!.cwd ? (
-            <div className="border-t border-line px-3 py-1.5 font-mono text-[10px] text-faint">
-              cwd: {task!.cwd}
+    <div>
+      <div
+        ref={cardRef}
+        className="relative my-1 flex items-center gap-1.5 border-l-2 py-0.5 pl-2 text-[11px]"
+        style={{ borderColor: color, color: "rgb(var(--muted))", background: "color-mix(in srgb, currentColor 4%, transparent)" }}
+        onMouseEnter={() => {
+          setHover(true);
+          if (REAL_TID_RE.test(block.taskId)) {
+            void fetchTaskOnce(block.taskId).then((t) => {
+              // 缓存可能来自更早的轮询（任务那时还 running）——终态字段以
+              // 事件行为准展示，这里只取 command/cwd，不覆盖行内状态。
+              if (t) setTask(t);
+            });
+          }
+        }}
+        onMouseLeave={() => setHover(false)}
+      >
+        <span style={{ color }}>▸</span>
+        <span className="truncate">
+          {label} · <span className="font-mono">{block.title || block.taskId}</span>
+          {block.dur ? ` · ${block.dur}` : ""}
+        </span>
+        {showCard && (
+          <div
+            className="absolute left-2 top-full z-30 mt-1 w-max max-w-xl overflow-hidden rounded-lg border border-line bg-card shadow-lg"
+            data-testid={`task-event-cmd-${block.taskId}`}
+          >
+            <div className="select-text whitespace-pre-wrap break-all px-3 py-2 font-mono text-[11px] leading-relaxed text-txt">
+              $ {task!.command}
             </div>
-          ) : null}
-        </div>
+            {task!.cwd ? (
+              <div className="border-t border-line px-3 py-1.5 font-mono text-[10px] text-faint">
+                cwd: {task!.cwd}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+      {block.log && (
+        <details className="mb-1 ml-2 text-xs text-muted">
+          <summary className="cursor-pointer">{tc("taskCard.outputTail")}</summary>
+          <pre className="selectable max-h-48 overflow-auto whitespace-pre-wrap break-words">{block.log}</pre>
+        </details>
       )}
     </div>
   );
