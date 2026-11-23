@@ -161,6 +161,16 @@ def on_turn_event(session_id: str | None, event: str, data: dict) -> None:
         shared.spawn_bg(_mirror_question(session_id, data))
 
 
+async def retire_mirrored_question(session_id: str, qid: str) -> None:
+    """Release the chat slot for a question answered by subscriber sync."""
+    ad = _wecom_adapter()
+    if ad is None:
+        return
+    for chat_key, pending in list(ad._pending_q.items()):
+        if pending.get("session_id") == session_id and pending.get("question_id") == qid:
+            await ad.unregister_pending_question(chat_key, pending)
+
+
 async def _mirror_question(session_id: str, data: dict) -> None:
     from .base import ChannelTap
     from .wecom.tap import WeComTap

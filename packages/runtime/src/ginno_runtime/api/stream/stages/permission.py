@@ -84,8 +84,11 @@ async def handle_interrupt(ctx: StreamTurnCtx, delta) -> None:
             # 既有行为零变化；qid 凭证由 ask_tools 在 interrupt payload
             # 里生成并随 checkpoint 落盘（三层凭证链的第一层）。
             try:
+                from ....worker_bus.question_sync import sync_parked_answer
                 from ....worker_bus.relay import note_parked_question
 
+                if await sync_parked_answer(ctx.session_id, value):
+                    continue
                 await note_parked_question(ctx.session_id, ctx.turn_id, value)
             except Exception:
                 eng._log.exception(

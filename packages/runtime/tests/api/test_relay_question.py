@@ -22,7 +22,7 @@ import pytest
 from ginno_runtime import server_shared
 from ginno_runtime.api.stream import resume as resume_mod
 from ginno_runtime.tools import ask_tools as at
-from ginno_runtime.worker_bus import relay
+from ginno_runtime.worker_bus import question_sync, relay
 
 
 @pytest.fixture(autouse=True)
@@ -175,7 +175,7 @@ async def test_parked_registers_subscribers_and_payload(isolated_home, monkeypat
     assert set(ent.get("asked") or {}) == {"sess-sub", "sess-sub2"}
     text = relay._relay_instructions(ent)
     assert "relay_answer" in text and "ask_user" in text
-    assert "含义" in text or "meaning" in text
+    assert "完整文本" in text or "original option text" in text
     assert "qid" in text and "sess-worker" in text
 
 
@@ -523,6 +523,47 @@ async def test_resume_question_tombstones_relay(isolated_home, monkeypatch):
     assert tb["answered_by"] == "user" and tb["answer"] == "Ginno 全局"
     server_shared._PENDING_RESUME.discard("sess-worker")
     server_shared._PENDING_KIND.pop("sess-worker", None)
+
+
+def test_sync_multi_card_matches_options_by_label():
+    original = {"multi": True, "questions": [
+        {"question": "Where?", "options": ["local", "shared"]},
+        {"question": "When?", "options": ["today", "later"]},
+    ]}
+    selections = question_sync.selected_options(original, {
+        "multi": True, "answers": [{"option_index": 1}, {"option_index": 0}],
+    })
+    forwarded = {"multi": True, "questions": [
+        {"question": "Date?", "options": ["later", "today"]},
+        {"question": "Destination?", "options": ["shared", "local"]},
+    ]}
+    assert question_sync._map_selections(selections, forwarded) == {
+        "multi": True, "answers": [
+            {"answer": "today", "option_index": 1}, {"answer": "shared", "option_index": 0},
+        ],
+    }
+    forwarded["questions"][0]["options"] = ["today", "tomorrow"]
+    assert question_sync._map_selections(selections, forwarded) is None
+    assert question_sync.selected_options(original, {
+        "multi": True, "answers": [{"option_index": 1}, {"skip": True}],
+    }) == []
+
+
+def test_sync_requires_trusted_relay_origin():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    envelope = '<ginno_worker_question worker="worker" qid="q_worker">request</ginno_worker_question>'
+    marker = {"ginno_worker_msg": {"kind": "question", "from": "worker", "qid": "q_worker"}}
+    origin = HumanMessage(content=envelope, additional_kwargs=marker, id="before-ask")
+    card = AIMessage(content="", tool_calls=[{"name": "ask_user", "args": {}, "id": "card"}])
+    earlier = AIMessage(content="", tool_calls=[{"name": "ask_user", "args": {}, "id": "earlier"}])
+
+    assert question_sync._relay_origin([origin, card], "card") == (
+        "worker", "q_worker", envelope, "before-ask",
+    )
+    assert question_sync._relay_origin([HumanMessage(content=envelope), card], "card") is None
+    assert question_sync._relay_origin([origin, earlier, card], "card") is None
+    assert question_sync._relay_origin([origin, HumanMessage(content="Another question"), card], "card") is None
 
 
 async def test_resume_question_arm_from_checkpoint(isolated_home, monkeypatch):

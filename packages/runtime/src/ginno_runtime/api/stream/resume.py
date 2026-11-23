@@ -74,6 +74,7 @@ async def resume_question(
     session: dict | None = None,
     answered_by: str = "user",
     relayed_by: str | None = None,
+    expected_qid: str = "",
 ) -> bool:
     """user_question 的统一 resume 段（relay-question 设计 ⑤，零复制抽取）。
 
@@ -88,13 +89,24 @@ async def resume_question(
     note_session_resumed`` 即销 pending_relay 登记条目、写墓碑——保证
     任何一路 resume 之后，晚到的另一路 relay 必然命中墓碑（幂等零影响）。
     """
-    if arm_from_checkpoint and session_id not in _PENDING_RESUME:
-        # resume_pending_interrupt 只认内存守卫;守卫丢失(重连/重启竞态)
-        # 时以 checkpointer 事实武装它——steer 即答路径的存在意义。
+    from ...worker_bus import relay
+
+    parked = None
+    needs_arm = arm_from_checkpoint and session_id not in _PENDING_RESUME
+    if expected_qid or needs_arm or relay.has_pending_for_worker(session_id):
         sess = session if session is not None else shared._SESSIONS.get(session_id)
-        if sess is not None and _parked_user_question(sess, session_id) is not None:
-            _PENDING_RESUME.add(session_id)
-            _PENDING_KIND[session_id] = "user_question"
+        if sess is not None:
+            parked = _parked_user_question(sess, session_id)
+    if expected_qid and (not parked or parked.get("qid") != expected_qid):
+        return False
+    if needs_arm and parked is not None:
+        if expected_qid:
+            # An accepted resume can still be draining the old checkpoint.
+            task = _TURN_TASKS.get(session_id)
+            if session_id in shared._RUNNING_TURNS or (task is not None and not task.done()):
+                return False
+        _PENDING_RESUME.add(session_id)
+        _PENDING_KIND[session_id] = "user_question"
     value: dict = {"kind": "user_answer"}
     if multi:
         value["multi"] = True
@@ -111,16 +123,11 @@ async def resume_question(
         )
     ok = resume_pending_interrupt(session_id, value, base_config=base_config)
     if ok:
-        # 墓碑统一收口：relay 登记条目即销（无登记时零开销 dict 扫描）。
+        # Close the original relay registration before returning the receipt.
         try:
-            from ...worker_bus.relay import note_session_resumed
-
-            summary = str(answer or "")
-            if multi:
-                summary = "; ".join(
-                    str(a.get("answer") or "") for a in value["answers"]
-                )
-            note_session_resumed(session_id, answered_by, summary)
+            relay.note_session_resumed(
+                session_id, answered_by, value, qid=str((parked or {}).get("qid") or ""),
+            )
         except Exception:
             _log.exception("relay_note_resumed_failed session=%s", session_id)
     return ok

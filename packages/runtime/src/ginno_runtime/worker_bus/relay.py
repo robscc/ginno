@@ -20,8 +20,7 @@ WS 连接上——订阅它的会话（订阅方）应当能代为转达：用�
    relay_answer 命中墓碑返回 ``already_answered``（纯只读四不：
    不 resume / 不写 checkpoint / 不广播 / 不动注册表）。
 
-幂等零影响（v5）：墓碑只服务「晚到的 relay 答案」一个消费者，读路径
-绝不触碰 worker 侧任何状态。
+墓碑为晚到的 relay_answer 提供只读回执，也保留原选项供订阅方的转达卡同步。
 """
 
 from __future__ import annotations
@@ -148,6 +147,10 @@ def tombstone_of(qid: str) -> dict | None:
     return _RELAY_TOMBSTONES.get(str(qid or "")) or None
 
 
+def has_pending_for_worker(session_id: str) -> bool:
+    return any(e.get("worker_sid") == session_id for e in _PENDING_RELAY.values())
+
+
 def relay_pending_for(subscriber_id: str) -> list[dict]:
     """该订阅者当前可代答的登记条目（多 worker / 同 worker 多问都在列表）。"""
     out = []
@@ -241,16 +244,16 @@ def _relay_instructions(entry: dict, *, reminder: bool = False) -> str:
         + t(
             "How to relay:\n"
             "1. Ask YOUR user with the ask_user tool. You may rephrase the "
-            "question, but the options must keep the SAME meaning and the "
-            "SAME count as listed above.\n"
+            "question. Keep the original option text so a choice made in the "
+            "worker session can also answer your card.\n"
             "2. When you have 3 or fewer pending questions to relay, prefer "
             "ONE ask_user(questions=[...]) card asking them together.\n"
             "3. After the user answers, map their answer back to one of the "
             "original options above, WRITE DOWN your mapping reason first, "
             "then call relay_answer with it.\n",
             "转达方式：\n"
-            "1. 用 ask_user 工具问你的用户。可以改述问题措辞，但每个选项的"
-            "含义与数量必须与上面一致。\n"
+            "1. 用 ask_user 工具问你的用户。可以改述问题，保留每个原选项的"
+            "完整文本，以便同步 Worker 会话里的选择。\n"
             "2. 待转达问题 ≤3 个时，建议一次 ask_user(questions=[…]) 一屏问完。\n"
             "3. 用户回答后，把答案映射回上面的原选项，先写下映射理由，再调用 "
             "relay_answer。\n",
@@ -351,31 +354,52 @@ async def _push_to_subscribers(entry: dict, *, reminder: bool) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def mark_answered(qid: str, answered_by: str, answer: str) -> None:
-    """登记条目 → 墓碑（TTL 24h）。answered_by：直答者（"user" 或订阅方
-    session id）；answer：答案摘要（选项文本；multi 为逐题摘要）。"""
+def mark_answered(
+    qid: str, answered_by: str, answer: str, *, value: dict | None = None,
+) -> None:
+    """Close a relay registration and retain the accepted choice for 24 hours."""
     qid = str(qid or "")
-    ent = _PENDING_RELAY.pop(qid, None)
+    ent = _PENDING_RELAY.get(qid)
     if ent is None:
         return
-    _RELAY_TOMBSTONES[qid] = {
+    record = {
         "answered_by": str(answered_by or ""),
         "answer": str(answer or "")[:400],
         "answered_at": int(time.time()),
         "worker_sid": str(ent.get("worker_sid") or ""),
+        "subscribers": ent.get("subscribers") or [],
     }
+    if value is not None:
+        from .question_sync import selected_options
+
+        record["selections"] = selected_options(ent.get("payload") or {}, value)
+    _PENDING_RELAY.pop(qid)
+    _RELAY_TOMBSTONES[qid] = record
     _persist_unlocked()
     _log.info("relay_answered qid=%s by=%s", qid, answered_by)
 
 
-def note_session_resumed(session_id: str, answered_by: str, answer: str) -> None:
-    """resume_question 共享段的收口钩子：该 worker 的待答条目若有，即销。
+def note_session_resumed(
+    session_id: str, answered_by: str, value: dict, *, qid: str = "",
+) -> None:
+    """Record the accepted answer to the worker's current parked question."""
+    if not qid:
+        matches = [q for q, e in _PENDING_RELAY.items() if e.get("worker_sid") == session_id]
+        if len(matches) != 1:
+            return
+        qid = matches[0]
+    entry = find_pending(qid)
+    if not entry or entry.get("worker_sid") != session_id:
+        return
+    summary = str(value.get("answer") or "")
+    if value.get("multi"):
+        summary = "; ".join(str(a.get("answer") or "") for a in value["answers"])
+    mark_answered(qid, answered_by, summary, value=value)
+    if _RELAY_TOMBSTONES[qid].get("selections"):
+        from ..server_shared import spawn_bg
+        from .question_sync import sync_answered_subscribers
 
-    用户直答 / steer 即答 / relay_answer 三路 resume 都过这里——保证
-    「晚到的另一路 relay」必然命中墓碑而非僵尸 pending 条目。"""
-    for qid in [q for q, e in _PENDING_RELAY.items()
-                if e.get("worker_sid") == session_id]:
-        mark_answered(qid, answered_by, answer)
+        spawn_bg(sync_answered_subscribers(qid))
 
 
 # --------------------------------------------------------------------------- #
@@ -664,7 +688,7 @@ def build_relay_tool_loose(subscriber_id: str | None):
 
 
 def reconcile_relay() -> None:
-    """启动恢复（server lifespan 调）：读盘重建 + 对全部待答条目重注入。
+    """启动恢复：同步已作答的转达卡，然后重注入仍待答的问题。
 
     重注入统一带 reminder 标注（goal ⑥「已问未答 asked_at 重注入时模板
     标注提醒」）：崩溃可能吃掉上次注入，宁可重发——模板幂等（qid 相同、
@@ -672,11 +696,13 @@ def reconcile_relay() -> None:
     加。派后台任务：lifespan 里不能 await 网络性注入（可能开 wake turn）。
     """
     load_state()
-    if not _PENDING_RELAY:
+    if not (_PENDING_RELAY or _RELAY_TOMBSTONES):
         return
     from ..server_shared import spawn_bg
+    from .question_sync import sync_answered_subscribers
 
     async def _push_all() -> None:
+        await sync_answered_subscribers(restore=True)
         for ent in list(_PENDING_RELAY.values()):
             await _push_to_subscribers(ent, reminder=True)
 
