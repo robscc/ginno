@@ -44,6 +44,10 @@ export type Block =
       answer?: string; optionIndex?: number | null;
       multi?: boolean; questions?: QuestionSub[] }
   | { kind: "thinking"; text: string }
+  // Responses 思考摘要（reasoning-summary-design）：live 由 reasoning.summary
+  // 事件驱动（快照整段对账，无增量拼接），历史由 messages_ui 投影——两者同形：
+  // parts 有序（服务端 item/summary_index 键），receiving 仅 live 期为 true。
+  | { kind: "reasoning_summary"; parts: { id: string; text: string }[]; revision?: number; receiving?: boolean }
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
   // centered system rows in the transcript ("context chips").

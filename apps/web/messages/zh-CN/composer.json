@@ -31,6 +31,7 @@
       "copy": "复制",
       "copied": "已复制 ✓",
       "openLink": "打开 {target}",
+      "openFileLink": "在代码面板打开 {target}",
       "mermaid": {
         "generating": "图形生成中…",
         "renderFailed": "图形渲染失败",

@@ -7,6 +7,7 @@ import { FileTypeIcon } from "./blocks/FileTypeIcon";
 import { useTranslations } from "next-intl";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
+import type { MarkdownFileTarget } from "@/lib/codePaths";
 import { fmtTokens } from "@/lib/format";
 import { AskUserCard } from "./AskUserCard";
 import { useGinno } from "@/lib/store";
@@ -39,6 +40,7 @@ import {
 import { FileChips, SkillChips } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
+import { ReasoningSummary } from "./blocks/ReasoningSummary";
 import { LlmCallLine } from "./blocks/llmCallLine";
 import { TaskEventBand } from "./TaskCard";
 import { imageUrl, ImageGallery } from "./blocks/media";
@@ -367,12 +369,16 @@ function useMcpToolsWithUi(): Record<string, McpToolUiInfo> {
 export function InnerBlocks({
   blocks,
   streaming,
+  onFileLink,
+  offline = false,
   isLatestTurn,
   onAnswerQuestion,
   questionLive,
 }: {
   blocks: Block[];
   streaming?: boolean;
+  onFileLink?: (target: MarkdownFileTarget) => void;
+  offline?: boolean;
   /** 本 turn 是否为列表最新（决定历史编辑 diff 的默认收起，2026-11-21） */
   isLatestTurn?: boolean;
   onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
@@ -428,7 +434,11 @@ export function InnerBlocks({
       if (streaming && last && !cited.length) text = maskPartialSources(text);
       out.push(
         <div key={key++}>
-          <Markdown text={cleanAgentText(text)} streaming={!!(streaming && last)} />
+          <Markdown
+            text={cleanAgentText(text)}
+            streaming={!!(streaming && last)}
+            onFileLink={onFileLink}
+          />
           {streaming && last && (
             <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-violet" />
           )}
@@ -463,6 +473,8 @@ export function InnerBlocks({
           onAnswer={onAnswerQuestion}
         />,
       );
+    } else if (b.kind === "reasoning_summary") {
+      out.push(<ReasoningSummary key="responses-summary" block={b} live={!!streaming} offline={offline} />);
     } else if (b.kind === "thinking") {
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {

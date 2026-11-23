@@ -20,7 +20,7 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
 
     scripts = tmp_path / "responses.json"
     scripts.write_text(json.dumps([{"content": [
-        {"type": "reasoning", "summary": [{"type": "summary_text", "text": SUMMARY}]},
+        {"type": "reasoning", "summary": [{"type": "summary_text", "text": "**Review options**"}, {"type": "summary_text", "text": SUMMARY}]},
         {"type": "text", "text": ANSWER},
     ]}]))
     monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts))
@@ -32,18 +32,20 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
             browser, page = smoke._new_page(pw)
             try:
                 page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
-                title = "Reasoning summary test"
+                title = "Compare two options"
                 ta = page.locator("textarea").first
                 ta.fill(title)
                 ta.press("Enter")
                 expect(page.get_by_text(ANSWER, exact=True)).to_be_visible(timeout=15_000)
 
                 def check_summary():
-                    panel = page.get_by_role("button", name=re.compile(r"^Deeply thought"))
+                    panel = page.get_by_role("button", name=re.compile(r"^Reasoning summary"))
                     expect(panel).to_have_count(1)
-                    if panel.get_attribute("title") == "Expand reasoning":
-                        panel.click()
-                    expect(page.get_by_text(SUMMARY, exact=True)).to_be_visible()
+                    expect(panel).to_have_attribute("aria-expanded", "false")
+                    expect(panel).to_contain_text("2 parts")
+                    panel.click()
+                    expect(page.get_by_text("Review options", exact=True)).to_be_visible()
+                    expect(page.get_by_role("listitem").filter(has_text=SUMMARY)).to_be_visible()
 
                 check_summary()
                 page.reload(wait_until="load")

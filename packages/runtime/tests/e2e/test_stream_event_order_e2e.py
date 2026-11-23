@@ -173,9 +173,11 @@ def test_codex_reasoning_summary_reaches_websocket_once(
          "output_index": 0, "summary_index": 0, "item_id": "rs_test", "sequence_number": i}
         for i, text in enumerate(("Compare ", "choices."))
     ]
+    wire_events.append({"type": "response.reasoning_summary_text.delta", "delta": "**Verify**",
+                        "output_index": 0, "summary_index": 1, "item_id": "rs_test", "sequence_number": 2})
     wire_events.append({
         "type": "response.output_text.delta", "delta": "Choose B.",
-        "output_index": 1, "content_index": 0, "item_id": "msg_test", "sequence_number": 2,
+        "output_index": 1, "content_index": 0, "item_id": "msg_test", "sequence_number": 3,
     })
     requests = []
 
@@ -198,5 +200,41 @@ def test_codex_reasoning_summary_reaches_websocket_once(
 
     assert requests == ["/v1/responses"]
     assert not events_of(events, "error")
-    assert "".join(e["content"] for e in events_of(events, "thinking.delta")) == "Compare choices."
+    summaries = events_of(events, "reasoning.summary")
+    assert summaries and not events_of(events, "thinking.delta")
+    parts = summaries[-1]["summary"]["parts"]
+    assert [p["text"] for p in parts] == ["Compare choices.", "**Verify**"]
+    history = client.get(f"/api/sessions/{sid}/history").json()["messages"]
+    assert [b["parts"] for m in history for b in m["blocks"] if b["kind"] == "reasoning_summary"] == [parts]
     assert "".join(e["content"] for e in events_of(events, "token.delta")) == "Choose B."
+
+def test_summary_snapshot_catches_up_a_reconnected_socket(create_session, ws_conv):
+    import asyncio
+    from threading import Event
+
+    release = Event()
+
+    class PausedSummary(_OrderModel):
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            for index, text in enumerate(("First", "Second")):
+                yield ChatGenerationChunk(message=AIMessageChunk(content=[{
+                    "type": "reasoning", "index": 0,
+                    "summary": [{"index": index, "type": "summary_text", "text": text}],
+                }]))
+                if index == 0:
+                    assert await asyncio.to_thread(release.wait, 12)
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Answer"))
+
+    sid = create_session(PausedSummary())
+    with ws_conv(sid) as original:
+        original.invoke("Compare")
+        received = original.recv_until("reasoning.summary", "error")[-1]
+        with ws_conv(sid) as reconnected:
+            try:
+                reconnected.send({"type": "turn_state"})
+                probe = reconnected.recv_until("turn.state")[-1]
+                assert probe["running"] and probe["reasoning_summary"] == received["summary"]
+            finally:
+                release.set()
+            final = reconnected.recv_until("message.end", "error")[-1]
+            assert [p["text"] for p in final["reasoning_summary"]["parts"]] == ["First", "Second"]

@@ -175,7 +175,7 @@ def test_responses_reasoning_summary_replays_once(shape):
     blocks = [block for m in messages if m["role"] == "assistant" for block in m["blocks"]]
     assert blocks[-1] == {"kind": "text", "text": "Choose B."}
     assert blocks[:-1] == (
-        [] if shape == "encrypted-only" else [{"kind": "thinking", "text": "Compare choices."}]
+        [] if shape == "encrypted-only" else [{"kind": "reasoning_summary", "parts": [{"id": "history-1/0/0", "text": "Compare choices."}]}]
     )
 
 

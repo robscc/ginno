@@ -290,6 +290,7 @@ parkedTurn,
 isTail,
   isLatestTurn,
 sessionKey,
+onFileLink,
 }: {
 agent: AgentConfig | null;
 agentName?: string;
@@ -324,6 +325,7 @@ isTail?: boolean;
   isLatestTurn?: boolean;
 /** 当前会话 id：dev-swap 进度行/结果落块的会话门控（§4.5 B 会话不打扰）。 */
 sessionKey?: string | null;
+onFileLink?: (target: import("@/lib/codePaths").MarkdownFileTarget) => void;
 }) {
 const { tc } = useChatT();
 // devswap 域文案（动态阶段 key 收敛，cast 理由同 useChatT）。
@@ -500,6 +502,8 @@ return (
             <InnerBlocks
               blocks={blocks}
               streaming={streaming}
+              onFileLink={onFileLink}
+              offline={connLost}
               isLatestTurn={isLatestTurn}
               onAnswerQuestion={onAnswerQuestion}
               questionLive={questionLive}

@@ -22,34 +22,12 @@ import {
   updateFolder,
 } from "@/lib/runtime";
 import type { CodeRoot } from "@/lib/codeTypes";
+import { splitRootPathIn } from "@/lib/codePaths";
 import type { SessionMeta } from "@/lib/types";
 import { PROJECT_SLUG, fsError } from "./panelShared";
 
 /** Message helper with the panel's i18n shape (see CodePanel's `t`). */
 export type PanelT = (key: string, values?: Record<string, string | number>) => string;
-
-/**
- * Longest-prefix match of an ABSOLUTE path against the roots (S3).
- * The socket and the git endpoint speak absolute paths; the panel addresses
- * files as (rootId, root-relative path). Longest prefix wins, so a root
- * nested inside another resolves to the inner one rather than the outer.
- */
-export function splitRootPathIn(
-  roots: CodeRoot[],
-  abs: string,
-): { rootId: string; rel: string } | null {
-  let best: { rootId: string; rel: string; len: number } | null = null;
-  for (const r of roots) {
-    const base = r.path.endsWith("/") ? r.path.slice(0, -1) : r.path;
-    if (!base) continue;
-    if (abs === base || abs.startsWith(base + "/")) {
-      if (!best || base.length > best.len) {
-        best = { rootId: r.id, rel: abs.slice(base.length + 1), len: base.length };
-      }
-    }
-  }
-  return best ? { rootId: best.rootId, rel: best.rel } : null;
-}
 
 /** Absolute path of a rooted tab, or null when its root is unknown. */
 export function absPathOfTab(

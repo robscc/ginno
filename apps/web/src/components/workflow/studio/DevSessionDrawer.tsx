@@ -311,7 +311,7 @@ function DrawerStream({
           const streaming = m.id === liveId;
           return (
             <div key={m.id} className="rounded-2xl rounded-bl-md border border-line bg-card px-3 py-2 text-[13px] leading-relaxed text-txt">
-              <InnerBlocks blocks={m.blocks} streaming={streaming} />
+              <InnerBlocks blocks={m.blocks} streaming={streaming} offline={wsStatus !== "live"} />
               {streaming && m.blocks.length === 0 && (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-faint" />
               )}

@@ -282,6 +282,15 @@
       "sandbox": "沙箱",
       "permissions": "此应用请求了额外权限：{perms}"
     },
+    "reasoningSummary": {
+      "title": "思考摘要",
+      "receiving": "接收中",
+      "waiting": "等待后续摘要",
+      "saved": "已记录",
+      "offline": "连接中断",
+      "offlineHint": "已收到的摘要可以继续查看。",
+      "count": "{count} 段"
+    },
     "thinking": {
       "live": "思考中……",
       "done": "已深入思考",

@@ -322,7 +322,7 @@ class WeComTap(ChannelTap):
                 self._buf.append(txt)
                 self._buf_len += len(txt)
                 await self._maybe_flush()
-        elif event == "thinking.delta":
+        elif event in ("thinking.delta", "reasoning.summary") and data.get("content"):
             # P1 进展区：思考滚动片段（随节流出帧，不逐 token 打 API）
             self._progress.on_thinking(str(data.get("content") or ""))
             await self._maybe_flush()

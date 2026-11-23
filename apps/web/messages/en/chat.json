@@ -282,6 +282,15 @@
       "sandbox": "sandboxed",
       "permissions": "This app requested extra permissions: {perms}"
     },
+    "reasoningSummary": {
+      "title": "Reasoning summary",
+      "receiving": "Receiving",
+      "waiting": "Waiting for more",
+      "saved": "Saved",
+      "offline": "Disconnected",
+      "offlineHint": "Previously received summaries are available.",
+      "count": "{count, plural, one {# part} other {# parts}}"
+    },
     "thinking": {
       "live": "Thinking…",
       "done": "Deeply thought",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from uuid import uuid4
 
 from . import providers as prov_mod
 from ._version import ginno_user_agent
@@ -106,6 +107,20 @@ def _reasoning_chat_openai() -> type:
             if self.reasoning_passthrough:
                 _replay_reasoning_content(messages, payload)
             return payload
+
+        def _stream_responses(self, messages, stop=None, run_manager=None, **kwargs):
+            request_id = uuid4().hex
+            for gen in super()._stream_responses(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield bridge_responses_reasoning(gen, request_id, keep_text=self.use_responses_api is True)
+
+        async def _astream_responses(self, messages, stop=None, run_manager=None, **kwargs):
+            request_id = uuid4().hex
+            async for gen in super()._astream_responses(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield bridge_responses_reasoning(gen, request_id, keep_text=self.use_responses_api is True)
 
     _REASONING_CLS = ReasoningChatOpenAI
     return _REASONING_CLS
@@ -275,76 +290,66 @@ def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
 _RESPONSES_CLS: type | None = None
 
 
-def responses_reasoning_summary(message: Any) -> str:
-    """Read the public summary from current or legacy Responses messages."""
-    def block_summary(block: Any) -> str:
-        if not isinstance(block, dict) or block.get("type") != "reasoning":
-            return ""
+def responses_reasoning_parts(message: Any, *, fallback_id: str = "") -> list[dict[str, str]]:
+    """Project only visible Responses summaries, preserving item and part boundaries."""
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    request = (kwargs.get("ginno_response_request") or {}).get("id")
+    request = request or getattr(message, "id", None) or fallback_id
+
+    def parts_of(block: dict, item: int) -> list[dict[str, str]]:
         summary = block.get("summary")
         if not isinstance(summary, list):
-            return ""
-        return "".join(
-            part["text"] for part in summary
+            return []
+        # LangChain's Responses converter preserves the output item index on
+        # deltas (even when it omits item_id) and summary_index on each part.
+        item_key = block.get("index", block.get("id") or item)
+        return [
+            {"id": f"{request}/{item_key}/{part.get('index', i)}", "text": part["text"]}
+            for i, part in enumerate(summary)
             if isinstance(part, dict)
             and part.get("type") == "summary_text"
             and isinstance(part.get("text"), str)
-        )
+            and part["text"]
+        ]
 
     content = getattr(message, "content", None)
     if isinstance(content, list):
-        text = "".join(block_summary(block) for block in content)
-        if text:
-            return text
-    return block_summary((getattr(message, "additional_kwargs", None) or {}).get("reasoning"))
+        parts = [
+            part for i, block in enumerate(content)
+            if isinstance(block, dict) and block.get("type") == "reasoning"
+            for part in parts_of(block, i)
+        ]
+        if parts:
+            return parts
+    legacy = kwargs.get("reasoning")
+    if isinstance(legacy, dict) and legacy.get("type", "reasoning") == "reasoning":
+        return parts_of(legacy, 0)
+    return []
 
 
-def bridge_responses_reasoning(gen_chunk):
-    """Keep the reasoning_content field used by saved messages and gateway replay."""
+def bridge_responses_reasoning(gen_chunk, request_id: str = "", *, keep_text: bool = True):
+    """Keep the request identity stable through LangChain chunk merging and history."""
     message = getattr(gen_chunk, "message", None)
-    text = responses_reasoning_summary(message)
     kwargs = getattr(message, "additional_kwargs", None)
-    if text and kwargs is not None:
-        kwargs["reasoning_content"] = text
+    if kwargs is None:
+        return gen_chunk
+    if parts := responses_reasoning_parts(message):
+        if request_id:
+            # LangChain keeps identical nested `id` fields when merging chunks.
+            kwargs["ginno_response_request"] = {"id": request_id}
+        if keep_text:
+            kwargs["reasoning_content"] = "".join(part["text"] for part in parts)
     return gen_chunk
 
 
 def _responses_chat_openai() -> type:
-    """ChatOpenAI pinned to the Responses API, with the reasoning bridge.
-
-    ``use_responses_api=True`` sends everything to ``POST /v1/responses``;
-    the LangChain message interface is unchanged, so the stream/graph/usage
-    pipeline needs zero edits (design doc §3.3 — P2's cheap win). The
-    subclass only re-routes reasoning summaries into the field the rest of
-    Ginno expects.
-    """
+    """Pin the Responses route while sharing the OpenAI streaming adapter."""
     global _RESPONSES_CLS
-    if _RESPONSES_CLS is not None:
-        return _RESPONSES_CLS
+    if _RESPONSES_CLS is None:
+        class ResponsesReasoningChatOpenAI(_reasoning_chat_openai()):
+            reasoning_passthrough: bool = False
 
-    from langchain_openai import ChatOpenAI
-
-    class ResponsesReasoningChatOpenAI(ChatOpenAI):
-        def _get_request_payload(
-            self, input_, *, stop: list[str] | None = None, **kwargs: Any
-        ) -> dict:
-            messages = _with_interrupted_tool_results(
-                self._convert_input(input_).to_messages()
-            )
-            return super()._get_request_payload(messages, stop=stop, **kwargs)
-
-        def _stream_responses(self, messages, stop=None, run_manager=None, **kwargs):
-            for gen in super()._stream_responses(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
-                yield bridge_responses_reasoning(gen)
-
-        async def _astream_responses(self, messages, stop=None, run_manager=None, **kwargs):
-            async for gen in super()._astream_responses(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            ):
-                yield bridge_responses_reasoning(gen)
-
-    _RESPONSES_CLS = ResponsesReasoningChatOpenAI
+        _RESPONSES_CLS = ResponsesReasoningChatOpenAI
     return _RESPONSES_CLS
 
 # Lazily-built Anthropic class (same pattern as ReasoningChatOpenAI): the

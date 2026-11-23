@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..reasoning_summary import TurnReasoningSummary
+
 
 class StreamTurnCtx:
     """One turn segment's shared mutable state (legacy locals, same names)."""
@@ -90,6 +92,7 @@ class StreamTurnCtx:
     emit: Callable[..., str]
     safe_send: Callable[[str], Any]
     _coal: Any  # DeltaCoalescer
+    reasoning_summary: TurnReasoningSummary
 
     def __init__(self, graph, config: dict, input_state: dict | None, command):
         # legacy engine.py:121-166 的预初始化（顺序/默认值逐一对应）。

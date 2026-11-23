@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ginno 思考摘要 · 交互原型</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --base: #0a0a0f;
+    --panel: #0e0e15;
+    --card: #15151d;
+    --line: #2a2a37;
+    --text: #e9e9f0;
+    --muted: #a6a6b6;
+    --accent: #c5adff;
+    --purple: #986fff;
+    --warn: #f2ba70;
+    font: 14px/1.55 Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--text); background: var(--base); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  [hidden] { display: none !important; }
+  .page { width: min(1180px, calc(100% - 48px)); margin: 28px auto; }
+  .demo { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .demo-name { color: var(--muted); font-size: 13px; }
+  .demo-actions, .scenes { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .scenes { padding: 3px; border: 1px solid var(--line); background: var(--panel); border-radius: 9px; }
+  .scenes button, .aux { border: 0; background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 9px; font-size: 12px; }
+  .scenes button:hover, .aux:hover { color: var(--text); background: #20202a; }
+  .scenes button[aria-pressed="true"] { background: #292038; color: var(--accent); }
+  .play { color: var(--accent); border: 1px solid #44315e; background: #21172e; border-radius: 7px; min-width: 82px; padding: 6px 10px; font-size: 12px; }
+  .play:hover { background: #30213f; }
+  .window { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: min(675px, calc(100vh - 110px)); border: 1px solid var(--line); border-radius: 15px; overflow: hidden; box-shadow: 0 16px 56px #0006; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 20px 12px; }
+  .brand { display: flex; align-items: center; gap: 9px; margin: 0 6px 30px; font-weight: 650; }
+  .brand-icon, .agent-icon { display: grid; place-items: center; flex: none; background: #29203c; color: var(--accent); border-radius: 7px; width: 25px; height: 25px; }
+  aside h2 { margin: 0 7px 8px; font-size: 11px; font-weight: 500; color: var(--muted); }
+  .session-row { position: relative; padding: 8px 10px 8px 13px; border-radius: 7px; background: #1b1b25; font-size: 13px; }
+  .session-row::before { content: ""; position: absolute; inset: 7px auto 7px 0; width: 2px; border-radius: 2px; background: var(--purple); }
+  .conversation { min-width: 0; }
+  .topbar { border-bottom: 1px solid var(--line); min-height: 57px; padding: 10px 24px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  h1 { font-size: 15px; margin: 0; font-weight: 630; }
+  .model { font-size: 11px; color: var(--muted); text-align: right; }
+  .thread { width: min(720px, 100%); margin-inline: auto; padding: 26px 24px 38px; }
+  .request { margin: 0 0 25px auto; width: fit-content; max-width: 86%; padding: 9px 13px; background: #1b1b25; border: 1px solid var(--line); border-radius: 12px 12px 3px 12px; }
+  .agent { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .agent-icon { width: 20px; height: 20px; border-radius: 5px; }
+  .reply { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  .summary { border: 1px solid #3c2c56; border-radius: 9px; background: #1a1526; }
+  .summary[data-state="offline"] { border-color: #5c482e; }
+  .summary-toggle { width: 100%; border: 0; background: transparent; border-radius: 8px; text-align: left; padding: 11px 12px; display: flex; align-items: center; gap: 10px; }
+  .summary-toggle:hover { background: #ffffff06; }
+  .pulse { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #785aa4; }
+  [data-state="receiving"] .pulse { background: var(--purple); animation: pulse 1.7s ease-in-out infinite; }
+  [data-state="offline"] .pulse { background: var(--warn); }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px #986fff30; } }
+  .summary-info { min-width: 0; flex: 1; }
+  .summary-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 9px; }
+  .summary-heading strong { color: var(--accent); font-size: 13px; font-weight: 640; }
+  .summary-state { color: var(--muted); font-size: 11px; }
+  [data-state="offline"] .summary-state { color: var(--warn); }
+  .latest { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [aria-expanded="true"] .latest { display: none; }
+  .count { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chevron { width: 6px; height: 6px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg) translateY(-2px); margin-right: 3px; flex: none; }
+  [aria-expanded="true"] .chevron { transform: rotate(225deg) translateY(-2px); }
+  .summary-detail { border-top: 1px solid #352947; }
+  .parts { max-height: 248px; overflow: auto; list-style: none; margin: 0; padding: 9px 14px; scrollbar-width: thin; scrollbar-color: #544469 transparent; }
+  .part { position: relative; padding: 7px 3px 10px 18px; overflow-wrap: anywhere; }
+  .part::before { content: ""; position: absolute; width: 5px; height: 5px; left: 2px; top: 15px; border-radius: 50%; background: #796693; }
+  .part:not(:last-child)::after { content: ""; position: absolute; top: 22px; bottom: -10px; left: 4px; width: 1px; background: #3d3150; }
+  .part.is-receiving::before { background: #c09aff; box-shadow: 0 0 8px #986fff99; }
+  .part-title { display: block; font-size: 13px; font-weight: 590; }
+  .part p { color: var(--muted); font-size: 12px; margin: 3px 0 0; white-space: pre-wrap; }
+  .resume-hint { margin: 0; padding: 8px 13px; color: var(--warn); font-size: 12px; border-top: 1px solid #59402a; }
+  .tool { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 10px; margin: 10px 0 0; border: 1px solid var(--line); background: var(--panel); border-radius: 7px; font-size: 12px; }
+  .tool-icon, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tool-icon { color: #99c8d8; }
+  .tool-state { color: var(--muted); margin-left: auto; }
+  .answer { margin: 13px 1px 1px; }
+  .answer code, dialog code { background: #22222d; border-radius: 4px; padding: 1px 4px; font-size: .88em; overflow-wrap: anywhere; }
+  dialog { width: min(555px, calc(100% - 36px)); border: 1px solid #484057; border-radius: 12px; background: #191822; color: var(--text); padding: 20px 24px; box-shadow: 0 12px 52px #0009; }
+  dialog::backdrop { background: #05050ab7; }
+  dialog header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  dialog h2 { margin: 0; font-size: 16px; }
+  dialog dl { margin-bottom: 0; }
+  dialog dt { font-weight: 630; margin: 12px 0 4px; }
+  dialog dd { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.66; }
+  @media (max-width: 760px) {
+    .page { width: calc(100% - 24px); margin-block: 14px; }
+    .window { grid-template-columns: minmax(0, 1fr); }
+    aside { display: none; }
+    .topbar { padding-inline: 14px; }
+    .thread { padding: 17px 12px 27px; }
+  }
+  @media (max-width: 400px) {
+    .demo-actions { gap: 4px; }
+    .scenes button, .aux { padding-inline: 6px; }
+    .request { max-width: 96%; }
+    .model { max-width: 112px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="demo">
+    <span class="demo-name">Ginno 思考摘要 · 交互原型</span>
+    <div class="demo-actions">
+      <nav class="scenes" aria-label="演示场景">
+        <button type="button" data-scene="live" aria-pressed="true">流式生成</button>
+        <button type="button" data-scene="history" aria-pressed="false">历史回看</button>
+        <button type="button" data-scene="offline" aria-pressed="false">中断恢复</button>
+      </nav>
+      <button type="button" class="play" id="play">重播</button>
+      <button type="button" class="aux" id="rules">交互说明</button>
+    </div>
+  </header>
+  <main class="window">
+    <aside aria-label="会话列表">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">✦</span>GinnoWork</div>
+      <h2>今天</h2>
+      <div class="session-row" aria-current="page">桌面构建排查</div>
+    </aside>
+    <section class="conversation" aria-labelledby="session-title">
+      <header class="topbar">
+        <h1 id="session-title">桌面构建排查</h1>
+        <span class="model">Codex · OpenAI Responses</span>
+      </header>
+      <div class="thread">
+        <p class="request">桌面构建偶尔会放过坏包，帮我确认原因。</p>
+        <div class="agent"><span class="agent-icon" aria-hidden="true">✦</span>Dev Agent</div>
+        <article class="reply">
+          <section class="summary" id="summary" aria-label="模型提供的思考摘要" hidden>
+            <button type="button" class="summary-toggle" id="summary-toggle" aria-expanded="true" aria-controls="summary-detail">
+              <span class="pulse" aria-hidden="true"></span>
+              <span class="summary-info">
+                <span class="summary-heading"><strong>思考摘要</strong><span class="summary-state" id="summary-state" role="status"></span></span>
+                <span class="latest" id="latest"></span>
+              </span>
+              <span class="count" id="count"></span>
+              <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="summary-detail" id="summary-detail">
+              <ol class="parts" id="parts" tabindex="0" aria-label="摘要段落"></ol>
+              <p class="resume-hint" id="resume-hint" hidden>连接中断。已收到的摘要可以继续查看。</p>
+            </div>
+          </section>
+          <div class="tool" id="tool" hidden><span class="tool-icon" aria-hidden="true">&gt;_</span><span>bash · 验证签名检查</span><span class="tool-state" id="tool-state"></span></div>
+          <p class="answer" id="answer" hidden>已用临时目录复现。<code>.app</code> 缺失时，签名命令退出非零，构建仍报告成功。先检查产物是否存在，再验证签名，可挡住这类坏包。</p>
+        </article>
+      </div>
+    </section>
+  </main>
+</div>
+<dialog id="spec" aria-labelledby="spec-title">
+  <header><h2 id="spec-title">思考摘要的交互</h2><form method="dialog"><button type="submit" class="aux">关闭</button></form></header>
+  <dl>
+    <dt>第一段抵达时出现</dt>
+    <dd>回合内保留一张摘要卡。接收时可以随时收起，折叠行保留最新标题和段数。没有可见摘要的回合沿用普通等待提示。</dd>
+    <dt>每段按服务端边界生成</dt>
+    <dd>按模型请求、<code>item_id</code> 和 <code>summary_index</code> 归并 <code>response.reasoning_summary_text.delta</code>。同段内追加，段落之间分别渲染。只有标题的段落保留一行。</dd>
+    <dt>摘要与工具各自更新</dt>
+    <dd>摘要给出模型当时在考虑的内容。工具卡的运行与结果由工具事件更新。回合结束默认收起摘要，手动展开后保留选择。</dd>
+    <dt>历史与重连使用相同段落</dt>
+    <dd>历史默认收起，点击即可按原顺序读回。只有整段文本的旧记录按一段展示。连接中断时保留已接收内容，续传时按请求内事件序号去重。</dd>
+  </dl>
+</dialog>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const summary = $('summary');
+  const toggle = $('summary-toggle');
+  const list = $('parts');
+  const play = $('play');
+  const buttons = [...document.querySelectorAll('[data-scene]')];
+
+  const checkBuild = '**梳理桌面构建链路**\n检查 Web 导出、sidecar 和 Tauri 装配的先后顺序。';
+  const checkCache = '**Checking runtime cache paths**';
+  const checkSignature = '**验证签名检查**\n在临时目录复现产物缺失，观察命令退出状态。';
+  const conclude = '**整理验证结果**\n确认失败分支后，给出可以直接落地的校验顺序。';
+  const delta = (wait, request, index, sequence, text) => ({
+    wait, request, item_id: `reasoning-${request}`, summary_index: index,
+    sequence_number: sequence, type: 'response.reasoning_summary_text.delta', delta: text,
+  });
+  const done = (wait, request, index, sequence, text) => ({
+    ...delta(wait, request, index, sequence, ''), type: 'response.reasoning_summary_text.done', text,
+  });
+  const frames = [
+    delta(140, 'res-a', 0, 1, '**梳理桌面'),
+    delta(480, 'res-a', 0, 2, '构建链路**\n检查 Web 导出、sidecar 和 Tauri 装配的先后顺序。'),
+    done(680, 'res-a', 0, 3, checkBuild),
+    delta(740, 'res-a', 1, 4, '**Checking runtime '),
+    delta(500, 'res-a', 1, 5, 'cache paths**'),
+    done(330, 'res-a', 1, 6, checkCache),
+    { wait: 700, type: 'tool.start' },
+    { wait: 980, type: 'tool.end' },
+    delta(750, 'res-b', 0, 1, '**验证签名检查**\n在临时目录复现产物缺失'),
+    delta(620, 'res-b', 0, 2, '，观察命令退出状态。'),
+    done(410, 'res-b', 0, 3, checkSignature),
+    delta(880, 'res-b', 1, 4, conclude),
+    done(430, 'res-b', 1, 5, conclude),
+    { wait: 800, type: 'turn.done' },
+  ];
+  const snapshot = 9;
+  const parts = new Map();
+  const seen = new Set();
+  let cursor = 0;
+  let timer = null;
+  let scene = 'live';
+  let toolState = '';
+  let finished = false;
+  let waitingForConnection = false;
+  let open = true;
+  let manuallyToggled = false;
+  let started = false;
+
+  function accept(frame) {
+    if (frame.type === 'tool.start' || frame.type === 'tool.end') {
+      toolState = frame.type === 'tool.start' ? '运行中' : '已返回';
+      return;
+    }
+    if (frame.type === 'turn.done') {
+      finished = true;
+      if (!manuallyToggled) open = false;
+      return;
+    }
+    const eventKey = `${frame.request}/${frame.sequence_number}`;
+    if (seen.has(eventKey)) return;
+    seen.add(eventKey);
+    const partKey = `${frame.request}/${frame.item_id}/${frame.summary_index}`;
+    const part = parts.get(partKey) || { text: '', done: false };
+    if (frame.type === 'response.reasoning_summary_text.done') {
+      part.text = frame.text;
+      part.done = true;
+    } else {
+      part.text += frame.delta;
+    }
+    parts.set(partKey, part);
+  }
+
+  function parseSegment(text) {
+    const heading = /^\*\*([^\n]+?)\*\*/.exec(text);
+    if (heading) return { title: heading[1], body: text.slice(heading[0].length).trimStart() };
+    const [first, ...rest] = text.split('\n');
+    return { title: first.replace(/^\*\*|\*\*?$/g, ''), body: rest.join('\n').trim() };
+  }
+
+  function render() {
+    const segments = [...parts.values()];
+    const recent = segments.at(-1);
+    const receiving = Boolean(recent && !recent.done && !finished && !waitingForConnection);
+    summary.hidden = segments.length === 0;
+    summary.dataset.state = waitingForConnection ? 'offline' : receiving ? 'receiving' : 'idle';
+    toggle.setAttribute('aria-expanded', String(open));
+    $('summary-detail').hidden = !open;
+    const status = waitingForConnection ? '连接中断' : finished ? '已收齐' : receiving ? '接收中' : '等待后续摘要';
+    if ($('summary-state').textContent !== status) $('summary-state').textContent = status;
+    $('count').textContent = `${segments.length} 段`;
+    $('latest').textContent = recent ? parseSegment(recent.text).title : '';
+    const stickToBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+    list.replaceChildren(...segments.map((part) => {
+      const { title, body } = parseSegment(part.text);
+      const row = document.createElement('li');
+      row.className = `part${receiving && part === recent ? ' is-receiving' : ''}`;
+      const heading = document.createElement('span');
+      heading.className = 'part-title';
+      heading.textContent = title;
+      row.append(heading);
+      if (body) {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = body;
+        row.append(paragraph);
+      }
+      return row;
+    }));
+    if (stickToBottom && receiving) list.scrollTop = list.scrollHeight;
+    $('resume-hint').hidden = !waitingForConnection;
+    $('tool').hidden = !toolState;
+    $('tool-state').textContent = toolState;
+    $('answer').hidden = !finished;
+    play.hidden = scene === 'history';
+    play.textContent = waitingForConnection ? '模拟重连' : timer !== null ? '暂停' : finished || !started ? '重播' : '继续播放';
+    for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.scene === scene));
+  }
+
+  function pause() {
+    window.clearTimeout(timer);
+    timer = null;
+  }
+
+  function load(next, prefix = 0) {
+    pause();
+    parts.clear();
+    seen.clear();
+    cursor = 0;
+    scene = next;
+    toolState = '';
+    finished = false;
+    waitingForConnection = next === 'offline';
+    open = next !== 'history';
+    manuallyToggled = false;
+    started = false;
+    while (cursor < prefix) accept(frames[cursor++]);
+    render();
+  }
+
+  function advance() {
+    started = true;
+    if (cursor >= frames.length) { pause(); render(); return; }
+    const frame = frames[cursor];
+    timer = window.setTimeout(() => {
+      accept(frame);
+      cursor++;
+      advance();
+    }, frame.wait);
+    render();
+  }
+
+  for (const button of buttons) button.addEventListener('click', () => {
+    const next = button.dataset.scene;
+    load(next, next === 'history' ? frames.length : snapshot);
+  });
+  play.addEventListener('click', () => {
+    if (waitingForConnection) {
+      waitingForConnection = false;
+      accept(frames[cursor - 1]);
+      advance();
+    } else if (timer !== null) {
+      pause();
+      render();
+    } else {
+      if (finished || !started) load('live');
+      advance();
+    }
+  });
+  toggle.addEventListener('click', () => {
+    manuallyToggled = true;
+    open = !open;
+    render();
+  });
+  $('rules').addEventListener('click', () => $('spec').showModal());
+  load('live', snapshot);
+</script>
+</body>
+</html>

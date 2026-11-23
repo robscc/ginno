@@ -242,7 +242,9 @@ return blocks.map((b) =>
       ? { ...b, status: "skipped" as const }
       : b.kind === "llm_call" && b.pending
         ? { ...b, pending: false, ok: false, error: "interrupted" }
-        : b,
+        : b.kind === "reasoning_summary" && b.receiving
+          ? { ...b, receiving: false }
+          : b,
 );
 }
 
@@ -315,6 +317,20 @@ switch (ev.event) {
     return appendStreamDelta(blocks, "text", (ev.content as string) || "");
   case "thinking.delta":
     return appendStreamDelta(blocks, "thinking", (ev.content as string) || "");
+  case "reasoning.summary": {
+    const snap = ev.summary as Extract<Block, { kind: "reasoning_summary" }> | undefined;
+    if (!snap || !Array.isArray(snap.parts) || !snap.parts.length || typeof snap.revision !== "number") return blocks;
+    const previous = blocks.find(b => b.kind === "reasoning_summary");
+    if (previous?.revision !== undefined && previous.revision >= snap.revision) return blocks;
+    // A resumed segment may contribute new parts to an already checkpointed bubble.
+    const parts = new Map(previous?.parts.map(part => [part.id, part]));
+    for (const part of snap.parts) {
+      if (part && typeof part.id === "string" && typeof part.text === "string") parts.set(part.id, part);
+    }
+    if (!parts.size) return blocks;
+    const next: Block = { kind: "reasoning_summary", parts: [...parts.values()], receiving: snap.receiving, revision: snap.revision };
+    return previous ? blocks.map(b => b === previous ? next : b) : [next, ...blocks];
+  }
   case "tool.start":
     return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
   case "tool.args": {

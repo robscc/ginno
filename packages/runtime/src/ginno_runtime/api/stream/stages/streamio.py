@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ....models import responses_reasoning_parts
 from .. import engine as eng
 from .ctx import StreamTurnCtx
 
@@ -20,6 +21,8 @@ def make_emit(ctx: StreamTurnCtx):
     """legacy engine.py:190-199 的 emit 闭包（闭包变量→ctx 属性）。"""
 
     def emit(event: str, data: dict) -> str:
+        if event == "reasoning.summary":
+            data = {**data, "summary": ctx.reasoning_summary.snapshot()}
         # Vibe Island notch 状态收口(engine 的 safe_send 不走
         # _push_session_event,所以这里单独埋):开关关闭时 no-op,绝不抛。
         eng._vibe_island.on_turn_event(ctx.session_id, event, data)
@@ -185,10 +188,25 @@ async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
 
     调用方(run.py)已做 chunk.type gate(``("ai","AIMessageChunk")``)。
     """
-    summary = eng.responses_reasoning_summary(chunk)
-    if summary:
-        await ctx._coal.feed("thinking.delta", summary)
+    parts = responses_reasoning_parts(chunk)
+    if parts:
+        # Snapshot during serialization, after the same 33 ms coalescing as text.
+        delta = ctx.reasoning_summary.add(parts)
+        await ctx._coal.feed("reasoning.summary", delta)
     content = getattr(chunk, "content", "")
+    # The SDK does not expose summary_text.done in all supported response
+    # shapes. Actual output or the end of this model call stops the pulse.
+    visible_output = isinstance(content, str) and bool(content) or (
+        isinstance(content, list)
+        and any(isinstance(b, dict) and b.get("type") == "text" and b.get("text") for b in content)
+    )
+    if ctx.reasoning_summary.receiving and (
+        visible_output or getattr(chunk, "tool_call_chunks", None)
+        or getattr(chunk, "tool_calls", None) or getattr(chunk, "chunk_position", None) == "last"
+    ):
+        await ctx._coal.flush_kind("reasoning.summary")
+        ctx.reasoning_summary.finish_receiving()
+        await ctx.safe_send(ctx.emit("reasoning.summary", {"content": ""}))
     if isinstance(content, list):
         for b in content:
             btype = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
@@ -280,7 +298,7 @@ async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
             ctx.turn_text.append(content)
             ctx.seg_text.append(content)
             await ctx._coal.feed("token.delta", content)
-    if not summary:
+    if not parts:
         rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
         if rk:
             await ctx._coal.feed("thinking.delta", rk)

@@ -13,8 +13,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useTranslations } from "next-intl";
+import { FileText } from "lucide-react";
 import { openLinkExternal } from "@/lib/runtime";
 import { splitFrontmatter, type FrontmatterEntry } from "@/lib/markdownFrontmatter";
+import { parseMarkdownFileTarget, type MarkdownFileTarget } from "@/lib/codePaths";
 import { MermaidBlock } from "./MermaidBlock";
 
 // Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
@@ -114,9 +116,11 @@ export const Markdown = memo(function Markdown({
   text,
   onWikilink,
   streaming,
+  onFileLink,
 }: {
   text: string;
   onWikilink?: (target: string) => void;
+  onFileLink?: (target: MarkdownFileTarget) => void;
   /** 本轮回答仍在生成。只为 mermaid 服务：图形必须等文本落定后再渲染
    *  （半截 mermaid 语法必然解析失败，见 MermaidBlock 文件头第 1 条）。 */
   streaming?: boolean;
@@ -214,6 +218,21 @@ export const Markdown = memo(function Markdown({
                   title={t("markdown.openLink", { target })}
                   className="rounded bg-violet/15 px-1 py-0.5 text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:bg-violet/25 hover:decoration-violet"
                 >
+                  {children}
+                </button>
+              );
+            }
+            const file = onFileLink ? parseMarkdownFileTarget(href) : null;
+            if (file && onFileLink) {
+              const location = file.line ? `${file.path}:${file.line}` : file.path;
+              return (
+                <button
+                  type="button"
+                  onClick={() => onFileLink(file)}
+                  title={t("markdown.openFileLink", { target: location })}
+                  className="inline rounded bg-card2/80 px-1 py-px text-left text-txt underline decoration-line2 underline-offset-2 transition-colors hover:text-violet hover:decoration-violet"
+                >
+                  <FileText aria-hidden className="mr-1 inline h-3 w-3 align-[-2px] text-muted" />
                   {children}
                 </button>
               );

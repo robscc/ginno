@@ -31,6 +31,7 @@
       "copy": "Copy",
       "copied": "Copied ✓",
       "openLink": "Open {target}",
+      "openFileLink": "Open {target} in the code panel",
       "mermaid": {
         "generating": "rendering diagram…",
         "renderFailed": "Diagram render failed",

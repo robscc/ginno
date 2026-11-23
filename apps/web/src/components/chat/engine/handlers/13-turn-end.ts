@@ -9,6 +9,8 @@ import { reconcileTurnFromHistory } from "../connect";
 import { flushSteerQueue, recallSteers } from "../steer";
 import {
   finalizeTurnMetaLocal,
+  mutateLive,
+  adoptOrphanStream,
   markDelivered,
   upsertTurnMeta,
 } from "../liveBubble";
@@ -37,7 +39,13 @@ export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
     // pending question card interactive after a reload (questionLive).
     ctx.syncDisplay(sid);
   }
-  if (ev.running) return; // the broadcast stream resumes on this socket
+  if (ev.running) {
+    if (ev.reasoning_summary) {
+      adoptOrphanStream(ctx, sid);
+      mutateLive(ctx, sid, { ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
+    }
+    return;
+  }
   // ...unless our newest send is NEWER than the probe this answers. The
   // answer can only describe the session as it was when the server
   // handled the probe; reconciling a send that postdates it reads a
@@ -67,6 +75,9 @@ export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
 }
 
 export function onMessageEnd(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  if (ev.reasoning_summary && ctx.liveBySessionRef.current[sid]) {
+    mutateLive(ctx, sid, { ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
+  }
   markDelivered(ctx, sid);
   const wasOrphan = !!ctx.orphanStreamRef.current[sid];
   // turn 收口要盖时间戳的气泡：清理 liveId 之前先捕获（收口后按 id /

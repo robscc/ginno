@@ -236,7 +236,7 @@ const EXTRACTED_CASES = [...SRC.matchAll(/^\s*\["([^"]+)",/gm)].map((m) => m[1])
 /** 人工钉住的 handle() switch case 全集（源码顺序）。重构迁移注册表时此表
  *  就是验收清单：迁移后必须每个键都还能路由到等价处理。 */
 const EXPECTED_CASES = [
-  "token.delta", "thinking.delta", "tool.start", "tool.args", "tool.args_delta", "tool.end",
+  "token.delta", "thinking.delta", "reasoning.summary", "tool.start", "tool.args", "tool.args_delta", "tool.end",
   "user.question",
   "widget.emit", "ref.emit", "image.emit",
   "llm.request", "llm.response",
@@ -284,11 +284,11 @@ describe("① handle() 事件类型全集枚举快照（防拆分丢 case）", (
     expect(new Set(EXTRACTED_CASES).size).toBe(EXTRACTED_CASES.length);
   });
 
-  it("流帧共享体结构：6 事件相邻共享，user.question 独立 handler（P0-1 结构防线）", () => {
+  it("流帧共享体结构：7 事件相邻共享，user.question 独立 handler（P0-1 结构防线）", () => {
     // 2026-11-14 通知风暴的结构载体：delta/tool 共享体顺序 + ask 通知必须在
     // user.question 自己的 handler 里。拆注册 / 换共享函数都会红。
     expect(SRC).toMatch(
-      /\["token\.delta", stream\.onDelta\],\s*\n\s*\["thinking\.delta", stream\.onDelta\],\s*\n\s*\["tool\.start", stream\.onStreamFrame\],\s*\n\s*\["tool\.args", stream\.onStreamFrame\],\s*\n\s*\["tool\.args_delta", stream\.onStreamFrame\],\s*\n\s*\["tool\.end", stream\.onStreamFrame\],\s*\n\s*\["user\.question", stream\.onQuestion\],/,
+      /\["token\.delta", stream\.onDelta\],\s*\n\s*\["thinking\.delta", stream\.onDelta\],\s*\n\s*\["reasoning\.summary", stream\.onDelta\],\s*\n\s*\["tool\.start", stream\.onStreamFrame\],\s*\n\s*\["tool\.args", stream\.onStreamFrame\],\s*\n\s*\["tool\.args_delta", stream\.onStreamFrame\],\s*\n\s*\["tool\.end", stream\.onStreamFrame\],\s*\n\s*\["user\.question", stream\.onQuestion\],/,
     );
     // ask 通知仍是 user.question handler 的专属首副作用（不进共享函数）。
     expect(STREAM_SRC).toMatch(
@@ -322,6 +322,10 @@ const DISPATCH_TABLE: CaseSpec[] = [
   {
     event: "thinking.delta", desc: "追加 thinking 块", ev: { content: "思", turn_id: "t1" },
     probe: (b) => expect(kinds(b)).toContain("thinking"),
+  },
+  {
+    event: "reasoning.summary", desc: "摘要快照", ev: { summary: { revision: 1, parts: [{ id: "a", text: "Review" }] } },
+    probe: (b) => expect(kinds(b)).toContain("reasoning_summary"),
   },
   {
     event: "tool.start", desc: "追加 pending tool 块", ev: { id: "c1", name: "bash", turn_id: "t1" },

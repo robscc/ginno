@@ -783,7 +783,7 @@ export function PinStream({
           return (
             <div key={m.id} className="max-w-[94%] rounded-2xl rounded-bl-md border border-line bg-card px-3 py-2 text-[13px] leading-relaxed text-txt">
               <div className="pin-compact">
-                <InnerBlocks blocks={m.blocks} streaming={streaming} />
+                <InnerBlocks blocks={m.blocks} streaming={streaming} offline={wsStatus !== "live"} />
               </div>
               {streaming && m.blocks.length === 0 && (
                 <span className="flex items-center gap-1.5 text-faint">

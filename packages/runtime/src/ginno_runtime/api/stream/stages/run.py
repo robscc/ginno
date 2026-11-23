@@ -164,7 +164,10 @@ def _setup_io(ctx: StreamTurnCtx, stack: AsyncExitStack) -> None:
     # ≈30fps，N 路并发时 WS send/json.dumps/前端 setState 同比例降频。
     # 协议不变；非 delta 事件前 flush 保序；finally close 清残留。
     from ..delta_coalesce import DeltaCoalescer
+    from ..reasoning_summary import begin_summary, end_summary
 
+    ctx.reasoning_summary = begin_summary(ctx.session_id, ctx.ui_turn_id)
+    stack.callback(end_summary, ctx.session_id, ctx.reasoning_summary)
     ctx._coal = DeltaCoalescer(ctx.safe_send, ctx.emit)
     ctx._ka = asyncio.create_task(keepalive(ctx))
     # 【栈条目 E5/E6】见 docstring 顺序契约：ka 先压（后弹）、coal 后压
@@ -434,7 +437,7 @@ async def stream_graph_staged(
 
             async for mode, payload in chunked_stream(ctx):
                 if mode == "messages":
-                    chunk, msg_meta = payload
+                    chunk, _msg_meta = payload
                     # Only AI message chunks carry streaming text / thinking /
                     # tool-call chunks. ToolMessage chunks (the result emitted by
                     # the tools node, type "tool") must NOT be streamed as

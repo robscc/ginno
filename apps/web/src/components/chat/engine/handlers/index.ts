@@ -28,6 +28,7 @@ export const EVENT_HANDLERS: ReadonlyMap<string, EventHandler> = new Map<string,
   // ── 01 stream 帧（token/thinking 前置撤行 + tool 共享体；问卡独立通知）──
   ["token.delta", stream.onDelta],
   ["thinking.delta", stream.onDelta],
+  ["reasoning.summary", stream.onDelta],
   ["tool.start", stream.onStreamFrame],
   ["tool.args", stream.onStreamFrame],
   ["tool.args_delta", stream.onStreamFrame],

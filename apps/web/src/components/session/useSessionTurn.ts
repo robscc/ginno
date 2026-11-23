@@ -176,6 +176,7 @@ export function useSessionTurn<Msg extends SessionMsg>(opts: UseSessionTurnOpts<
       }
       case "token.delta":
       case "thinking.delta":
+      case "reasoning.summary":
       case "tool.start":
       case "tool.args":
       case "tool.end":
@@ -195,6 +196,7 @@ export function useSessionTurn<Msg extends SessionMsg>(opts: UseSessionTurnOpts<
         addSystemRow(optsRef.current.texts.compacted(Number(ev.compacted_messages ?? 0)));
         break;
       case "turn.state":
+        if (ev.running && ev.reasoning_summary) mutateLive({ ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
         // 探针应答（6s 兜底已在 socket 层取消）：turn 不在了 → 本地 live 态
         // 是陈旧的，从持久化 history 重建。
         if (ev.running) break;
@@ -203,6 +205,7 @@ export function useSessionTurn<Msg extends SessionMsg>(opts: UseSessionTurnOpts<
         setBusy(false);
         break;
       case "message.end":
+        if (ev.reasoning_summary && liveRef.current) mutateLive({ ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
         closeLive(false);
         // 回合已结束：滞留的权限提示作废（可能已被主窗口应答，
         // 服务端 _PENDING_RESUME 会去重）。

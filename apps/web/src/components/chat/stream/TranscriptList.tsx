@@ -32,6 +32,7 @@ import {
 } from "../streamCards";
 import { type ChatMsg, failedTurnBannerVisible } from "../streamCore";
 import { CopyBubbleButton } from "./CopyBubbleButton";
+import { useMarkdownFileLinks } from "./useMarkdownFileLinks";
 import type { SessionMeta } from "@/lib/types";
 import {
   consumeMessageTarget,
@@ -115,6 +116,7 @@ export function TranscriptList({
   const g = useGinno();
   const tc = useTranslations("chat");
   const router = useRouter();
+  const onFileLink = useMarkdownFileLinks(session);
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tr = tc as unknown as {
@@ -668,6 +670,7 @@ export function TranscriptList({
               isTail={m.id === lastAssistantId}
               isLatestTurn={m.id === lastAssistantId}
               sessionKey={session?.id ?? null}
+              onFileLink={onFileLink}
               onAnswerQuestion={answerQuestion}
               // questionLive: is this session's turn actually alive? A
               // parked question keeps the server turn running WITHOUT a

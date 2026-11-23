@@ -205,6 +205,7 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
       }
       case "token.delta":
       case "thinking.delta":
+      case "reasoning.summary":
       case "tool.start":
       case "tool.args":
       case "tool.end":
@@ -224,6 +225,7 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
         addSystemRow(optsRef.current.texts.compacted(Number(ev.compacted_messages ?? 0)));
         break;
       case "turn.state":
+        if (ev.running && ev.reasoning_summary) mutateLive({ ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
         // 探针应答（6s 兜底已取消）。决策在 pinTurnStateAction（纯函数，
         // 单测钉住）：resume → 流照常续；stale → 回答描述的是探针那一刻，
         // 此后本端又发过新 turn，等流事件自愈；idle → 本端已不信 turn 在途，
@@ -248,6 +250,7 @@ export function usePinSessionLoop<Msg extends SessionMsg>(opts: UsePinSessionLoo
         }
         break;
       case "message.end":
+        if (ev.reasoning_summary && liveRef.current) mutateLive({ ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
         closeLive(false);
         // 回合已结束：滞留的权限提示作废（可能已被主窗口应答，服务端
         // _PENDING_RESUME 会去重）。

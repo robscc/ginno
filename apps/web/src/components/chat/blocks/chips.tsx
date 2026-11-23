@@ -2,8 +2,8 @@
 
 import { Code2, Sparkles } from "lucide-react";
 import { FileTypeIcon } from "./FileTypeIcon";
-import type { CodeRoot } from "@/lib/codeTypes";
 import { listCodeRoots } from "@/lib/runtime";
+import { splitRootPathIn } from "@/lib/codePaths";
 import { useGinno } from "@/lib/store";
 import { useChatT } from "./i18n";
 import type { Block } from "./types";
@@ -46,31 +46,15 @@ async function openChipInCode(
     g.openInCode({ rootId: g.codeRootId ?? "session", path });
     return;
   }
-  let roots: CodeRoot[];
   try {
-    roots = await listCodeRoots("default", sessionId);
+    const roots = await listCodeRoots("default", sessionId);
+    const target = splitRootPathIn(roots, path);
+    // Outside every root: let the panel surface the guidance.
+    g.openInCode(target
+      ? { rootId: target.rootId, path: target.rel }
+      : { rootId: g.codeRootId ?? roots[0]?.id ?? "session", path });
   } catch {
     return;
-  }
-  let best: { rootId: string; rel: string } | null = null;
-  for (const r of roots) {
-    if (!r.path) continue;
-    const prefix = r.path.endsWith("/") ? r.path : `${r.path}/`;
-    if (path === r.path) {
-      best = { rootId: r.id, rel: "" };
-      continue;
-    }
-    if (path.startsWith(prefix)) {
-      const rel = path.slice(prefix.length);
-      // Most specific root wins = the shortest remaining relative path.
-      if (!best || rel.length < best.rel.length) best = { rootId: r.id, rel };
-    }
-  }
-  if (best) {
-    g.openInCode({ rootId: best.rootId, path: best.rel });
-  } else {
-    // Outside every root: let the panel surface the guidance.
-    g.openInCode({ rootId: g.codeRootId ?? roots[0]?.id ?? "session", path });
   }
 }
 

@@ -20,7 +20,8 @@ import {
   TREE_PX,
   WIDE_PX,
 } from "./panelShared";
-import { splitRootPathIn, absPathOfTab, pickDefaultRoot } from "./useCodeRoots";
+import { absPathOfTab, pickDefaultRoot } from "./useCodeRoots";
+import { splitRootPathIn } from "@/lib/codePaths";
 import { pickEvictionVictim, nextActiveAfterClose } from "./useCodeTabs";
 import { agentTouchedMap } from "./useGitStatus";
 
