@@ -47,8 +47,7 @@ fn precheck_tray_frames() {
             }
             panic!(
                 "tray_anim 帧预检失败（坏帧清单见上方 ❌ 行）。\n\
-                 修复：`make app` 会自动精准重烘缺失帧；手动执行\n\
-                 `python3 apps/desktop/scripts/gen_tray_rainbow.py --only <帧名...>`"
+                 在仓库根目录运行 `make tray-frames` 修复后重试。"
             );
         }
         // Command 失败（无 bash 等）→ 落到内联回退
@@ -67,7 +66,7 @@ fn inline_fallback_check(dir: &Path) {
     if !missing.is_empty() {
         panic!(
             "tray_anim 缺帧（{}/12）：{} —— 需要 frame_00..frame_11，\
-             修复用 apps/desktop/scripts/gen_tray_rainbow.py --only <帧名...>",
+             在仓库根目录运行 `make tray-frames` 修复后重试。",
             missing.len(),
             missing.join(" ")
         );

@@ -42,7 +42,7 @@ TK_VOCAB := $(RUNTIME)/vendor/tiktoken/fb374d419588a4632f3f557e76b4b70aebbca790
 # Contents/Resources/resources/ and lib.rs points GINNO_MOD_RUNNER_PATH at it.
 RUNNER_RES := $(ROOT)/apps/desktop/resources/mod-runner.mjs
 
-.PHONY: all app app-force app-impl sidecar runtime web mod-broker mod-runner clean help e2e-ui
+.PHONY: all app app-force app-impl tray-frames sidecar runtime web mod-broker mod-runner clean help e2e-ui
 
 all: app
 
@@ -71,20 +71,7 @@ app: check guard-app-not-running
 # Release CI uses it to override bundle.macOS.signingIdentity with ad-hoc
 # ("--config release-override.conf.json") — runners have no local signing
 # identities; see .github/workflows/release.yml.
-	@# tray_anim 帧预检 + 精准自愈（2026-11-21）：判据单一来源是
-	@# apps/desktop/scripts/check_tray_frames.sh——逐名校验 frame_00..11
-	@# + PNG magic（【不是计数】：错名 frame_5.png + 凑数文件曾能骗过
-	@# wc -l，直到 include_bytes! 才爆）。apps/desktop/build.rs 调同一
-	@# 脚本，直接 cargo 构建 / CI rust job 共用同一套判据。
-	@bad=$$(bash $(ROOT)/apps/desktop/scripts/check_tray_frames.sh --bad-only) || true; \
-	if [ -n "$$bad" ]; then \
-	  echo "⚠️  tray_anim 坏帧（缺失/错名/坏内容）：$$bad —— 精准重烘，不覆盖其余帧"; \
-	  (cd $(ROOT)/apps/desktop && python3 scripts/gen_tray_rainbow.py --only $$bad) || { \
-	    echo "⚠️  预烘脚本失败（如缺 Pillow），回落 git restore（仅还原坏帧）"; \
-	    git -C $(ROOT) checkout -- $$(for f in $$bad; do echo "apps/desktop/icons/tray_anim/$$f"; done) || true; \
-	  }; \
-	  bash $(ROOT)/apps/desktop/scripts/check_tray_frames.sh || { echo "❌ tray_anim 帧无法恢复（坏帧清单见上）"; exit 1; }; \
-	fi
+	@$(MAKE) tray-frames
 	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build $(TAURI_ARGS)
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens
@@ -101,6 +88,26 @@ app: check guard-app-not-running
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
+
+## tray-frames: verify the checked-in tray PNGs and repair only missing or invalid frames
+tray-frames:
+	@check="$(ROOT)/apps/desktop/scripts/check_tray_frames.sh"; \
+	bad=$$(bash "$$check" --bad-only) || true; \
+	if [ -n "$$bad" ]; then \
+	  echo "⚠️  修复托盘动画帧：$$bad"; \
+	  for frame in $$bad; do \
+	    path="apps/desktop/icons/tray_anim/$$frame"; \
+	    if git -C "$(ROOT)" ls-files --error-unmatch -- "$$path" >/dev/null 2>&1; then \
+	      git -C "$(ROOT)" restore --worktree -- "$$path" || exit 1; \
+	    fi; \
+	  done; \
+	  bad=$$(bash "$$check" --bad-only) || true; \
+	  if [ -n "$$bad" ]; then \
+	    uv run --directory "$(RUNTIME)" --locked --extra docs python \
+	      "$(ROOT)/apps/desktop/scripts/gen_tray_rainbow.py" --only $$bad || exit 1; \
+	  fi; \
+	fi; \
+	bash "$$check"
 
 ## app-impl: app 的并行构建段（mod-broker / mod-runner / sidecar 三链并发）
 app-impl: mod-broker mod-runner sidecar
