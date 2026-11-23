@@ -187,17 +187,55 @@ def extract_mixed(body: dict) -> tuple[str, dict | None]:
     return " ".join(parts), image
 
 
-def parse_answer(text: str, options: list) -> dict:
-    """把用户回复解析成 resume 载荷（ask_user 文本作答路径）。
+MULTI_ANSWER_GUIDE = (
+    "请用一条消息按题号逐行回复，例如 `1. 2` 表示第 1 题选第 2 项，"
+    "`2. 你的回答` 表示第 2 题作答。单题可填 `跳过`，整组可直接回复 `跳过`。"
+)
+_SKIP_ANSWERS = {"跳过", "skip", "跳过这个问题"}
+_NUMBERED_ANSWER = re.compile(r"([1-9])[.、:：)]\s*(.+)")
 
-    「跳过/skip」→ skip；纯数字 → option_index（1-based）；其余按自由文本。
-    """
+
+def parse_answer(text: str, options: list[str]) -> dict:
+    """解析一道题的回复。用户从 1 开始编号，恢复时使用从 0 开始的索引。"""
     t = text.strip()
-    if t.lower() in ("跳过", "skip", "跳过这个问题"):
-        return {"kind": "user_answer", "answer": "", "option_index": None, "skip": True}
-    if t.isdigit():
-        idx = int(t)
+    if t.lower() in _SKIP_ANSWERS:
+        return {"answer": "", "option_index": None, "skip": True}
+    if options and t.isdecimal():
+        try:
+            idx = int(t)
+        except ValueError:
+            idx = 0
         if 1 <= idx <= len(options):
-            return {"kind": "user_answer", "answer": str(options[idx - 1]),
-                    "option_index": idx - 1, "skip": False}
-    return {"kind": "user_answer", "answer": t, "option_index": None, "skip": False}
+            return {"answer": options[idx - 1], "option_index": idx - 1, "skip": False}
+    return {"answer": t, "option_index": None, "skip": False}
+
+
+def parse_multi_answer(text: str, questions: list[dict]) -> list[dict] | None:
+    """按题号解析一条完整回复。缺题、题号重复或不合法的答案返回 None。"""
+    if text.strip().lower() in _SKIP_ANSWERS:
+        return [parse_answer(text, []) for _ in questions]
+
+    answers: dict[int, dict] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = _NUMBERED_ANSWER.fullmatch(line.strip())
+        if not match:
+            return None
+        index = int(match[1]) - 1
+        if index >= len(questions) or index in answers:
+            return None
+        question = questions[index]
+        options = question.get("options") or []
+        answer = parse_answer(match[2], options)
+        if not answer["skip"] and answer["option_index"] is None:
+            value = answer["answer"]
+            if value in options:
+                answer["option_index"] = options.index(value)
+            elif not question.get("allow_free_text", True) or (options and value.isdecimal()):
+                return None
+        answers[index] = answer
+
+    if len(answers) != len(questions):
+        return None
+    return [answers[i] for i in range(len(questions))]

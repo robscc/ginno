@@ -300,6 +300,21 @@ def test_parse_answer():
     assert oob["answer"] == "9"  # 越界数字按自由文本
 
 
+def test_parse_multi_answer_validates_each_question():
+    questions = [{"options": ["A", "B"], "allow_free_text": False}, {}]
+    assert p.parse_multi_answer("2：123\n1、B", questions) == [
+        {"answer": "B", "option_index": 1, "skip": False},
+        {"answer": "123", "option_index": None, "skip": False},
+    ]
+    assert p.parse_multi_answer("跳过", questions) == [
+        {"answer": "", "option_index": None, "skip": True},
+        {"answer": "", "option_index": None, "skip": True},
+    ]
+    for invalid in ("1. B", "1. B\n1. A", "1. B\n3. 晚上", "1. 9\n2. 晚上",
+                    "1. 随便\n2. 晚上"):
+        assert p.parse_multi_answer(invalid, questions) is None
+
+
 # ---------------------------------------------------------------- sessions
 
 
@@ -391,8 +406,11 @@ class FakeAdapter:
         self.pending: dict[str, dict] = {}
         self.answered: dict[str, dict] = {}
 
-    async def register_pending_question(self, chat_key, session_id, qid, options, *, proactive=False):
-        pending = {"session_id": session_id, "question_id": qid, "options": options}
+    async def register_pending_question(
+        self, chat_key, session_id, qid, options, *, questions=None, proactive=False,
+    ):
+        pending = {"session_id": session_id, "question_id": qid, "options": options,
+                   "questions": questions or []}
         self.pending[chat_key] = pending
         return pending
 
