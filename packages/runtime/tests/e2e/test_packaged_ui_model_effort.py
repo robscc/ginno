@@ -225,7 +225,13 @@ def test_codex_model_effort_is_model_specific_and_persists(tmp_path, monkeypatch
     sol = "codex/gpt-6.2-sol"
     older = "codex/gpt-5.3-codex"
     settings = _settings()
-    settings["providers"]["custom"]["models"] = [MODEL, sol, older]
+    settings["providers"]["custom"].update(
+        models=[MODEL, sol, older],
+        model_tags={
+            sol: {"tag": "codex", "max_effort": "ultra"},
+            older: {"tag": "codex", "max_effort": "xhigh"},
+        },
+    )
     monkeypatch.setattr(smoke, "_settings", lambda: settings)
     proc, log = smoke._spawn(tmp_path, port)
     try:
@@ -241,21 +247,21 @@ def test_codex_model_effort_is_model_specific_and_persists(tmp_path, monkeypatch
             chip.click()
 
             def expand(name):
-                row = page.get_by_role("button", name=name).filter(
-                    has=page.locator(f'[role="button"][title="{ARROW_TITLE}"]')
-                )
-                row.locator(f'[role="button"][title="{ARROW_TITLE}"]').click()
+                row = page.locator(f'[data-model-provider-id="custom"] [data-chat-model-id="{name}"]')
+                row.locator('[data-model-efforts-toggle]').click()
 
-            maximum = page.get_by_role("button", name="Maximum", exact=True)
-            extra_high = page.get_by_role("button", name="Extra high", exact=True)
+            maximum = page.locator('[data-thinking-effort="max"]')
+            extra_high = page.locator('[data-thinking-effort="xhigh"]')
+            ultra = page.locator('[data-thinking-effort="ultra"]')
             expand(older)
             expect(extra_high).to_be_visible()
             expect(maximum).to_have_count(0)
+            expect(ultra).to_have_count(0)
             expand(sol)
             expect(maximum).to_be_visible()
             expect(extra_high).to_be_visible()
-            expect(page.get_by_role("button", name=re.compile(r"^Off\b"))).to_have_count(0)
-            expect(page.get_by_role("button", name=re.compile(r"Ultra", re.I))).to_have_count(0)
+            expect(ultra).to_be_visible()
+            expect(page.locator('[data-thinking-effort="off"]')).to_have_count(0)
 
             sid = _sessions(port)[0]["id"]
             path = f"/api/sessions/{sid}"

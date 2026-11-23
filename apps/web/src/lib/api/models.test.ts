@@ -163,6 +163,7 @@ describe("model configs", () => {
     const payload = {
       ok: true,
       models: [{ id: "m1", owned_by: "org" }, { id: "m2", owned_by: null }],
+      model_tag_recommendations: { m1: { tag: "codex", max_effort: "ultra" }, m2: { tag: "codex" } },
       latency_ms: 88,
     };
     const mock = stubFetch(payload);

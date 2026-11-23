@@ -103,6 +103,9 @@
       "thinkingHigh": "高 · 深度",
       "thinkingXhigh": "极高",
       "thinkingMax": "最大",
+      "thinkingUltra": "Ultra",
+      "thinkingModelAria": "{model} 的思考强度",
+      "thinkingReset": "思考强度已恢复为自动",
       "thinkingUnsupported": "该服务商声明不支持思考档位"
     },
     "agentChips": {

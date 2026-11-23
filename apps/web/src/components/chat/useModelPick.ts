@@ -10,7 +10,8 @@ import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { pushNotice } from "@/lib/notice";
-import type { SessionMeta } from "@/lib/types";
+import type { SessionMeta, ThinkingEffort } from "@/lib/types";
+import { inheritHomeEffort, modelEffortLevels, normalizeHomeEffort } from "./modelEfforts";
 
 interface ModelPickDeps {
   g: ReturnType<typeof useGinno>;
@@ -25,8 +26,8 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   // Home-state model pick (composer model chip, M3) consumed on lazy creation.
   // thinking_effort 混在同一个对象里(thinking-effort-design §5):随
   // createAndSend 的 ...(homeModel ?? {}) 一并下发。
-  const [homeModel, setHomeModel] = useState<
-    { provider?: string; model?: string; thinking_effort?: string } | undefined
+  const [homeChoice, setHomeChoice] = useState<
+    { provider: string; model: string; thinking_effort?: ThinkingEffort } | undefined
   >(undefined);
   const homeCreatingRef = useRef(false);
 
@@ -71,26 +72,30 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     // model" report. The menu cannot produce one; this is the guard behind it.
     if (!model) return;
     if (!session) {
-      // 首页态：会话还没建，切换只写进本地 homeModel。旧实现完全无声，
-      // 用户点完 chip 不知道到底生效没（下一个会话才可见）。
-      setHomeModel({ provider: pid, model });
-      pushNotice("info", tc("notice.homeModelPicked", { model }), {
+      const destinationLevels = modelEffortLevels(g.providers[pid], model);
+      const inherited = inheritHomeEffort(homeEffort, homeLevels, destinationLevels);
+      const destinationDefault = normalizeHomeEffort(targetAgent?.thinking_effort, destinationLevels);
+      setHomeChoice({
+        provider: pid,
+        model,
+        thinking_effort: homeChoice?.thinking_effort !== undefined || inherited !== destinationDefault
+          ? inherited
+          : undefined,
+      });
+      const message = homeEffort !== "auto" && inherited === "auto"
+        ? tc("model.thinkingReset")
+        : tc("notice.homeModelPicked", { model });
+      pushNotice("info", message, {
         source: "model",
         dedupeKey: "model:__home__",
       });
       return;
     }
-    const prevProvider = session.provider;
-    const prevModel = session.model;
-    g.applySessionPatch(session.id, { provider: pid, model });
     try {
       const r = await api.patchSession(session.id, { provider: pid, model });
       if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
       g.applySessionPatch(session.id, r.session);
     } catch {
-      // 旧实现是静默回滚：chip 弹回原样、零解释，读作「点了没反应」。
-      // 现在走公共通知层常驻提示，并给一个去设置的出口。
-      g.applySessionPatch(session.id, { provider: prevProvider, model: prevModel });
       pushNotice("error", tc("notice.modelSwitchFailed", { model }), {
         source: "model",
         duration: 0,
@@ -120,28 +125,17 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     g.providers[targetAgent.provider]?.enabled
       ? targetAgent.provider
       : null;
-  const homeEffective = homeModel
-    ? { ...homeModel }
-    : agentBindingPid
-      ? {
-          provider: agentBindingPid,
-          model:
-            targetAgent?.model ||
-            g.providers[agentBindingPid]?.default_model ||
-            g.providers[agentBindingPid]?.model ||
-            "",
-        }
-      : {
-          provider: g.defaultProvider,
-          model:
-            defaultProviderCfg?.default_model ||
-            defaultProviderCfg?.model ||
-            "",
-        };
-  // 首页态的模型来源:picked=用户点选 / agent=agent 绑定 / default=应用默认
-  const homeModelSource: "picked" | "agent" | "default" = homeModel
+  const homeProvider = agentBindingPid ?? g.defaultProvider;
+  const homeProviderCfg = g.providers[homeProvider];
+  const homeEffective = homeChoice
+    ? { provider: homeChoice.provider, model: homeChoice.model }
+    : {
+        provider: homeProvider,
+        model: targetAgent?.model || homeProviderCfg?.default_model || homeProviderCfg?.model || "",
+      };
+  const homeModelSource: "picked" | "agent" | "default" = homeChoice
     ? "picked"
-    : agentBindingPid
+    : agentBindingPid || targetAgent?.model
       ? "agent"
       : "default";
   const modelChipLabel = session
@@ -151,18 +145,13 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
       defaultProviderCfg?.name ||
       g.defaultProvider;
 
-  // ── 思考档位(thinking-effort-design §5)───────────────────────────────
-  // 会话态 = PATCH 热切(与 pickModel 同一条乐观更新+失败回滚路径);首页态
-  // 写进 homeModel 随懒创建下发。auto 是合法值(显式回缺省)。首页的生效
-  // 档位镜像服务端解析链:显式点选 > agent 默认 > auto。
-  const sessionEffort = session?.thinking_effort || "auto";
-  const homeEffort =
-    homeModel?.thinking_effort ||
-    (targetAgent?.thinking_effort && targetAgent.thinking_effort !== "auto"
-      ? targetAgent.thinking_effort
-      : "") ||
-    "auto";
-  const thinkingEffort = session ? sessionEffort : homeEffort;
+  const homeLevels = modelEffortLevels(g.providers[homeEffective.provider], homeEffective.model);
+  const homeEffort = normalizeHomeEffort(homeChoice?.thinking_effort ?? targetAgent?.thinking_effort, homeLevels);
+  // 两个建会话入口共用这个草稿。能力列表更新后，提交值与首页角标保持一致。
+  const homeModel = homeChoice?.thinking_effort !== undefined
+    ? { ...homeChoice, thinking_effort: homeEffort }
+    : homeChoice;
+  const thinkingEffort = session ? session.thinking_effort || "auto" : homeEffort;
 
   // 选模型 + 设思考档位的**原子**操作（2026-11-14 用户反馈「难度要点两次才到位」）。
   // 旧实现里 ModelChipMenu 的难度档 onClick 分别调 pickModel + pickThinking，两条
@@ -171,14 +160,14 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
   // 冲回旧值，读作「点了没生效」；第二次点时服务端已存住新值，模型应答不再陈旧，
   // 才到位。合并成单条 PATCH（provider+model+thinking_effort 一次下发）根除竞态，
   // 顺带省掉一次冗余往返。
-  async function pickModelAndThinking(pid: string, model: string, value: string) {
+  async function pickModelAndThinking(pid: string, model: string, value: ThinkingEffort) {
     setModelOpen(false);
     // 远端会话 fail-closed（同 pickModel）：模型与思考档位都由远端节点决定。
     if (session?.remote_peer) return;
     if (!model) return;
     if (!session) {
       // 首页态：会话未建，三字段一并写进 homeModel，随懒创建下发。
-      setHomeModel({ provider: pid, model, thinking_effort: value });
+      setHomeChoice({ provider: pid, model, thinking_effort: value });
       pushNotice("info", tc("notice.homeModelPicked", { model }), {
         source: "model",
         dedupeKey: "model:__home__",
@@ -191,13 +180,13 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
     g.applySessionPatch(session.id, {
       provider: pid,
       model,
-      thinking_effort: value as SessionMeta["thinking_effort"],
+      thinking_effort: value,
     });
     try {
       const r = await api.patchSession(session.id, {
         provider: pid,
         model,
-        thinking_effort: value as SessionMeta["thinking_effort"],
+        thinking_effort: value,
       });
       if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
       g.applySessionPatch(session.id, r.session);
@@ -205,7 +194,7 @@ export function useModelPick({ g, session, target }: ModelPickDeps) {
       g.applySessionPatch(session.id, {
         provider: prevProvider,
         model: prevModel,
-        thinking_effort: prevEffort as SessionMeta["thinking_effort"],
+        thinking_effort: prevEffort,
       });
       pushNotice("error", tc("notice.modelSwitchFailed", { model }), {
         source: "model",

@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ginno 模型标签 · 交互原型</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --base: #0a0a0f;
+    --panel: #0e0e15;
+    --card: #15151d;
+    --card2: #1b1b25;
+    --line: #262632;
+    --line2: #34343f;
+    --text: #e9e9f0;
+    --muted: #a6a6b6;
+    --violet: #c5adff;
+    --accent: #8b5cf6;
+    --selected: #2a1f42;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--base); color: var(--text); }
+  button, select, textarea { font: inherit; color: inherit; }
+  button, select, summary { cursor: pointer; }
+  button:disabled { cursor: default; opacity: .55; }
+  :focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { font-size: 12px; }
+  h1, h2, p { margin: 0; }
+  h1, h2 { font-size: 15px; font-weight: 630; }
+  .page { width: min(880px, calc(100% - 40px)); margin: 26px auto; }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0 2px 12px; }
+  .views { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; }
+  .views button { padding: 4px 9px; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 12px; }
+  .views button:hover, .views [aria-pressed="true"] { background: var(--card2); color: var(--text); }
+  .panel { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+  #config { max-width: 632px; margin-inline: auto; }
+  .panel-body { padding: 16px; }
+  .field { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--muted); font-size: 12px; }
+  .field select { max-width: 100%; min-height: 29px; padding: 3px 6px; border: 1px solid var(--line2); border-radius: 6px; background: var(--card2); color: var(--text); font-size: 12px; }
+  .models { border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+  .model-row + .model-row { border-top: 1px solid var(--line); }
+  .model-main { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 10px; }
+  .model-name { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 7px; flex: 1; min-width: 0; cursor: pointer; }
+  .model-name input { margin: 0 1px 0 0; accent-color: var(--accent); }
+  .model-name code { overflow-wrap: anywhere; min-width: 0; }
+  .default-badge { padding: 0 5px; border: 1px solid #59417d; border-radius: 999px; color: var(--violet); font-size: 10px; white-space: nowrap; }
+  .recommendation { margin-inline-start: auto; color: var(--violet); font-size: 10px; white-space: nowrap; }
+  .remove { flex: none; width: 22px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 17px; }
+  .remove:hover { background: var(--card2); color: var(--text); }
+  .codex-options { margin: 0 12px 8px; padding: 4px 0; }
+  .codex-options summary { color: var(--muted); font-size: 12px; }
+  .field-name { margin-inline-start: 6px; color: var(--violet); }
+  .option-fields { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; }
+  .hint { margin-top: 7px; color: var(--muted); font-size: 11px; }
+  pre { margin: 7px 0 0; padding: 7px 9px; background: var(--base); border: 1px solid var(--line); border-radius: 7px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+  .save-row { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .status { margin-right: auto; color: var(--muted); font-size: 12px; }
+  .save, .cancel { padding: 5px 10px; border: 1px solid var(--line2); border-radius: 7px; background: var(--card2); font-size: 12px; }
+  .save { border-color: #7856b4; background: #6942b2; color: white; }
+  .empty { padding: 10px; color: var(--muted); font-size: 12px; }
+
+  .picker { position: relative; flex: none; }
+  .picker-trigger { display: flex; align-items: center; gap: 6px; padding: 4px 7px; border: 1px solid var(--line2); border-radius: 6px; background: var(--card); color: var(--muted); font-size: 12px; line-height: 1.35; white-space: nowrap; }
+  .picker-trigger:hover, .picker-trigger[aria-expanded="true"] { background: var(--card2); color: var(--text); }
+  .picker-trigger[data-kind="codex"] { border-color: #66518d; color: var(--violet); }
+  .caret { display: inline-block; flex: none; width: 6px; height: 6px; margin: -2px 2px 0 1px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(45deg); }
+  .picker-menu { position: absolute; z-index: 4; right: 0; top: calc(100% + 4px); padding: 3px 0; border: 1px solid var(--line2); border-radius: 8px; background: var(--card); box-shadow: 0 9px 24px #0008; }
+  .tag-menu { width: 124px; }
+  .picker-option { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; min-height: 29px; padding: 4px 9px; border: 0; background: none; color: var(--muted); text-align: left; font-size: 12px; }
+  .picker-option[aria-checked="true"] { color: var(--text); }
+  .picker-option:hover, .model-option:hover { background: var(--card2); }
+  .tick { flex: none; width: 13px; color: var(--violet); visibility: hidden; }
+  [aria-checked="true"] .tick { visibility: visible; }
+
+  .chat { min-height: min(610px, calc(100vh - 105px)); display: flex; flex-direction: column; background: var(--base); }
+  .chat-col { width: min(680px, 100%); margin-inline: auto; padding: 14px 16px; }
+  .transcript { flex: 1; display: flex; flex-direction: column; gap: 14px; }
+  .user-message { align-self: end; max-width: 86%; padding: 8px 11px; border: 1px solid var(--line); border-radius: 12px 12px 4px 12px; background: var(--card2); }
+  .assistant-message { padding: 0 2px; }
+  .agent { margin-bottom: 5px; color: var(--muted); font-size: 12px; }
+  .switch-notice { margin-top: 1px; color: var(--muted); font-size: 12px; }
+  .composer { position: relative; padding: 9px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+  .composer::before { content: ""; position: absolute; left: calc(50% - 12px); top: 1px; width: 24px; height: 2px; border-radius: 2px; background: var(--line2); }
+  .composer textarea { display: block; width: 100%; min-height: 47px; padding: 4px 5px; resize: none; border: 0; outline: none; background: transparent; }
+  .composer textarea::placeholder { color: var(--muted); opacity: .7; }
+  .composer-bar, .left-controls, .right-controls { display: flex; align-items: center; gap: 5px; }
+  .composer-bar { justify-content: space-between; flex-wrap: wrap; padding-top: 4px; }
+  .left-controls { color: var(--muted); }
+  .left-controls span { padding: 1px 4px; }
+  .left-controls .connected { color: #60c39e; font-size: 9px; }
+  .right-controls { margin-left: auto; }
+  .globe { position: relative; flex: none; width: 12px; height: 12px; border: 1px solid currentColor; border-radius: 100%; }
+  .globe::before { content: ""; position: absolute; inset: -1px 2px; border-inline: 1px solid currentColor; border-radius: 100%; }
+  .globe::after { content: ""; position: absolute; inset: 4px 0 auto; border-top: 1px solid currentColor; }
+  .model-label { max-width: 152px; overflow: hidden; text-overflow: ellipsis; }
+  .effort-badge { flex: none; padding: 0 3px; border-radius: 3px; border: 1px solid #59417d; color: var(--violet); font-size: 9px; }
+  .send { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border: 0; border-radius: 7px; background: var(--accent); color: white; font-size: 18px; }
+  .chat-menu { top: auto; bottom: calc(100% + 4px); width: min(288px, calc(100vw - 72px)); }
+  .provider, .footnote { color: var(--muted); font-size: 10px; padding: 4px 10px; }
+  .footnote { border-top: 1px solid var(--line); }
+  .model-option { display: flex; align-items: center; }
+  .model-option .picker-option { flex: 1; }
+  .model-option .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .expand { flex: none; display: grid; place-items: center; width: 22px; height: 23px; margin-right: 5px; border: 0; border-radius: 4px; background: none; color: var(--muted); }
+  .expand:hover { background: var(--line2); color: var(--text); }
+  .expand .caret { transform: rotate(-45deg); }
+  .expand[aria-expanded="true"] .caret { transform: rotate(45deg); }
+  .efforts { display: flex; flex-wrap: wrap; gap: 4px; padding: 1px 7px 6px 30px; }
+  .effort { padding: 2px 7px; border: 1px solid var(--line2); border-radius: 999px; background: none; color: var(--muted); font-size: 10px; }
+  .effort:hover { color: var(--text); }
+  .effort[aria-pressed="true"] { color: var(--violet); border-color: #66518d; background: var(--selected); }
+  @media (max-width: 525px) {
+    .page { width: calc(100% - 24px); margin-block: 14px; }
+    .panel-body, .chat-col { padding: 12px; }
+    .model-main { gap: 5px; padding-inline: 7px; }
+    .model-name { gap: 3px 5px; }
+    .model-name code { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="top">
+    <strong>GinnoWork</strong>
+    <nav class="views" aria-label="原型页面">
+      <button type="button" data-view="config" aria-pressed="true">模型 API</button>
+      <button type="button" data-view="chat" aria-pressed="false">聊天</button>
+    </nav>
+  </header>
+
+  <form class="panel" id="config">
+    <header class="panel-head">
+      <h1>编辑 API 配置</h1>
+      <div class="field">
+        <label for="protocol">协议</label>
+        <select id="protocol">
+          <option value="responses">OpenAI Responses</option>
+          <option value="chat">Chat Completions</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+    </header>
+    <div class="panel-body">
+      <div class="models" id="models"></div>
+      <footer class="save-row">
+        <span class="status" id="save-status" role="status"></span>
+        <button type="button" class="cancel" id="cancel" disabled>取消</button>
+        <button type="submit" class="save" id="save" disabled>验证并保存</button>
+      </footer>
+    </div>
+  </form>
+
+  <section class="panel chat" id="chat" aria-labelledby="chat-title" hidden>
+    <header class="panel-head"><h2 id="chat-title">桌面构建排查</h2></header>
+    <div class="chat-col transcript">
+      <p class="user-message">检查构建失败的原因</p>
+      <article class="assistant-message">
+        <p class="agent">Dev Agent</p>
+        <p>先确认构建产物是否生成，再核对签名校验的结果。</p>
+      </article>
+      <p class="switch-notice" id="switch-notice" role="status" hidden></p>
+    </div>
+    <div class="chat-col">
+      <div class="composer">
+        <textarea rows="2" aria-label="消息输入框" placeholder="说点什么…… / 命令 · @ 提及 · 拖入或粘贴文件" readonly></textarea>
+        <div class="composer-bar">
+          <div class="left-controls" aria-hidden="true"><span>📎︎</span><span>⌨</span><span class="connected">●</span></div>
+          <div class="right-controls">
+            <div class="picker" id="model-picker">
+              <button type="button" class="picker-trigger" id="model-chip" aria-expanded="false" aria-controls="chat-model-menu" aria-haspopup="menu">
+                <span class="globe" aria-hidden="true"></span><span class="model-label" id="chosen-model"></span><span class="effort-badge" id="badge" hidden></span><span class="caret" aria-hidden="true"></span>
+              </button>
+              <div class="picker-menu chat-menu" id="chat-model-menu" role="menu" aria-label="选择模型" hidden></div>
+            </div>
+            <button type="button" class="send" aria-label="发送" disabled>↑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+  'use strict';
+
+  const catalog = [
+    { id: 'codex/gpt-6.2-astra', recommendedCap: 'ultra' },
+    { id: 'codex/gpt-6.2-sol', recommendedCap: 'ultra' },
+    { id: 'codex/gpt-5.3-codex', recommendedCap: 'xhigh' },
+    { id: 'deepseek-v4.1-flash' },
+  ];
+  const labels = {
+    auto: '自动（跟随服务商配置）', low: '低 · 快速', medium: '中',
+    high: '高 · 深度', xhigh: '极高', max: '最大', ultra: 'Ultra',
+  };
+  const badges = { low: 'LO', medium: 'MED', high: 'HI', xhigh: 'XHI', max: 'MAX', ultra: 'ULTRA' };
+  const baseEfforts = ['low', 'medium', 'high'];
+  const extendedEfforts = ['xhigh', 'max', 'ultra'];
+  const byId = (id) => document.getElementById(id);
+  const config = byId('config');
+  const chat = byId('chat');
+  const draft = {
+    protocol: 'responses',
+    models: catalog.map(({ id }) => id),
+    defaultModel: catalog[0].id,
+    // Saved sample settings for the chat preview.
+    tags: {
+      'codex/gpt-6.2-astra': { cap: 'ultra', anthropicField: 'sdk' },
+      'codex/gpt-6.2-sol': { cap: 'ultra', anthropicField: 'sdk' },
+    },
+  };
+  let saved = structuredClone(draft);
+  const session = { model: saved.defaultModel, effort: 'auto' };
+  let activePicker = null;
+  let expandedModel = null;
+
+  function effortField(protocol, tag) {
+    if (protocol === 'responses') return 'reasoning.effort';
+    if (protocol === 'anthropic' && tag.anthropicField !== 'gateway') return 'output_config.effort';
+    return 'reasoning_effort';
+  }
+
+  function requestExample(protocol, tag) {
+    if (!tag.cap) return {};
+    const field = effortField(protocol, tag);
+    if (field === 'reasoning.effort') return { reasoning: { effort: tag.cap } };
+    if (field === 'output_config.effort') return { output_config: { effort: tag.cap } };
+    return { reasoning_effort: tag.cap };
+  }
+
+  function renderRows() {
+    byId('models').innerHTML = draft.models.map((id, index) => {
+      const { recommendedCap } = catalog.find((model) => model.id === id);
+      return `<div class="model-row" data-model="${id}">
+        <div class="model-main">
+          <label class="model-name">
+            <input type="radio" name="default-model" aria-label="设为默认模型 ${id}" value="${id}">
+            <code>${id}</code><span class="default-badge" hidden>默认模型</span>
+          </label>
+          <div class="picker">
+            <button type="button" class="picker-trigger" aria-expanded="false" aria-controls="tag-menu-${index}" aria-haspopup="menu">
+              <span class="tag-value"></span><span class="caret" aria-hidden="true"></span>
+            </button>
+            <div class="picker-menu tag-menu" id="tag-menu-${index}" role="menu" aria-label="${id} 的模型标签" hidden>
+              <button type="button" class="picker-option" role="menuitemradio" data-tag="default"><span class="tick" aria-hidden="true">✓</span>默认</button>
+              <button type="button" class="picker-option" role="menuitemradio" data-tag="codex"><span class="tick" aria-hidden="true">✓</span>Codex${recommendedCap ? '<span class="recommendation">推荐</span>' : ''}</button>
+            </div>
+          </div>
+          <button type="button" class="remove" aria-label="移除 ${id}" title="移除模型">×</button>
+        </div>
+        <details class="codex-options" hidden>
+          <summary>Codex 参数<code class="field-name"></code></summary>
+          <div class="option-fields">
+            <div class="field">
+              <label for="cap-${index}">档位上限</label>
+              <select id="cap-${index}" data-key="cap">
+                <option value="">待确认</option>
+                ${extendedEfforts.map((level) => `<option value="${level}">${labels[level]}${level === recommendedCap ? '（推荐）' : ''}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field" data-anthropic>
+              <label for="effort-field-${index}">档位字段</label>
+              <select id="effort-field-${index}" data-key="anthropicField"><option value="sdk">output_config.effort</option><option value="gateway">reasoning_effort（网关）</option></select>
+            </div>
+          </div>
+          <pre aria-label="使用档位上限的请求示例"></pre>
+          <p class="hint" data-protocol-hint></p>
+          <p class="hint">切换模型时过滤源模型专用的思考记录和续传引用，保留正文及成对的工具调用与结果。</p>
+        </details>
+      </div>`;
+    }).join('') || '<p class="empty">至少保留一个模型</p>';
+    updateSettings();
+  }
+
+  function updateSettings() {
+    const protocolHints = {
+      responses: '省略 temperature。',
+      chat: '省略 temperature、enable_search 和 enable_thinking。',
+      anthropic: '按网关契约选择字段，省略 thinking 预算。',
+    };
+    for (const row of byId('models').querySelectorAll('.model-row')) {
+      const id = row.dataset.model;
+      const isDefault = id === draft.defaultModel;
+      const tag = draft.tags[id];
+      const value = tag ? 'Codex' : '默认';
+      const trigger = row.querySelector('.picker-trigger');
+      trigger.dataset.kind = tag ? 'codex' : 'default';
+      trigger.setAttribute('aria-label', `${id} 的标签，${value}`);
+      trigger.querySelector('.tag-value').textContent = value;
+      row.querySelector('[data-tag="default"]').setAttribute('aria-checked', String(!tag));
+      row.querySelector('[data-tag="codex"]').setAttribute('aria-checked', String(Boolean(tag)));
+      row.querySelector('[name="default-model"]').checked = isDefault;
+      row.querySelector('.default-badge').hidden = !isDefault;
+      const details = row.querySelector('.codex-options');
+      details.hidden = !tag;
+      if (!tag) {
+        details.open = false;
+        continue;
+      }
+      details.querySelector('.field-name').textContent = effortField(draft.protocol, tag);
+      details.querySelector('[data-key="cap"]').value = tag.cap;
+      details.querySelector('[data-anthropic]').hidden = draft.protocol !== 'anthropic';
+      details.querySelector('[data-key="anthropicField"]').value = tag.anthropicField;
+      details.querySelector('pre').textContent = JSON.stringify(requestExample(draft.protocol, tag), null, 2);
+      details.querySelector('[data-protocol-hint]').textContent = protocolHints[draft.protocol];
+    }
+    const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+    byId('save').disabled = !dirty || !draft.models.length;
+    byId('cancel').disabled = !dirty;
+    byId('save-status').textContent = dirty ? '有未保存的改动' : '';
+  }
+
+  function closePicker(restoreFocus = false) {
+    if (!activePicker) return;
+    const trigger = activePicker.querySelector('.picker-trigger');
+    trigger.setAttribute('aria-expanded', 'false');
+    activePicker.querySelector('.picker-menu').hidden = true;
+    activePicker = null;
+    if (restoreFocus) trigger.focus();
+  }
+
+  function togglePicker(trigger) {
+    const picker = trigger.closest('.picker');
+    const opening = activePicker !== picker;
+    closePicker();
+    if (!opening) return;
+    activePicker = picker;
+    trigger.setAttribute('aria-expanded', 'true');
+    const menu = picker.querySelector('.picker-menu');
+    menu.hidden = false;
+    (menu.querySelector('[aria-checked="true"]') ?? menu.querySelector('button'))?.focus();
+  }
+
+  function effortsFor(id) {
+    const tag = saved.tags[id];
+    if (!tag) return baseEfforts;
+    const cap = extendedEfforts.indexOf(tag.cap);
+    return cap < 0 ? [] : [...baseEfforts, ...extendedEfforts.slice(0, cap + 1)];
+  }
+
+  function showEfforts() {
+    for (const group of byId('chat-model-menu').querySelectorAll('.efforts')) {
+      group.hidden = group.dataset.model !== expandedModel;
+    }
+    for (const trigger of byId('chat-model-menu').querySelectorAll('.expand')) {
+      trigger.setAttribute('aria-expanded', String(trigger.dataset.model === expandedModel));
+    }
+  }
+
+  function renderChat() {
+    const badge = badges[session.effort];
+    byId('chosen-model').textContent = session.model;
+    byId('badge').textContent = badge ?? '';
+    byId('badge').hidden = !badge;
+    byId('chat-model-menu').innerHTML = `<div class="provider">本地 LLM 网关</div>
+      ${saved.models.map((id, index) => {
+        const selected = id === session.model;
+        const efforts = ['auto', ...effortsFor(id)].map((effort) => {
+          const hint = extendedEfforts.includes(effort) ? ` title="${effort}"` : '';
+          return `<button type="button" class="effort" data-model="${id}" data-effort="${effort}" aria-pressed="${selected && effort === session.effort}"${hint}>${labels[effort]}</button>`;
+        }).join('');
+        return `<div class="model-option">
+          <button type="button" class="picker-option" role="menuitemradio" aria-checked="${selected}" data-chat-model="${id}">
+            <span class="tick" aria-hidden="true">✓</span><span class="name">${id}</span>
+          </button>
+          ${selected && badge ? `<span class="effort-badge">${badge}</span>` : ''}
+          <button type="button" class="expand" role="menuitem" aria-label="${id} 的思考强度" aria-expanded="false" aria-controls="levels-${index}" data-model="${id}"><span class="caret" aria-hidden="true"></span></button>
+        </div>
+        <div class="efforts" id="levels-${index}" role="group" aria-label="${id} 的思考档位" data-model="${id}" hidden>${efforts}</div>`;
+      }).join('')}
+      <div class="footnote">下一回合生效 · 你的选择随会话保留，除非其服务商或模型被移除</div>`;
+    showEfforts();
+  }
+
+  function chooseModel(id, effort, previousTag = saved.tags[session.model]) {
+    const leavingCodex = previousTag && !saved.tags[id];
+    const reset = effort === undefined && session.effort !== 'auto' &&
+      (leavingCodex || !effortsFor(id).includes(session.effort));
+    session.model = id;
+    session.effort = effort ?? (reset ? 'auto' : session.effort);
+    const notice = byId('switch-notice');
+    notice.textContent = reset ? '思考强度已恢复为自动' : '';
+    notice.hidden = !reset;
+    renderChat();
+  }
+
+  config.addEventListener('click', (event) => {
+    const option = event.target.closest('[data-tag]');
+    if (option) {
+      const { model } = option.closest('.model-row').dataset;
+      if (option.dataset.tag === 'default') delete draft.tags[model];
+      else if (!draft.tags[model]) {
+        const { recommendedCap } = catalog.find(({ id }) => id === model);
+        draft.tags[model] = { cap: recommendedCap ?? '', anthropicField: 'sdk' };
+      }
+      updateSettings();
+      closePicker(true);
+    }
+    const remove = event.target.closest('.remove');
+    if (remove) {
+      const { model } = remove.closest('.model-row').dataset;
+      const index = draft.models.indexOf(model);
+      draft.models.splice(index, 1);
+      delete draft.tags[model];
+      if (draft.defaultModel === model) draft.defaultModel = draft.models[0] ?? '';
+      closePicker();
+      renderRows();
+      const buttons = config.querySelectorAll('.remove');
+      (buttons[Math.min(index, buttons.length - 1)] ?? byId('cancel')).focus();
+    }
+  });
+
+  config.addEventListener('change', ({ target }) => {
+    if (target.id === 'protocol') draft.protocol = target.value;
+    else if (target.name === 'default-model') draft.defaultModel = target.value;
+    else if (target.dataset.key) draft.tags[target.closest('.model-row').dataset.model][target.dataset.key] = target.value;
+    updateSettings();
+  });
+
+  config.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (byId('save').disabled) return;
+    const previousTag = saved.tags[session.model];
+    saved = structuredClone(draft);
+    updateSettings();
+    byId('save-status').textContent = '演示配置已保存';
+    const id = saved.models.includes(session.model) ? session.model : saved.defaultModel;
+    chooseModel(id, undefined, previousTag);
+  });
+
+  byId('cancel').addEventListener('click', () => {
+    closePicker();
+    Object.assign(draft, structuredClone(saved));
+    byId('protocol').value = draft.protocol;
+    renderRows();
+    config.querySelector('.picker-trigger')?.focus();
+  });
+
+  chat.addEventListener('click', (event) => {
+    const arrow = event.target.closest('.expand');
+    if (arrow) {
+      expandedModel = expandedModel === arrow.dataset.model ? null : arrow.dataset.model;
+      showEfforts();
+      return;
+    }
+    const model = event.target.closest('[data-chat-model]');
+    const effort = event.target.closest('[data-effort]');
+    if (model || effort) {
+      closePicker(true);
+      chooseModel(model?.dataset.chatModel ?? effort.dataset.model, effort?.dataset.effort);
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('.picker-trigger');
+    if (trigger) togglePicker(trigger);
+    else if (activePicker && !activePicker.contains(event.target)) closePicker();
+  });
+
+  document.addEventListener('focusin', (event) => {
+    if (activePicker && !activePicker.contains(event.target)) closePicker();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (!activePicker) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePicker(true);
+      return;
+    }
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const buttons = [...activePicker.querySelectorAll('.picker-menu button')].filter((button) => button.getClientRects().length);
+    if (!buttons.length) return;
+    event.preventDefault();
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    const index = buttons.indexOf(document.activeElement);
+    buttons[(index + step + buttons.length) % buttons.length].focus();
+  });
+
+  const views = document.querySelectorAll('[data-view]');
+  for (const button of views) {
+    button.addEventListener('click', () => {
+      closePicker();
+      config.hidden = button.dataset.view !== 'config';
+      chat.hidden = button.dataset.view !== 'chat';
+      for (const view of views) view.setAttribute('aria-pressed', String(view === button));
+    });
+  }
+
+  renderRows();
+  renderChat();
+</script>
+</body>
+</html>

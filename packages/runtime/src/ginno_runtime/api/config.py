@@ -23,7 +23,7 @@ from ..api import env_settings as env_settings_api
 from ..agents.registry import AgentModelBindingError
 from ..lang import t
 from ..mcp.registry import MCPRegistry
-from ..models import codex_efforts
+from ..model_tags import codex_efforts, inherit_model_effort, resolve_model_effort
 from ..server_shared import _SESSIONS, _push_global_event
 from ..session_meta import _session_meta_list
 from ..skills.loader import SkillLoader
@@ -391,9 +391,14 @@ async def put_model_configs(req: PutModelConfigsRequest):
     # 了 id）置空忽略，绝不把 •••• 落盘、不报错打断保存。
     raw_cfgs = []
     for c in req.configs:
-        if isinstance(c, dict) and prov_mod.is_masked(c.get("api_key")):
-            c = dict(c)
-            prev = stored.get(c.get("id")) or {}
+        if isinstance(c, dict):
+            prev = stored.get(str(c.get("id") or "").strip()) or {}
+            c = {"model_tags": prev.get("model_tags", {}), **c}
+        else:
+            return JSONResponse(
+                status_code=400, content={"ok": False, "error": "Each config must be an object"},
+            )
+        if prov_mod.is_masked(c.get("api_key")):
             if not prev.get("api_key"):
                 log.warning(
                     "model_configs_put_mask_placeholder_ignored id=%s", c.get("id")
@@ -425,10 +430,7 @@ async def put_model_configs(req: PutModelConfigsRequest):
     if isinstance(blocked, JSONResponse):
         return blocked
     saved = prov_mod.save_configs(normalized, default)
-    # Same eviction semantics as the legacy PUT /api/providers: drop cached
-    # session graphs and re-resolve persisted metas against the new config.
-    _SESSIONS.clear()
-    _refresh_session_metas()
+    await _apply_model_config_changes(stored)
     return {
         "ok": True,
         "configs": [
@@ -468,14 +470,20 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
             "error": result.get("error"),
             "latency_ms": result.get("latency_ms"),
         }
-    saved_cfg = prov_mod.normalize_config(draft)
+    stored = {c["id"]: c for c in prov_mod.load_configs()}
+    config_id = str(draft.get("id") or "").strip() or f"prov_{uuid.uuid4().hex[:8]}"
+    previous = stored.get(config_id) or {}
+    saved_cfg = prov_mod.normalize_config({"model_tags": previous.get("model_tags", {}), **draft})
     saved_cfg["verified_at"] = int(time.time())
     saved_cfg["last_error"] = None
-    if not saved_cfg.get("id"):
-        saved_cfg["id"] = f"prov_{uuid.uuid4().hex[:8]}"
-    merged = {c["id"]: c for c in prov_mod.load_configs()}
-    merged[saved_cfg["id"]] = saved_cfg
-    prov_mod.save_configs(list(merged.values()))
+    saved_cfg["id"] = config_id
+    merged = {**stored, config_id: saved_cfg}
+    try:
+        saved = prov_mod.save_configs(list(merged.values()))
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    saved_cfg = next(c for c in saved if c["id"] == config_id)
+    await _apply_model_config_changes(stored)
     return {
         "ok": True,
         "config": {**saved_cfg, "api_key": prov_mod.mask_secret(saved_cfg.get("api_key"))},
@@ -538,8 +546,7 @@ async def delete_model_config(config_id: str):
             "",
         )
     prov_mod.save_configs(remaining, new_default)
-    _SESSIONS.clear()
-    _refresh_session_metas()
+    await _apply_model_config_changes(stored)
     return {"ok": True, "default_config": prov_mod.get_default_config()}
 
 
@@ -568,8 +575,10 @@ async def get_providers() -> dict:
     # plaintext. PUT /api/providers restores masked ones from storage.
     for c in legacy.values():
         models = [*(c.get("models") or []), c["default_model"]]
-        efforts = {model: levels for model in models if (levels := codex_efforts(model))}
-        c.pop("model_thinking_efforts", None)
+        efforts = {
+            model: levels for model in models
+            if (levels := codex_efforts(c, model)) is not None
+        }
         if efforts:
             c["model_thinking_efforts"] = efforts
         if c.get("api_key"):
@@ -585,7 +594,7 @@ class PutProvidersRequest(BaseModel):
     default_provider: str | None = None
 
 
-def _refresh_session_metas() -> None:
+def _refresh_session_metas(previous: dict[str, dict] | None = None) -> dict[str, dict]:
     """Re-resolve every session meta's provider/model against current config.
 
     Session metas persist provider/model from creation time; the topbar label
@@ -597,66 +606,98 @@ def _refresh_session_metas() -> None:
     dropped from its list) fall back to the enabled agent provider, else the
     enabled global default.
     """
-    providers = prov_mod.load_providers()
+    from ..agents.registry import provider_is_deliberate
+    from ..session_meta import _session_meta_rewrite_all
 
-    def _enabled(pid: str | None) -> bool:
-        return bool(pid) and bool((providers.get(pid) or {}).get("enabled"))
+    settings = _read_settings_file()
+    providers = prov_mod.load_providers(settings)
+    default_pid = prov_mod.get_default_provider(settings)
+    refreshed = {}
+
+    def enabled(pid: str | None) -> bool:
+        return bool((providers.get(pid) or {}).get("enabled"))
+
+    def allows(pid: str | None, model: str | None) -> bool:
+        allowed = (providers.get(pid) or {}).get("models") or []
+        return bool(model) and (not allowed or model in allowed)
 
     projects_root = paths.home() / "projects"
     if not projects_root.is_dir():
-        return
+        return refreshed
     for slug_dir in sorted(projects_root.iterdir()):
         if not slug_dir.is_dir():
             continue
         slug = slug_dir.name
         metas = _session_meta_list(slug)
-        if not metas:
-            continue
         changed = False
         for m in metas:
-            ag = _agent_lookup(m.get("agent_id"))
-            # 会话自身的绑定优先保留:新建会话时的选择、模型 chip 的切换都是
-            # 用户显式动作,meta 里的 provider/model 即意图,不能被重算打回
-            # (否则「选好的模型重启后悄悄变回 agent 绑定」)。仅当绑定已不可
-            # 解析(provider 被禁/删,或 model 不在其 models 列表;列表为空
-            # 视为不限,兼容手填 model 的用法)才继续走 agent/默认重算。
             cur_pid = m.get("provider")
             cur_model = m.get("model")
-            if _enabled(cur_pid):
-                allowed = (providers.get(cur_pid) or {}).get("models") or []
-                if cur_model and (not allowed or cur_model in allowed):
-                    continue
-            # Same precedence as _resolve_provider_model (2026-10-02 fix):
-            # the agent's provider counts only as a DELIBERATE choice — one
-            # differing from the global default. The seed placeholder
-            # (provider == default) must not shadow the user's 默认模型提供商.
-            default_pid = prov_mod.get_default_provider()
-            from ..agents.registry import provider_is_deliberate
+            provider, model = cur_pid, cur_model
+            if not enabled(cur_pid) or not allows(cur_pid, cur_model):
+                ag = _agent_lookup(m.get("agent_id"))
+                agent_pid = ag.provider if provider_is_deliberate(ag) else None
+                provider = agent_pid if enabled(agent_pid) else default_pid
+                agent_model = ag.model if ag and allows(provider, ag.model) else None
+                model = agent_model or prov_mod.model_for_provider(providers, provider)
 
-            provider = next(
-                (
-                    c
-                    for c in [
-                        (ag.provider if provider_is_deliberate(ag) else None),
-                        default_pid,
-                    ]
-                    if _enabled(c)
-                ),
-                None,
-            ) or prov_mod.get_default_provider()
-            model = (ag.model if ag and ag.model else None) or prov_mod.model_for_provider(
-                providers, provider
-            )
-            if m.get("provider") != provider or m.get("model") != model:
-                m["provider"] = provider
-                m["model"] = model
+            saved_effort = m.get("thinking_effort")
+            target_cfg = providers.get(provider)
+            if previous is None and (provider, model) == (cur_pid, cur_model):
+                eff = resolve_model_effort(target_cfg, model, saved_effort)
+            else:
+                source_cfg = (previous if previous is not None else providers).get(cur_pid)
+                eff = inherit_model_effort(source_cfg, cur_model, target_cfg, model, saved_effort)
+            effort = eff or "auto"
+            binding_changed = (provider, model) != (cur_pid, cur_model)
+            effort_changed = saved_effort is not None and effort != saved_effort
+            if binding_changed or effort_changed:
+                m.update(provider=provider, model=model, thinking_effort=effort)
                 changed = True
+            if m.get("id") in _SESSIONS:
+                refreshed[m["id"]] = {
+                    "provider": provider, "model": model, "thinking_effort": effort,
+                    "binding_changed": binding_changed, "effort_changed": effort_changed,
+                    "effort_reset": effort_changed and effort == "auto",
+                }
         if changed:
-            # 整表替换必须走 session_meta 的锁+原子写(直接 write_text 会绕开
-            # 2026-10-05 事故后加上的串行约束)。
-            from ..session_meta import _session_meta_rewrite_all
-
             _session_meta_rewrite_all(slug, metas)
+    return refreshed
+
+
+async def _apply_model_config_changes(previous: dict[str, dict]) -> None:
+    from .sessions._base import build_model
+
+    bindings = _refresh_session_metas(previous)
+    events = []
+    for sid, session in list(_SESSIONS.items()):
+        binding = bindings.get(sid)
+        if not binding or (sid not in shared._RUNNING_TURNS and not shared._SESSION_WS.get(sid)):
+            _SESSIONS.pop(sid, None)
+            continue
+        provider, model = binding["provider"], binding["model"]
+        effort = binding["thinking_effort"]
+        try:
+            built = build_model(
+                provider, model, session_id=sid,
+                thinking_effort=None if effort == "auto" else effort,
+            )
+        except ValueError as e:
+            log.warning("session config refresh failed session=%s: %s", sid, e)
+            _SESSIONS.pop(sid, None)
+            continue
+        # Keep the registered entry for the running turn and connected clients.
+        # A model call already in flight keeps the client it acquired earlier.
+        session.update(model=built, model_provider=provider, model_name=model, thinking_effort=effort)
+        if binding["binding_changed"] or binding["effort_changed"]:
+            events.append((sid, {
+                "session_id": sid, "provider": provider, "model": model,
+                "thinking_effort": effort, "effective": "next_step",
+                "effort_reset": binding["effort_reset"],
+            }))
+    await _push_global_event("providers.changed", {})
+    for sid, data in events:
+        await shared._push_session_event(sid, "session.model_changed", data)
 
 
 @router.put("/api/providers")
@@ -671,7 +712,7 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     providers: dict = {}
     for pid, cfg in (req.providers or {}).items():
         cfg = dict(cfg or {})
-        cfg.pop("model_thinking_efforts", None)
+        cfg.setdefault("model_tags", (stored.get(pid) or {}).get("model_tags", {}))
         if prov_mod.is_masked(cfg.get("api_key")):
             prev_key = (stored.get(pid) or {}).get("api_key")
             if not prev_key:
@@ -700,14 +741,7 @@ async def put_providers(req: PutProvidersRequest) -> dict:
             )
     else:
         default = prov_mod.get_default_provider()
-    # Evict all cached session graphs so the next WS connection rebuilds
-    # with the freshly saved model/provider — otherwise existing sessions
-    # keep using the LLM client that was frozen at session creation.
-    _SESSIONS.clear()
-    # Session metas persist provider/model from creation time; the topbar and
-    # rebuilt graphs read them, so re-resolve them against the just-saved
-    # config.
-    _refresh_session_metas()
+    await _apply_model_config_changes(stored)
     # Same SEC-01 outbound rule as GET: the echo carries no plaintext keys.
     echo = {pid: {**cfg, "api_key": prov_mod.mask_secret(cfg.get("api_key"))}
             for pid, cfg in saved.items()}

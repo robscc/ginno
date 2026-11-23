@@ -21,14 +21,16 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from .. import schedule_store as store
 from .. import scheduler
 from .. import workflows as wf_store
-from ..models import normalize_effort
+from ..model_tags import EXTENDED_EFFORTS, LEGACY_EFFORTS
 
 router = APIRouter()
 
 
 def _stored_task_effort(merged: dict) -> str:
     """任务级思考档位归一:"auto"|档位(非法/缺省 → auto)。"""
-    return normalize_effort(merged.get("thinking_effort")) or "auto"
+    # The effective model may follow an agent or the default at run time.
+    value = str(merged.get("thinking_effort") or "").strip().lower()
+    return value if value in (*LEGACY_EFFORTS, *EXTENDED_EFFORTS) else "auto"
 
 
 def _schedule_payload() -> dict:

@@ -9,10 +9,10 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Globe, Server } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { AgentConfig, ProviderConfig } from "@/lib/types";
-import type { SessionMeta } from "@/lib/types";
+import type { SessionMeta, ThinkingEffort } from "@/lib/types";
 import { useA2aPeers } from "@/lib/useA2aPeers";
+import { menuEfforts, modelEffortLevels, normalizeHomeEffort } from "../modelEfforts";
 
-const EFFORTS = ["auto", "off", "low", "medium", "high"] as const;
 // chip 角标缩写（locale 无关）;auto 不占宽。
 const EFFORT_BADGE: Record<string, string> = {
   off: "OFF",
@@ -21,6 +21,7 @@ const EFFORT_BADGE: Record<string, string> = {
   high: "HI",
   xhigh: "XHI",
   max: "MAX",
+  ultra: "ULTRA",
 };
 
 export function ModelChipMenu({
@@ -50,7 +51,7 @@ export function ModelChipMenu({
   onClose: () => void;
   onPick: (pid: string, model: string) => void;
   /** 选模型 + 设思考档位的原子回调（合并成单条 PATCH，根除并发覆盖竞态）。 */
-  onPickModelEffort: (pid: string, model: string, effort: string) => void;
+  onPickModelEffort: (pid: string, model: string, effort: ThinkingEffort) => void;
 }) {
   const tc = useTranslations("chat");
   // 远端会话（remote-session-design.md）：模型由远端节点自己的配置决定——
@@ -82,14 +83,15 @@ export function ModelChipMenu({
     high: tc("model.thinkingHigh"),
     xhigh: tc("model.thinkingXhigh"),
     max: tc("model.thinkingMax"),
+    ultra: tc("model.thinkingUltra"),
   };
   const currentProvider = session ? session.provider : homeEffective.provider;
   const currentModel = session ? session.model : homeEffective.model;
-  const currentLevels = enabledProviders.find(([id]) => id === currentProvider)?.[1]
-    .model_thinking_efforts?.[currentModel || ""];
-  // Older sessions can still have off on disk. This mirrors the runtime's
-  // legacy normalization until the user saves a new choice.
-  const activeEffort = currentLevels && thinkingEffort === "off" ? "low" : thinkingEffort;
+  const currentLevels = modelEffortLevels(
+    enabledProviders.find(([id]) => id === currentProvider)?.[1], currentModel,
+  );
+  // 老会话仍可能有 off。普通模型保留 OFF，Codex 显示兼容档位。
+  const activeEffort = thinkingEffort === "off" ? normalizeHomeEffort("off", currentLevels) : thinkingEffort;
   return (
     <div className="relative">
       <button
@@ -150,7 +152,7 @@ export function ModelChipMenu({
               const curProvider = session ? session.provider : homeEffective?.provider;
               const curModel = session ? session.model : homeEffective?.model;
               return (
-                <div key={pid}>
+                <div key={pid} data-model-provider-id={pid}>
                   <div className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-faint">
                     {p.name || pid}
                   </div>
@@ -163,32 +165,33 @@ export function ModelChipMenu({
                       const on = curProvider === pid && curModel === m;
                       const key = `${pid}:${m}`;
                       const isOpen = expanded === key;
-                      const levels = p.model_thinking_efforts?.[m];
-                      const efforts = levels ? ["auto", ...levels] : EFFORTS;
-                      const effortDisabled = p.thinking_mode === "none";
+                      const levels = modelEffortLevels(p, m);
+                      const efforts = menuEfforts(levels);
+                      const effortDisabled = levels === undefined && p.thinking_mode === "none";
                       return (
-                        <div key={key}>
-                          <button
-                            onClick={() => {
-                              onPick(pid, m);
-                              onClose();
-                            }}
-                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                              on ? "text-txt" : "text-muted"
-                            }`}
-                          >
-                            <span className={on ? "" : "opacity-0"}>✓</span>
-                            <span className="min-w-0 flex-1 truncate">{m}</span>
-                            {/* 行尾箭头：内联展开该模型思考强度（不跳页）。
-                                选中行额外显示当前档角标。 */}
-                            <span
-                              role="button"
-                              tabIndex={-1}
-                              title={tc("model.thinkingTitle")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setExpanded(isOpen ? null : key);
+                        <div key={key} data-chat-model-id={m}>
+                          <div className={`flex items-center gap-2 px-3 hover:bg-card2 ${
+                            on ? "text-txt" : "text-muted"
+                          }`}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onPick(pid, m);
+                                onClose();
                               }}
+                              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-xs"
+                            >
+                              <span aria-hidden="true" className={on ? "" : "opacity-0"}>✓</span>
+                              <span className="min-w-0 flex-1 truncate">{m}</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="button"
+                              title={tc("model.thinkingTitle")}
+                              aria-label={tc("model.thinkingModelAria", { model: m })}
+                              aria-expanded={isOpen}
+                              data-model-efforts-toggle
+                              onClick={() => setExpanded(isOpen ? null : key)}
                               className="-m-1 flex shrink-0 items-center gap-1 rounded p-1 text-faint hover:bg-line2/60 hover:text-txt"
                             >
                               {on && EFFORT_BADGE[activeEffort] && (
@@ -199,8 +202,8 @@ export function ModelChipMenu({
                               <ChevronRight
                                 className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`}
                               />
-                            </span>
-                          </button>
+                            </button>
+                          </div>
                           {isOpen && !effortDisabled && (
                             <div className="mb-1 ml-6 flex flex-wrap gap-1 px-3">
                               {efforts.map((e) => {
@@ -208,6 +211,7 @@ export function ModelChipMenu({
                                 return (
                                   <button
                                     key={e}
+                                    data-thinking-effort={e}
                                     aria-pressed={eOn}
                                     onClick={() => {
                                       onPickModelEffort(pid, m, e);

@@ -503,3 +503,93 @@ def test_fork_endpoint_copies_session(client, patch_build_model):
 
     # 未知会话 → not_found
     assert client.post("/api/sessions/nosuch/fork").json()["error"] == "not_found"
+
+
+def test_saved_codex_effort_by_config_and_switch_reset(client, monkeypatch):
+    from ginno_runtime import providers, server_shared as shared
+    from ginno_runtime.api import sessions
+    from ginno_runtime.session_meta import _session_meta_patch
+
+    model = "codex/gpt-6.2-sol"
+    cfg = {"enabled": True, "models": [model, "alias"], "default_model": model}
+    tagged = {**cfg, "id": "tagged", "model_tags": {
+        model: {"tag": "codex", "max_effort": "ultra"}, "alias": {"tag": "codex"},
+    }}
+    ordinary = {**cfg, "id": "ordinary"}
+    providers.save_configs([tagged, ordinary], "tagged")
+    calls = []
+
+    def fake_build(provider, model=None, *, session_id=None, thinking_effort=None):
+        calls.append((provider, model, thinking_effort))
+        return object()
+
+    monkeypatch.setattr(sessions, "build_model", fake_build)
+    pushed = []
+
+    async def fake_push(sid, event, data):
+        pushed.append(data)
+
+    monkeypatch.setattr(shared, "_push_session_event", fake_push)
+    body = {"project_slug": "default", "workspace": "", "thinking_effort": "ultra"}
+    assert not client.post("/api/sessions", json={**body, "provider": "ordinary"}).json()["ok"]
+    assert not client.post("/api/sessions", json={**body, "model": "alias"}).json()["ok"]
+    created = client.post("/api/sessions", json=body).json()
+    assert created["thinking_effort"] == "ultra"
+    sid = created["id"]
+    assert calls[-1] == ("tagged", model, "ultra")
+    sessions._SESSIONS.pop(sid)
+    assert sessions._ensure_session(sid)["thinking_effort"] == "ultra"
+    assert calls[-1] == ("tagged", model, "ultra")
+
+    def switch(**patch):
+        return client.patch(f"/api/sessions/{sid}", json=patch).json()
+
+    assert switch(thinking_effort="high")["session"]["thinking_effort"] == "high"
+    assert switch(provider="ordinary")["session"]["thinking_effort"] == "auto"
+    assert pushed[-1]["effort_reset"] is True
+    assert calls[-1] == ("ordinary", model, None)
+    assert switch(provider="tagged", thinking_effort="ultra")["ok"]
+    assert not switch(provider="ordinary", thinking_effort="ultra")["ok"]
+    assert sessions._SESSIONS[sid]["model_provider"] == "tagged"
+    assert switch(provider="ordinary", thinking_effort="high")["session"]["thinking_effort"] == "high"
+    assert pushed[-1]["effort_reset"] is False
+    assert switch(provider="tagged", thinking_effort="ultra")["ok"]
+    assert switch(model="alias")["session"]["thinking_effort"] == "auto"
+    assert not switch(thinking_effort="low")["ok"]
+    assert switch(model=model)["ok"]
+    sessions._SESSIONS.pop(sid)
+    _session_meta_patch("default", sid, {"thinking_effort": "off"})
+    assert sessions._ensure_session(sid)["thinking_effort"] == "low"
+    assert switch(provider="ordinary", thinking_effort="off")["ok"]
+    sessions._SESSIONS.pop(sid)
+    assert sessions._ensure_session(sid)["thinking_effort"] == "off"
+
+
+def test_save_model_config_revalidates_current_turn_on_next_call(client, monkeypatch):
+    from ginno_runtime import providers, server_shared as shared
+    from ginno_runtime.api import sessions
+
+    model = "manual-model"
+    tagged = {"id": "tagged", "enabled": True, "models": [model],
+              "model_tags": {model: {"tag": "codex", "max_effort": "ultra"}}}
+    providers.save_configs([tagged], "tagged")
+    calls = []
+
+    def fake_build(provider, model=None, *, session_id=None, thinking_effort=None):
+        calls.append((provider, model, thinking_effort))
+        return object()
+
+    monkeypatch.setattr(sessions, "build_model", fake_build)
+    sid = _post_session(client, thinking_effort="high").json()["id"]
+    entry = sessions._SESSIONS[sid]
+    getter = shared.make_session_model_getter(sid, entry["model"])
+    inflight_model = getter()
+    shared._RUNNING_TURNS[sid] = "current-turn"
+    saved = client.put("/api/model_configs", json={"configs": [{**tagged, "model_tags": {}}]}).json()
+    assert saved["ok"] is True
+    assert shared._RUNNING_TURNS[sid] == "current-turn"
+    assert sessions._SESSIONS[sid] is entry
+    assert entry["thinking_effort"] == "auto"
+    assert calls[-1] == ("tagged", model, None)
+    assert getter() is not inflight_model
+    assert client.get(f"/api/sessions/{sid}").json()["thinking_effort"] == "auto"

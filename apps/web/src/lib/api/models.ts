@@ -8,6 +8,7 @@ import type {
   AgentConfig,
   ModelConfig,
   ModelConfigReference,
+  ModelTagRecommendation,
   Providers,
   VerifyResult,
 } from "../types";
@@ -136,7 +137,12 @@ export async function reorderAgents(order: string[]) {
 // ok:false carries the error, same convention as verifyModelConfig.
 export async function listModelsForConfig(draft: Partial<ModelConfig>) {
   return json<
-    | { ok: true; models: Array<{ id: string; owned_by: string | null }>; latency_ms: number }
+    | {
+        ok: true;
+        models: Array<{ id: string; owned_by: string | null }>;
+        latency_ms: number;
+        model_tag_recommendations?: Record<string, ModelTagRecommendation>;
+      }
     | { ok: false; error: string }
   >(`${BASE}/model_configs/list_models`, {
     method: "POST",

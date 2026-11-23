@@ -65,6 +65,7 @@ from .graph_prompts import (
     tool_allowed,
 )
 from .lang import response_lang_directive, t
+from .model_history import stamp_model_origin
 from .permission.policy import PermissionPolicy, is_bypass_permissions
 from .server_shared import _TURN_IMAGE_BASELINE, STEER_CONTEXT_KEY, steer_drain, steer_messages
 from .state import AgentState
@@ -243,6 +244,7 @@ async def _ainvoke_rate_limited(bound, msgs):
         _emit_llm_event("request", _obs_req_id, _obs_attempt, _obs_meta)
         try:
             result = await bound.ainvoke(msgs)
+            stamp_model_origin(bound, result)
             _emit_llm_event(
                 "response", _obs_req_id, _obs_attempt, _obs_meta,
                 t0=_obs_t0, result=result,

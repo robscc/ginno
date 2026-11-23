@@ -88,9 +88,16 @@ export interface AgentConfig {
   status: string;
 }
 
-export type ThinkingEffort = "auto" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingEffort = "auto" | "off" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+export type CodexMaxEffort = Extract<ThinkingEffort, "xhigh" | "max" | "ultra">;
+export type ModelTagRecommendation = { tag: "codex"; max_effort?: CodexMaxEffort };
+export type ModelTag = ModelTagRecommendation & {
+  anthropic_effort_field?: "output_config" | "reasoning_effort";
+};
 
 export interface ProviderConfig {
+  model_tags?: Record<string, ModelTag>;
   /** Model-specific options advertised by the runtime, excluding auto. */
   model_thinking_efforts?: Record<string, Exclude<ThinkingEffort, "auto">[]>;
   enabled: boolean;
@@ -159,6 +166,7 @@ export interface ModelConfig {
   server_web_search_max_uses?: number;
   models: string[]; // replaces the old single model/default_model field
   default_model: string; // must be a member of models
+  model_tags?: Record<string, ModelTag>;
   max_tokens: number;
   context_window?: number; // model context window (tokens); 0/absent = unknown
   temperature: number;

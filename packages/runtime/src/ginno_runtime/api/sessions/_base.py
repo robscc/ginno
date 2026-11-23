@@ -30,7 +30,8 @@ from ... import server_shared as shared
 from ... import agents as agents_reg
 from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph
-from ...models import build_model, normalize_effort, resolve_model_effort
+from ...model_tags import inherit_model_effort, resolve_model_effort
+from ...models import build_model, normalize_effort
 from ...server_shared import _SESSIONS
 from ...session_meta import _find_meta
 from ..config import _agent_lookup
@@ -64,7 +65,8 @@ def _build_model_with_fallback(
         )
     except ValueError as e:
         dflt = prov_mod.get_default_provider()
-        dflt_model = prov_mod.model_for_provider(prov_mod.load_providers(), dflt)
+        providers = prov_mod.load_providers()
+        dflt_model = prov_mod.model_for_provider(providers, dflt)
         if dflt == provider and (model_name or None) == (dflt_model or None):
             raise
         logging.getLogger(__name__).warning(
@@ -76,9 +78,10 @@ def _build_model_with_fallback(
             dflt,
             dflt_model,
         )
-        return build_model(
-            dflt, dflt_model, session_id=session_id, thinking_effort=thinking_effort
+        effort = inherit_model_effort(
+            providers.get(provider), model_name, providers.get(dflt), dflt_model, thinking_effort,
         )
+        return build_model(dflt, dflt_model, session_id=session_id, thinking_effort=effort)
 
 
 def _default_title(agent_id: str | None) -> str:
@@ -137,11 +140,12 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         return None
     meta, slug = found
     provider = meta.get("provider") or prov_mod.get_default_provider()
-    model_name = meta.get("model") or prov_mod.model_for_provider(
-        prov_mod.load_providers(), provider
-    )
+    providers = prov_mod.load_providers()
+    model_name = meta.get("model") or prov_mod.model_for_provider(providers, provider)
     # 思考档位随会话记录恢复(设计 §2):meta 落盘值 "auto"|档位,auto → None。
-    stored_eff = resolve_model_effort(model_name, meta.get("thinking_effort")) or "auto"
+    stored_eff = resolve_model_effort(
+        providers.get(provider), model_name, meta.get("thinking_effort"),
+    ) or "auto"
     try:
         model = _build_model_with_fallback(
             provider,

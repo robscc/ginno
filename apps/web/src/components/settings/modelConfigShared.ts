@@ -1,5 +1,5 @@
 // Shared helpers for the model-config list page (multi-provider-model-config.md §2).
-import type { ModelConfig, ModelConfigReference, ModelProtocol } from "@/lib/types";
+import type { CodexMaxEffort, ModelConfig, ModelConfigReference, ModelProtocol, ModelTag, ModelTagRecommendation } from "@/lib/types";
 
 export const PROTOCOLS: ModelProtocol[] = ["anthropic", "openai-compatible", "openai-responses"];
 
@@ -165,4 +165,43 @@ export function mergeModelIds(existing: string[], picked: string[]): string[] {
  *  旁路。纯函数，vitest 覆盖见 modelConfigShared.test.ts。 */
 export function reconcileDefaultModel(models: string[], prev?: string): string {
   return prev && models.includes(prev) ? prev : (models[0] ?? "");
+}
+
+export const CODEX_CAPS = ["xhigh", "max", "ultra"] as const;
+
+const CODEX_CAP_BY_NAME: Record<string, CodexMaxEffort> = {
+  "gpt-6.2-astra": "ultra",
+  "gpt-6.2-sol": "ultra",
+  "gpt-6-luna": "max",
+  "gpt-5.6-luna": "max",
+  "gpt-5.2-codex": "xhigh",
+  "gpt-5.3-codex": "xhigh",
+};
+
+export function recommendModelTag(
+  id: string,
+  catalog?: Record<string, ModelTagRecommendation>,
+): ModelTagRecommendation | undefined {
+  if (catalog && Object.hasOwn(catalog, id)) return catalog[id];
+  const name = id.toLowerCase();
+  const codexRoute = name.startsWith("codex/") && name.length > "codex/".length;
+  const model = codexRoute ? name.slice("codex/".length) : name;
+  const maxEffort = Object.hasOwn(CODEX_CAP_BY_NAME, model) ? CODEX_CAP_BY_NAME[model] : undefined;
+  if (!codexRoute && !maxEffort) return undefined;
+  return maxEffort ? { tag: "codex", max_effort: maxEffort } : { tag: "codex" };
+}
+
+export function updateModelTag(tags: ModelConfig["model_tags"], id: string, tag?: ModelTag) {
+  const next = { ...tags };
+  if (tag) return { ...next, [id]: tag };
+  delete next[id];
+  return next;
+}
+
+export function modelTagsForSave(draft: ModelConfig): ModelConfig["model_tags"] {
+  if (draft.kind === "asr") return draft.model_tags;
+  const activeModels = new Set(draft.models);
+  return Object.fromEntries(
+    Object.entries(draft.model_tags ?? {}).filter(([id]) => activeModels.has(id)),
+  );
 }

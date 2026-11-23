@@ -1063,3 +1063,69 @@ def test_resolve_asr_config_by_id(client):
     if first_chat:
         assert resolve_asr_config(first_chat["id"]) is None
     assert resolve_asr_config("nosuch") is None
+
+
+def test_model_tags_save_load_legacy_view_and_prune(client, monkeypatch):
+    shared_model = "codex/gpt-6.2-sol"
+    unknown = "alias"
+    first = _relay("tagged", models=[shared_model, unknown], default_model=shared_model)
+    second = _relay("ordinary", models=[shared_model], default_model=shared_model)
+    first["model_tags"] = {
+        shared_model: {"tag": "codex", "max_effort": "ultra",
+                       "anthropic_effort_field": "reasoning_effort"},
+        unknown: {"tag": "codex"},
+        "deleted": {"tag": "codex", "max_effort": "max"},
+    }
+    first["model_tag_recommendations"] = {"deleted": {"tag": "codex"}}
+    base = client.get("/api/model_configs").json()["configs"]
+    r = client.put("/api/model_configs", json={
+        "configs": [*base, first, second], "default_config": "tagged",
+    })
+    assert r.json()["ok"] is True, r.text
+    first["model_tags"].pop("deleted")
+    model_configs = {c["id"]: c for c in client.get("/api/model_configs").json()["configs"]}
+    assert model_configs["tagged"]["model_tags"] == first["model_tags"]
+    assert model_configs["ordinary"]["model_tags"] == {}
+    assert "model_tag_recommendations" not in model_configs["tagged"]
+    persisted = {c["id"]: c for c in _read_settings()["model_configs"]}
+    assert persisted["tagged"]["model_tags"] == first["model_tags"]
+
+    providers = client.get("/api/providers").json()["providers"]
+    assert providers["tagged"]["model_thinking_efforts"] == {
+        shared_model: ["low", "medium", "high", "xhigh", "max", "ultra"], unknown: [],
+    }
+    assert "model_thinking_efforts" not in providers["ordinary"]
+
+    # Legacy clients can omit this newer field and still preserve saved tags.
+    legacy = dict(providers["tagged"])
+    legacy.pop("model_tags")
+    r = client.put("/api/providers", json={"providers": {"tagged": legacy}}).json()
+    assert r["providers"]["tagged"]["model_tags"] == first["model_tags"]
+    persisted = {c["id"]: c for c in _read_settings()["model_configs"]}
+    assert "model_thinking_efforts" not in persisted["tagged"]
+
+    # The settings form normally saves through the draft verification endpoint.
+    monkeypatch.setattr(prov_mod, "verify_config_draft", lambda _: {"ok": True})
+    r = client.post("/api/model_configs/verify", json={**first, "models": [shared_model]}).json()
+    assert r["ok"] is True
+    assert r["config"]["model_tags"] == {shared_model: first["model_tags"][shared_model]}
+    stored = {cfg["id"]: cfg for cfg in prov_mod.load_configs()}
+    assert stored["tagged"]["model_tags"] == r["config"]["model_tags"]
+
+
+def test_model_list_recommendations_require_capability_metadata(client, monkeypatch):
+    _patch_httpx_get(monkeypatch, _FakeResp(payload={"data": [
+        {"id": "codex/gpt-6.2-astra"},
+        {"id": "pool/gpt-6.2-sol", "owned_by": "codex"},
+        {"id": "alias", "capabilities": {"model_family": "codex", "supported_reasoning_levels": [
+            {"effort": "low"}, {"effort": "ultra"}, {"effort": "unknown"},
+        ]}},
+        {"id": "unknown", "family": "codex"},
+        {"id": "other", "supported_reasoning_efforts": ["ultra"]},
+    ]}))
+    r = client.post("/api/model_configs/list_models", json=_DRAFT).json()
+    assert r["ok"] is True
+    assert r["model_tag_recommendations"] == {
+        "alias": {"tag": "codex", "max_effort": "ultra"}, "unknown": {"tag": "codex"},
+    }
+    assert len(r["models"]) == 5

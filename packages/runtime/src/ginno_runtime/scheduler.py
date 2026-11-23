@@ -693,6 +693,7 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
     from .api import sessions as _sessions_api
     from .api import stream as _stream_api
     from .api.sessions import _turn_last_error
+    from .model_tags import resolve_model_effort
     from .tools.ask_tools import reset_interactive as _reset_interactive_turn
     from .tools.ask_tools import set_interactive as _set_interactive_turn
 
@@ -716,6 +717,10 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         # _resolve_thinking_effort 的 agent 默认链。
         thinking_effort=str(task.get("thinking_effort") or "") or None,
     )
+    if req.thinking_effort is not None:
+        provider, model_name, _agent_id = _sessions_api._resolve_provider_model(req)
+        cfg = prov_mod.load_providers().get(provider)
+        req.thinking_effort = resolve_model_effort(cfg, model_name, req.thinking_effort) or "auto"
     meta = await _sessions_api.create_session(req)
     if meta.get("ok") is False or not meta.get("id"):
         return {

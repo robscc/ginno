@@ -162,11 +162,17 @@ def test_empty_reasoning_delta_survives(monkeypatch):
 # ---- layer 3: history → request body (reasoning_content round-trip) ----
 
 
-def _payload(monkeypatch, messages, **cfg_over):
+def _payload(monkeypatch, messages, *, same_source=False, **cfg_over):
+    from ginno_runtime.model_history import stamp_model_origin
+
     monkeypatch.setattr(
         prov_mod, "load_providers", lambda: {"custom": _cfg(**cfg_over)}
     )
-    return build_model("custom")._get_request_payload(messages)
+    client = build_model("custom")
+    if same_source:
+        for message in messages:
+            stamp_model_origin(client, message)
+    return client._get_request_payload(messages)
 
 
 def _ai(reasoning=None, tool_calls=None, content=""):
@@ -187,14 +193,13 @@ def test_payload_replays_reasoning_from_additional_kwargs(monkeypatch):
     from langchain_core.messages import HumanMessage
 
     out = _payload(
-        monkeypatch, [HumanMessage("hi"), _ai(reasoning="let me think", tool_calls=_TC)]
+        monkeypatch, [HumanMessage("hi"), _ai(reasoning="let me think", tool_calls=_TC)],
+        same_source=True, model="deepseek-v4.1-flash",
     )
     assert out["messages"][1]["reasoning_content"] == "let me think"
 
 
-def test_payload_replays_anthropic_thinking_blocks(monkeypatch):
-    """A session that started on an Anthropic-protocol thinking provider and
-    was switched to DeepSeek mid-flight keeps its CoT as content blocks."""
+def test_payload_omits_unattributed_anthropic_thinking_blocks(monkeypatch):
     from langchain_core.messages import AIMessage, HumanMessage
 
     out = _payload(
@@ -210,7 +215,8 @@ def test_payload_replays_anthropic_thinking_blocks(monkeypatch):
             ),
         ],
     )
-    assert out["messages"][1]["reasoning_content"] == "step 1"
+    assert out["messages"][1]["reasoning_content"] == ""
+    assert out["messages"][1]["content"] == "answer"
 
 
 def test_payload_fills_empty_reasoning_for_tool_call_turns(monkeypatch):
@@ -315,40 +321,3 @@ def test_generic_off_still_minimal_openai_official(monkeypatch):
     # 本修复无关）。
     m = _mk_zhipu(monkeypatch)("custom", "chatgpt-api/gpt-6.2-astra", thinking_effort="off")
     assert getattr(m, "reasoning_effort", None) == "minimal"
-
-
-def test_anthropic_codex_effort_direct_reasoning_effort(monkeypatch):
-    """anthropic 协议 + codex 模型：档位直传 reasoning_effort，不发 thinking 块。
-
-    2026-11-23 报障回案：gpt-5.3-codex 走 anthropic 壳网关时默认路径是
-    thinking/budget_tokens——网关拒（400）。修复后 codex 自动按 effort
-    直传。off 在入层前已被 codex 归一化为 low（resolve_model_effort 的
-    legacy 规则：codex 值域无 off，落 low 兜底）。
-    """
-    captured: dict = {}
-
-    class _FakeAnthropic:
-        def __init__(self, **kw):
-            captured.update(kw)
-
-    import ginno_runtime.models as models_mod
-
-    monkeypatch.setattr(models_mod, "_healing_chat_anthropic", lambda: _FakeAnthropic)
-    cfg = _cfg(
-        protocol="anthropic",
-        base_url="https://gw.example/anthropic",
-        model="gpt-5.3-codex",
-    )
-    monkeypatch.setattr(
-        prov_mod, "load_providers", lambda: {"p": {**cfg, "id": "p"}}
-    )
-    m = build_model("p", model_name="gpt-5.3-codex", thinking_effort="high")
-    assert m is not None
-    assert captured.get("reasoning_effort") == "high"
-    assert "thinking" not in captured, "codex 不应走 budget_tokens 路径"
-
-    captured.clear()
-    build_model("p", model_name="gpt-5.3-codex", thinking_effort="off")
-    # off → resolve 层归一化为 low（codex 无 off 档），仍走 effort 直传。
-    assert captured.get("reasoning_effort") == "low"
-    assert "thinking" not in captured

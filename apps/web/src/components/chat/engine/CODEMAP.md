@@ -64,6 +64,7 @@
 | skills.changed | 刷 slash 菜单技能表 | ctx.g.reloadSkills |
 | memory.changed | 刷 Memory 角标 | ctx.g.reloadMemoryBadge |
 | agents.changed | 刷 picker/mention 列表 | ctx.g.reloadAgents |
+| providers.changed | 设置保存后刷新服务商与模型档位列表 | ctx.g.reloadProviders |
 | session.model_changed | 模型热切回流：patch 会话条目 + 轻提示 toast（不进收件箱） | applySessionPatch(provider/model/thinking_effort)；pushNotice(model) |
 | workflows.changed | 刷 workflow 定义 + 运行列表 | ctx.g.reloadWorkflows/reloadWorkflowRuns |
 | synthesis.event | 刷总结面板；命中挂起等待即 resolve | ctx.g.reloadSynthesisCases；ctx.finishSynthesisWait |

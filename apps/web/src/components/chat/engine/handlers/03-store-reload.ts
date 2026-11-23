@@ -40,6 +40,10 @@ export function onAgentsChanged(ctx: EngineCtx, sid: string) {
   ctx.g.reloadAgents();
 }
 
+export function onProvidersChanged(ctx: EngineCtx) {
+  void ctx.g.reloadProviders();
+}
+
 export function onSessionModelChanged(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   // 模型热切回流（model-assignment-design.md §3.2）：服务端已原地换掉
   // 会话条目的模型对象，下一个 superstep 生效。发起端乐观更新过，这里
@@ -63,8 +67,10 @@ export function onSessionModelChanged(ctx: EngineCtx, sid: string, ev: ServerEve
   // 操作确认类反馈——toast 几秒即逝，不进通知中心不留档。
   {
     const { tr } = ctx.i18nRef.current;
-    const key = patch.model ? "model.switchToast" : "model.switchToastNoModel";
-    pushNotice("success", tr(key, patch.model ? { model: patch.model } : undefined), {
+    const reset = ev.effort_reset === true;
+    const message = reset ? tr("model.thinkingReset")
+      : patch.model ? tr("model.switchToast", { model: patch.model }) : tr("model.switchToastNoModel");
+    pushNotice("success", message, {
       source: "model",
       dedupeKey: `model:${sid}`,
       inbox: false,

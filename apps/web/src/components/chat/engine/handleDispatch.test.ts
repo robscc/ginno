@@ -114,6 +114,7 @@ function makeBag(overrides: AnyRec = {}): Bag {
     reloadSkills: vi.fn(),
     reloadMemoryBadge: vi.fn(),
     reloadAgents: vi.fn(),
+    reloadProviders: vi.fn(),
     reloadWorkflows: vi.fn(),
     reloadWorkflowRuns: vi.fn(),
     reloadSynthesisCases: vi.fn(),
@@ -243,7 +244,7 @@ const EXPECTED_CASES = [
   "turn.start",
   "permission.request", "version.propose",
   "todos.changed", "skills.changed", "memory.changed", "agents.changed",
-  "session.model_changed",
+  "providers.changed", "session.model_changed",
   "workflows.changed",
   "synthesis.event",
   "run.bind", "run.event", "run.status",
@@ -417,6 +418,7 @@ const DISPATCH_TABLE: CaseSpec[] = [
   { event: "skills.changed", desc: "刷 skill 清单", ev: {}, probe: (b) => expect(b.g.reloadSkills).toHaveBeenCalled() },
   { event: "memory.changed", desc: "刷记忆角标", ev: {}, probe: (b) => expect(b.g.reloadMemoryBadge).toHaveBeenCalled() },
   { event: "agents.changed", desc: "刷 agent 列表", ev: {}, probe: (b) => expect(b.g.reloadAgents).toHaveBeenCalled() },
+  { event: "providers.changed", desc: "刷新模型档位列表", ev: {}, probe: (b) => expect(b.g.reloadProviders).toHaveBeenCalled() },
   {
     event: "session.model_changed", desc: "patch 三元组 + 轻提示（不进收件箱）",
     ev: { provider: "p1", model: "m1", thinking_effort: "high" },
@@ -868,6 +870,24 @@ describe("② 全事件 dispatch 触达表（注册表化重构的验收网）",
 
   it("②表覆盖①钉住的全部事件类型（两张清单不脱节）", () => {
     expect(DISPATCH_TABLE.map((c) => c.event).sort()).toEqual([...EXPECTED_CASES].sort());
+  });
+});
+
+describe("session.model_changed effort reset", () => {
+  it("uses the authoritative Auto and replaces the ordinary model toast", () => {
+    const bag = makeBag();
+    vi.mocked(pushNotice).mockClear();
+    handle(bag.ctx, SID, {
+      event: "session.model_changed", provider: "p1", model: "model-b",
+      thinking_effort: "auto", effort_reset: true,
+    });
+    expect(bag.g.applySessionPatch).toHaveBeenCalledWith(SID, {
+      provider: "p1", model: "model-b", thinking_effort: "auto",
+    });
+    expect(pushNotice).toHaveBeenCalledTimes(1);
+    expect(pushNotice).toHaveBeenCalledWith("success", "model.thinkingReset", {
+      source: "model", dedupeKey: `model:${SID}`, inbox: false,
+    });
   });
 });
 

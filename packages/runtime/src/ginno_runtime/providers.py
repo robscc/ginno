@@ -40,6 +40,7 @@ from . import paths
 from . import settings_store
 from ._version import ginno_user_agent
 from .lang import t
+from .model_tags import catalogue_model_tag, normalize_model_tags
 
 PROVIDER_IDS = ("anthropic", "openai", "custom")
 
@@ -136,6 +137,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "org_id": "",
     "bearer_auth": False,
     "models": [],
+    "model_tags": {},
     "default_model": "",
     "max_tokens": 8192,
     "temperature": 0.7,
@@ -177,10 +179,13 @@ def _coerce_models(value: Any) -> list[str]:
 
 
 def normalize_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
-    """Merge a config over CONFIG_DEFAULTS (unknown keys preserved verbatim)."""
+    """Merge config defaults, normalize tags and discard derived response fields."""
     out = deepcopy(CONFIG_DEFAULTS)
     out.update(cfg or {})
     out["models"] = _coerce_models(out.get("models"))
+    out["model_tags"] = normalize_model_tags(out, out["models"])
+    out.pop("model_tag_recommendations", None)
+    out.pop("model_thinking_efforts", None)
     out["enabled"] = bool(out.get("enabled"))
     # kind 只有两个合法值；未知值一律回 chat（旧配置无此字段也是 chat）。
     out["kind"] = "asr" if str(out.get("kind") or "") == "asr" else "chat"
@@ -209,7 +214,7 @@ def legacy_providers_to_configs(stored: dict[str, Any]) -> list[dict[str, Any]]:
         model = str(merged.get("default_model") or merged.get("model") or "").strip()
         models = _coerce_models(merged.get("models")) or ([model] if model else [])
         name = str(merged.get("name") or "").strip() or _LEGACY_SLOT_NAMES.get(pid, pid)
-        cfg = normalize_config(merged)
+        cfg = normalize_config({**merged, "models": models})
         cfg.update(
             {
                 "id": pid,
@@ -404,7 +409,8 @@ def save_providers(providers: dict[str, dict[str, Any]]) -> dict[str, dict[str, 
     drafts = legacy_providers_to_configs(providers)
     merged = {cfg["id"]: cfg for cfg in load_configs()}
     for cfg in drafts:
-        merged[cfg["id"]] = cfg
+        if cfg["id"] in providers or cfg["id"] not in merged:
+            merged[cfg["id"]] = cfg
     saved = save_configs(list(merged.values()))
     return {cfg["id"]: cfg for cfg in saved}
 
@@ -415,7 +421,7 @@ def get_default_provider(settings: dict[str, Any] | None = None) -> str:
 
 def model_for_provider(providers: dict[str, dict[str, Any]], pid: str) -> str:
     cfg = providers.get(pid, {})
-    return cfg.get("default_model") or cfg.get("model") or ""
+    return cfg.get("default_model") or cfg.get("model") or model_for_config(cfg)
 
 
 # ---- system-proxy switch (settings.json top-level `use_system_proxy`) ------
@@ -702,6 +708,7 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
                 "latency_ms": _latency(),
             }
         models: list[dict[str, Any]] = []
+        recommendations = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -710,8 +717,13 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
                 continue
             owned = str(row.get("owned_by") or row.get("display_name") or "").strip()
             models.append({"id": mid, "owned_by": owned or None})
+            if recommendation := catalogue_model_tag(row):
+                recommendations[mid] = recommendation
         models.sort(key=lambda m: m["id"])
-        return {"ok": True, "models": models, "latency_ms": _latency()}
+        result = {"ok": True, "models": models, "latency_ms": _latency()}
+        if recommendations:
+            result["model_tag_recommendations"] = recommendations
+        return result
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False,

@@ -14,7 +14,8 @@ from ... import providers as prov_mod
 from ... import server_shared as shared
 from ...checkpointer import FileCheckpointer
 from ..messages_ui import _messages_to_ui
-from ...models import build_model, resolve_model_effort
+from ...model_tags import inherit_model_effort, resolve_model_effort
+from ...models import build_model
 from ...server_shared import _SESSIONS, _log
 from ...session_meta import (
     _find_meta,
@@ -169,26 +170,32 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
         cur_meta = next(
             (m for m in _session_meta_list(slug) if m.get("id") == session_id), None
         ) or {}
-        provider = (
-            patch.get("provider") or (s or {}).get("model_provider") or cur_meta.get("provider")
+        providers = prov_mod.load_providers()
+        cur_provider = (
+            (s or {}).get("model_provider") or cur_meta.get("provider")
+            or prov_mod.get_default_provider()
         )
-        if patch.get("provider") is not None and patch.get("model") is None:
-            # provider change without an explicit model → that provider's
-            # configured default, so the meta never keeps a foreign model.
-            patch["model"] = prov_mod.model_for_provider(
-                prov_mod.load_providers(), patch["provider"]
-            )
-        if patch.get("model") is None:
-            # 只换档位/只换 provider 以外的组合:模型沿用会话现值(meta 名),
-            # 不能回落 provider 默认把会话的钉选模型洗掉。
-            patch["model"] = (s or {}).get("model_name") or cur_meta.get("model")
-        # Validate explicit choices against the destination model. An inherited
-        # choice can be unavailable after a model switch and rolls back to auto.
+        cur_model = (
+            (s or {}).get("model_name") or cur_meta.get("model")
+            or prov_mod.model_for_provider(providers, cur_provider)
+        )
+        provider = patch.get("provider") or cur_provider
+        model = patch.get("model")
+        if model == "" or (model is None and patch.get("provider") is not None):
+            model = prov_mod.model_for_provider(providers, provider)
+        elif model is None:
+            model = cur_model
+        patch["model"] = model
+        target_cfg = providers.get(provider)
         saved_effort = (s or {}).get("thinking_effort") or cur_meta.get("thinking_effort")
         try:
-            eff = resolve_model_effort(
-                patch.get("model"), eff_raw if eff_changed else saved_effort, strict=eff_changed
-            )
+            if eff_changed:
+                eff = resolve_model_effort(target_cfg, model, eff_raw, strict=True)
+            else:
+                eff = inherit_model_effort(
+                    providers.get(cur_provider), cur_model, target_cfg, model, saved_effort,
+                )
+            effort_reset = not eff_changed and not eff and saved_effort not in (None, "", "auto")
             patch["thinking_effort"] = eff or "auto"
             new_model = build_model(
                 provider,
@@ -251,6 +258,7 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
                 # 更新 chip 角标;auto 也显式给,缺字段时前端保持旧值。
                 "thinking_effort": patch["thinking_effort"],
                 "effective": "next_step",
+                "effort_reset": effort_reset,
             },
         )
     return {

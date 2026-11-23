@@ -479,6 +479,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       socketReadyRef.current[sid]?.resolve();
       g.setConnected(true);
       statusRef.current[sid] = "live";
+      if (lastSeenRef.current[sid]) void g.reloadProviders();
       lastSeenRef.current[sid] = Date.now();
       // ALWAYS probe, not only when this client believes a turn is in flight:
       // after a full page reload no ref remembers the turn, yet the server may

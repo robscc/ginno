@@ -428,3 +428,13 @@ def test_workflow_target_missing_def_records_error(client):
     assert rows[0]["run_id"] == run_id
     assert rows[0]["status"] == "error"
     assert rows[0]["error"] == "workflow_missing"
+
+
+def test_schedule_keeps_extended_effort_for_runtime_validation(client):
+    task = client.post("/api/schedule/tasks", json=_prompt_task(
+        model={"provider": "relay", "model": "alias"}, thinking_effort="ultra",
+    )).json()
+    assert task["thinking_effort"] == "ultra"
+    url = f"/api/schedule/tasks/{task['id']}"
+    assert client.patch(url, json={"name": "改名"}).json()["thinking_effort"] == "ultra"
+    assert client.patch(url, json={"thinking_effort": "MAX"}).json()["thinking_effort"] == "max"

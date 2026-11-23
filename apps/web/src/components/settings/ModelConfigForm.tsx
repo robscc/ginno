@@ -5,16 +5,20 @@ import { useLocale, useTranslations } from "next-intl";
 import { ChevronDown, Eye, EyeOff, Loader2, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import { cn } from "@/lib/utils";
-import type { ModelConfig, ModelProtocol } from "@/lib/types";
+import type { ModelConfig, ModelProtocol, ModelTag, ModelTagRecommendation } from "@/lib/types";
+import { CodexModelParameters, ModelTagPicker } from "./ModelTagControls";
 import {
   blankConfig,
   countNonDefaults,
   domainRecommendations,
   mergeModelIds,
+  modelTagsForSave,
   parseModelsText,
   PROTOCOLS,
   PROTOCOL_LABEL,
   reconcileDefaultModel,
+  recommendModelTag,
+  updateModelTag,
 } from "./modelConfigShared";
 
 // Add/edit form for one model config (multi-provider-model-config.md §2.2–2.4).
@@ -132,6 +136,10 @@ export function ModelConfigForm({
   // 「从 API 拉取」 panel: fetched catalogue + ticked ids + search filter.
   const [fetching, setFetching] = useState(false);
   const [fetched, setFetched] = useState<Array<{ id: string; owned_by: string | null }> | null>(null);
+  const [catalogTags, setCatalogTags] = useState<{
+    connection: string;
+    recommendations?: Record<string, ModelTagRecommendation>;
+  }>();
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [modelSearch, setModelSearch] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -166,6 +174,13 @@ export function ModelConfigForm({
     return (fetched ?? []).filter((m) => m.id.toLowerCase().includes(q));
   }, [fetched, modelSearch]);
 
+  const connection = JSON.stringify([
+    draft.protocol, draft.base_url, draft.api_key, draft.org_id, draft.bearer_auth,
+  ]);
+  const catalogRecommendations = catalogTags?.connection === connection
+    ? catalogTags.recommendations
+    : undefined;
+
   const fetchModels = async () => {
     setFetchError(null);
     setFetching(true);
@@ -181,6 +196,7 @@ export function ModelConfigForm({
       });
       if (r.ok) {
         setFetched(r.models);
+        setCatalogTags({ connection, recommendations: r.model_tag_recommendations });
         // models already in the list start checked (merging them is a no-op)
         setPicked(new Set(draft.models));
         setModelSearch("");
@@ -220,7 +236,16 @@ export function ModelConfigForm({
   const removeModel = (id: string) => {
     const models = draft.models.filter((m) => m !== id);
     setModelsText(models.join("\n"));
-    setDraft((d) => ({ ...d, models, default_model: reconcileDefaultModel(models, d.default_model) }));
+    setDraft((d) => ({
+      ...d,
+      models,
+      default_model: reconcileDefaultModel(models, d.default_model),
+      model_tags: d.model_tags && updateModelTag(d.model_tags, id),
+    }));
+  };
+
+  const setModelTag = (id: string, tag?: ModelTag) => {
+    setDraft((d) => ({ ...d, model_tags: updateModelTag(d.model_tags, id, tag) }));
   };
 
   // Blank input = omit the field so the backend applies its per-protocol
@@ -274,7 +299,12 @@ export function ModelConfigForm({
     }
     setChecking(true);
     try {
-      const body = { ...draft, name: draft.name.trim(), id: isNew ? undefined : draft.id };
+      const body = {
+        ...draft,
+        name: draft.name.trim(),
+        id: isNew ? undefined : draft.id,
+        model_tags: modelTagsForSave(draft),
+      };
       const r = await api.verifyModelConfig(body);
       if (r.ok) {
         // 行内绿条先亮 ~0.9s 再交给父组件收起表单（父级还有自己的顶部
@@ -425,7 +455,7 @@ export function ModelConfigForm({
           label={t("modelsLabel")}
           hint={listMode === "chips" ? t("defaultModelHint") : t("modelsHint")}
         >
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => void fetchModels()}
@@ -540,36 +570,54 @@ export function ModelConfigForm({
               // 只能出自这里（default_model ∈ models 恒成立，移除默认行自动
               // 落到剩余首条）。
               <div className="rounded-xl border border-line">
-                {draft.models.map((m) => (
-                  <div
-                    key={m}
-                    className="flex items-center gap-2 border-b border-line px-3 py-1.5 last:border-b-0"
-                  >
-                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-xs">
-                      <input
-                        type="radio"
-                        name={defaultRadioGroup}
-                        aria-label={t("setDefaultAria", { model: m })}
-                        checked={draft.default_model === m}
-                        onChange={() => set("default_model", m)}
-                      />
-                      <span className="truncate font-mono">{m}</span>
-                      {draft.default_model === m && (
-                        <span className="pill shrink-0 border border-violet/50 text-violet">
-                          {t("defaultBadge")}
-                        </span>
+                {draft.models.map((m) => {
+                  const tag = draft.model_tags?.[m]?.tag === "codex" ? draft.model_tags[m] : undefined;
+                  return (
+                    <div key={m} data-model-id={m} className="border-b border-line last:border-b-0">
+                      <div className="flex items-center gap-2 px-3 py-1.5">
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-xs">
+                          <input
+                            type="radio"
+                            name={defaultRadioGroup}
+                            aria-label={t("setDefaultAria", { model: m })}
+                            checked={draft.default_model === m}
+                            onChange={() => set("default_model", m)}
+                            className="shrink-0"
+                          />
+                          <span className="truncate font-mono" title={m}>{m}</span>
+                          {draft.default_model === m && (
+                            <span className="pill hidden shrink-0 border border-violet/50 text-violet sm:inline-flex">
+                              {t("defaultBadge")}
+                            </span>
+                          )}
+                        </label>
+                        {!isAsr && (
+                          <ModelTagPicker
+                            model={m}
+                            tag={tag}
+                            recommendation={recommendModelTag(m, catalogRecommendations)}
+                            onChange={(value) => setModelTag(m, value)}
+                          />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeModel(m)}
+                          aria-label={t("removeModelAria", { model: m })}
+                          className="shrink-0 text-faint transition-colors hover:text-txt"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {!isAsr && tag && (
+                        <CodexModelParameters
+                          protocol={draft.protocol}
+                          tag={tag}
+                          onChange={(value) => setModelTag(m, value)}
+                        />
                       )}
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => removeModel(m)}
-                      aria-label={t("removeModelAria", { model: m })}
-                      className="shrink-0 text-faint transition-colors hover:text-txt"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
                 {!draft.models.length && (
                   <div className="px-3 py-3 text-center text-xs text-faint">
                     {t("emptyModelsHint")}

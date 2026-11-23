@@ -244,33 +244,39 @@ def test_patch_thinking_effort_hot_swap_and_normalize(client, monkeypatch):
 
 
 @pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
-@pytest.mark.parametrize("effort, expected", [("xhigh", "xhigh"), ("max", "max"), ("off", "low"), ("auto", None)])
-def test_codex_sol_uses_actual_sdk_payload(monkeypatch, protocol, effort, expected):
+@pytest.mark.parametrize("effort, expected", [
+    ("xhigh", "xhigh"), ("max", "max"), ("ultra", None), ("off", "low"), ("auto", None),
+])
+def test_codex_sol_uses_configured_protocol_payload(monkeypatch, protocol, effort, expected):
     from langchain_core.messages import HumanMessage
 
+    name = "codex/gpt-6.2-sol"
     _patch(monkeypatch, _cfg(
-        model="codex/gpt-6.2-sol", protocol=protocol, enable_search=True, enable_thinking=True,
+        model=name, protocol=protocol, enable_search=True, enable_thinking=True,
+        model_tags={name: {"tag": "codex", "max_effort": "max"}},
     ))
     model = build_model("custom", thinking_effort=effort)
     payload = model._get_request_payload([HumanMessage("fixture")])
-    assert model._use_responses_api(payload)
-    assert payload.get("reasoning") == ({"effort": expected} if expected else None)
-    assert "reasoning_effort" not in payload
+    if protocol == "openai-responses":
+        assert model.use_responses_api is True
+        assert payload.get("reasoning") == ({"effort": expected} if expected else None)
+        assert "reasoning_effort" not in payload
+    else:
+        assert model.use_responses_api is False
+        assert payload.get("reasoning_effort") == expected
+        assert "reasoning" not in payload
     assert "temperature" not in payload
     assert not model.extra_body
 
 
 @pytest.mark.parametrize("name", ["gpt-5.2-codex", "codex/gpt-5.3-codex"])
-def test_older_codex_supports_xhigh_but_not_max(monkeypatch, name):
+def test_configured_codex_supports_xhigh_but_not_max(monkeypatch, name):
     from langchain_core.messages import HumanMessage
 
-    _patch(monkeypatch, _cfg(model=name))
+    _patch(monkeypatch, _cfg(model=name, model_tags={name: {"tag": "codex", "max_effort": "xhigh"}}))
     model = build_model("custom", thinking_effort="xhigh")
     body = model._get_request_payload([HumanMessage("fixture")])
-    if model._use_responses_api(body):
-        assert body["reasoning"] == {"effort": "xhigh"}
-    else:
-        assert body["reasoning_effort"] == "xhigh"
+    assert body["reasoning_effort"] == "xhigh"
     assert build_model("custom", thinking_effort="max").reasoning_effort is None
 
 
@@ -281,6 +287,14 @@ def test_codex_session_create_patch_restore_and_model_switch(client, patch_build
     patch_build_model(object())
     path = "/api/sessions"
     sol = "codex/gpt-6.2-sol"
+    older = "codex/gpt-5.3-codex"
+    prov_mod.save_configs([{
+        "id": "custom", "enabled": True, "models": [sol, older], "default_model": sol,
+        "model_tags": {
+            sol: {"tag": "codex", "max_effort": "max"},
+            older: {"tag": "codex", "max_effort": "xhigh"},
+        },
+    }], "custom")
     request = {"project_slug": "effort-test", "workspace": "/tmp/x", "model": sol}
     created = client.post(path, json={**request, "thinking_effort": "xhigh"}).json()
     assert created["thinking_effort"] == "xhigh"
@@ -296,7 +310,6 @@ def test_codex_session_create_patch_restore_and_model_switch(client, patch_build
     changed = client.patch(session_path, json={"model": sol, "thinking_effort": "max"}).json()
     assert changed["session"]["thinking_effort"] == "max"
     assert sessions._ensure_session(sid)["thinking_effort"] == "max"
-    older = "codex/gpt-5.3-codex"
     invalid = client.patch(session_path, json={"model": older, "thinking_effort": "max"}).json()
     assert not invalid["ok"]
     assert invalid["error"].endswith("Available: auto, low, medium, high, xhigh")

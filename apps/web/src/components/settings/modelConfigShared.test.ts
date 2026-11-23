@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { blankConfig, countNonDefaults, reconcileDefaultModel } from "./modelConfigShared";
+import {
+  blankConfig, countNonDefaults, modelTagsForSave, reconcileDefaultModel, recommendModelTag, updateModelTag,
+} from "./modelConfigShared";
 
 // 进阶段「已改项」徽标的计数口径（0 = 不显示徽标）。
 const base = () => ({
@@ -69,5 +71,45 @@ describe("reconcileDefaultModel", () => {
 
   it("does not resurrect a default that is not in the list", () => {
     expect(reconcileDefaultModel(["x"], "y")).toBe("x");
+  });
+});
+
+describe("model tag recommendations", () => {
+  it.each([
+    ["codex/gpt-6.2-astra", "ultra"],
+    ["codex/gpt-6.2-sol", "ultra"],
+    ["codex/gpt-6-luna", "max"],
+    ["codex/gpt-5.6-luna", "max"],
+    ["codex/gpt-5.2-codex", "xhigh"],
+    ["gpt-5.3-codex", "xhigh"],
+  ])("recommends the verified cap for %s", (id, cap) => {
+    expect(recommendModelTag(id)).toEqual({ tag: "codex", max_effort: cap });
+  });
+
+  it("prefers the full ID from the catalogue, including an unknown cap", () => {
+    expect(recommendModelTag("codex/gpt-6.2-sol", { "codex/gpt-6.2-sol": { tag: "codex" } }))
+      .toEqual({ tag: "codex" });
+    expect(recommendModelTag("gateway/alias", { "gateway/alias": { tag: "codex", max_effort: "max" } }))
+      .toEqual({ tag: "codex", max_effort: "max" });
+  });
+
+  it("recommends explicit new Codex routes without guessing caps for lookalikes", () => {
+    expect(recommendModelTag("codex/new-route")).toEqual({ tag: "codex" });
+    expect(recommendModelTag("chatgpt-api/gpt-6.2-astra")).toBeUndefined();
+    expect(recommendModelTag("another/gpt-5.3-codex")).toBeUndefined();
+    expect(recommendModelTag("deepseek-v4.1-flash")).toBeUndefined();
+  });
+});
+
+describe("model tag drafts", () => {
+  it("uses full IDs, leaves the original untouched and removes deselected or deleted models from the payload", () => {
+    const m = { tag: "codex", max_effort: "ultra", anthropic_effort_field: "reasoning_effort" } as const;
+    const original = { m };
+    const edited = updateModelTag(original, "codex/new-route", { tag: "codex" });
+    expect(original).toEqual({ m });
+    expect(edited).toEqual({ m, "codex/new-route": { tag: "codex" } });
+    expect(updateModelTag(edited, "m")).toEqual({ "codex/new-route": { tag: "codex" } });
+    expect(modelTagsForSave({ ...base(), model_tags: edited })).toEqual(original);
+    expect(modelTagsForSave({ ...base(), model_tags: updateModelTag(original, "m") })).toEqual({});
   });
 });

@@ -232,14 +232,15 @@ export function ModelApiSettings() {
               onSetDefault={() => onSetDefault(cfg.id)}
               onDelete={() => onDelete(cfg.id)}
             >
-              {/* embedded：编辑体嵌进展开卡，不带自己的边框（卡片化 2026-10-17） */}
-              <ModelConfigForm
-                initial={cfg}
-                isNew={false}
-                embedded
-                onCancel={() => setEditing(null)}
-                onSaved={onSaved}
-              />
+              {editing === cfg.id && (
+                <ModelConfigForm
+                  initial={cfg}
+                  isNew={false}
+                  embedded
+                  onCancel={() => setEditing(null)}
+                  onSaved={onSaved}
+                />
+              )}
             </ModelConfigCard>
           ))}
 

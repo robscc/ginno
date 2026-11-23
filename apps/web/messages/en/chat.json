@@ -103,6 +103,9 @@
       "thinkingHigh": "High · deep",
       "thinkingXhigh": "Extra high",
       "thinkingMax": "Maximum",
+      "thinkingUltra": "Ultra",
+      "thinkingModelAria": "Thinking for {model}",
+      "thinkingReset": "Thinking effort returned to Auto",
       "thinkingUnsupported": "This provider declares no thinking-effort support"
     },
     "agentChips": {

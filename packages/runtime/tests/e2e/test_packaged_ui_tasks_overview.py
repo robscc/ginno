@@ -128,14 +128,18 @@ def _api(port: int, method: str, path: str, body: dict | None = None):
         return json.loads(r.read().decode()) if r.status != 204 else {}
 
 
-def _spawn(tmp_path: Path, port: int):
+def _spawn(tmp_path: Path, port: int, *, fake_llm: bool = True):
     """起 sidecar（packaged bundle 或源码），返回 (proc, stderr 日志句柄)。
 
     GINNO_HOME 直接用 tmp_path——与根 conftest 的 isolated_home 同一目录，
     测试进程内 plan_store 写盘 = sidecar 读盘，天然同源。
     """
     (tmp_path / "settings.json").write_text(json.dumps(_settings()), encoding="utf-8")
-    env = dict(os.environ, GINNO_HOME=str(tmp_path), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(port))
+    env = dict(os.environ, GINNO_HOME=str(tmp_path), GINNO_RUNTIME_PORT=str(port))
+    if fake_llm:
+        env["GINNO_FAKE_LLM"] = "1"
+    else:
+        env.pop("GINNO_FAKE_LLM", None)
     err_log = (tmp_path / "sidecar-stderr.log").open("wb")
     if RUNTIME_MODE == "source":
         proc = subprocess.Popen(

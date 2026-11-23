@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from . import providers as prov_mod
 from ._version import ginno_user_agent
+from .model_tags import LEGACY_EFFORTS, codex_efforts, codex_tag, resolve_model_effort
 
 # Per-request timeout (seconds) for chat calls. Without this the SDK falls back
 # to its ~600s default and a stalled gateway makes a turn hang for minutes (the
@@ -73,6 +74,13 @@ def _reasoning_chat_openai() -> type:
         # from the protocol; ``reasoning_passthrough`` in the provider config
         # overrides either way.
         reasoning_passthrough: bool = True
+        history_origin: str = ""
+
+        def _history_origin(self, kwargs: dict) -> str:
+            if not self.history_origin:
+                return ""
+            endpoint = "responses" if self._use_responses_api({**self.model_kwargs, **kwargs}) else "chat"
+            return f"{self.history_origin}:{endpoint}"
 
         def _convert_chunk_to_generation_chunk(
             self, chunk, default_chunk_class, base_generation_info
@@ -100,9 +108,14 @@ def _reasoning_chat_openai() -> type:
         def _get_request_payload(
             self, input_, *, stop: list[str] | None = None, **kwargs: Any
         ) -> dict:
-            messages = _with_interrupted_tool_results(
-                self._convert_input(input_).to_messages()
-            )
+            from .model_history import request_history
+
+            origin = self._history_origin(kwargs)
+            messages = request_history(self._convert_input(input_).to_messages(), origin)
+            if origin and (response_id := kwargs.get("previous_response_id")):
+                if not any(message.response_metadata.get("id") == response_id for message in messages):
+                    kwargs.pop("previous_response_id")
+            messages = _with_interrupted_tool_results(messages)
             payload = super()._get_request_payload(messages, stop=stop, **kwargs)
             if self.reasoning_passthrough:
                 _replay_reasoning_content(messages, payload)
@@ -222,10 +235,8 @@ def _reasoning_text(message: Any) -> str | None:
 
     * third-party gateways (DeepSeek / Qwen / vLLM) stream it as a delta field,
       which ReasoningChatOpenAI parks in ``additional_kwargs``;
-    * Anthropic-protocol thinking arrives as ``{"type": "thinking", ...}``
-      content blocks. A session started on a thinking provider and switched to
-      DeepSeek mid-flight still holds those blocks — they must be replayed as
-      ``reasoning_content`` on the chat-completions wire.
+    * Same-source compatible gateways can also emit structured thinking blocks.
+      The request history filter handles ownership before this translation.
     """
     ak = getattr(message, "additional_kwargs", None) or {}
     if "reasoning_content" in ak:
@@ -406,12 +417,18 @@ def _healing_chat_anthropic() -> type:
     from langchain_anthropic import ChatAnthropic
 
     class HealingChatAnthropic(ChatAnthropic):
+        history_origin: str = ""
+
+        def _history_origin(self, kwargs: dict) -> str:
+            return self.history_origin
+
         def _get_request_payload(
             self, input_, *, stop: list[str] | None = None, **kwargs: Any
         ) -> dict:
-            messages = _with_interrupted_tool_results(
-                self._convert_input(input_).to_messages()
-            )
+            from .model_history import request_history
+
+            messages = request_history(self._convert_input(input_).to_messages(), self.history_origin)
+            messages = _with_interrupted_tool_results(messages)
             payload = super()._get_request_payload(messages, stop=stop, **kwargs)
             return _glm_anthropic_payload(payload)
 
@@ -420,38 +437,7 @@ def _healing_chat_anthropic() -> type:
 
 
 # ---- 思考强度(thinking-effort-design.md §1/§3)-----------------------------
-THINKING_EFFORTS = ("off", "low", "medium", "high")
-_CODEX_EFFORTS = ("low", "medium", "high", "xhigh")
-_CODEX_MODEL_EFFORTS = {
-    "gpt-5.2-codex": _CODEX_EFFORTS,
-    "gpt-5.3-codex": _CODEX_EFFORTS,
-    "gpt-6.2-sol": (*_CODEX_EFFORTS, "max"),
-}
-
-
-def codex_efforts(model: str | None) -> tuple[str, ...] | None:
-    """Recognize official model IDs and gateway aliases such as codex/gpt-6.2-sol."""
-    return _CODEX_MODEL_EFFORTS.get((model or "").strip().lower().rsplit("/", 1)[-1])
-
-
-def resolve_model_effort(model: str | None, value: Any, *, strict: bool = False) -> str | None:
-    """Resolve a saved preference, or validate a new explicit choice."""
-    raw = str(value or "").strip().lower()
-    if raw in ("", "auto"):
-        return None
-    codex = codex_efforts(model)
-    options = codex or THINKING_EFFORTS
-    if raw in options:
-        return raw
-    if codex and raw == "off" and not strict:
-        return "low"
-    # Legacy callers for other models could submit arbitrary strings and got
-    # auto. Extended levels are explicit choices and must not silently vanish.
-    if strict and (codex or raw in ("xhigh", "max", "ultra")):
-        raise ValueError(
-            f"Unsupported thinking effort {raw!r}. Available: auto, {', '.join(options)}"
-        )
-    return None
+THINKING_EFFORTS = LEGACY_EFFORTS
 
 
 # 档位 → token 预算内置默认;provider 配置 thinking_budgets 可整体覆盖。
@@ -513,12 +499,10 @@ def thinking_dialect(cfg: dict, model: str | None) -> str:
 
 
 def _effective_effort(cfg: dict, model: str | None, value: Any) -> str | None:
-    """解析档位并套能力闸门:provider 显式声明 thinking_mode="none" 时按
-    auto 处理(UI 置灰之外的服务端兜底,见设计 §7)。"""
-    eff = resolve_model_effort(model, value)
-    if eff and str(cfg.get("thinking_mode") or "auto") == "none":
+    """The per-model tag takes precedence over the provider-wide default."""
+    if cfg.get("thinking_mode") == "none" and codex_tag(cfg, model) is None:
         return None
-    return eff
+    return resolve_model_effort(cfg, model, value)
 
 
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, int | None]:
@@ -645,6 +629,43 @@ def resolve_api_key(raw: Any) -> str:
     return got
 
 
+def _configure_codex_anthropic(
+    kwargs: dict, cfg: dict, model: str | None, tag: dict, effort: str | None,
+) -> None:
+    saved = cfg.get("extra_body")
+    saved = dict(saved) if isinstance(saved, dict) else {}
+    nested = saved.pop("extra_body", None)
+    extra = {**saved, **(nested if isinstance(nested, dict) else {})}
+    output_config = extra.pop("output_config", None)
+    output_config = dict(output_config) if isinstance(output_config, dict) else {}
+    # An explicit conversation choice supersedes saved effort. Auto keeps a
+    # configured effort only if the saved tag permits that exact level.
+    body_effort = output_config.pop("effort", None)
+    gateway_effort = extra.pop("reasoning_effort", None)
+    configured_effort = extra.pop("effort", None) or gateway_effort or body_effort
+    if effort is None and configured_effort in (codex_efforts(cfg, model) or ()):
+        effort = configured_effort
+    field = tag.get("anthropic_effort_field") or "output_config"
+
+    # Request identity and history are owned by the model factory and serializer.
+    for key in ("model", "messages", "system", "stream", "thinking", "thinking_budget",
+                "budget_tokens", "enable_thinking"):
+        extra.pop(key, None)
+    if effort is not None:
+        if field == "reasoning_effort":
+            # A constructor/SDK kwarg named reasoning_effort is an alias for
+            # output_config.effort in LangChain. SDK extra_body stays on the wire.
+            extra["reasoning_effort"] = effort
+        else:
+            output_config["effort"] = effort
+    if output_config:
+        kwargs["output_config"] = output_config
+    if "betas" in extra:
+        kwargs["betas"] = extra.pop("betas")
+    if extra:
+        kwargs["model_kwargs"] = {"extra_body": extra}
+
+
 def build_model(
     provider_id: str,
     model_name: str | None = None,
@@ -709,7 +730,22 @@ def build_model(
     # 思考档位(设计 §3):一次解析三个分支共用;auto(None)时各分支维持
     # 现状(provider 配置的 enable_thinking 等继续生效)。
     effort = _effective_effort(cfg, model, thinking_effort)
-    codex = codex_efforts(model) is not None
+    tag = codex_tag(cfg, model)
+    codex = tag is not None
+
+    from .model_history import model_origin
+
+    if proto == "anthropic":
+        default_model = "claude-3-7-sonnet-20250219"
+        endpoint = base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    else:
+        default_model = "gpt-4o"
+        endpoint = base_url or "https://api.openai.com/v1"
+        if proto not in ("openai", "openai-responses") and not base_url:
+            endpoint = os.environ.get("OPENAI_API_BASE") or os.environ.get("OPENAI_BASE_URL") or endpoint
+    history_origin = model_origin(
+        provider_id, model or default_model, endpoint, proto or "", "codex" if codex else "",
+    )
 
     if proto == "anthropic":
         key = cfg.get("api_key")
@@ -735,7 +771,8 @@ def build_model(
         # 自决)在这里没有"不传"可走,退回老默认 4096。
         mt = max_tokens if (max_tokens is not None and max_tokens > 0) else 4096
         chat_kwargs: dict[str, Any] = dict(
-            model=model or "claude-3-7-sonnet-20250219",
+            model=model or default_model,
+            history_origin=history_origin,
             api_key=key,
             base_url=base_url,
             temperature=temperature if temperature is not None else 0.7,
@@ -748,23 +785,17 @@ def build_model(
         # extra_body 透传（2026-11-04）：网关私有参数（如 enable_thinking、
         # top_k 等非规范字段）经 model_kwargs 原样进请求 body。
         extra_body = cfg.get("extra_body")
-        if isinstance(extra_body, dict) and extra_body:
+        if tag is not None:
+            _configure_codex_anthropic(chat_kwargs, cfg, model, tag, effort)
+        elif isinstance(extra_body, dict) and extra_body:
             chat_kwargs["model_kwargs"] = {**extra_body}
-        if effort:
+        if effort and not codex:
             # 参数风格覆写（2026-11-04 Magpie/TestChannel 实案）：Qwen 套
             # Anthropic 壳的网关只吃 `reasoning_effort`，且服务端会自动注入
             # effort——任何 `thinking` 参数都触发 400 「cannot be set
             # simultaneously」。cfg["thinking_param_style"]="reasoning_effort"
             # 时改走 effort 直传，不发 thinking 块参数。
-            #
-            # codex 模型同款（2026-11-23 用户报障「anthropic 下选了档位报错」）：
-            # codex 系（gpt-5.x-codex / gpt-6.2-sol）只吃 reasoning_effort，
-            # 走默认的 thinking/budget_tokens 路径必被网关拒——anthropic 壳
-            # 下 codex 自动按 reasoning_effort 直传，无需手工配
-            # thinking_param_style（off 映射 minimal：codex 值域无 off）。
-            if str(cfg.get("thinking_param_style") or "") == "reasoning_effort" or codex_efforts(
-                model
-            ):
+            if str(cfg.get("thinking_param_style") or "") == "reasoning_effort":
                 chat_kwargs["reasoning_effort"] = "minimal" if effort == "off" else effort
             elif effort == "off":
                 # 显式关(网关可能默认开);多数 Claude 模型等价于不传。
@@ -790,7 +821,8 @@ def build_model(
         # extra_body switches (enable_search/enable_thinking) have no
         # Responses equivalent here.
         chat_kw: dict[str, Any] = dict(
-            model=model or "gpt-4o",
+            model=model or default_model,
+            history_origin=history_origin,
             api_key=cfg.get("api_key") or "not-needed",
             base_url=base_url or "https://api.openai.com/v1",
             temperature=None if codex else (temperature if temperature is not None else 0.7),
@@ -822,7 +854,8 @@ def build_model(
     if proto == "openai" and not base_url:
         base_url = "https://api.openai.com/v1"
     chat_kw: dict[str, Any] = dict(
-        model=model or "gpt-4o",
+        model=model or default_model,
+        history_origin=history_origin,
         api_key=key or "not-needed",
         base_url=base_url,
         temperature=None if codex else (temperature if temperature is not None else 0.7),
@@ -832,6 +865,9 @@ def build_model(
     )
     if max_tokens:  # None(0=不传)不传——openai 协议不强制,端点自决
         chat_kw["max_tokens"] = max_tokens
+    if codex:
+        # LangChain otherwise reroutes select model names (e.g. gpt-6 + tools).
+        chat_kw["use_responses_api"] = False
     # OpenAI-compatible gateway switches, forwarded verbatim into the request
     # body via `extra_body` (langchain-openai passes it through untouched):
     # - `enable_search` (None = follow the provider config) lets gateways such
@@ -895,7 +931,7 @@ def build_model(
     # gateway that rejects the non-standard field.
     passthrough = cfg.get("reasoning_passthrough")
     chat_kw["reasoning_passthrough"] = (
-        proto == "openai-compatible" if passthrough is None else bool(passthrough)
+        (proto == "openai-compatible" and not codex) if passthrough is None else bool(passthrough)
     )
     return _reasoning_chat_openai()(**chat_kw)
 

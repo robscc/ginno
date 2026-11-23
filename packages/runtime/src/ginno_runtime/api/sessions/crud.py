@@ -22,7 +22,7 @@ from ...agents.memory import ensure_agent_memory
 from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph
 from ...lang import t
-from ...models import resolve_model_effort
+from ...model_tags import resolve_model_effort
 from ...server_shared import _SESSIONS, _log
 from ...session_meta import (
     _find_meta,
@@ -136,12 +136,14 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
     return provider, model, (agent.id if agent else req.agent_id)
 
 
-def _resolve_thinking_effort(req: CreateSessionRequest, model: str | None = None) -> str:
+def _resolve_thinking_effort(
+    req: CreateSessionRequest, model: str | None = None, *, cfg: dict | None = None,
+) -> str:
     """创建时档位解析链(§9 P1):显式请求 > agent 默认 > auto。"""
     if req.thinking_effort is not None:
-        return resolve_model_effort(model, req.thinking_effort, strict=True) or "auto"
+        return resolve_model_effort(cfg, model, req.thinking_effort, strict=True) or "auto"
     agent = _agent_lookup(req.agent_id)
-    return resolve_model_effort(model, agent.thinking_effort if agent else None) or "auto"
+    return resolve_model_effort(cfg, model, agent.thinking_effort if agent else None) or "auto"
 
 
 # ---- sessions CRUD ----
@@ -153,7 +155,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
     # 思考档位(设计 §2):解析链显式 > agent 默认;落盘值恒 "auto"|档位,
     # build 时 "auto" 归 None(跟随 provider 配置)。
     try:
-        effort_stored = _resolve_thinking_effort(req, model_name)
+        effort_stored = _resolve_thinking_effort(
+            req, model_name, cfg=prov_mod.load_providers().get(provider),
+        )
     except ValueError as e:
         return {"error": str(e), "ok": False}
     effort = None if effort_stored == "auto" else effort_stored
