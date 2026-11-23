@@ -55,7 +55,6 @@ function makeCtx(overrides: Record<string, unknown> = {}): EngineCtx {
     liveBySessionRef: ref<Record<string, string | null>>({}),
     socketsRef: ref<Record<string, unknown>>({}),
     busyBySessionRef: ref<Record<string, boolean>>({}),
-    compactingBySessionRef: ref<Record<string, boolean>>({}),
     compactStageRef: ref<Record<string, unknown>>({}),
     streamAgentRef: ref<Record<string, string | null>>({}),
     orphanStreamRef: ref<Record<string, boolean>>({}),

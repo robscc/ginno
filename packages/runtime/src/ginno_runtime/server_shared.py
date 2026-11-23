@@ -447,13 +447,9 @@ _TURN_STOP: dict[str, Any] = {}
 # an emit never hides the picture from the agent-node lift.
 _TURN_IMAGE_BASELINE: dict[str, dict[str, float]] = {}
 
-# Sessions whose E3 compaction summarizer call is currently in flight
-# (2026-11-16 P5). The turn.state reconnect probe reports it so the client
-# keeps the「压缩中…」mirror alive across a WS drop — without it, ANY event
-# (turn.state included) clears the mirror and a still-compacting turn shows
-# an unlocked composer. Maintained by compaction.maybe_compact_history
-# (add before the summary call, discard in finally) — never here.
-_COMPACTING: set[str] = set()
+# Active compaction phases, including the history write, for turn.state probes.
+# Compaction owns registration and removes its entry when it settles.
+_COMPACTING: dict[str, dict[str, str]] = {}
 
 # Steering stash (docs/steering-design.md §3.2): messages the user sent while a
 # turn was running, held here until the next `agent` superstep absorbs them.

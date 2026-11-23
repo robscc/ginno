@@ -14,6 +14,7 @@ import { MAX_SEND_TEXT_BYTES, textByteLength } from "@/lib/limits";
 import { useTranslations } from "next-intl";
 import { agentHex } from "@/lib/theme";
 import { hasPendingTool, type Block } from "@/components/chat/blocks";
+import type { CompactionStage } from "./engine/handlers/11-context";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -163,17 +164,8 @@ export function ChatStream({
   // from history — after a full reload liveId is null, yet a parked ask_user
   // still accepts answers (backend resumes them from ANY socket).
   const [serverRunning, setServerRunning] = useState(false);
-  // E3 压缩进行中（context.compacting）：live 气泡状态行显示「压缩中…」。
-  // 瞬态显示层状态,真源在 engine 的 compactingBySessionRef。
-  const [compacting, setCompacting] = useState(false);
-  // 压缩进度（2026-11-12）：{stage,pct} 事件驱动 + 时间缓动（LLM 黑盒期
-  // 5→92 由前端推进，Claude Code 同款）；null = 不在压缩中。
-  const [compactStage, setCompactStage] = useState<{
-    stage: string;
-    pct: number;
-    predicted_s?: number;
-    eta?: number;
-  } | null>(null);
+  const [compactStage, setCompactStage] = useState<CompactionStage | null>(null);
+  const compacting = compactStage !== null;
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Command/mention autocomplete: open menu (items + active index + trigger).
   const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
@@ -192,39 +184,6 @@ export function ChatStream({
   // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
   const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
 
-  // 压缩进度（2026-11-14 升级）：有 predicted_s（历史压缩时长预估）→ 按时间轴
-  // 走进度 + 显示 ETA + 后端每 30s 心跳帧校准；无预估 → ease-out 时间轴
-  // 缓动（2026-11-16 P3：旧的每 1.8s +4 线性档在分钟级摘要上 5 分钟才爬
-  // 到 66%，观感近乎冻结；改 90s 时间常数的指数逼近——60s ≈41%、3min
-  // ≈79%、上限 88%（writing=92 档仍由事件接管）。心跳只在有预估时发，
-  // 与本缓动互斥，两条路径不会互相覆盖 pct。
-  const compactStartRef = useRef(0);
-  useEffect(() => {
-    if (!compacting || !compactStage) return;
-    if (compactStage.stage !== "summarizing") return;
-    const predicted = compactStage.predicted_s;
-    compactStartRef.current = Date.now();
-    const t = setInterval(() => {
-      const elapsed = (Date.now() - compactStartRef.current) / 1000;
-      setCompactStage((p) => {
-        if (!p || p.stage !== "summarizing") return p;
-        if (predicted && predicted > 0) {
-          const frac = Math.min(1, elapsed / predicted);
-          return {
-            ...p,
-            pct: Math.min(90, Math.round(8 + frac * 82)),
-            eta: Math.max(0, Math.round(predicted - elapsed)),
-          };
-        }
-        const eased = 1 - Math.exp(-elapsed / 90);
-        return { ...p, pct: Math.min(88, Math.round(8 + eased * 80)) };
-      });
-    }, predicted ? 500 : 1800);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随阶段/预估重建计时器；依赖整对象会让 pct 每跳一次就重置节奏
-  }, [compacting, compactStage?.stage, compactStage?.predicted_s]);
-  const compactPct = compacting ? (compactStage?.pct ?? 8) : null;
-  const compactEta = compacting ? (compactStage?.eta ?? null) : null;
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -288,7 +247,7 @@ export function ChatStream({
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setCompacting, setCompactStage, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
@@ -1049,9 +1008,7 @@ export function ChatStream({
             session={session}
             liveId={liveId}
             running={running}
-            compacting={compacting}
-            compactPct={compactPct}
-            compactEta={compactEta}
+            compactStage={compactStage}
             serverRunning={serverRunning}
             wsStatus={wsStatus}
             parked={parked}

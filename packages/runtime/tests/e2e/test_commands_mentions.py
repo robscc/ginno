@@ -162,31 +162,48 @@ def test_compact_empty_session_reports_nothing(create_session, ws_conv):
 
 
 def test_compact_forces_summary_regardless_of_threshold(
-    create_session, ws_conv, isolated_home
+    create_session, ws_conv, isolated_home, monkeypatch,
 ):
-    # keep_turns=1 so a 2-turn history already has a compactable prefix; the
-    # token threshold stays at its huge default — only the force path can fire.
+    import asyncio
+    from threading import Event
+
+    # Two stored turns with keep_turns=1 are enough only for manual compaction.
     (isolated_home / "settings.json").write_text(
         json.dumps({"context": {"compact_keep_turns": 1}})
     )
     model = CapturingModel(reply="ok")
     sid = create_session(model, agent_id="dev")
+    release = Event()
+    generate = model._agenerate
+
+    async def paused_summary(*args, **kwargs):
+        assert await asyncio.to_thread(release.wait, 12)
+        return await generate(*args, **kwargs)
+
     with ws_conv(sid) as conv:
-        conv.invoke("第一个问题")
-        conv.recv_until("message.end", "error")
-        conv.invoke("第二个问题")
-        conv.recv_until("message.end", "error")
-        conv.invoke("/compact")
-        # 异步化：message.end 秒到；context.compacting + 结果 notice 随后
-        events = conv.recv_until("message.end", "error")
-        assert "message.end" in event_names(events)
-        tail = conv.recv_until("notice", "error")
-    all_events = events + tail
-    assert "context.compacting" in event_names(all_events)
-    notices = events_of(all_events, "notice")
-    result_notice = next(n for n in notices if "Context compacted" in n["message"])
+        for question in ("第一个问题", "第二个问题"):
+            conv.invoke(question)
+            conv.recv_until("message.end", "error")
+        monkeypatch.setattr(model, "_agenerate", paused_summary)
+        try:
+            conv.invoke("/compact")
+            events = conv.recv_until("message.end", "error")
+            assert "message.end" in event_names(events)
+            if not events_of(events, "context.compacting"):
+                events.extend(conv.recv_until("context.compacting", "error"))
+            with ws_conv(sid) as reconnected:
+                reconnected.send({"type": "turn_state"})
+                probe = reconnected.recv_until("turn.state")[-1]
+                assert probe["compacting"] is True
+                assert probe["compaction_stage"] == "summarizing"
+        finally:
+            release.set()
+        events.extend(conv.recv_until("notice", "error"))
+    frames = events_of(events, "context.compacting")
+    assert [e["stage"] for e in frames] == ["summarizing", "writing", "done"]
+    assert all("pct" not in e and "predicted_s" not in e for e in frames)
+    result_notice = next(n for n in events_of(events, "notice") if "Context compacted" in n["message"])
     assert "tokens" in result_notice["message"]
-    # 2 turn calls + 1 summarizer call (the summary SystemMessage is captured)
     assert len(model._captured) >= 3
 
 

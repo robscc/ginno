@@ -317,9 +317,8 @@ async def test_compaction_respects_disabled_flag(isolated_home):
     assert await maybe_compact_history(session, config) is None
 
 
-async def test_on_summary_start_brackets_the_summarizer_call(isolated_home):
-    """on_summary_start fires exactly once per compaction that actually runs,
-    and never on the cheap early-return paths (below threshold / disabled)."""
+async def test_compaction_status_delivery_is_best_effort(isolated_home, monkeypatch):
+    """Only actual compaction sends status. Delivery errors cannot block the write."""
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
@@ -336,25 +335,16 @@ async def test_on_summary_start_brackets_the_summarizer_call(isolated_home):
 
     calls: list[str] = []
 
-    async def on_start() -> None:
-        calls.append("start")
-
-    # Below threshold → no compaction, callback silent.
-    assert await maybe_compact_history(session, config, on_summary_start=on_start) is None
-    assert calls == []
-
-    # force path compacts → callback fired exactly once (before the summary).
-    stats = await maybe_compact_history(session, config, force=True, on_summary_start=on_start)
-    assert stats is not None
-    assert calls == ["start"]
-
-    # A raising callback must not break compaction (status is best-effort).
-    async def boom() -> None:
+    async def broken_push(session_id, event, payload, turn_id):
+        calls.append(payload["stage"])
         raise RuntimeError("ui hiccup")
 
-    # second run: fresh history is now short, force again to be sure
-    stats2 = await maybe_compact_history(session, config, force=True, on_summary_start=boom)
-    assert stats2 is None or stats2["summary_chars"] >= 0  # no exception escaped
+    monkeypatch.setattr("ginno_runtime.server_shared._push_session_event", broken_push)
+    assert await maybe_compact_history(session, config) is None
+    assert calls == []
+
+    assert await maybe_compact_history(session, config, force=True) is not None
+    assert calls == ["summarizing", "writing", "done"]
 
 
 async def test_stop_event_aborts_the_summarizer_call(isolated_home, monkeypatch):

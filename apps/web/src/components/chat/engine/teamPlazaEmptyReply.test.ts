@@ -57,7 +57,6 @@ function makeCtx(): EngineCtx {
     socketsRef: ref<Record<string, unknown>>({}),
     busyBySessionRef: ref<Record<string, boolean>>({}),
     serverRunningRef: ref<Record<string, boolean>>({}),
-    compactingBySessionRef: ref<Record<string, boolean>>({}),
     compactStageRef: ref<Record<string, unknown>>({}),
     streamAgentRef: ref<Record<string, string | null>>({}),
     orphanStreamRef: ref<Record<string, boolean>>({}),

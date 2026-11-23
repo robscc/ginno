@@ -116,57 +116,8 @@ async def _compact_async_handler(
         _log.exception("compact_cmd_microcompact_failed session=%s", sid)
 
     try:
-        # 「压缩中…」状态事件（与 turn 入口的自动压缩同一条 UI 契约）：
-        # 只在真正决定压缩（过完所有早退检查）后、总结 LLM 调用前发出。
-        from ..server_shared import _push_global_event, _push_session_event
-
-        async def _announce_compacting(predicted_s=None) -> None:
-            # 进度条（2026-11-12）：stage + pct 事件；2026-11-14 增 predicted_s
-            # （历史压缩时长预估），前端据此走时间轴进度 + ETA，无预估时回退缓动。
-            await _push_session_event(
-                sid, "context.compacting",
-                {"stage": "summarizing", "pct": 8, "predicted_s": predicted_s},
-            )
-
-        async def _announce_summary_done() -> None:
-            await _push_session_event(
-                sid, "context.compacting", {"stage": "writing", "pct": 92}
-            )
-
-        async def _announce_heartbeat(pct: int) -> None:
-            # P3（2026-11-16）：与 turn 入口自动压缩同一条进度契约。
-            await _push_session_event(
-                sid, "context.compacting", {"stage": "summarizing", "pct": pct}
-            )
-
-        async def _announce_done() -> None:
-            # 终态必达（2026-11-12 卡死修复）：compact 是后台任务，结束后
-            # 若无后续事件，前端 compacting 镜像永不清 → Composer 永久
-            # readOnly（@ 打不进输入框）。done 事件让前端即时解锁。
-            await _push_session_event(
-                sid, "context.compacting", {"stage": "done", "pct": 100}
-            )
-
-        try:
-            stats = await maybe_compact_history(
-                session, config, force=True,
-                on_summary_start=_announce_compacting,
-                on_summary_done=_announce_summary_done,
-                on_heartbeat=_announce_heartbeat,
-            )
-        except Exception as e:
-            _log.exception("compact_cmd_failed session=%s", sid)
-            # 不在此处发 done：finally 必达，except 内再发就是双发（2026-11
-            # 审计 P3——前端按「恰好一条 done」解锁，重复事件徒增噪音）。
-            return t(
-                f"Compaction failed: {type(e).__name__}: {e}",
-                f"压缩失败：{type(e).__name__}: {e}",
-            )
-        finally:
-            await _announce_done()
+        stats = await maybe_compact_history(session, config, force=True)
     except Exception as e:
-        # 外层（heal/前置段）兜底——原 try 的收尾；stats 自身的失败已在
-        # 内层捕获并连带发出 compacting 终态。
         _log.exception("compact_cmd_failed session=%s", sid)
         return t(
             f"Compaction failed: {type(e).__name__}: {e}",

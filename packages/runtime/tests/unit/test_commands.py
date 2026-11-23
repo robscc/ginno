@@ -387,9 +387,6 @@ async def _run_compact(monkeypatch, graph, *, running=(), compact_exc=None):
         session,
         config,
         force=False,
-        on_summary_start=None,
-        on_summary_done=None,
-        on_heartbeat=None,
         abort_event=None,
     ):
         calls["compact"] += 1
