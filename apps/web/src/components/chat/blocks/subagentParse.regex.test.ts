@@ -69,3 +69,11 @@ it("folds plans and subagent results from a single callback in order", () => {
     { kind: "subagent_result", sessionId: "s-1", summary: "Result" },
   ]);
 });
+
+
+it("accepts legacy Worker attributes and preserves the callback message ID", () => {
+  const text = "<ginno_worker_result session='w1' msg_id='m1' from='Worker &amp; Co'>Report</ginno_worker_result>";
+  expect(foldSubagentResultBlocks([{ kind: "text", text }])).toMatchObject([
+    { kind: "worker_result", sessionId: "w1", msgId: "m1", from: "Worker & Co", summary: "Report" },
+  ]);
+});
