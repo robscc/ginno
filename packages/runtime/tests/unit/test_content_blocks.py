@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime.graph import _latest_human_text, text_of_content
@@ -146,6 +147,36 @@ def test_ai_content_blocks_includes_thinking_text_and_image():
     assert blocks[1] == {"kind": "text", "text": "answer"}
     assert blocks[2]["kind"] == "image"
     assert blocks[2]["url"] == f"data:image/png;base64,{B64}"
+
+
+@pytest.mark.parametrize("shape", ["native", "legacy", "bridged", "encrypted-only"])
+def test_responses_reasoning_summary_replays_once(shape):
+    block = {
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "Compare choices."}],
+        "encrypted_content": "ciphertext",
+    }
+    answer = {"type": "text", "text": "Choose B."}
+    kwargs = {}
+    if shape == "legacy":
+        kwargs["reasoning"] = block
+        content = [answer]
+    else:
+        content = [block, answer]
+        if shape == "bridged":
+            kwargs["reasoning_content"] = "Compare choices."
+        elif shape == "encrypted-only":
+            block["summary"] = []
+
+    messages = _messages_to_ui([
+        HumanMessage(content="Choose an option."),
+        AIMessage(content=content, additional_kwargs=kwargs),
+    ], agent_id="dev")
+    blocks = [block for m in messages if m["role"] == "assistant" for block in m["blocks"]]
+    assert blocks[-1] == {"kind": "text", "text": "Choose B."}
+    assert blocks[:-1] == (
+        [] if shape == "encrypted-only" else [{"kind": "thinking", "text": "Compare choices."}]
+    )
 
 
 # --------------------------------------------------------------------------- #

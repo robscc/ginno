@@ -275,36 +275,36 @@ def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
 _RESPONSES_CLS: type | None = None
 
 
-def bridge_responses_reasoning(gen_chunk):
-    """Re-attach Responses-API reasoning summaries as ``reasoning_content``.
+def responses_reasoning_summary(message: Any) -> str:
+    """Read the public summary from current or legacy Responses messages."""
+    def block_summary(block: Any) -> str:
+        if not isinstance(block, dict) or block.get("type") != "reasoning":
+            return ""
+        summary = block.get("summary")
+        if not isinstance(summary, list):
+            return ""
+        return "".join(
+            part["text"] for part in summary
+            if isinstance(part, dict)
+            and part.get("type") == "summary_text"
+            and isinstance(part.get("text"), str)
+        )
 
-    The Responses API streams thinking output as official *reasoning summary*
-    events, which langchain-openai turns into content blocks shaped
-    ``{"type": "reasoning", "summary": [{"type": "summary_text", "text": ...}]}``
-    — NOT the third-party ``delta.reasoning_content`` field that
-    ReasoningChatOpenAI harvests on the chat-completions path. Ginno's
-    thinking pipeline (api/stream.py ``thinking.delta``; api/messages_ui.py
-    replay) reads ``additional_kwargs["reasoning_content"]``, so copy each
-    delta's summary text there. Chunk accumulation merges additional_kwargs,
-    so the persisted message ends up with the full reasoning text.
-    """
-    try:
-        content = gen_chunk.message.content
-        if isinstance(content, list):
-            texts = [
-                s.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "reasoning"
-                for s in (block.get("summary") or [])
-                if isinstance(s, dict)
-            ]
-            text = "".join(t for t in texts if t)
-            if text:
-                ak = getattr(gen_chunk.message, "additional_kwargs", None)
-                if ak is not None:
-                    ak["reasoning_content"] = text
-    except (AttributeError, TypeError):
-        pass
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        text = "".join(block_summary(block) for block in content)
+        if text:
+            return text
+    return block_summary((getattr(message, "additional_kwargs", None) or {}).get("reasoning"))
+
+
+def bridge_responses_reasoning(gen_chunk):
+    """Keep the reasoning_content field used by saved messages and gateway replay."""
+    message = getattr(gen_chunk, "message", None)
+    text = responses_reasoning_summary(message)
+    kwargs = getattr(message, "additional_kwargs", None)
+    if text and kwargs is not None:
+        kwargs["reasoning_content"] = text
     return gen_chunk
 
 

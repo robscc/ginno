@@ -185,6 +185,9 @@ async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
 
     调用方(run.py)已做 chunk.type gate(``("ai","AIMessageChunk")``)。
     """
+    summary = eng.responses_reasoning_summary(chunk)
+    if summary:
+        await ctx._coal.feed("thinking.delta", summary)
     content = getattr(chunk, "content", "")
     if isinstance(content, list):
         for b in content:
@@ -277,9 +280,10 @@ async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
             ctx.turn_text.append(content)
             ctx.seg_text.append(content)
             await ctx._coal.feed("token.delta", content)
-    rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
-    if rk:
-        await ctx._coal.feed("thinking.delta", rk)
+    if not summary:
+        rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
+        if rk:
+            await ctx._coal.feed("thinking.delta", rk)
 
 
 async def handle_custom(ctx: StreamTurnCtx, payload) -> None:

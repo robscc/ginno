@@ -36,6 +36,7 @@ from ...checkpointer import ABANDONED_TURNS
 from ...graph import BLOCK_PREFIX
 from ...knowledge import citations as cit
 from ...lang import t
+from ...models import responses_reasoning_summary
 from ...server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
