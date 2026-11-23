@@ -440,7 +440,8 @@ export function TranscriptList({
           // （它不认识这些块，会渲染成空气泡）。worker 协议信封
           // （<ginno_worker_result>/<ginno_worker_assign>）同通道同处理。
           <div key={m.id} className="flex flex-col items-center gap-2">
-            <div className="w-full max-w-[85%]">
+            <div className="flex w-full max-w-[85%] flex-col gap-2">
+              <IndependentEvents blocks={m.blocks} />
               <SubagentBlocks
                 session={session?.type === "subagent" ? session : undefined}
                 blocks={m.blocks.filter(

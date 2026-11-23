@@ -139,81 +139,76 @@ def _image_block_url(b: dict) -> str | None:
     return None
 
 
-_RESULT_ENV_RE = re.compile(
-    r"<ginno_subagent_result\b([^>]*)>(.*?)</ginno_subagent_result>", re.S
-)
-
-_PLAN_ENV_RE = re.compile(
-    r"<ginno_plan_update\b([^>]*)>(.*?)</ginno_plan_update>", re.S
+_RETURN_ENV_RE = re.compile(
+    r"<(?P<tag>ginno_subagent_result|ginno_plan_update|ginno_worker_result)\b([^>]*)>(.*?)</(?P=tag)>", re.S
 )
 
 
-def _plan_update_blocks(content: Any) -> list[dict] | None:
-    """清单状态注入信封（plan-orchestration §4/§8 P3）折成专用清单卡，而非
-    子代理结果卡或裸 steering 带。与 _subagent_result_blocks 同一入口分支
-    调用（注入消息都带 ginno_subagent_result kw，child key 是 plan-<id>）。"""
+def _return_envelope_blocks(content: Any) -> list[dict]:
+    """Fold all return envelopes in the order they were injected."""
     if isinstance(content, str):
         text = content
     elif isinstance(content, list):
         text = "\n".join(
-            p.get("text") or ""
-            for p in content
+            p.get("text") or "" for p in content
             if isinstance(p, dict) and p.get("type") == "text"
         )
     else:
-        return None
+        return []
     out: list[dict] = []
-    for m in _PLAN_ENV_RE.finditer(text):
-        am = re.search(r'plan="([^"]*)"', m.group(1))
-        raw = html.unescape(m.group(2)).strip()
-        # 模型侧行动菜单（"You can: …"尾段）是给主 agent 的指令，卡片只展示
-        # 状态行；找不到结构分界则整段展示，宁多勿丢。
-        body = raw.split("You can:", 1)[0].strip() or raw
-        out.append(
-            {
-                "kind": "plan_update",
-                "planId": html.unescape(am.group(1)) if am else "",
-                "text": body,
-            }
-        )
-    return out or None
+    for m in _RETURN_ENV_RE.finditer(text):
+        tag, attrs, raw = m.groups()
 
-
-def _subagent_result_blocks(content: Any) -> list[dict] | None:
-    """runtime 注入的子代理结果（契约 3）折成结果卡，而不是原始 XML 当
-    steering 带直出（2026-10-12 真机：t17 delegation 回传整段信封裸渲染）。
-
-    注入消息同时带 ginno_steer kw（steer_messages 合并盖的章），必须在
-    steer 带分支【前】检查。合并注入时一条消息可带多个信封——逐个解析，
-    每张一张卡；一个都解析不出则回 None（落回 steer 带渲染，防御旧形状）。
-    属性与正文的转义由 runtime 侧 _xml_attr/_xml_text 负责，这里
-    html.unescape 是前端 DOMParser 解码的镜像。"""
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = "\n".join(
-            p.get("text") or ""
-            for p in content
-            if isinstance(p, dict) and p.get("type") == "text"
-        )
-    else:
-        return None
-    out: list[dict] = []
-    for m in _RESULT_ENV_RE.finditer(text):
-
-        def attr(name: str, attrs: str = m.group(1)) -> str:
+        def attr(name: str, attrs: str = attrs) -> str:
             am = re.search(rf'{name}="([^"]*)"', attrs)
             return html.unescape(am.group(1)) if am else ""
 
-        out.append(
-            {
+        body = html.unescape(raw).strip()
+        if tag == "ginno_plan_update":
+            # The action menu is model scaffolding, outside the status card.
+            out.append({
+                "kind": "plan_update",
+                "planId": attr("plan"),
+                "text": body.split("You can:", 1)[0].strip() or body,
+            })
+        elif tag == "ginno_worker_result":
+            out.append({
+                "kind": "worker_result",
+                "sessionId": attr("session"),
+                "msgId": attr("msg_id"),
+                "from": attr("from"),
+                "status": attr("status"),
+                "goal": attr("goal"),
+                "summary": body,
+                "digest": attr("kind") == "digest",
+                "viaFile": attr("via_file") == "1",
+                "filePath": attr("file"),
+            })
+        else:
+            out.append({
                 "kind": "subagent_result",
                 "sessionId": attr("session"),
                 "goal": attr("goal"),
-                "summary": html.unescape(m.group(2)).strip(),
-            }
-        )
-    return out or None
+                "summary": body,
+            })
+    return out
+
+
+def _task_event_blocks(kwargs: dict) -> list[dict]:
+    events = kwargs.get("ginno_task_events")
+    if not isinstance(events, list):
+        events = [kwargs.get("ginno_task_event")]
+    return [
+        {
+            "kind": "task_event",
+            "taskId": str(event["task"]),
+            "ev": str(event.get("kind") or ""),
+            "title": str(event.get("title") or ""),
+            "exit": event.get("exit"),
+            "dur": str(event.get("dur") or ""),
+        }
+        for event in events if isinstance(event, dict) and event.get("task")
+    ]
 
 
 def _steer_band_blocks(content: Any, steer_kw: dict) -> list[dict]:
@@ -1007,14 +1002,12 @@ def _messages_to_ui(
             # the assistant bubble either. One turn is ONE bubble, and the
             # injection point renders as a full-width band inside it (§4.2/§4.3),
             # so the band joins the open accumulator instead of flushing it.
-            steer_kw = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
+            kwargs = m.additional_kwargs
+            steer_kw = kwargs.get("ginno_steer")
             # runtime 注入的子代理结果也带 ginno_steer（steer_messages 合并），
             # 但它该折结果卡而非 steer 带——先于 steer 分支检查（契约 3）。
-            res_kw = (getattr(m, "additional_kwargs", None) or {}).get(
-                "ginno_subagent_result"
-            )
-            if res_kw:
-                cards = _subagent_result_blocks(content_raw) or _plan_update_blocks(content_raw)
+            if kwargs.get("ginno_subagent_result"):
+                cards = _return_envelope_blocks(content_raw)
                 if cards:
                     # 子代理结果与下面的 task_event 一样是**新 turn 的触发器**
                     # （回传→父会话开新 turn），先 flush 上一泡再挂 pending——
@@ -1028,25 +1021,15 @@ def _messages_to_ui(
             # taskId 折进同 transcript 里 bg_run 的常驻卡片；找不到卡片（很老
             # 的历史/卡片被清）时兜底渲染一行完成带。先于 steer 分支（steer
             # 路径注入的消息同时带 ginno_steer 戳）。
-            task_kw = (getattr(m, "additional_kwargs", None) or {}).get(
-                "ginno_task_event"
-            )
-            if isinstance(task_kw, dict) and task_kw.get("task"):
-                blk = {
-                    "kind": "task_event",
-                    "taskId": str(task_kw.get("task") or ""),
-                    "ev": str(task_kw.get("kind") or ""),
-                    "title": str(task_kw.get("title") or ""),
-                    "exit": task_kw.get("exit"),
-                    "dur": str(task_kw.get("dur") or ""),
-                }
+            task_blocks = _task_event_blocks(kwargs)
+            if task_blocks:
                 # 回执是**新 turn 的触发器**（bg 完成→新 turn），live 视图里
                 # 下一段流式在新气泡里跑——回放必须先 flush 上一泡，否则把
                 # 新 turn 的内容焊进旧气泡（2026-11-18 实锤：[task finished]
                 # 后的 PR 合并 turn 焊进上一 turn，111 块巨无霸）。flush 后
                 # pending_bands 让回执挂到新气泡头部。
                 flush_assistant()
-                pending_bands.append([blk])
+                pending_bands.append(task_blocks)
                 continue
             if steer_kw:
                 group = _steer_band_blocks(content_raw, steer_kw)

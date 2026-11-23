@@ -202,17 +202,17 @@ async def _flush_after(session_id: str) -> None:
         return
     if len(entries) == 1:
         text = entries[0]["text"]
-        payload = entries[0]["payload"]
+        extra_kwargs = {"ginno_task_event": entries[0]["payload"]}
     else:
         text = (
             f"{len(entries)} background task events arrived:\n\n"
             + "\n\n".join(e["text"] for e in entries)
         )
-        payload = entries[-1]["payload"]  # 带上最后一个事件的戳；文本里全量
-    await _run_wake_turn(session_id, text, payload)
+        extra_kwargs = {"ginno_task_events": [e["payload"] for e in entries]}
+    await _run_wake_turn(session_id, text, extra_kwargs)
 
 
-async def _run_wake_turn(session_id: str, text: str, payload: dict) -> None:
+async def _run_wake_turn(session_id: str, text: str, extra_kwargs: dict) -> None:
     """镜像 sessions._run_goal_turn / subagent runner 的 headless turn。"""
     from ..api.sessions import _ensure_session, _first_agent_id
     from ..api.stream import _run_stream
@@ -233,6 +233,7 @@ async def _run_wake_turn(session_id: str, text: str, payload: dict) -> None:
             "turn_id": turn_id,
             "user_text": text,
             "usage_source": "task",
+            "task_events": extra_kwargs.get("ginno_task_events") or [extra_kwargs["ginno_task_event"]],
         }
     }
     _RUNNING = shared._RUNNING_TURNS
@@ -242,7 +243,7 @@ async def _run_wake_turn(session_id: str, text: str, payload: dict) -> None:
     try:
         await _run_stream(
             None, session["graph"], config, text, session, agent_id,
-            user_extra_kwargs={"ginno_task_event": payload},
+            user_extra_kwargs=extra_kwargs,
         )
     finally:
         reset_interactive(ask_tok)
