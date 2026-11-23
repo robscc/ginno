@@ -997,6 +997,18 @@ def _messages_to_ui(
     for m in messages:
         if isinstance(m, HumanMessage):
             content_raw = getattr(m, "content", "")
+            # Old idle batches only stamped the last event. The legacy
+            # renderer needs the original headers to recover every receipt.
+            if (
+                m.additional_kwargs.get("ginno_task_event")
+                and isinstance(content_raw, str)
+                and re.match(r"^(?:[2-9]|[1-9]\d+) background task events arrived:\n\n", content_raw)
+            ):
+                flush_assistant()
+                ui.append({
+                    "id": m.id, "role": "user", "blocks": [{"kind": "text", "text": content_raw}],
+                })
+                continue
             # Mid-turn steered message (docs/steering-design.md §3.5): a REAL user
             # message — never folded into a context row — but it must not break
             # the assistant bubble either. One turn is ONE bubble, and the

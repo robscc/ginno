@@ -1,65 +1,54 @@
 import type { Block } from "./types";
 
-// 后台任务事件注入带（runtime tasks/inject.py 的原文首行）在历史重放时折成
-// 极薄 task_event 标记行——与 live 侧 steer.absorbed 的 ginno_task_event 折卡
-// 对齐。旧记录的 tail 留在状态块里，默认折叠，任务记录清理后仍可展开。
-//
-// 注入带两种形态（inject.py STATUS_TEXT）：
-//   [task finished] "{title}" ({tid}) exit {code} · ran {dur}
-//   [task failed to start] "{title}" ({tid}) {note}
-// 注：不带 m-flag 的 JS `$` 只匹配绝对串尾——注入带是多行（tail 在后），
-// 故不锚 `$`；`(.*)` 不跨行，恰好吸收首行余下部分。
-const TASK_EVENT_BAND_RE =
-  /^\[task (finished|failed to start)\] "([^"]*)" \((t_[0-9a-zA-Z]+)\)(.*)/;
+// Legacy checkpoints use the exact header templates from tasks/inject.py.
+const STATUS = {
+  finished: "finished",
+  "failed to start": "failed_to_start",
+  "stopped by user": "stopped",
+  timeout: "timeout",
+  "interrupted by app quit": "interrupted",
+  healthy: "healthy",
+  watch: "watch",
+  "watch muted": "watch_muted",
+} as const;
+const statusPattern = Object.keys(STATUS).join("|");
+const taskHeader = String.raw`\[task (${statusPattern})\] "([^\r\n]*)" \((t_[0-9a-zA-Z]+)\)([^\r\n]*)`;
+const TASK_HEADER_RE = new RegExp(`^${taskHeader}`);
+const LEGACY_BATCH_RE = /^([2-9]|[1-9]\d+) background task events arrived:\n\n/;
+const LEGACY_BATCH_SEPARATOR = new RegExp(String.raw`\n\n(?=\[task (?:${statusPattern})\] ")`);
 
-// 遗言恢复带（runtime lastwords.py render_band 首行族）：
-//   [lastwords] dev-swap 重启恢复：{摘要} · 旧指纹 abc123 · 后台任务 2 个可收割(bg_logs)
-// 与 [task …] 族同构（首行前缀标记 + 余下摘要），折成 ev:"lastwords" 的
-// task_event 块；taskId 合成 "lastwords"（无 tid），title 取首行余下全文
-// （TaskEventBand 显示 title || taskId）。多行正文（auto 续跑模板）同样
-// 保留首行余下部分之后的正文为 text block——重放不露长原文由首行折叠保证。
-const LASTWORDS_BAND_RE = /^\[lastwords\] (.*)/;
+function parseTaskEvent(text: string): Extract<Block, { kind: "task_event" }> | undefined {
+  const match = TASK_HEADER_RE.exec(text);
+  if (!match) return;
+  const [, status, title, taskId, rest] = match;
+  const ev = STATUS[status as keyof typeof STATUS];
+  const exit = / exit (-?\d+)/.exec(rest)?.[1];
+  const dur = / · ran (.+)$| after (\d+(?:h|m|s)(?: \d+(?:m|s))?)(?= —|$)/.exec(rest);
+  const note = ["healthy", "watch", "watch_muted", "failed_to_start"].includes(ev) ? rest.trim() : "";
+  const tail = text.slice(match[0].length).trim();
+  const log = [note, tail].filter(Boolean).join("\n");
+  return {
+    kind: "task_event",
+    taskId,
+    ev,
+    title,
+    ...(exit != null ? { exit: Number(exit) } : {}),
+    ...(dur ? { dur: dur[1] ?? dur[2] } : {}),
+    ...(log ? { log } : {}),
+  };
+}
 
 export function foldTaskEventBlocks(blocks: Block[]): Block[] {
-  const out: Block[] = [];
-  for (const b of blocks) {
-    if (b.kind !== "text" || typeof b.text !== "string") {
-      out.push(b);
-      continue;
+  return blocks.flatMap((block): Block[] => {
+    if (block.kind !== "text") return [block];
+    // Keep [lastwords] intact so TranscriptList can render the whole recovery receipt.
+    const batch = LEGACY_BATCH_RE.exec(block.text);
+    if (batch) {
+      const events = block.text.slice(batch[0].length).split(LEGACY_BATCH_SEPARATOR).map(parseTaskEvent);
+      if (events.length === Number(batch[1]) && events.every((event) => event !== undefined)) return events;
+      return [block];
     }
-    const m = TASK_EVENT_BAND_RE.exec(b.text);
-    if (!m) {
-      const lw = LASTWORDS_BAND_RE.exec(b.text);
-      if (lw) {
-        out.push({
-          kind: "task_event",
-          taskId: "lastwords",
-          ev: "lastwords",
-          title: lw[1],
-        } as Block);
-        const nl = b.text.indexOf("\n");
-        if (nl >= 0 && b.text.slice(nl + 1).trim()) {
-          out.push({ kind: "text", text: b.text.slice(nl + 1) });
-        }
-        continue;
-      }
-      out.push(b);
-      continue;
-    }
-    const [, evRaw, title, taskId, rest = ""] = m;
-    const exit = / exit (-?\d+)/.exec(rest)?.[1];
-    const dur = / · ran (.+?)(?:\n|$)/.exec(rest)?.[1];
-    const nl = b.text.indexOf("\n");
-    const log = nl < 0 ? "" : b.text.slice(nl + 1).trim();
-    out.push({
-      kind: "task_event",
-      taskId,
-      ev: evRaw === "finished" ? "finished" : "failed_to_start",
-      title,
-      ...(exit != null ? { exit: Number(exit) } : {}),
-      ...(dur != null ? { dur } : {}),
-      ...(log ? { log } : {}),
-    });
-  }
-  return out;
+    const event = parseTaskEvent(block.text);
+    return event ? [event] : [block];
+  });
 }
