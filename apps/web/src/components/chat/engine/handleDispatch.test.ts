@@ -4,7 +4,7 @@
 //   ① 事件类型全集枚举快照：从 handle.ts 源码静态提取 switch 的 case 清单，
 //      与人工钉住的清单逐项比对——将来把巨型 switch 拆成注册表时，任何
 //      丢 case / 改名 / 漏迁移都会在这里先红，而不是在用户桌面上丢事件。
-//   ② 全事件 dispatch 触达表：77 个事件类型逐个构造最小事件喂进真实
+//   ② 全事件 dispatch 触达表：79 个事件类型逐个构造最小事件喂进真实
 //      handle()，断言每个 case 至少触达它该有的核心观察点（g.* 回调 /
 //      store 落块 / refs 状态 / 通知出口）。dispatch 表错键会静默掉进
 //      switch 之外（无 default），这层就是防「静默丢事件」的网。
@@ -236,7 +236,7 @@ const EXTRACTED_CASES = [...SRC.matchAll(/^\s*\["([^"]+)",/gm)].map((m) => m[1])
 /** 人工钉住的 handle() switch case 全集（源码顺序）。重构迁移注册表时此表
  *  就是验收清单：迁移后必须每个键都还能路由到等价处理。 */
 const EXPECTED_CASES = [
-  "token.delta", "thinking.delta", "tool.start", "tool.args", "tool.end",
+  "token.delta", "thinking.delta", "tool.start", "tool.args", "tool.args_delta", "tool.end",
   "user.question",
   "widget.emit", "ref.emit", "image.emit",
   "llm.request", "llm.response",
@@ -284,11 +284,11 @@ describe("① handle() 事件类型全集枚举快照（防拆分丢 case）", (
     expect(new Set(EXTRACTED_CASES).size).toBe(EXTRACTED_CASES.length);
   });
 
-  it("流帧共享体结构：5 事件相邻共享，user.question 独立 handler（P0-1 结构防线）", () => {
+  it("流帧共享体结构：6 事件相邻共享，user.question 独立 handler（P0-1 结构防线）", () => {
     // 2026-11-14 通知风暴的结构载体：delta/tool 共享体顺序 + ask 通知必须在
     // user.question 自己的 handler 里。拆注册 / 换共享函数都会红。
     expect(SRC).toMatch(
-      /\["token\.delta", stream\.onDelta\],\s*\n\s*\["thinking\.delta", stream\.onDelta\],\s*\n\s*\["tool\.start", stream\.onStreamFrame\],\s*\n\s*\["tool\.args", stream\.onStreamFrame\],\s*\n\s*\["tool\.end", stream\.onStreamFrame\],\s*\n\s*\["user\.question", stream\.onQuestion\],/,
+      /\["token\.delta", stream\.onDelta\],\s*\n\s*\["thinking\.delta", stream\.onDelta\],\s*\n\s*\["tool\.start", stream\.onStreamFrame\],\s*\n\s*\["tool\.args", stream\.onStreamFrame\],\s*\n\s*\["tool\.args_delta", stream\.onStreamFrame\],\s*\n\s*\["tool\.end", stream\.onStreamFrame\],\s*\n\s*\["user\.question", stream\.onQuestion\],/,
     );
     // ask 通知仍是 user.question handler 的专属首副作用（不进共享函数）。
     expect(STREAM_SRC).toMatch(
@@ -332,6 +332,12 @@ const DISPATCH_TABLE: CaseSpec[] = [
     pre: [{ event: "tool.start", id: "c1", name: "bash", turn_id: "t1" }],
     ev: { id: "c1", preview: "ls -la" },
     probe: (b) => expect(blockOf(b, "tool")).toMatchObject({ argsPreview: "ls -la" }),
+  },
+  {
+    event: "tool.args_delta", desc: "给 pending tool 块挂累计参数快照",
+    pre: [{ event: "tool.start", id: "c1", name: "bash", turn_id: "t1" }],
+    ev: { id: "c1", tail: '{"command":', total: 11 },
+    probe: (b) => expect(blockOf(b, "tool")).toMatchObject({ argsStream: '{"command":' }),
   },
   {
     event: "tool.end", desc: "tool 块关闭（pending=false）",
