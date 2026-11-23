@@ -202,39 +202,70 @@ def test_codex_reasoning_summary_reaches_websocket_once(
     assert not events_of(events, "error")
     summaries = events_of(events, "reasoning.summary")
     assert summaries and not events_of(events, "thinking.delta")
-    parts = summaries[-1]["summary"]["parts"]
+    snapshot = summaries[-1]["summary"]
+    parts = snapshot["parts"]
     assert [p["text"] for p in parts] == ["Compare choices.", "**Verify**"]
+    assert {frame["summary"]["requestId"] for frame in summaries} == {snapshot["requestId"]}
     history = client.get(f"/api/sessions/{sid}/history").json()["messages"]
-    assert [b["parts"] for m in history for b in m["blocks"] if b["kind"] == "reasoning_summary"] == [parts]
-    assert "".join(e["content"] for e in events_of(events, "token.delta")) == "Choose B."
+    assert [b for m in history for b in m["blocks"] if b["kind"] == "reasoning_summary"] == [
+        {"kind": "reasoning_summary", "requestId": snapshot["requestId"], "parts": parts},
+    ]
+    text_frames = events_of(events, "token.delta")
+    assert "".join(e["content"] for e in text_frames) == "Choose B."
+    assert {e["requestId"] for e in text_frames} == {snapshot["requestId"]}
 
-def test_summary_snapshot_catches_up_a_reconnected_socket(create_session, ws_conv):
+
+
+def test_request_summaries_keep_order_after_a_tool_and_reconnect(client, create_session, ws_conv):
     import asyncio
     from threading import Event
 
     release = Event()
 
+    def summary(text, index=0):
+        return ChatGenerationChunk(message=AIMessageChunk(content=[{
+            "type": "reasoning", "index": 0,
+            "summary": [{"index": index, "type": "summary_text", "text": text}],
+        }]))
+
     class PausedSummary(_OrderModel):
         async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-            for index, text in enumerate(("First", "Second")):
-                yield ChatGenerationChunk(message=AIMessageChunk(content=[{
-                    "type": "reasoning", "index": 0,
-                    "summary": [{"index": index, "type": "summary_text", "text": text}],
-                }]))
-                if index == 0:
-                    assert await asyncio.to_thread(release.wait, 12)
+            if not any(isinstance(m, ToolMessage) for m in messages):
+                yield summary("First request")
+                async for chunk in super()._astream(messages, stop, run_manager, **kwargs):
+                    yield chunk
+                return
+            yield summary("Second request")
+            assert await asyncio.to_thread(release.wait, 12)
+            yield summary("Finish checking", 1)
             yield ChatGenerationChunk(message=AIMessageChunk(content="Answer"))
 
     sid = create_session(PausedSummary())
     with ws_conv(sid) as original:
         original.invoke("Compare")
-        received = original.recv_until("reasoning.summary", "error")[-1]
+        tool_events = original.recv_until("tool.end", "error")
+        assert tool_events[-1]["event"] == "tool.end"
+        first = events_of(tool_events, "reasoning.summary")[-1]["summary"]
+        second = original.recv_until("reasoning.summary", "error")[-1]["summary"]
+        assert not first["receiving"] and second["receiving"]
+        assert first["requestId"] == tool_events[-1]["requestId"]
+        assert first["requestId"] != second["requestId"]
         with ws_conv(sid) as reconnected:
             try:
                 reconnected.send({"type": "turn_state"})
                 probe = reconnected.recv_until("turn.state")[-1]
-                assert probe["running"] and probe["reasoning_summary"] == received["summary"]
+                assert probe["running"] and probe["reasoning_summaries"] == [first, second]
             finally:
                 release.set()
             final = reconnected.recv_until("message.end", "error")[-1]
-            assert [p["text"] for p in final["reasoning_summary"]["parts"]] == ["First", "Second"]
+            assert final["reasoning_summaries"][0] == first
+            second_final = final["reasoning_summaries"][1]
+            assert not second_final["receiving"]
+            assert [p["text"] for p in second_final["parts"]] == ["Second request", "Finish checking"]
+
+    history = client.get(f"/api/sessions/{sid}/history").json()["messages"]
+    blocks = next(m["blocks"] for m in history if m["role"] == "assistant")
+    relevant = [b for b in blocks if b["kind"] in {"reasoning_summary", "text", "tool"}]
+    assert [b["kind"] for b in relevant] == ["reasoning_summary", "text", "tool", "reasoning_summary", "text"]
+    assert relevant[0]["requestId"] == first["requestId"]
+    assert relevant[3]["requestId"] == second["requestId"]

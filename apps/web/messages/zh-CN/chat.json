@@ -285,7 +285,6 @@
     "reasoningSummary": {
       "title": "思考摘要",
       "receiving": "接收中",
-      "waiting": "等待后续摘要",
       "saved": "已记录",
       "offline": "连接中断",
       "offlineHint": "已收到的摘要可以继续查看。",

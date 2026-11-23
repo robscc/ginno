@@ -80,14 +80,12 @@ def make_edit_diff(
     new_l = (new or "").splitlines(keepends=True)
     if old_l == new_l:
         return None
-    full = list(
-        difflib.unified_diff(
-            old_l,
-            new_l,
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        )
-    )
+    # Edit arguments are often fragments without a final newline. difflib
+    # preserves that on body records, so add the display separator explicitly.
+    full = [
+        line if line.endswith("\n") else line + "\n"
+        for line in difflib.unified_diff(old_l, new_l, fromfile=f"a/{path}", tofile=f"b/{path}")
+    ]
     added = sum(1 for l in full if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in full if l.startswith("-") and not l.startswith("---"))
     text = "".join(full)

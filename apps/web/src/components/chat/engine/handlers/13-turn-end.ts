@@ -40,9 +40,9 @@ export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
     ctx.syncDisplay(sid);
   }
   if (ev.running) {
-    if (ev.reasoning_summary) {
+    if (ev.reasoning_summaries || ev.reasoning_summary) {
       adoptOrphanStream(ctx, sid);
-      mutateLive(ctx, sid, { ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
+      mutateLive(ctx, sid, ev);
     }
     return;
   }
@@ -75,8 +75,8 @@ export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
 }
 
 export function onMessageEnd(ctx: EngineCtx, sid: string, ev: ServerEvent) {
-  if (ev.reasoning_summary && ctx.liveBySessionRef.current[sid]) {
-    mutateLive(ctx, sid, { ...ev, event: "reasoning.summary", summary: ev.reasoning_summary });
+  if ((ev.reasoning_summaries || ev.reasoning_summary) && ctx.liveBySessionRef.current[sid]) {
+    mutateLive(ctx, sid, ev);
   }
   markDelivered(ctx, sid);
   const wasOrphan = !!ctx.orphanStreamRef.current[sid];

@@ -39,6 +39,15 @@ describe("parseDiffLines", () => {
     expect(ctx1.ln2).toBe(1);
   });
 
+  it("preserves empty context lines without adding a row for the final newline", () => {
+    const lines = parseDiffLines("@@ -1,2 +1,2 @@\r\n \r\n-y=2\r\n+y=42\r\n");
+    expect(lines.slice(1)).toEqual([
+      { t: "ctx", ln1: 1, ln2: 1, text: "" },
+      { t: "del", ln1: 2, text: "y=2" },
+      { t: "add", ln2: 2, text: "y=42" },
+    ]);
+  });
+
   it("非 diff 垃圾输入不炸（按 ctx 容错）", () => {
     const ls = parseDiffLines("random\ntext");
     expect(ls).toHaveLength(0); // 未进 hunk 的行被忽略

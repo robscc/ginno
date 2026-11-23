@@ -290,6 +290,7 @@ function appendStreamDelta(
   blocks: Block[],
   kind: "text" | "thinking",
   t: string,
+  requestId?: string,
 ): Block[] {
   if (!t) return blocks;
   let start = 0;
@@ -302,37 +303,63 @@ function appendStreamDelta(
   }
   for (let i = blocks.length - 1; i >= start; i--) {
     if (blocks[i].kind === kind) {
+      const cur = blocks[i] as Extract<Block, { kind: "text" | "thinking" }>;
+      if (cur.kind === "text" && cur.requestId !== requestId) break;
       const next = blocks.slice();
-      const cur = next[i] as { kind: "text" | "thinking"; text: string };
-      next[i] = { kind, text: cur.text + t };
+      next[i] = { ...cur, text: cur.text + t };
       return next;
     }
   }
-  return [...blocks, { kind, text: t }];
+  return [...blocks, { kind, text: t, ...(requestId && { requestId }) }];
+}
+
+function applyReasoningSummary(blocks: Block[], raw: unknown): Block[] {
+  const snapshot = raw as Extract<Block, { kind: "reasoning_summary" }> | undefined;
+  if (!snapshot || !Array.isArray(snapshot.parts) || typeof snapshot.revision !== "number") return blocks;
+  const { requestId, revision, receiving } = snapshot;
+  const previous = blocks.find(
+    (block): block is Extract<Block, { kind: "reasoning_summary" }> =>
+      block.kind === "reasoning_summary" && block.requestId === requestId,
+  );
+  if (previous?.revision !== undefined && previous.revision >= revision) return blocks;
+
+  const parts = new Map(previous?.parts.map(part => [part.id, part]));
+  for (const part of snapshot.parts) {
+    if (part && typeof part.id === "string" && typeof part.text === "string") parts.set(part.id, part);
+  }
+  if (!parts.size) return blocks;
+  const next: Block = { kind: "reasoning_summary", requestId, parts: [...parts.values()], revision, receiving };
+  if (previous) return blocks.map(block => block === previous ? next : block);
+
+  // Reconnect may deliver a summary after its output. Use the request's first
+  // surviving block, or the next summary if the entire request was missed.
+  const anchor = requestId ? blocks.findIndex(block =>
+    ("requestId" in block && block.requestId === requestId) ||
+    (block.kind === "reasoning_summary" && (block.revision ?? 0) > revision),
+  ) : -1;
+  if (anchor >= 0) return [...blocks.slice(0, anchor), next, ...blocks.slice(anchor)];
+  return [...blocks, next];
 }
 
 export function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
+const requestId = typeof ev.requestId === "string" ? ev.requestId : undefined;
 switch (ev.event) {
   case "token.delta":
-    return appendStreamDelta(blocks, "text", (ev.content as string) || "");
+    return appendStreamDelta(blocks, "text", (ev.content as string) || "", requestId);
   case "thinking.delta":
     return appendStreamDelta(blocks, "thinking", (ev.content as string) || "");
-  case "reasoning.summary": {
-    const snap = ev.summary as Extract<Block, { kind: "reasoning_summary" }> | undefined;
-    if (!snap || !Array.isArray(snap.parts) || !snap.parts.length || typeof snap.revision !== "number") return blocks;
-    const previous = blocks.find(b => b.kind === "reasoning_summary");
-    if (previous?.revision !== undefined && previous.revision >= snap.revision) return blocks;
-    // A resumed segment may contribute new parts to an already checkpointed bubble.
-    const parts = new Map(previous?.parts.map(part => [part.id, part]));
-    for (const part of snap.parts) {
-      if (part && typeof part.id === "string" && typeof part.text === "string") parts.set(part.id, part);
-    }
-    if (!parts.size) return blocks;
-    const next: Block = { kind: "reasoning_summary", parts: [...parts.values()], receiving: snap.receiving, revision: snap.revision };
-    return previous ? blocks.map(b => b === previous ? next : b) : [next, ...blocks];
-  }
+  case "reasoning.summary":
+    return applyReasoningSummary(blocks, ev.summary);
+  case "turn.state":
+  case "message.end":
+    return Array.isArray(ev.reasoning_summaries)
+      ? ev.reasoning_summaries.reduceRight<Block[]>(applyReasoningSummary, blocks)
+      : applyReasoningSummary(blocks, ev.reasoning_summary);
   case "tool.start":
-    return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
+    return [...blocks, {
+      kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true,
+      ...(requestId && { requestId }),
+    }];
   case "tool.args": {
     // Attach the tool call's args preview (e.g. the bash command) to the
     // pending bubble so the user sees WHAT is running, not just the label.
@@ -435,6 +462,7 @@ switch (ev.event) {
       ...blocks,
       {
         kind: "tool", id, name: name ?? "tool", content, pending: false,
+        ...(requestId && { requestId }),
         ...(ev.diff ? { diff: ev.diff as ImportDiff } : {}),
       },
     ];
@@ -465,6 +493,7 @@ switch (ev.event) {
     const card: QuestionBlock = {
       kind: "question",
       id,
+      ...(requestId && { requestId }),
       question: (ev.question as string) || "",
       header: (ev.header as string) || undefined,
       options: subs ? [] : (ev.options as string[]) || [],

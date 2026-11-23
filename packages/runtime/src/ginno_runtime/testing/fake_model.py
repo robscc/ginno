@@ -198,6 +198,8 @@ class ScriptedChatModel(BaseChatModel):
         cid = msg.id or f"fake_{uuid.uuid4().hex[:8]}"
         usage = getattr(msg, "usage_metadata", None)
         if msg.tool_calls:
+            if msg.content:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=msg.content, id=cid))
             last = len(msg.tool_calls) - 1
             for i, tc in enumerate(msg.tool_calls):
                 # 1) name-first chunk with empty args → fires server "tool.start"

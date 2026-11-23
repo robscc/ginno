@@ -21,7 +21,7 @@ from .. import workflows as wf_store
 from ..api import server_tools
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
-from ..models import responses_reasoning_parts
+from ..models import responses_reasoning_parts, responses_request_id
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ..tools.render_tools import RENDER_TOOL_NAMES, split_attach_tags, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
@@ -932,7 +932,6 @@ def _messages_to_ui(
     # turn-meta 对齐键（见 AIMessage 分支注释）：当前 bubble 内最后一条
     # AIMessage 的 id——turns.jsonl 的 message_id 用同一键匹配。
     acc_last_ai_id: str | None = None
-    acc_summary: dict[str, dict] = {}
     # AgentTeam 回帖标记（agent-team-design.md §5.2 要点 2）：成员产出写回主会话
     # 时带 ``ginno_team_reply`` kw，序列化到 bubble 上让前端渲染成**回帖卡**
     # （带头像、可折叠、点「展开全文」跳成员工作台），而不是普通 assistant 气泡。
@@ -955,9 +954,6 @@ def _messages_to_ui(
 
     def flush_assistant() -> None:
         nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks, acc_team_reply, acc_last_ai_id
-        if acc_summary and acc is not None:
-            acc.insert(0, {"kind": "reasoning_summary", "parts": list(acc_summary.values())})
-        acc_summary.clear()
         if acc:
             # A turn can produce the same ref twice — a real attach_ref call
             # plus the XML tag models sometimes write into the answer — and
@@ -1171,9 +1167,12 @@ def _messages_to_ui(
             for blk in step:
                 if blk.get("kind") == "sources" and blk.get("items"):
                     blk["items"] = _resolve_source_items(blk["items"], ref_map)
-            parts = responses_reasoning_parts(m, fallback_id=f"history-{message_index}")
+            request_id = responses_request_id(m, fallback_id=f"history-{message_index}")
+            parts = responses_reasoning_parts(m, request_id=request_id)
             if parts:
-                acc_summary.update((part["id"], part) for part in parts if part["text"].strip())
+                visible_parts = [part for part in parts if part["text"].strip()]
+                if visible_parts:
+                    step.insert(0, {"kind": "reasoning_summary", "requestId": request_id, "parts": visible_parts})
             else:
                 reasoning = (getattr(m, "additional_kwargs", None) or {}).get("reasoning_content")
                 if reasoning:

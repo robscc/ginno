@@ -474,7 +474,7 @@ export function InnerBlocks({
         />,
       );
     } else if (b.kind === "reasoning_summary") {
-      out.push(<ReasoningSummary key="responses-summary" block={b} live={!!streaming} offline={offline} />);
+      out.push(<ReasoningSummary key={`responses-summary-${b.requestId ?? key++}`} block={b} live={!!streaming} offline={offline} />);
     } else if (b.kind === "thinking") {
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
