@@ -256,6 +256,11 @@ _SESSION_WS: dict[str, list[Any]] = {}
 # "stream will resume" from "turn is gone — reconcile from history".
 _RUNNING_TURNS: dict[str, str] = {}
 
+# Task executing a background wake, keyed by (session_id, turn_id). A wake can
+# run inline in the assigning session's task, so keep this liveness signal
+# separate from _TURN_TASKS, whose entries the WS stop watchdog can cancel.
+_WAKE_TURN_TASKS: dict[tuple[str, str], asyncio.Task[Any]] = {}
+
 # When each _RUNNING_TURNS entry was (re)armed — stamped by engine._stream_graph,
 # the chokepoint every real turn execution passes through (WS/channel/goal/cli
 # all re-register there). Feeds turn_gate_busy's staleness self-heal: a turn
@@ -300,25 +305,14 @@ def heal_stale_running_turn(session_id: str, age: float, via: str = "gate") -> N
 def running_turn_alive(
     session_id: str, *, _heal: bool = True, via: str = "gate"
 ) -> bool:
-    """Is a turn REALLY live on this session? Three signals, weakest to
-    strongest (the judgement core behind :func:`turn_gate_busy` and the
-    read paths — badge / /api/running):
+    """Check turn liveness for busy gates, the badge and /api/running.
 
-    1. ``_TURN_TASKS[sid]`` alive — desktop invoke/resume task (definitive);
-    2. ``sid in _PENDING_RESUME`` — parked at an interrupt awaiting an answer
-       (definitive: the resume hasn't happened);
-    3. ``_RUNNING_TURNS[sid]`` — armed at turn start; channel/goal turns carry
-       no task, so this is the only signal for them — BUT it can leak (an end
-       path that skipped its pop). Liveness is verified with
-       ``_RUNNING_TURNS_AT`` (stamped by engine._stream_graph, the chokepoint
-       every real execution passes): NO timestamp = freshly armed, still in
-       the preamble → conservatively busy; timestamped but silent past
-       RUNNING_TURN_STALE_S with no live task ⇒ leaked ⇒ heal (drop the flag)
-       and report not-alive, logging loudly so the leaking path can be traced.
+    A live desktop task, a pending interrupt, or a live task matching the
+    registered wake turn keeps the session busy. For a registration alone,
+    keep an untimestamped preamble or a recent entry. Heal a timestamped
+    entry once it passes RUNNING_TURN_STALE_S without any live task.
 
-    O(1) dict probes + one time.time() — no disk IO (badge polls this every
-    5s). ``_heal=False`` turns it into a pure probe (leave the registries
-    untouched).
+    O(1) lookups and no disk IO. ``_heal=False`` leaves the registries intact.
     """
     import time as _time
 
@@ -327,7 +321,11 @@ def running_turn_alive(
         return True
     if session_id in _PENDING_RESUME:
         return True
-    if session_id in _RUNNING_TURNS:
+    turn_id = _RUNNING_TURNS.get(session_id)
+    if turn_id is not None:
+        wake_task = _WAKE_TURN_TASKS.get((session_id, turn_id))
+        if wake_task is not None and not wake_task.done():
+            return True
         since = _RUNNING_TURNS_AT.get(session_id)
         if since is None:
             return True  # armed but not yet in the engine — can't date it

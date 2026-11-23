@@ -57,6 +57,36 @@ def test_alive_with_live_task_even_if_stale():
         shared._RUNNING_TURNS_AT.pop("s-task", None)
 
 
+async def test_wake_task_only_keeps_its_own_turn_alive(monkeypatch):
+    sid, tid = "s-wake", "t-wake"
+    release = asyncio.Event()
+    wake_task = asyncio.create_task(release.wait())
+    monkeypatch.setitem(shared._WAKE_TURN_TASKS, (sid, tid), wake_task)
+    try:
+        _arm(sid, tid, age_s=shared.RUNNING_TURN_STALE_S + 5)
+        assert shared.running_turn_alive(sid) is True
+
+        # Once stop removes the current registration, the task cannot keep
+        # this session busy, even if its coroutine is still unwinding.
+        shared._RUNNING_TURNS.pop(sid)
+        assert shared.running_turn_alive(sid) is False
+
+        # An old task must not protect a leaked registration for a successor.
+        _arm(sid, "t-leaked", age_s=shared.RUNNING_TURN_STALE_S + 5)
+        assert shared.running_turn_alive(sid) is False
+        assert sid not in shared._RUNNING_TURNS
+        assert sid not in shared._RUNNING_TURNS_AT
+    finally:
+        release.set()
+        await wake_task
+
+    # A finished task is no evidence of liveness even for the same turn ID.
+    _arm(sid, tid, age_s=shared.RUNNING_TURN_STALE_S + 5)
+    assert shared.running_turn_alive(sid) is False
+    assert sid not in shared._RUNNING_TURNS
+    assert sid not in shared._RUNNING_TURNS_AT
+
+
 def test_alive_when_parked_at_interrupt():
     """信号②：_PENDING_RESUME（ask_user/权限卡）→ 计活（parked 是活的）。"""
     _arm("s-park", "t-2", age_s=shared.RUNNING_TURN_STALE_S * 3)
