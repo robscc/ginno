@@ -33,6 +33,7 @@ import 冲突——CI 全量必红。）
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 
@@ -350,6 +351,128 @@ def test_worker_answered_first_late_relay_is_readonly(
         wconv.send({"type": "ping"})
         after = wconv.recv_until("pong", "error")
         assert [e.get("event") for e in after] == ["pong"], after
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["live", "legacy-restart"])
+def test_worker_choice_resumes_subscriber_relay_card(
+    client, create_session, ws_conv, patch_build_model, restart,
+):
+    cp = FileCheckpointer("default")
+    sub_call = "call_subscriber_ask"
+    sub_model = ScriptedChatModel(scripts=[
+        script(tool_calls=[script_tool_call(
+            "ask_user", {"question": "这次迁移选哪个位置？", "options": OPTS[::-1]}, sub_call,
+        )]),
+        script(text="已收到订阅会话选的位置。"),
+    ])
+    sub = create_session(sub_model)
+    worker = create_session([
+        script(tool_calls=[_ask_call()]), script(text="已按选择完成。"),
+    ])
+    assert client.portal.call(ww.watch_worker, sub, worker, "digest")["ok"]
+
+    with ws_conv(worker) as wconv, ws_conv(sub) as sconv:
+        wconv.invoke("跑迁移")
+        original = events_of(wconv.recv_until("user.question", "error"), "user.question")[0]
+        forwarded = events_of(sconv.recv_until("user.question", "error"), "user.question")[0]
+        assert original["qid"] != forwarded["qid"]
+        assert forwarded["id"] == sub_call
+        assert forwarded["options"] == OPTS[::-1]
+
+        if restart:
+            from ginno_runtime import server_shared as shared
+            from ginno_runtime.api.stream.resume import resume_pending_interrupt
+
+            def answer_with_old_runtime():
+                assert resume_pending_interrupt(worker, {
+                    "kind": "user_answer", "answer": OPTS[0], "option_index": 0,
+                })
+                relay.mark_answered(original["qid"], "user", OPTS[0])
+                # Recreate the 1ff55791 tombstone shape on disk.
+                relay.tombstone_of(original["qid"]).pop("subscribers", None)
+                relay._persist_unlocked()
+
+            client.portal.call(answer_with_old_runtime)
+            assert _ask_settlement(wconv.recv_until("message.end", "error"))["answer"] == OPTS[0]
+
+            async def restart_relay():
+                async with shared._turn_lock(sub):
+                    shared._SESSIONS.pop(sub)
+                    shared._PENDING_KIND.pop(sub)
+                    shared._PENDING_RESUME.remove(sub)
+                    shared._RUNNING_TURNS.pop(sub)
+                    relay._reset_state()
+                    relay.reconcile_relay()
+
+            patch_build_model(sub_model)
+            client.portal.call(restart_relay)
+        else:
+            # Only answer the original card, with the order reversed in the relay.
+            wconv.respond_answer(OPTS[0], option_index=0)
+            assert _ask_settlement(wconv.recv_until("message.end", "error"))["answer"] == OPTS[0]
+
+        receipts = _wait_for(cp, sub, lambda messages: [
+            m for m in messages if getattr(m, "tool_call_id", "") == sub_call
+        ], timeout=8)
+        assert receipts and len(receipts) == 1
+        answered = json.loads(receipts[0].content)
+        assert answered["source"] == "option"
+        assert answered["answer"] == OPTS[0]
+        assert answered["option_index"] == 1
+
+        frames = sconv.recv_until("message.end", "error")
+        assert not events_of(frames, "error")
+        settled = [e for e in events_of(frames, "tool.end") if e.get("id") == sub_call]
+        assert len(settled) == 1 and settled[0]["turn_id"] == forwarded["turn_id"]
+
+        history = client.get(f"/api/sessions/{sub}/history").json()["messages"]
+        cards = [b for m in history for b in m["blocks"] if b.get("id") == sub_call]
+        assert len(cards) == 1
+        assert cards[0]["status"] == "answered"
+        assert cards[0]["answer"] == OPTS[0] and cards[0]["optionIndex"] == 1
+
+
+def test_worker_choice_before_subscriber_parks(client, create_session, ws_conv, monkeypatch):
+    from ginno_runtime.api.stream import resume
+
+    release = asyncio.Event()
+
+    class HeldModel(ScriptedChatModel):
+        async def _astream(self, *args, **kwargs):
+            await release.wait()
+            async for chunk in super()._astream(*args, **kwargs):
+                yield chunk
+
+    sub_call = "call_late_subscriber_ask"
+    sub = create_session(HeldModel(scripts=[
+        script(tool_calls=[script_tool_call(
+            "ask_user", {"question": "选哪个位置？", "options": OPTS}, sub_call,
+        )]),
+        script(text="已同步。"),
+    ]))
+    worker = create_session([
+        script(tool_calls=[_ask_call()]), script(text="已作答。"),
+    ])
+    assert client.portal.call(ww.watch_worker, sub, worker, "digest")["ok"]
+
+    # The stream can deliver the interrupt before its pending write becomes visible.
+    read_parked = resume._parked_user_question
+    monkeypatch.setattr(resume, "_parked_user_question", lambda session, sid: (
+        None if sid == sub else read_parked(session, sid)
+    ))
+
+    with ws_conv(worker) as wconv, ws_conv(sub) as sconv:
+        wconv.invoke("跑迁移")
+        assert events_of(wconv.recv_until("user.question", "error"), "user.question")
+        assert events_of(sconv.recv_until("turn.start", "error"), "turn.start")
+        wconv.respond_answer(OPTS[1], option_index=1)
+        assert _ask_settlement(wconv.recv_until("message.end", "error"))["answer"] == OPTS[1]
+        client.portal.call(release.set)
+
+        frames = sconv.recv_until("message.end", "user.question", "error")
+        assert frames[-1]["event"] == "message.end"
+        ends = [e for e in events_of(frames, "tool.end") if e.get("id") == sub_call]
+        assert len(ends) == 1 and json.loads(ends[0]["content"])["answer"] == OPTS[1]
 
 
 # --------------------------------------------------------------------------- #

@@ -93,6 +93,18 @@ async def test_mirror_pushes_question_and_registers_original_session(mirror_adap
     assert mirror_adapter._pending_q[chat]["question_id"] == "q-1"
 
 
+async def test_retired_mirror_releases_only_the_synced_question(mirror_adapter):
+    synced = await mirror_adapter.register_pending_question("chat", "main", "q_sync", ["A", "B"])
+    latest = await mirror_adapter.register_pending_question("other", "main", "q_new", ["X", "Y"])
+    unrelated = await mirror_adapter.register_pending_question("worker", "worker", "q_sync", ["A", "B"])
+
+    await ask_relay.retire_mirrored_question("main", "q_sync")
+
+    assert not await mirror_adapter.unregister_pending_question("chat", synced)
+    assert mirror_adapter._pending_q == {"other": latest, "worker": unrelated}
+    mirror_adapter.client.send_markdown.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_mirror_skips_wecom_tap_and_previously_sent_question(mirror_adapter, monkeypatch):
     tap = WeComTap(mirror_adapter, "req", "chat", "stream")
