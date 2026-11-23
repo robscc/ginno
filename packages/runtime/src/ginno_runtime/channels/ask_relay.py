@@ -10,11 +10,9 @@ ask_tools 短路点改为先经 ``relay_ask()``——推企微卡片并**同步�
 graph 不打断、无需 resume 机制。
 
 **B. 卡片镜像（auto 续跑等有人值守语义、但桌面无人看）**：
-``on_turn_event`` 挂在 ``_push_session_event``（与 vibe_island 同型）
-——user.question 事件且该 turn 无渠道 tap 时，用 push_only tap 复用
-``_send_question``（发卡片 + register pending + 超时 resume）——企微
-回复走 wecom adapter 现成的 ``_try_answer`` → resume_question 统一
-段（qid 一次性凭证 + 墓碑重放防线），近零新机制。
+两条事件出口都调用 ``on_turn_event``（流式引擎和 ``_push_session_event``）。
+无渠道 tap 时主动推送问题。有绑定的企微会话使用自己的聊天地址，桌面会话
+使用最近活跃地址。企微回复经 ``_try_answer`` 进入统一的 ``resume_question``。
 
 开关：settings.json ``"ask_relay_wecom": true``（默认关；无 UI）。
 fail-safe：wecom 未连接/无活跃 chat_key → A 直接回退现状回执、B 静默
@@ -29,14 +27,15 @@ import time
 from typing import Any
 
 from ginno_runtime import paths
+from ginno_runtime import server_shared as shared
 
 
 def _relay_enabled() -> bool:
     try:
         raw = json.loads(paths.settings_path().read_text() or "{}")
-    except Exception:  # noqa: BLE001 — settings 损坏按未开启
+    except (OSError, ValueError):
         return False
-    return bool(raw.get("ask_relay_wecom"))
+    return isinstance(raw, dict) and bool(raw.get("ask_relay_wecom"))
 
 
 def _wecom_adapter():
@@ -156,31 +155,43 @@ async def relay_ask(
 # ---------------------------------------------------------------------------
 
 def on_turn_event(session_id: str | None, event: str, data: dict) -> None:
-    """_push_session_event 的全局钩子（与 vibe_island 同型，绝不抛）。"""
-    try:
-        _note_loop()
-        if event != "user.question" or not _relay_enabled() or not session_id:
-            return
-        asyncio.get_running_loop().create_task(_mirror_question(session_id, data))
-    except RuntimeError:
-        pass  # 无事件循环（极端场景）——静默
+    """在后台镜像提问，桌面发帧无需等待企微回执。"""
+    _note_loop()
+    if event == "user.question" and session_id and _relay_enabled():
+        shared.spawn_bg(_mirror_question(session_id, data))
 
 
 async def _mirror_question(session_id: str, data: dict) -> None:
-    ad = _wecom_adapter()
-    chat_key = getattr(ad, "last_chat_key", None) if ad else None
-    if not ad or not chat_key:
-        return
-    # 该 turn 已有 wecom tap（企微发起）则不镜像——只有非渠道 turn 才补触达。
-    q_id = str(data.get("id") or "")
-    if q_id and q_id in getattr(ad, "_own_question_ids", frozenset()):
-        return
+    from .base import ChannelTap
     from .wecom.tap import WeComTap
 
-    tap = WeComTap.push_only(ad, chat_key)
-    payload = dict(data)
-    payload.setdefault("session_id", session_id)
+    sockets = shared._SESSION_WS.get(session_id) or []
+    if any(isinstance(socket, ChannelTap) for socket in sockets):
+        return  # 正常渠道回合由自己的 tap 发送。
+    channel = (shared._SESSIONS.get(session_id) or {}).get("channel")
+    if channel and channel != "wecom":
+        return
+    if data.get("multi"):
+        # 企微文本回执一次只能提交一个答案。
+        return
+
     try:
-        await tap._send_question(payload)
-    except Exception:  # noqa: BLE001 — 镜像失败不影响桌面卡片
-        pass
+        ad = _wecom_adapter()
+        chat_key = ad.question_destination(session_id) if ad else None
+        if not chat_key:
+            shared._log.info("wecom_question_mirror_no_destination session=%s", session_id)
+            return
+        q_id = str(data.get("qid") or data.get("id") or "")
+        if q_id and q_id in ad._own_question_ids:
+            return
+        tap = WeComTap.push_only(ad, chat_key)
+        tap.session_id = session_id
+        if await tap._send_question(data):
+            shared._log.info("wecom_question_mirror_sent session=%s", session_id)
+        else:
+            shared._log.info("wecom_question_mirror_chat_busy session=%s", session_id)
+    except Exception as exc:  # noqa: BLE001 — 镜像失败时桌面卡片仍可作答
+        shared._log.warning(
+            "wecom_question_mirror_failed session=%s error_type=%s",
+            session_id, type(exc).__name__,
+        )

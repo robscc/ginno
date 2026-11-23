@@ -284,7 +284,8 @@ class WeComChannelAdapter(ChannelAdapter):
             answer=str(value.get("answer") or ""),
             option_index=value.get("option_index"),
             skip=bool(value.get("skip")),
-            arm_from_checkpoint=True,
+            # 主动镜像关联当前进程的停车守卫。桌面已答时不再重新武装。
+            arm_from_checkpoint=not pending.get("proactive"),
             answered_by="wecom",
         )
         if ok:
@@ -622,14 +623,42 @@ class WeComChannelAdapter(ChannelAdapter):
 
     # ---- ask_user 登记（tap 调用）---------------------------------------------
 
-    async def register_pending_question(self, chat_key: str, session_id: str,
-                                        question_id: str, options: list) -> None:
-        self._pending_q[chat_key] = {
+    def question_destination(self, session_id: str) -> str | None:
+        """有渠道绑定时只在已绑定的聊天中选目标。"""
+        bindings = self._mapper.chats_for(session_id) if self._mapper is not None else []
+        chats = {item["chat_id"] for item in bindings if item["chat_id"]}
+        if not chats:
+            session = shared._SESSIONS.get(session_id) or {}
+            return None if session.get("channel") == "wecom" else self.last_chat_key
+        if self.last_chat_key in chats:
+            return self.last_chat_key
+        return next(iter(chats)) if len(chats) == 1 else None
+
+    async def register_pending_question(
+        self, chat_key: str, session_id: str, question_id: str, options: list,
+        *, proactive: bool = False,
+    ) -> dict | None:
+        previous = self._pending_q.get(chat_key)
+        if previous is not None:
+            previous_session = previous.get("session_id")
+            if (
+                previous.get("kind") == "devswap"
+                or (question_id and previous.get("question_id") == question_id)
+                or (previous_session != session_id and previous_session in shared._PENDING_RESUME)
+            ):
+                return None
+        pending = {
             "session_id": session_id, "question_id": question_id,
-            "options": options,
+            "options": options, "proactive": proactive,
         }
+        self._pending_q[chat_key] = pending
         # 新问题作废旧墓碑：之后的拒绝提示不得误引上一问的答案
         self._answered_q.pop(chat_key, None)
+        return pending
 
-    async def unregister_pending_question(self, chat_key: str) -> None:
-        self._pending_q.pop(chat_key, None)
+    async def unregister_pending_question(self, chat_key: str, pending: dict) -> bool:
+        # 超时和发送失败只能撤销本次登记。
+        if self._pending_q.get(chat_key) is pending:
+            self._pending_q.pop(chat_key, None)
+            return True
+        return False
