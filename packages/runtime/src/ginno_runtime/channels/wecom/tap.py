@@ -211,16 +211,27 @@ class WeComTap(ChannelTap):
     async def _send_question(self, data: dict) -> bool:
         q_id = str(data.get("qid") or data.get("id") or "")
         options = list(data.get("options") or [])
+        questions = data.get("questions") or []
         lines = [f"\n\n❓ **{data.get('header') or 'Ginno 提问'}**",
                  str(data.get("question") or "")]
-        for i, opt in enumerate(options):
-            lines.append(f"{i + 1}. {opt}")
-        lines.append("\n（直接回复数字或文字作答；回复「跳过」跳过）")
+        if questions:
+            for i, question in enumerate(questions, 1):
+                header = question.get("header")
+                title = f"第 {i} 题 · {header}" if header else f"第 {i} 题"
+                lines.extend(["", f"**{title}**", "", question["question"]])
+                if sub_options := question.get("options"):
+                    lines.append("")
+                    lines.extend(f"{j}. {option}" for j, option in enumerate(sub_options, 1))
+            lines.extend(["", p.MULTI_ANSWER_GUIDE])
+        else:
+            lines.extend(f"{i}. {option}" for i, option in enumerate(options, 1))
+            lines.append("\n（直接回复数字或文字作答；回复「跳过」跳过）")
         md = "\n".join(lines)
         timeout_s = float(self.adapter.config.get("ask_timeout_s") or 600)
         # 回执到达前就可以收到用户回复，先占用该聊天的待答位置。
         pending = await self.adapter.register_pending_question(
-            self.chat_key, self.session_id, q_id, options, proactive=not self.req_id)
+            self.chat_key, self.session_id, q_id, options,
+            questions=questions, proactive=not self.req_id)
         if pending is None:
             return False
         try:

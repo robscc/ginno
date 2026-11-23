@@ -171,9 +171,6 @@ async def _mirror_question(session_id: str, data: dict) -> None:
     channel = (shared._SESSIONS.get(session_id) or {}).get("channel")
     if channel and channel != "wecom":
         return
-    if data.get("multi"):
-        # 企微文本回执一次只能提交一个答案。
-        return
 
     try:
         ad = _wecom_adapter()

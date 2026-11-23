@@ -275,24 +275,39 @@ class WeComChannelAdapter(ChannelAdapter):
         # 一次性凭证：先弹登记再恢复——之后任何重放只可能命中墓碑或被
         # 守卫/checkpointer 双信号拒绝，不存在二次执行路径。
         sid = str(pending.get("session_id") or "")
+        questions = pending.get("questions") or []
+        if questions:
+            answers = p.parse_multi_answer(text, questions)
+            if answers is None:
+                if self.client is not None:
+                    try:
+                        await self.client.send_markdown(chat_key, p.MULTI_ANSWER_GUIDE)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return True
+            response = {"multi": True, "answers": answers}
+            summary = " / ".join(a["answer"] or "（跳过）" for a in answers)
+            skipped = all(a["skip"] for a in answers)
+        else:
+            response = p.parse_answer(text, pending.get("options") or [])
+            summary = response["answer"]
+            skipped = response["skip"]
+
         self._pending_q.pop(chat_key, None)
-        value = p.parse_answer(text, list(pending.get("options") or []))
         from ...api.stream.resume import resume_question
 
         ok = await resume_question(
             sid,
-            answer=str(value.get("answer") or ""),
-            option_index=value.get("option_index"),
-            skip=bool(value.get("skip")),
             # 主动镜像关联当前进程的停车守卫。桌面已答时不再重新武装。
             arm_from_checkpoint=not pending.get("proactive"),
             answered_by="wecom",
+            **response,
         )
         if ok:
             self.mark_question_answered(
                 chat_key, qid=str(pending.get("question_id") or ""),
-                session_id=sid, answer=str(value.get("answer") or ""),
-                skip=bool(value.get("skip")), raw=text, answered_by="wecom")
+                session_id=sid, answer=summary,
+                skip=skipped, raw=text, answered_by="wecom")
             return True
         # 过期 qid / 已答（守卫空且 checkpoint 无 parked）：拒绝并告知。
         # 不再像旧 resume 管线那样回落成新 turn——迟到的「2」开新 turn
@@ -636,7 +651,7 @@ class WeComChannelAdapter(ChannelAdapter):
 
     async def register_pending_question(
         self, chat_key: str, session_id: str, question_id: str, options: list,
-        *, proactive: bool = False,
+        *, questions: list[dict] | None = None, proactive: bool = False,
     ) -> dict | None:
         previous = self._pending_q.get(chat_key)
         if previous is not None:
@@ -649,7 +664,7 @@ class WeComChannelAdapter(ChannelAdapter):
                 return None
         pending = {
             "session_id": session_id, "question_id": question_id,
-            "options": options, "proactive": proactive,
+            "options": options, "questions": questions or [], "proactive": proactive,
         }
         self._pending_q[chat_key] = pending
         # 新问题作废旧墓碑：之后的拒绝提示不得误引上一问的答案
