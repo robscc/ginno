@@ -58,6 +58,54 @@ _ORIG_BUILD_MODEL = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Offline tiktoken (session-scoped, autouse)
+# --------------------------------------------------------------------------- #
+# isolated_home 每测试换空 GINNO_HOME → token_count._cache_dir() 指向空目录
+# → tiktoken.get_encoding("o200k_base") 冷缓存时从 openaipublic.blob 下载。
+# 无外网（TUN 全接管）的机器上 socket 永久阻塞，曾把 pytest worker 卡到被
+# pytest-timeout 杀掉、xdist INTERNALERROR 永不退出。这里在会话开头就把
+# token_count 的编码器换成「真实但不联网」的 Encoding：单字节 BPE（256 个
+# mergeable ranks）+ GPT-2 分词正则，encode 结果确定性、可断言，且不触发
+# 任何网络。需要真实 o200k 词表的测试自行 monkeypatch 本替换
+# （token_count._REAL_ENCODER 保留了原实现）。
+@pytest.fixture(autouse=True, scope="session")
+def _offline_tiktoken():
+    """isolated_home 每测试换空 GINNO_HOME → token_count._cache_dir() 指向
+    空目录 → tiktoken.get_encoding("o200k_base") 冷缓存时从 openaipublic.blob
+    下载词表。无外网（TUN 全接管）的机器上 socket 永久阻塞，曾把 pytest
+    worker 卡到被 pytest-timeout 杀掉、xdist INTERNALERROR 永不退出。
+
+    会话开头把 token_count 的编码器换成「真实但不联网」的 Encoding：
+    单字节 BPE（256 个 mergeable ranks）+ GPT-2 分词正则 + 一个 special
+    token，encode 结果确定、可断言、零网络。确需真实 o200k 词表的测试
+    自行 monkeypatch 本替换（先测 token_count._REAL_ENCODER 可用）。"""
+    from ginno_runtime import token_count
+
+    try:
+        import tiktoken
+    except ImportError:  # pragma: no cover — runtime always deps tiktoken
+        yield
+        return
+
+    ranks = {bytes([b]): b for b in range(256)}
+    enc = tiktoken.Encoding(
+        name="ginno_test_bytes",
+        pat_str=r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""",
+        mergeable_ranks=ranks,
+        special_tokens={"<|endoftext|>": 256},
+    )
+
+    token_count._REAL_ENCODER = token_count._encoder
+    token_count._encoder = lambda: enc  # type: ignore[assignment]
+    token_count._cached_encoder = enc
+    token_count._encoder_loaded = True
+    yield
+    token_count._encoder = token_count._REAL_ENCODER  # type: ignore[assignment]
+    token_count._cached_encoder = None
+    token_count._encoder_loaded = False
+
+
 @pytest.fixture(autouse=True)
 def _clean_running_turns():
     """每测试前清空运行中 turn 全局（e2e 段残留会污染后跑的 unit/api 断言
