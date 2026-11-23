@@ -321,21 +321,22 @@ def running_turn_alive(
         return True
     if session_id in _PENDING_RESUME:
         return True
-    turn_id = _RUNNING_TURNS.get(session_id)
-    if turn_id is not None:
-        wake_task = _WAKE_TURN_TASKS.get((session_id, turn_id))
-        if wake_task is not None and not wake_task.done():
-            return True
-        since = _RUNNING_TURNS_AT.get(session_id)
-        if since is None:
-            return True  # armed but not yet in the engine — can't date it
-        age = _time.time() - since
-        if age > RUNNING_TURN_STALE_S:
-            if _heal:
-                heal_stale_running_turn(session_id, age, via)
-            return False
+    try:
+        turn_id = _RUNNING_TURNS[session_id]
+    except KeyError:
+        return False
+    wake_task = _WAKE_TURN_TASKS.get((session_id, turn_id))
+    if wake_task is not None and not wake_task.done():
         return True
-    return False
+    since = _RUNNING_TURNS_AT.get(session_id)
+    if since is None:
+        return True  # armed but not yet in the engine — can't date it
+    age = _time.time() - since
+    if age > RUNNING_TURN_STALE_S:
+        if _heal:
+            heal_stale_running_turn(session_id, age, via)
+        return False
+    return True
 
 
 def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
