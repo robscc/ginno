@@ -709,7 +709,15 @@ def build_model(
             # effort——任何 `thinking` 参数都触发 400 「cannot be set
             # simultaneously」。cfg["thinking_param_style"]="reasoning_effort"
             # 时改走 effort 直传，不发 thinking 块参数。
-            if str(cfg.get("thinking_param_style") or "") == "reasoning_effort":
+            #
+            # codex 模型同款（2026-11-23 用户报障「anthropic 下选了档位报错」）：
+            # codex 系（gpt-5.x-codex / gpt-6.2-sol）只吃 reasoning_effort，
+            # 走默认的 thinking/budget_tokens 路径必被网关拒——anthropic 壳
+            # 下 codex 自动按 reasoning_effort 直传，无需手工配
+            # thinking_param_style（off 映射 minimal：codex 值域无 off）。
+            if str(cfg.get("thinking_param_style") or "") == "reasoning_effort" or codex_efforts(
+                model
+            ):
                 chat_kwargs["reasoning_effort"] = "minimal" if effort == "off" else effort
             elif effort == "off":
                 # 显式关(网关可能默认开);多数 Claude 模型等价于不传。

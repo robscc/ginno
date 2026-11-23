@@ -315,3 +315,40 @@ def test_generic_off_still_minimal_openai_official(monkeypatch):
     # 本修复无关）。
     m = _mk_zhipu(monkeypatch)("custom", "chatgpt-api/gpt-6.2-astra", thinking_effort="off")
     assert getattr(m, "reasoning_effort", None) == "minimal"
+
+
+def test_anthropic_codex_effort_direct_reasoning_effort(monkeypatch):
+    """anthropic 协议 + codex 模型：档位直传 reasoning_effort，不发 thinking 块。
+
+    2026-11-23 报障回案：gpt-5.3-codex 走 anthropic 壳网关时默认路径是
+    thinking/budget_tokens——网关拒（400）。修复后 codex 自动按 effort
+    直传。off 在入层前已被 codex 归一化为 low（resolve_model_effort 的
+    legacy 规则：codex 值域无 off，落 low 兜底）。
+    """
+    captured: dict = {}
+
+    class _FakeAnthropic:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    import ginno_runtime.models as models_mod
+
+    monkeypatch.setattr(models_mod, "_healing_chat_anthropic", lambda: _FakeAnthropic)
+    cfg = _cfg(
+        protocol="anthropic",
+        base_url="https://gw.example/anthropic",
+        model="gpt-5.3-codex",
+    )
+    monkeypatch.setattr(
+        prov_mod, "load_providers", lambda: {"p": {**cfg, "id": "p"}}
+    )
+    m = build_model("p", model_name="gpt-5.3-codex", thinking_effort="high")
+    assert m is not None
+    assert captured.get("reasoning_effort") == "high"
+    assert "thinking" not in captured, "codex 不应走 budget_tokens 路径"
+
+    captured.clear()
+    build_model("p", model_name="gpt-5.3-codex", thinking_effort="off")
+    # off → resolve 层归一化为 low（codex 无 off 档），仍走 effort 直传。
+    assert captured.get("reasoning_effort") == "low"
+    assert "thinking" not in captured
