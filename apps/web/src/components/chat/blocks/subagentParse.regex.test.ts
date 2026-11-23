@@ -60,3 +60,12 @@ describe("parseSubagentResults（正则化后）", () => {
     }
   });
 });
+
+it("folds plans and subagent results from a single callback in order", () => {
+  const text = '<ginno_plan_update plan="plan-1">Status &amp; details</ginno_plan_update>\n'
+    + '<ginno_subagent_result session="s-1">Result</ginno_subagent_result>';
+  expect(foldSubagentResultBlocks([{ kind: "text", text }])).toMatchObject([
+    { kind: "plan_update", planId: "plan-1", text: "Status & details" },
+    { kind: "subagent_result", sessionId: "s-1", summary: "Result" },
+  ]);
+});

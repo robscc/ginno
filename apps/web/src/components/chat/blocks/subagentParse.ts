@@ -61,6 +61,32 @@ export function parseSubagentResults(
   return out;
 }
 
+const RETURN_ENV_RE = /<(ginno_subagent_result|ginno_plan_update|ginno_worker_result)\b([^>]*)>([\s\S]*?)<\/\1>/g;
+
+function parseReturnCards(text: string): Block[] {
+  const cards: Block[] = [];
+  for (const match of text.matchAll(RETURN_ENV_RE)) {
+    const [raw, tag, attrs, body] = match;
+    if (tag === "ginno_plan_update") {
+      const status = decodeEntities(body).trim();
+      cards.push({
+        kind: "plan_update",
+        planId: decodeEntities(/plan="([^"]*)"/.exec(attrs)?.[1] ?? ""),
+        text: status.split("You can:", 1)[0].trim() || status,
+      });
+    } else if (tag === "ginno_worker_result") {
+      for (const result of parseWorkerResults(raw)) {
+        cards.push({ kind: "worker_result", ...result });
+      }
+    } else {
+      for (const result of parseSubagentResults(raw)) {
+        cards.push({ kind: "subagent_result", ...result, goal: result.goal || undefined });
+      }
+    }
+  }
+  return cards;
+}
+
 /** 单条结果标签（非合并场景）。 */
 export function parseSubagentResult(
   text: string,
@@ -131,33 +157,22 @@ export function parseWorkerResults(
   viaFile: boolean;
   filePath: string;
 }> {
-  const doc = parseEnvelope(text);
-  if (!doc) return [];
-  const out: Array<{
-    sessionId: string;
-  msgId: string;
-    from: string;
-    status: string;
-    goal: string;
-    summary: string;
-    digest: boolean;
-    viaFile: boolean;
-    filePath: string;
-  }> = [];
-  for (const el of Array.from(doc.getElementsByTagName("ginno_worker_result"))) {
-    out.push({
-      sessionId: el.getAttribute("session") ?? "",
-      msgId: el.getAttribute("msg_id") ?? "",
-      from: el.getAttribute("from") ?? "",
-      status: el.getAttribute("status") ?? "",
-      goal: el.getAttribute("goal") ?? "",
-      summary: (el.textContent ?? "").trim(),
-      digest: el.getAttribute("kind") === "digest",
-      viaFile: el.getAttribute("via_file") === "1",
-      filePath: el.getAttribute("file") ?? "",
-    });
-  }
-  return out;
+  return Array.from(text.matchAll(/<ginno_worker_result\b([^>]*)>([\s\S]*?)<\/ginno_worker_result>/g),
+    ([, attrs, body]) => {
+      const attr = (name: string) => decodeEntities(new RegExp(`${name}="([^"]*)"`).exec(attrs)?.[1] ?? "");
+      return {
+        sessionId: attr("session"),
+        msgId: attr("msg_id"),
+        from: attr("from"),
+        status: attr("status"),
+        goal: attr("goal"),
+        summary: decodeEntities(body).trim(),
+        digest: attr("kind") === "digest",
+        viaFile: attr("via_file") === "1",
+        filePath: attr("file"),
+      };
+    },
+  );
 }
 
 /** assign_worker 注入的 <ginno_worker_assign>：worker 会话侧的任务简报
@@ -219,22 +234,9 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
       out.push(b);
       continue;
     }
-    // 清单状态信封（plan-orchestration §4）：折专用清单卡（同一注入通道，
-    // child key 是 plan-<id>），与结果卡区分开。
-    const planDoc = parseEnvelope(b.text);
-    const planEls = planDoc
-      ? Array.from(planDoc.getElementsByTagName("ginno_plan_update"))
-      : [];
-    if (planEls.length) {
-      for (const el of planEls) {
-        const raw = (el.textContent ?? "").trim();
-        const body = raw.split("You can:", 1)[0].trim() || raw;
-        out.push({
-          kind: "plan_update",
-          planId: el.getAttribute("plan") ?? "",
-          text: body,
-        });
-      }
+    const returns = parseReturnCards(b.text);
+    if (returns.length) {
+      out.push(...returns);
       continue;
     }
     const brief = parseSubagentBrief(b.text);
@@ -242,29 +244,10 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
       out.push({ kind: "subagent_brief", ...brief });
       continue;
     }
-    // worker 协议信封（worker-protocol-design §7）：员工任务简报 / 回传
-    // 折专用卡——检查在 subagent 结果信封之前（两类信封互斥）。
+    // worker 协议信封（worker-protocol-design §7）：员工任务简报。
     const wAssign = parseWorkerAssign(b.text);
     if (wAssign) {
       out.push({ kind: "worker_assign", ...wAssign });
-      continue;
-    }
-    const wResults = parseWorkerResults(b.text);
-    if (wResults.length) {
-      for (const r of wResults) {
-        out.push({
-          kind: "worker_result",
-          sessionId: r.sessionId,
-          msgId: r.msgId || undefined,
-          from: r.from || undefined,
-          status: r.status || undefined,
-          goal: r.goal || undefined,
-          summary: r.summary,
-          digest: r.digest,
-          viaFile: r.viaFile || undefined,
-          filePath: r.filePath || undefined,
-        });
-      }
       continue;
     }
     // 旧版委托注入（2026-10-05 信封化之前落库的）：裸机器头 + delegation=
@@ -290,19 +273,7 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
       });
       continue;
     }
-    const results = parseSubagentResults(b.text);
-    if (!results.length) {
-      out.push(b);
-      continue;
-    }
-    for (const r of results) {
-      out.push({
-        kind: "subagent_result",
-        sessionId: r.sessionId,
-        goal: r.goal || undefined,
-        summary: r.summary,
-      });
-    }
+    out.push(b);
   }
   return out;
 }

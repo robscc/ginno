@@ -518,3 +518,38 @@ def test_task_or_404_falls_back_to_index(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         tasks_api._task_or_404("t_gone")
     assert ei.value.status_code == 404
+
+
+async def test_idle_coalescing_projects_every_event_in_order(isolated_home, monkeypatch):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    import ginno_runtime.api.sessions as sessions_api
+    import ginno_runtime.api.stream as stream_api
+    from ginno_runtime import server_shared as shared
+    from ginno_runtime.api.messages_ui import _messages_to_ui
+
+    sid = "test-task-batch"
+    session = {"agent_id": "dev", "project_slug": "default", "graph": object()}
+    monkeypatch.setitem(shared._SESSIONS, sid, session)
+    monkeypatch.setattr(sessions_api, "_ensure_session", lambda session_id: session)
+    monkeypatch.setattr(task_inject, "COALESCE_S", 0)
+    messages = []
+    stream_events = []
+
+    async def fake_run_stream(ws, graph, config, text, live_session, agent_id, *, user_extra_kwargs):
+        messages.append(HumanMessage(content=text, additional_kwargs=user_extra_kwargs))
+        stream_events.extend(config["configurable"]["task_events"])
+
+    monkeypatch.setattr(stream_api, "_run_stream", fake_run_stream)
+    for tid, kind in [("t_batch1", "finished"), ("t_batch2", "timeout")]:
+        task_inject.on_task_event(
+            {"id": tid, "title": tid, "origin_session": sid, "exit_code": 0, "dur": "1s"}, kind,
+        )
+    await task_inject._FLUSH_TASKS[sid]
+    assert len(messages) == 1
+    assert [event["task"] for event in stream_events] == ["t_batch1", "t_batch2"]
+    assert "t_batch1" in messages[0].content and "t_batch2" in messages[0].content
+    blocks = _messages_to_ui([*messages, AIMessage(content="ack")], None)[0]["blocks"]
+    assert [(b["taskId"], b["ev"]) for b in blocks if b["kind"] == "task_event"] == [
+        ("t_batch1", "finished"), ("t_batch2", "timeout"),
+    ]

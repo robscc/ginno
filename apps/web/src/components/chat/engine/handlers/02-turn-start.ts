@@ -4,7 +4,7 @@
 import type { EngineCtx } from "../ctx";
 import type { ServerEvent } from "./types";
 import { omitRepeatedResults } from "../../blocks/subagentParse";
-import { foldSubagentResultBlocks } from "@/components/chat/blocks";
+import { foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
 import type { ChatMsg } from "../../streamCore";
 import { mid } from "../../streamCore";
 import { ensureLive, markDelivered, upsertTurnMeta } from "../liveBubble";
@@ -67,6 +67,25 @@ export function onTurnStart(ctx: EngineCtx, sid: string, ev: ServerEvent) {
         ? { ...msg, turnId: srvTurn }
         : msg,
     );
+  }
+  if (srvTurn && Array.isArray(ev.task_events)) {
+    const blocks: Block[] = ev.task_events.flatMap((task) =>
+      task && typeof task.task === "string" ? [{
+        kind: "task_event" as const,
+        taskId: task.task,
+        ev: String(task.kind || ""),
+        title: String(task.title || ""),
+        exit: task.exit ?? null,
+        dur: String(task.dur || ""),
+      }] : [],
+    );
+    const eventId = `${srvTurn}-task-events`;
+    const store = ctx.storeRef.current[sid] ?? [];
+    if (blocks.length && !store.some((msg) => msg.id === eventId)) {
+      ctx.storeRef.current[sid] = store.flatMap((msg) =>
+        msg.id === id ? [{ id: eventId, role: "system" as const, blocks }, msg] : [msg],
+      );
+    }
   }
   // 渠道轮次回显（engine 端 echo_user 标记，turn.start 带 text/images）：
   // 桌面端没有 composer 的乐观气泡，IM 侧输入只能靠服务端回传才显示。

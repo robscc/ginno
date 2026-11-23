@@ -149,7 +149,7 @@ def _is_injected(m: Any) -> bool:
     kw = getattr(m, "additional_kwargs", None) or {}
     return any(
         k in kw
-        for k in ("ginno_task_event", "ginno_steer", "ginno_lastwords", "ginno_subagent_result")
+        for k in ("ginno_task_event", "ginno_task_events", "ginno_steer", "ginno_lastwords", "ginno_subagent_result")
     )
 
 

@@ -93,3 +93,19 @@ def test_receipt_before_any_ai_renders_standalone_then_attaches():
     bubbles = _bubbles(ui)
     assert len(bubbles) == 1
     assert bubbles[0]["blocks"][0].get("kind") == "task_event"
+
+
+def test_coalesced_plan_and_subagent_returns_keep_order():
+    combined = HumanMessage(
+        id="batched-returns",
+        content=('Below are the returns from 2 subagents:\n\n'
+                 '<ginno_plan_update plan="pl_demo">Build done</ginno_plan_update>\n\n'
+                 '<ginno_subagent_result session="s_demo">Result done</ginno_subagent_result>'),
+        additional_kwargs={"ginno_subagent_result": "plan-pl_demo,s_demo"},
+    )
+    bubbles = _bubbles(_messages_to_ui([combined, AIMessage(content="ack")], None))
+    assert bubbles[0]["blocks"] == [
+        {"kind": "plan_update", "planId": "pl_demo", "text": "Build done"},
+        {"kind": "subagent_result", "sessionId": "s_demo", "goal": "", "summary": "Result done"},
+        {"kind": "text", "text": "ack"},
+    ]

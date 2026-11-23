@@ -342,6 +342,9 @@ async def _emit_turn_start(ctx: StreamTurnCtx) -> None:
                     for i in _echo_imgs
                     if isinstance(i, dict) and i.get("data")
                 ]
+        task_events = ctx._cfg_conf.get("task_events")
+        if task_events:
+            _ts_payload["task_events"] = task_events
         await ctx.safe_send(ctx.emit("turn.start", _ts_payload))
         # Mods turn.start tap (claude-code-mods-design.md §5.3, same
         # position as the WS event): observe-only, zero-cost with no mod.
