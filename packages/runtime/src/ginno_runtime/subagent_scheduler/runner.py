@@ -152,9 +152,13 @@ async def _run_managed_turn_locked(
             "echo_user": True,
         }
     }
+    wake_key = (session_id, turn_id)
+    wake_task = asyncio.current_task()
+    if wake_task is not None:
+        _NS.server_shared._WAKE_TURN_TASKS[wake_key] = wake_task
     _NS._RUNNING_TURNS[session_id] = turn_id
-    notify_turn_started(session_id)  # 投递 ack（2026-11-18 方案②）
     try:
+        notify_turn_started(session_id)  # 投递 ack（2026-11-18 方案②）
         await _run_stream(
             None, session["graph"], config, text, session, agent_id,
             user_extra_kwargs=extra_kwargs, origin="subagent",
@@ -162,6 +166,7 @@ async def _run_managed_turn_locked(
     finally:
         if _NS._RUNNING_TURNS.get(session_id) == turn_id and session_id not in _NS._PENDING_RESUME:
             _NS._RUNNING_TURNS.pop(session_id, None)
+        _NS.server_shared._WAKE_TURN_TASKS.pop(wake_key, None)
         _NS._TURN_STOP.pop(session_id, None)
         if session_id not in _NS._PENDING_RESUME:
             try:
