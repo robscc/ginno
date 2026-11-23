@@ -38,6 +38,7 @@
 | thinking.delta | 思考增量落 live 气泡（与 token.delta 共享撤行+帧体） | store 气泡 thinking 块；retryNoticeRef |
 | tool.start | 工具调用开跑：pending tool 块（与 args/end 共享帧体） | store 气泡 tool 块（pending） |
 | tool.args | 工具参数预览（与 start/end 共享帧体） | store 气泡 tool 块 argsPreview |
+| tool.args_delta | pending 参数累计快照，以调用 ID 更新 | store 气泡 tool 块 `argsStream` |
 | tool.end | 工具调用收口：内容回填、pending 清除 | store 气泡 tool 块（完成态） |
 | user.question | ask_user 挂起卡（独立 case 体，P0-1 结构防线） + OS 通知（去重后即时弹） | store 气泡 question 块；notifyNative(askUser)；sessionStorage 去重集 |
 | widget.emit | widget 块合并进 live 气泡（三键一体：widget/ref/image） | store 气泡对应块 |
