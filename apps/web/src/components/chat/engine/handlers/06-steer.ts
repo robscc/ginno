@@ -3,6 +3,7 @@
 
 import type { EngineCtx } from "../ctx";
 import type { ServerEvent } from "./types";
+import { omitRepeatedResults } from "../../blocks/subagentParse";
 import { foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
 import { mid } from "../../streamCore";
 import { settleRecalled } from "../steer";
@@ -91,19 +92,7 @@ export function onSteerAbsorbed(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   ]).filter((b) => b.kind !== "text");
   if (foldedCards.length) {
     const store = ctx.storeRef.current[sid] ?? [];
-    // 幂等：同一 child 的回传卡已在 store（absorb 事件重放/重连补发）
-    // 不重复插；无 sessionId 的卡（plan/delegation）不做去重。
-    const fresh = foldedCards.filter((b) => {
-      const csid = (b as { sessionId?: string }).sessionId;
-      if (!csid) return true;
-      return !store.some((m) =>
-        m.blocks.some(
-          (ob) =>
-            (ob.kind === "subagent_result" || ob.kind === "worker_result") &&
-            (ob as { sessionId?: string }).sessionId === csid,
-        ),
-      );
-    });
+    const fresh = omitRepeatedResults(foldedCards, store.flatMap((m) => m.blocks));
     if (fresh.length) {
       ctx.storeRef.current[sid] = [
         ...store,
