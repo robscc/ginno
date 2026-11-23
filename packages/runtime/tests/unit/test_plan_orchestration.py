@@ -426,7 +426,9 @@ async def test_plan_command_list_and_cancel(isolated_home):
 
 def test_plan_update_envelope_blocks(isolated_home):
     """<ginno_plan_update> 信封 → 专用 plan_update 块（区别于结果卡/裸带）。"""
-    from ginno_runtime.api.messages_ui import _plan_update_blocks
+    from langchain_core.messages import HumanMessage
+
+    from ginno_runtime.api.messages_ui import _messages_to_ui
 
     content = (
         '<ginno_plan_update plan="pl_x">\n'
@@ -435,13 +437,17 @@ def test_plan_update_envelope_blocks(isolated_home):
         "You can: verify the above results.\n"
         "</ginno_plan_update>"
     )
-    blocks = _plan_update_blocks(content)
+    def blocks_for(text: str) -> list[dict]:
+        message = HumanMessage(content=text, additional_kwargs={"ginno_subagent_result": "plan-pl_x"})
+        return _messages_to_ui([message], None)[0]["blocks"]
+
+    blocks = blocks_for(content)
     assert blocks and blocks[0]["kind"] == "plan_update"
     assert blocks[0]["planId"] == "pl_x"
     assert "[done] it_1 ok" in blocks[0]["text"]
     # 行动菜单尾段是模型指令，不进卡片
     assert "You can" not in blocks[0]["text"]
-    assert _plan_update_blocks("plain text") is None
+    assert blocks_for("plain text") == [{"kind": "text", "text": "plain text"}]
 
 
 async def test_do_flush_wraps_plan_envelope(isolated_home, monkeypatch):
