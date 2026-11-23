@@ -159,8 +159,8 @@ def _return_envelope_blocks(content: Any) -> list[dict]:
         tag, attrs, raw = m.groups()
 
         def attr(name: str, attrs: str = attrs) -> str:
-            am = re.search(rf'{name}="([^"]*)"', attrs)
-            return html.unescape(am.group(1)) if am else ""
+            am = re.search(rf"""(?:^|\s){name}\s*=\s*(?:"([^"]*)"|'([^']*)')""", attrs)
+            return html.unescape(am.group(1) or am.group(2) or "") if am else ""
 
         body = html.unescape(raw).strip()
         if tag == "ginno_plan_update":

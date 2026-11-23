@@ -159,7 +159,10 @@ export function parseWorkerResults(
 }> {
   return Array.from(text.matchAll(/<ginno_worker_result\b([^>]*)>([\s\S]*?)<\/ginno_worker_result>/g),
     ([, attrs, body]) => {
-      const attr = (name: string) => decodeEntities(new RegExp(`${name}="([^"]*)"`).exec(attrs)?.[1] ?? "");
+      const attr = (name: string) => {
+        const match = new RegExp(String.raw`(?:^|\s)${name}\s*=\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs);
+        return decodeEntities(match?.[1] ?? match?.[2] ?? "");
+      };
       return {
         sessionId: attr("session"),
         msgId: attr("msg_id"),
