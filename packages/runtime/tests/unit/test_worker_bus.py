@@ -350,6 +350,7 @@ async def test_notify_settled_fires_once_and_skips_ancestors(inject_calls):
     assert len(inject_calls) == 1 and inject_calls[0]["sub"] == "SUB"
     assert "<ginno_worker_result" in inject_calls[0]["text"]
     assert 'status="done"' in inject_calls[0]["text"]
+    assert 'msg_id="result-' in inject_calls[0]["text"]
     assert inject_calls[0]["child"] == "W1"
     assert inject_calls[0]["extra"]["ginno_worker_msg"]["from"] == "W1"
     meta = next(m for m in _session_meta_list(SLUG) if m["id"] == "W1")

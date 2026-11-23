@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any
 
 from .. import paths
@@ -209,7 +210,7 @@ async def notify_settled(target_id: str) -> None:
             _session_meta_patch(slug, target_id, {"subscribers": keep})
         return
     _session_meta_patch(slug, target_id, {"subscribers": keep})
-    text = _worker_result_text(target_id, meta, st)
+    text = _worker_result_text(target_id, meta, st, msg_id=f"result-{uuid.uuid4().hex}")
     _log.info("worker_notify_settled target=%s status=%s subs=%s",
               target_id, st, ",".join(fire))
     for sid in fire:
@@ -274,7 +275,7 @@ async def on_turn_settled_hook(session_id: str) -> None:
         )
         return
     due = list(digests)
-    _digest_msg_id = f"digest-{session_id[:8]}-{now}"
+    _digest_msg_id = f"digest-{uuid.uuid4().hex}"
     via_file = False
     file_path = ""
     if len(excerpt) > DIGEST_CAP:

@@ -255,6 +255,7 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
         out.push({
           kind: "worker_result",
           sessionId: r.sessionId,
+          msgId: r.msgId || undefined,
           from: r.from || undefined,
           status: r.status || undefined,
           goal: r.goal || undefined,
@@ -304,4 +305,31 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
     }
   }
   return out;
+}
+
+// A worker session can send a series of digests and a separate terminal result.
+// Older envelopes lack a message ID; only identical legacy reports are replays.
+function resultKey(block: Block): string | undefined {
+  if (block.kind === "worker_result") {
+    if (block.msgId) return JSON.stringify([block.kind, block.sessionId, block.msgId]);
+    if (block.sessionId) {
+      return JSON.stringify([
+        block.kind, block.sessionId, block.digest, block.status, block.summary, block.filePath,
+      ]);
+    }
+  }
+  if (block.kind === "subagent_result" && block.sessionId) {
+    return JSON.stringify([block.kind, block.sessionId]);
+  }
+}
+
+export function omitRepeatedResults(blocks: Block[], existing: Block[]): Block[] {
+  const seen = new Set(existing.map(resultKey));
+  return blocks.filter((block) => {
+    const key = resultKey(block);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

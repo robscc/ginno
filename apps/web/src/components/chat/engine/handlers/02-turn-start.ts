@@ -3,6 +3,7 @@
 
 import type { EngineCtx } from "../ctx";
 import type { ServerEvent } from "./types";
+import { omitRepeatedResults } from "../../blocks/subagentParse";
 import { foldSubagentResultBlocks } from "@/components/chat/blocks";
 import type { ChatMsg } from "../../streamCore";
 import { mid } from "../../streamCore";
@@ -84,29 +85,13 @@ export function onTurnStart(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   if (srvTurn && (echoText || echoImgs.length)) {
     const store = ctx.storeRef.current[sid] ?? [];
     if (!store.some((m) => m.role === "user" && m.turnId === srvTurn)) {
-      // 信封折卡（<ginno_subagent_result>/<ginno_worker_result> 等）与
-      // steer.absorbed 路径按 sessionId 互斥（2026-11-05 双卡修复：子代理
-      // 回传先经 steer 注入折卡，wake turn echo 再折一次 → 同一结果
-      // 两张卡；absorb 侧已有同款幂等，这里对齐——已存在同 sessionId 的
-      // 结果卡时，echo 只保留非信封内容（纯文本渠道回显不受影响））。
-      const echoBlocks = foldSubagentResultBlocks([
+      const echoBlocks = omitRepeatedResults(foldSubagentResultBlocks([
         ...(echoText ? [{ kind: "text" as const, text: echoText }] : []),
         ...echoImgs.map((i) => ({
           kind: "image" as const,
           url: `data:${i.media_type || "image/png"};base64,${i.data}`,
         })),
-      ]).filter((b) => {
-        const csid = (b as { sessionId?: string }).sessionId;
-        if (!csid) return true;
-        if (b.kind !== "subagent_result" && b.kind !== "worker_result") return true;
-        return !store.some((m) =>
-          m.blocks.some(
-            (ob) =>
-              (ob.kind === "subagent_result" || ob.kind === "worker_result") &&
-              (ob as { sessionId?: string }).sessionId === csid,
-          ),
-        );
-      });
+      ]), store.flatMap((m) => m.blocks));
       if (echoBlocks.length) {
         const echo: ChatMsg = {
           id: srvTurn,

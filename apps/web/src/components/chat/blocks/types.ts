@@ -113,7 +113,7 @@ export type Block =
   // ---- worker 协议（worker-protocol-design.md §7，P1 web 侧）----
   // 员工回传卡：watch 订阅的终态/ digest 注入 <ginno_worker_result> 信封
   // 折成专用卡（区别于子代理结果卡：带派发来源 from 与 digest 标识）。
-  | { kind: "worker_result"; sessionId: string; from?: string; status?: string;
+  | { kind: "worker_result"; sessionId: string; msgId?: string; from?: string; status?: string;
       goal?: string; summary: string; digest?: boolean;
       viaFile?: boolean; filePath?: string }
   // 员工任务卡：assign_worker 注入的 <ginno_worker_assign> 信封（worker
