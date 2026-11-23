@@ -290,12 +290,15 @@ def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
 _RESPONSES_CLS: type | None = None
 
 
-def responses_reasoning_parts(message: Any, *, fallback_id: str = "") -> list[dict[str, str]]:
-    """Project only visible Responses summaries, preserving item and part boundaries."""
+def responses_request_id(message: Any, *, fallback_id: str = "") -> str:
+    """Use the SDK request marker, or the LangChain message ID in older history."""
     kwargs = getattr(message, "additional_kwargs", None) or {}
     request = (kwargs.get("ginno_response_request") or {}).get("id")
-    request = request or getattr(message, "id", None) or fallback_id
+    return request or getattr(message, "id", None) or fallback_id
 
+
+def responses_reasoning_parts(message: Any, *, request_id: str) -> list[dict[str, str]]:
+    """Project only visible Responses summaries, preserving item and part boundaries."""
     def parts_of(block: dict, item: int) -> list[dict[str, str]]:
         summary = block.get("summary")
         if not isinstance(summary, list):
@@ -304,7 +307,7 @@ def responses_reasoning_parts(message: Any, *, fallback_id: str = "") -> list[di
         # deltas (even when it omits item_id) and summary_index on each part.
         item_key = block.get("index", block.get("id") or item)
         return [
-            {"id": f"{request}/{item_key}/{part.get('index', i)}", "text": part["text"]}
+            {"id": f"{request_id}/{item_key}/{part.get('index', i)}", "text": part["text"]}
             for i, part in enumerate(summary)
             if isinstance(part, dict)
             and part.get("type") == "summary_text"
@@ -321,7 +324,7 @@ def responses_reasoning_parts(message: Any, *, fallback_id: str = "") -> list[di
         ]
         if parts:
             return parts
-    legacy = kwargs.get("reasoning")
+    legacy = (getattr(message, "additional_kwargs", None) or {}).get("reasoning")
     if isinstance(legacy, dict) and legacy.get("type", "reasoning") == "reasoning":
         return parts_of(legacy, 0)
     return []
@@ -333,12 +336,12 @@ def bridge_responses_reasoning(gen_chunk, request_id: str = "", *, keep_text: bo
     kwargs = getattr(message, "additional_kwargs", None)
     if kwargs is None:
         return gen_chunk
-    if parts := responses_reasoning_parts(message):
-        if request_id:
-            # LangChain keeps identical nested `id` fields when merging chunks.
-            kwargs["ginno_response_request"] = {"id": request_id}
-        if keep_text:
-            kwargs["reasoning_content"] = "".join(part["text"] for part in parts)
+    if request_id:
+        # Keep the same identity on reasoning, text and tool chunks. LangChain
+        # preserves identical nested IDs when merging the checkpoint message.
+        kwargs["ginno_response_request"] = {"id": request_id}
+    if keep_text and (parts := responses_reasoning_parts(message, request_id=request_id)):
+        kwargs["reasoning_content"] = "".join(part["text"] for part in parts)
     return gen_chunk
 
 

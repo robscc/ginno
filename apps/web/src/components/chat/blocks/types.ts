@@ -17,7 +17,7 @@ export type EditDiffPayload = {
 };
 
 export type Block =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; requestId?: string }
   // `url` is set for user uploads (data URL). Code-generated images carry a
   // file-ledger `fileId` (+ mtime for cache-busting) resolved via imageUrl().
   | { kind: "image"; url?: string; fileId?: string; name?: string; mtime?: number }
@@ -31,23 +31,23 @@ export type Block =
   // 历史投影（messages_ui 标签路径）不带该标记，靠 session.remote_peer 兜底。
   | { kind: "ref"; refKind: string; name: string; refId?: string;
       remote?: boolean; peer?: string }
-  | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: EditDiffPayload }
+  | { kind: "tool"; id?: string; requestId?: string; name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: EditDiffPayload }
   // ask_user parked the turn on an ambiguity: the card REPLACES the pending
   // ask_user tool bubble (same tool-call id), and the tool's JSON result folds
   // back into status/answer on tool.end (a stop while parked → "skipped").
   // History replay rebuilds it from the checkpoint (api/messages_ui.py).
   // multi（契约 v2，2026-10-29）：一次 ask 携带多个独立问题（questions[]），
   // 每题自己的 options；answered 后每题的答案挂在子题上。
-  | { kind: "question"; id?: string; question: string; header?: string;
+  | { kind: "question"; id?: string; requestId?: string; question: string; header?: string;
       options: string[]; allowFreeText: boolean;
       status: "pending" | "answered" | "skipped";
       answer?: string; optionIndex?: number | null;
       multi?: boolean; questions?: QuestionSub[] }
   | { kind: "thinking"; text: string }
-  // Responses 思考摘要（reasoning-summary-design）：live 由 reasoning.summary
-  // 事件驱动（快照整段对账，无增量拼接），历史由 messages_ui 投影——两者同形：
-  // parts 有序（服务端 item/summary_index 键），receiving 仅 live 期为 true。
-  | { kind: "reasoning_summary"; parts: { id: string; text: string }[]; revision?: number; receiving?: boolean }
+  // One Responses summary per model request. History has the same request ID;
+  // older sidecars send a single turn-wide snapshot without an ID.
+  | { kind: "reasoning_summary"; requestId?: string; parts: { id: string; text: string }[];
+      revision?: number; receiving?: boolean }
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
   // centered system rows in the transcript ("context chips").

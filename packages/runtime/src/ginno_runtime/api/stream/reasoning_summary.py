@@ -1,7 +1,7 @@
-"""Latest visible Responses summary for an active turn segment.
+"""Visible Responses summaries grouped by model request in an active turn.
 
-Snapshots carry an increasing revision so stream delivery and turn-state
-probes can arrive in either order. Completed history comes from AI messages.
+Each snapshot carries a revision so stream delivery and turn-state probes
+can arrive in either order. Completed history comes from AI messages.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from itertools import count
 _revisions = count(1)
 
 
-class TurnReasoningSummary:
-    def __init__(self, turn_id: str):
-        self.turn_id = turn_id
+class RequestReasoningSummary:
+    def __init__(self, request_id: str):
+        self.request_id = request_id
         self.parts: dict[str, str] = {}
         self.revision = 0
         self.receiving = False
@@ -30,10 +30,9 @@ class TurnReasoningSummary:
         self.revision = next(_revisions)
         return "".join(delta)
 
-    def snapshot(self) -> dict | None:
-        if not self.parts:
-            return None
+    def snapshot(self) -> dict:
         return {
+            "requestId": self.request_id,
             "revision": self.revision,
             "receiving": self.receiving,
             "parts": [{"id": key, "text": text} for key, text in self.parts.items()],
@@ -42,6 +41,23 @@ class TurnReasoningSummary:
     def finish_receiving(self) -> None:
         self.receiving = False
         self.revision = next(_revisions)
+
+
+class TurnReasoningSummary:
+    def __init__(self, turn_id: str):
+        self.turn_id = turn_id
+        self.current: RequestReasoningSummary | None = None
+        self._requests: dict[str, RequestReasoningSummary] = {}
+
+    def select_request(self, request_id: str | None) -> None:
+        self.current = None
+        if request_id is not None:
+            if request_id not in self._requests:
+                self._requests[request_id] = RequestReasoningSummary(request_id)
+            self.current = self._requests[request_id]
+
+    def snapshots(self) -> list[dict]:
+        return [request.snapshot() for request in self._requests.values()]
 
 
 _active: dict[str, TurnReasoningSummary] = {}
@@ -58,6 +74,6 @@ def end_summary(session_id: str, summary: TurnReasoningSummary) -> None:
         del _active[session_id]
 
 
-def active_summary(session_id: str, turn_id: str) -> dict | None:
+def active_summaries(session_id: str, turn_id: str) -> list[dict]:
     summary = _active.get(session_id)
-    return summary.snapshot() if summary and summary.turn_id == turn_id else None
+    return summary.snapshots() if summary and summary.turn_id == turn_id else []

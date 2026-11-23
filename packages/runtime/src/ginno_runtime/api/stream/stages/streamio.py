@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ....models import responses_reasoning_parts
+from ....models import responses_reasoning_parts, responses_request_id
 from .. import engine as eng
 from .ctx import StreamTurnCtx
 
@@ -21,8 +21,12 @@ def make_emit(ctx: StreamTurnCtx):
     """legacy engine.py:190-199 的 emit 闭包（闭包变量→ctx 属性）。"""
 
     def emit(event: str, data: dict) -> str:
-        if event == "reasoning.summary":
-            data = {**data, "summary": ctx.reasoning_summary.snapshot()}
+        if event in ("reasoning.summary", "token.delta", "tool.start", "tool.end", "user.question"):
+            if request := ctx.reasoning_summary.current:
+                if event == "reasoning.summary":
+                    data = {**data, "summary": request.snapshot()}
+                else:
+                    data = {**data, "requestId": request.request_id}
         # Vibe Island notch 状态收口(engine 的 safe_send 不走
         # _push_session_event,所以这里单独埋):开关关闭时 no-op,绝不抛。
         eng._vibe_island.on_turn_event(ctx.session_id, event, data)
@@ -183,30 +187,43 @@ async def chunked_stream(ctx: StreamTurnCtx):
             return
 
 
+async def finish_reasoning_summary(ctx: StreamTurnCtx) -> None:
+    request = ctx.reasoning_summary.current
+    if request is None or not request.receiving:
+        return
+    await ctx._coal.flush_kind("reasoning.summary")
+    request.finish_receiving()
+    await ctx.safe_send(ctx.emit("reasoning.summary", {"content": ""}))
+
+
 async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
     """legacy engine.py:549-651 的 messages 模式文本/thinking/叙述/attach 段。
 
     调用方(run.py)已做 chunk.type gate(``("ai","AIMessageChunk")``)。
     """
-    parts = responses_reasoning_parts(chunk)
-    if parts:
-        # Snapshot during serialization, after the same 33 ms coalescing as text.
-        delta = ctx.reasoning_summary.add(parts)
-        await ctx._coal.feed("reasoning.summary", delta)
     content = getattr(chunk, "content", "")
-    # The SDK does not expose summary_text.done in all supported response
-    # shapes. Actual output or the end of this model call stops the pulse.
-    visible_output = isinstance(content, str) and bool(content) or (
+    visible_output = (isinstance(content, str) and bool(content)) or (
         isinstance(content, list)
         and any(isinstance(b, dict) and b.get("type") == "text" and b.get("text") for b in content)
     )
-    if ctx.reasoning_summary.receiving and (
-        visible_output or getattr(chunk, "tool_call_chunks", None)
-        or getattr(chunk, "tool_calls", None) or getattr(chunk, "chunk_position", None) == "last"
-    ):
-        await ctx._coal.flush_kind("reasoning.summary")
-        ctx.reasoning_summary.finish_receiving()
-        await ctx.safe_send(ctx.emit("reasoning.summary", {"content": ""}))
+    has_output = visible_output or getattr(chunk, "tool_call_chunks", None) or getattr(chunk, "tool_calls", None)
+    request_id = responses_request_id(chunk)
+    parts = responses_reasoning_parts(chunk, request_id=request_id)
+    summaries = ctx.reasoning_summary
+    request = summaries.current
+    if (parts or has_output) and (request is None or request.request_id != request_id):
+        if request is not None or parts:
+            # Flush under the old request identity before changing where text,
+            # tools and buffered summary fragments are attached.
+            await finish_reasoning_summary(ctx)
+            await ctx._coal.flush()
+            summaries.select_request(request_id if parts else None)
+    if parts and summaries.current is not None:
+        delta = summaries.current.add(parts)
+        await ctx._coal.feed("reasoning.summary", delta)
+    # Visible output or the last chunk closes this request's summary.
+    if has_output or getattr(chunk, "chunk_position", None) == "last":
+        await finish_reasoning_summary(ctx)
     if isinstance(content, list):
         for b in content:
             btype = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)

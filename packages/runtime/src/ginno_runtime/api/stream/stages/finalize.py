@@ -257,14 +257,17 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
             "turn_meta_write_failed session=%s", ctx.session_id, exc_info=True
         )
     await ctx._coal.flush()
-    summary = ctx.reasoning_summary.snapshot()
+    request = ctx.reasoning_summary.current
+    if request is not None and request.receiving:
+        request.finish_receiving()
+    summaries = ctx.reasoning_summary.snapshots()
     await ctx.safe_send(
         ctx.emit(
             "message.end",
             {
                 "text": _clean_text.strip()[:200],
                 "meta": _tm,
-                **({"reasoning_summary": summary} if summary else {}),
+                **({"reasoning_summaries": summaries} if summaries else {}),
                 # turn 发起者标记（interactive/schedule/subagent）：
                 # 前端据此跳过非交互 turn 的 OS 通知（完成通知由
                 # schedule-run/workflow-run 通道统一发，防双弹）。

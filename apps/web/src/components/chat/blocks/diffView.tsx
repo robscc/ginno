@@ -24,8 +24,8 @@ export function parseDiffLines(text: string): DiffLine[] {
   let l1 = 0;
   let l2 = 0;
   let inHunk = false;
-  for (const raw of text.split("\n")) {
-    if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+  for (const raw of text.split(/\r?\n/)) {
+    if (!raw || raw.startsWith("---") || raw.startsWith("+++")) continue;
     if (raw.startsWith("@@")) {
       inHunk = true;
       const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
@@ -107,7 +107,7 @@ export function DiffView({ diff }: { diff: EditDiffPayload }) {
         </button>
       </div>
       {view === "u" ? (
-        <div className="diff overflow-x-auto">
+        <div className="diff min-w-0">
           {spans.map((s, i) =>
             s.kind === "fold" ? (
               unfolded.has(i) ? (
@@ -180,17 +180,17 @@ export function pairLines(lines: DiffLine[]): { left: DiffLine | null; right: Di
 
 function SplitView({ lines }: { lines: DiffLine[] }) {
   return (
-    <div className="diff grid grid-cols-2 overflow-x-auto">
+    <div className="diff min-w-0">
       {pairLines(lines).map((r, k) => {
         if (r.left?.t === "hunk") {
           return (
-            <div key={k} className="col-span-2 bg-indigo-500/5 py-0.5 pl-2 text-[10px] text-indigo-400">
+            <div key={k} className="bg-indigo-500/5 py-0.5 pl-2 text-[10px] text-indigo-400">
               {r.left.text}
             </div>
           );
         }
         return (
-          <div key={k} className="col-span-2 grid grid-cols-2">
+          <div key={k} className="grid grid-cols-2">
             <SplitCell l={r.left} kind="del" />
             <SplitCell l={r.right} kind="add" />
           </div>
@@ -211,9 +211,11 @@ function SplitCell({ l, kind }: { l: DiffLine | null; kind: "del" | "add" }) {
       : "text-transparent";
   const ln = l && l.t !== "hunk" ? String(l.t === "del" ? l.ln1 : l.t === "add" ? l.ln2 : l.ln1 ?? "") : "";
   return (
-    <div className={`grid grid-cols-[3em_1fr] whitespace-pre ${cls}`}>
+    <div className={`grid min-w-0 grid-cols-[3em_minmax(0,1fr)] ${cls}`}>
       <span className="pr-1.5 text-right text-faint select-none">{ln}</span>
-      <span className="pr-2">{l && l.t !== "hunk" ? l.text || "\u00A0" : "\u00A0"}</span>
+      <span className="whitespace-pre-wrap pr-2 [overflow-wrap:anywhere]">
+        {l && l.t !== "hunk" ? l.text || "\u00A0" : "\u00A0"}
+      </span>
     </div>
   );
 }
@@ -234,11 +236,11 @@ function DiffRow({ l }: { l: DiffLine }) {
   const ln1 = l.t === "add" ? "" : String(l.ln1 ?? "");
   const ln2 = l.t === "del" ? "" : String(l.ln2 ?? "");
   return (
-    <div className={`grid grid-cols-[3em_3em_1em_1fr] whitespace-pre ${cls}`}>
+    <div className={`grid min-w-0 grid-cols-[3em_3em_1em_minmax(0,1fr)] ${cls}`}>
       <span className="pr-1.5 text-right text-faint select-none">{ln1}</span>
       <span className="pr-1.5 text-right text-faint select-none">{ln2}</span>
       <span className="select-none">{mk}</span>
-      <span className="pr-3">{l.text || "\u00A0"}</span>
+      <span className="whitespace-pre-wrap pr-3 [overflow-wrap:anywhere]">{l.text || "\u00A0"}</span>
     </div>
   );
 }

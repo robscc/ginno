@@ -285,7 +285,6 @@
     "reasoningSummary": {
       "title": "Reasoning summary",
       "receiving": "Receiving",
-      "waiting": "Waiting for more",
       "saved": "Saved",
       "offline": "Disconnected",
       "offlineHint": "Previously received summaries are available.",

@@ -15,7 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .... import jsonx as json
 from ....server_shared import _RUNNING_TURNS, _ev, _log
-from ..reasoning_summary import active_summary
+from ..reasoning_summary import active_summaries
 from .control import (
     handle_plan_cancel,
     handle_plan_confirm,
@@ -120,7 +120,7 @@ async def run_receive_loop(conn: WsConn) -> None:
             except Exception:  # noqa: BLE001 — 探针辅助
                 _compacting = False
             turn_id = _RUNNING_TURNS.get(session_id, "")
-            summary = active_summary(session_id, turn_id)
+            summaries = active_summaries(session_id, turn_id)
             try:
                 await ws.send_text(
                     _ev(
@@ -129,7 +129,7 @@ async def run_receive_loop(conn: WsConn) -> None:
                             "running": session_id in _RUNNING_TURNS,
                             "turn_id": turn_id,
                             "compacting": _compacting,
-                            **({"reasoning_summary": summary} if summary else {}),
+                            **({"reasoning_summaries": summaries} if summaries else {}),
                         },
                     )
                 )

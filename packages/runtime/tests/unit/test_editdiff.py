@@ -49,7 +49,12 @@ def test_truncation_keeps_stats_full():
 def test_no_trailing_newline():
     d = make_edit_diff("edit", "t.py", "a\nb", "a\nb\nc")
     assert d is not None
-    assert "+c" in d["text"]
+    assert d["text"].splitlines()[3:] == [" a", "-b", "+b", "+c"]
+
+    # edit_file often receives single-line fragments from the middle of a file.
+    d = make_edit_diff("edit", "t.py", "y=2", "y=42")
+    assert d is not None
+    assert d["text"].splitlines()[3:] == ["-y=2", "+y=42"]
 
 
 def test_maybe_edit_diff_from_args(monkeypatch):

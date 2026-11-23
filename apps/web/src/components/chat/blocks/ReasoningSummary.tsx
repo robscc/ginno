@@ -21,12 +21,13 @@ export function ReasoningSummary({ block, live, offline }: {
   const { tc } = useChatT();
   const id = useId();
   const [choice, setChoice] = useState<boolean | null>(null);
-  const open = choice ?? live;
+  const active = live && block.receiving === true;
+  const open = choice ?? active;
   const follow = useRef(true);
   const list = useRef<HTMLOListElement>(null);
   useEffect(() => {
-    if (open && live && follow.current && list.current) list.current.scrollTop = list.current.scrollHeight;
-  }, [block.parts, open, live]);
+    if (open && active && follow.current && list.current) list.current.scrollTop = list.current.scrollHeight;
+  }, [block.parts, open, active]);
   // Some gateways put several adjacent bold-only headings in one summary_text.
   // Keep the provider part count and show each heading on its own line.
   const parts = block.parts.filter(p => p.text.trim()).map(p => {
@@ -35,8 +36,9 @@ export function ReasoningSummary({ block, live, offline }: {
     return { id: p.id, title, body: body.replace(/^\*\*([^*\n]+)\*\*$/gm, "$1") };
   });
   if (!parts.length) return null;
-  const disconnected = live && offline;
-  const receiving = live && block.receiving && !disconnected;
+  const disconnected = active && offline;
+  const receiving = active && !offline;
+  const status = disconnected ? "offline" : receiving ? "receiving" : "saved";
   return (
     <section className={`my-2 min-w-0 overflow-hidden rounded-r-lg border-l-2 ${disconnected ? "border-amber-500/70 bg-amber-500/[0.07]" : "border-violet/70 bg-violet/[0.07]"}`}>
       <button type="button" aria-expanded={open} aria-controls={id}
@@ -46,7 +48,7 @@ export function ReasoningSummary({ block, live, offline }: {
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-baseline gap-x-2">
             <strong className="text-xs font-medium text-violet">{tc("reasoningSummary.title")}</strong>
-            <span className="text-[11px] text-muted">{disconnected ? tc("reasoningSummary.offline") : !live ? tc("reasoningSummary.saved") : receiving ? tc("reasoningSummary.receiving") : tc("reasoningSummary.waiting")}</span>
+            <span className="text-[11px] text-muted">{tc(`reasoningSummary.${status}`)}</span>
           </span>
           {!open && <span className="block truncate text-xs text-muted">{parts[parts.length - 1].title}</span>}
         </span>
