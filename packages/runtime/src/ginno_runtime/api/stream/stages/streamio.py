@@ -23,6 +23,11 @@ def make_emit(ctx: StreamTurnCtx):
         # Vibe Island notch 状态收口(engine 的 safe_send 不走
         # _push_session_event,所以这里单独埋):开关关闭时 no-op,绝不抛。
         eng._vibe_island.on_turn_event(ctx.session_id, event, data)
+        # 流式提问直接经 safe_send 送到桌面和渠道 tap。
+        if event == "user.question":
+            from ....channels.ask_relay import on_turn_event
+
+            on_turn_event(ctx.session_id, event, data)
         # frame_session is stamped on every turn frame: the client drops any
         # frame whose frame_session isn't the socket's own session, making a
         # cross-session render leak structurally impossible (2026-10-01).

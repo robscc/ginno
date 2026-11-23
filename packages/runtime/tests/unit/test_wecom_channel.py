@@ -391,12 +391,16 @@ class FakeAdapter:
         self.pending: dict[str, dict] = {}
         self.answered: dict[str, dict] = {}
 
-    async def register_pending_question(self, chat_key, session_id, qid, options):
-        self.pending[chat_key] = {
-            "session_id": session_id, "question_id": qid, "options": options}
+    async def register_pending_question(self, chat_key, session_id, qid, options, *, proactive=False):
+        pending = {"session_id": session_id, "question_id": qid, "options": options}
+        self.pending[chat_key] = pending
+        return pending
 
-    async def unregister_pending_question(self, chat_key):
-        self.pending.pop(chat_key, None)
+    async def unregister_pending_question(self, chat_key, pending):
+        if self.pending.get(chat_key) is pending:
+            self.pending.pop(chat_key, None)
+            return True
+        return False
 
     def mark_question_answered(self, chat_key, *, qid="", session_id="",
                                answer="", skip=False, raw="", answered_by="user"):

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from unittest.mock import AsyncMock
 
 import pytest
 
+from ginno_runtime import server_shared
 from ginno_runtime.channels import ask_relay
+from ginno_runtime.channels.wecom.adapter import WeComChannelAdapter
+from ginno_runtime.channels.wecom.tap import WeComTap
 
 
 def test_parse_answer_digit_substring_free(monkeypatch):
@@ -69,37 +73,73 @@ async def test_relay_ask_answered(monkeypatch):
     assert not ask_relay._UNATTENDED_Q  # finally 清场
 
 
+@pytest.fixture
+def mirror_adapter(monkeypatch):
+    ad = WeComChannelAdapter()
+    ad.client = AsyncMock()
+    ad.last_chat_key = "chat"
+    monkeypatch.setattr(ask_relay, "_wecom_adapter", lambda: ad)
+    return ad
+
+
 @pytest.mark.asyncio
-async def test_mirror_skips_wecom_own_question(monkeypatch):
-    """wecom 自己 tap 已发的 qid 不镜像（防双卡片）。"""
-    class _Ad:
-        client = object()
-        last_chat_key = "ck"
-        _own_question_ids = ["q-own"]
+async def test_mirror_pushes_question_and_registers_original_session(mirror_adapter):
+    data = {"id": "call-1", "qid": "q-1", "question": "选哪个？", "options": ["A", "B"]}
+    await ask_relay._mirror_question("s1", data)
+    mirror_adapter.client.send_markdown.assert_awaited_once()
+    chat, card = mirror_adapter.client.send_markdown.await_args.args
+    assert chat == "chat" and "1. A" in card and "2. B" in card
+    assert mirror_adapter._pending_q[chat]["session_id"] == "s1"
+    assert mirror_adapter._pending_q[chat]["question_id"] == "q-1"
 
-    monkeypatch.setattr(ask_relay, "_relay_enabled", lambda: True)
-    monkeypatch.setattr(ask_relay, "_wecom_adapter", lambda: _Ad())
-    pushed = []
 
-    async def _fake_mirror(sid, data):
-        pushed.append((sid, data))
+@pytest.mark.asyncio
+async def test_mirror_skips_wecom_tap_and_previously_sent_question(mirror_adapter, monkeypatch):
+    tap = WeComTap(mirror_adapter, "req", "chat", "stream")
+    tap.session_id = "s1"
+    monkeypatch.setitem(server_shared._SESSION_WS, "s1", [tap])
+    data = {"id": "call-1", "qid": "q-1", "question": "选哪个？", "options": ["A", "B"]}
 
-    monkeypatch.setattr(ask_relay, "_mirror_question", _fake_mirror)
-    # 非 question 事件：不触发
-    ask_relay.on_turn_event("s1", "token.delta", {})
-    assert pushed == []
-    # wecom 自己的 qid：_mirror_question 内部去重——直接测 _mirror_question
-    # 走真实路径（push_only 构造会失败？mock tap）
-    import ginno_runtime.channels.wecom.tap as tap_mod
+    await ask_relay._mirror_question("s1", data)
+    mirror_adapter.client.send_markdown.assert_not_awaited()
+    await tap.on_frame("user.question", data)
+    mirror_adapter.client.respond.assert_awaited_once()
+    server_shared._SESSION_WS["s1"].clear()
 
-    orig = tap_mod.WeComTap.push_only
-    tap_mod.WeComTap.push_only = classmethod(
-        lambda cls, ad, ck: pytest.fail("不应为 wecom 自己的 qid 镜像")
-    )
+    await ask_relay._mirror_question("s1", data)
+    mirror_adapter.client.send_markdown.assert_not_awaited()
+
+    monkeypatch.setitem(server_shared._PENDING_KIND, "s1", "user_question")
+    await tap.close()
+    assert mirror_adapter._pending_q["chat"]["question_id"] == "q-1"
+    await tap._cancel_ask_timer()
+
+
+@pytest.mark.asyncio
+async def test_mirror_preserves_other_session_waiting_for_same_chat(mirror_adapter):
+    data = {"id": "call-1", "qid": "q-1", "question": "选哪个？"}
+    server_shared._PENDING_RESUME.add("s1")
     try:
-        await ask_relay._mirror_question("s1", {"id": "q-own", "question": "x"})
+        await ask_relay._mirror_question("s1", data)
+        first = mirror_adapter._pending_q["chat"]
+        await ask_relay._mirror_question("s2", {**data, "qid": "q-2"})
+        mirror_adapter.client.send_markdown.assert_awaited_once()
+        assert mirror_adapter._pending_q["chat"] is first
     finally:
-        tap_mod.WeComTap.push_only = orig
+        server_shared._PENDING_RESUME.discard("s1")
+
+
+@pytest.mark.asyncio
+async def test_mirror_push_failure_rolls_back_and_allows_retry(mirror_adapter):
+    data = {"id": "call-1", "qid": "q-1", "question": "选哪个？"}
+    mirror_adapter.client.send_markdown.side_effect = [ConnectionError("offline"), {}]
+    await ask_relay._mirror_question("s1", data)
+    mirror_adapter.client.send_markdown.assert_awaited_once()
+    assert "chat" not in mirror_adapter._pending_q
+
+    await ask_relay._mirror_question("s1", data)
+    assert mirror_adapter.client.send_markdown.await_count == 2
+    assert mirror_adapter._pending_q["chat"]["session_id"] == "s1"
 
 
 def test_ask_tools_unattended_relay_branch(monkeypatch):

@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ... import server_shared as shared
 from ..base import ChannelTap, TurnProgressTracker
 from . import protocol as p
 
@@ -108,8 +109,7 @@ class WeComTap(ChannelTap):
         self._stream_done = False     # finish=true 已发（超时强制或终态）
         self._finalized = False
         self._ask_timer: asyncio.TimerHandle | None = None
-        self._question_id: str | None = None
-        self._options: list = []
+        self._pending_question: dict | None = None
         # P1 进展区：thinking/tool 帧 → markdown 引用块，流中原地更新、终稿清场
         self._progress = TurnProgressTracker()
         # 正文媒体补发去重（_flush_text_media）：一路径一 turn 至多发一次
@@ -161,7 +161,9 @@ class WeComTap(ChannelTap):
         if self._finalized:
             return
         self._finalized = True
-        self._cancel_ask_timer()
+        # 回合在提问处暂停时也会关闭 tap。待答登记须保留到作答或超时。
+        if note or shared._PENDING_KIND.get(self.session_id) != "user_question":
+            await self._cancel_ask_timer()
         self._progress.clear()  # 终稿只留正文
         await self._maybe_flush(force=True)
         body = self._full or "（无输出）"
@@ -206,58 +208,60 @@ class WeComTap(ChannelTap):
 
     # ---- ask_user（文本作答路径）---------------------------------------------
 
-    async def _send_question(self, data: dict) -> None:
-        q_id = str(data.get("id") or "")
-        self._question_id = q_id
-        self._options = list(data.get("options") or [])
-        # ask_relay 镜像去重：本 tap 已发的 qid 登记（wecom 自己发起的
-        # turn 不再镜像第二份卡片）。getattr 防御——测试 FakeAdapter 等
-        # 子类可能未初始化该 deque。
-        _ids = getattr(self.adapter, "_own_question_ids", None)
-        if _ids is not None and q_id:
-            _ids.append(q_id)
+    async def _send_question(self, data: dict) -> bool:
+        q_id = str(data.get("qid") or data.get("id") or "")
+        options = list(data.get("options") or [])
         lines = [f"\n\n❓ **{data.get('header') or 'Ginno 提问'}**",
                  str(data.get("question") or "")]
-        for i, opt in enumerate(self._options):
+        for i, opt in enumerate(options):
             lines.append(f"{i + 1}. {opt}")
         lines.append("\n（直接回复数字或文字作答；回复「跳过」跳过）")
         md = "\n".join(lines)
-        self._buf.append(md)
-        self._buf_len += len(md)
-        await self._maybe_flush(force=True)
-        # 登记待答：该会话的下一条文本消息会走 resume 而不是新 turn
-        await self.adapter.register_pending_question(
-            self.chat_key, self.session_id, q_id, self._options)
         timeout_s = float(self.adapter.config.get("ask_timeout_s") or 600)
+        # 回执到达前就可以收到用户回复，先占用该聊天的待答位置。
+        pending = await self.adapter.register_pending_question(
+            self.chat_key, self.session_id, q_id, options, proactive=not self.req_id)
+        if pending is None:
+            return False
+        try:
+            if self._stream_done:
+                await self.adapter.client.send_markdown(self.chat_key, md)
+            else:
+                self._buf.append(md)
+                self._buf_len += len(md)
+                await self._maybe_flush(force=True)
+        except (Exception, asyncio.CancelledError):
+            await self.adapter.unregister_pending_question(self.chat_key, pending)
+            raise
+
+        ids = getattr(self.adapter, "_own_question_ids", None)
+        if ids is not None and q_id:
+            ids.append(q_id)
+        self._pending_question = pending
         loop = asyncio.get_running_loop()
         self._ask_timer = loop.call_later(
-            timeout_s, lambda: asyncio.create_task(self._ask_timeout()))
+            timeout_s, lambda: shared.spawn_bg(self._ask_timeout(pending)))
+        return True
 
-    async def _ask_timeout(self) -> None:
+    async def _ask_timeout(self, pending: dict) -> None:
         from ...api.stream.resume import resume_question
 
-        await self.adapter.unregister_pending_question(self.chat_key)
-        # 超时跳过同样走 resume_question 共享段（relay 墓碑统一收口）。
-        # 刻意不带 arm_from_checkpoint：计时器是兜底不是凭证——用户可能
-        # 刚在桌面答完（resume 任务在跑），宽松武装会把已答问题再拉起。
-        ok = await resume_question(
-            self.session_id, skip=True, answered_by="wecom_timeout")
+        if not await self.adapter.unregister_pending_question(self.chat_key, pending):
+            return  # 已作答，或此聊天已有更新的待答登记。
+        session_id = pending["session_id"]
+        ok = await resume_question(session_id, skip=True, answered_by="wecom_timeout")
         if ok:
-            # 渠道墓碑：超时跳过也算「已答」，晚到的企微回复命中墓碑被
-            # 拒绝并告知，而不是回落成新 turn。
             self.adapter.mark_question_answered(
-                self.chat_key, qid=self._question_id or "",
-                session_id=self.session_id, skip=True,
-                answered_by="wecom_timeout")
+                self.chat_key, qid=pending["question_id"],
+                session_id=session_id, skip=True, answered_by="wecom_timeout")
 
-    def _cancel_ask_timer(self) -> None:
+    async def _cancel_ask_timer(self) -> None:
         if self._ask_timer is not None:
             self._ask_timer.cancel()
             self._ask_timer = None
-        if self._question_id:
-            task = asyncio.ensure_future(
-                self.adapter.unregister_pending_question(self.chat_key))
-            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        pending, self._pending_question = self._pending_question, None
+        if pending is not None:
+            await self.adapter.unregister_pending_question(self.chat_key, pending)
 
     # ---- 产物上行（P1）-------------------------------------------------------
 
@@ -355,6 +359,5 @@ class WeComTap(ChannelTap):
         # thinking.delta / tool.* / keepalive / artifacts.changed / …: 忽略
 
     async def close(self) -> None:
-        """turn 结束兜底：cancel 定时器 + 未终态时补一次 finalize。"""
-        self._cancel_ask_timer()
+        """在流结束时补发定格帧，并保留暂停回合的待答登记。"""
         await self._finalize()
