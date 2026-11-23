@@ -158,7 +158,6 @@ function makeBag(overrides: AnyRec = {}): Bag {
     proposeRef: ref<AnyRec>({}),
     busyBySessionRef: ref<AnyRec>({}),
     serverRunningRef: ref<AnyRec>({}),
-    compactingBySessionRef: ref<AnyRec>({}),
     compactStageRef: ref<AnyRec>({}),
     streamAgentRef: ref<AnyRec>({}),
     orphanStreamRef: ref<AnyRec>({}),
@@ -545,7 +544,7 @@ const DISPATCH_TABLE: CaseSpec[] = [
   {
     event: "session.state_changed", desc: "compacting 镜像置位",
     ev: { session_id: SID, state: "compacting" },
-    probe: (b) => expect(refOf(b, "compactingBySessionRef")).toBe(true),
+    probe: (b) => expect(refOf(b, "compactStageRef")).toBe("summarizing"),
   },
 
   // —— runtime 生命周期 ——
@@ -673,10 +672,7 @@ const DISPATCH_TABLE: CaseSpec[] = [
   {
     event: "context.compacting", desc: "置压缩镜像 + 阶段",
     ev: { stage: "summarizing", pct: 10 },
-    probe: (b) => {
-      expect(refOf(b, "compactingBySessionRef")).toBe(true);
-      expect(refOf(b, "compactStageRef")).toMatchObject({ stage: "summarizing", pct: 10 });
-    },
+    probe: (b) => expect(refOf(b, "compactStageRef")).toBe("summarizing"),
   },
   {
     event: "context.compacted", desc: "压缩完成居中行",
@@ -985,29 +981,29 @@ describe("③ 弹层边界与收口复位", () => {
   });
 });
 
-describe("③ 压缩镜像收尾（handle 顶部公共段）", () => {
-  it("压缩期间任何非 compacting 事件到达 = 压缩已结束（清镜像 + syncDisplay）", () => {
+describe("③ 压缩阶段", () => {
+  it("旧运行时的估算值不影响阶段，通知和保活也不会清除状态", () => {
     const bag = makeBag();
-    handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing", pct: 8 });
-    expect(refOf(bag, "compactingBySessionRef")).toBe(true);
+    handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing", pct: 8, predicted_s: 30 });
     handle(bag.ctx, SID, { event: "notice", message: "x" });
-    expect(refOf(bag, "compactingBySessionRef")).toBe(false);
+    handle(bag.ctx, SID, { event: "keepalive" });
+    expect(refOf(bag, "compactStageRef")).toBe("summarizing");
+    handle(bag.ctx, SID, { event: "context.compacting", stage: "writing" });
+    expect(refOf(bag, "compactStageRef")).toBe("writing");
+  });
+
+  it("重连恢复保存阶段，后续探针可以补上丢失的完成帧", () => {
+    const bag = makeBag();
+    handle(bag.ctx, SID, { event: "turn.state", running: false, compacting: true, compaction_stage: "writing" });
+    expect(refOf(bag, "compactStageRef")).toBe("writing");
+    handle(bag.ctx, SID, { event: "turn.state", running: false, compacting: false });
     expect(refOf(bag, "compactStageRef")).toBeNull();
   });
 
-  it("turn.state 携带 compacting=true 是探针报告「还在压缩」——保住镜像不清", () => {
+  it("压缩完成即清除阶段", () => {
     const bag = makeBag();
-    handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing", pct: 8 });
-    handle(bag.ctx, SID, { event: "turn.state", running: true, compacting: true });
-    expect(refOf(bag, "compactingBySessionRef")).toBe(true); // P5：不能当结束信号清掉
-    expect(refOf(bag, "serverRunningRef")).toBe(true);
-  });
-
-  it("context.compacting stage=done 自清镜像（后台任务无后续事件的兜底）", () => {
-    const bag = makeBag();
-    handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing", pct: 8 });
+    handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing" });
     handle(bag.ctx, SID, { event: "context.compacting", stage: "done" });
-    expect(refOf(bag, "compactingBySessionRef")).toBe(false);
     expect(refOf(bag, "compactStageRef")).toBeNull();
   });
 });

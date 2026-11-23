@@ -109,16 +109,11 @@ async def run_receive_loop(conn: WsConn) -> None:
             # Post-reconnect probe (frontend ChatStream): is a turn still
             # streaming (or parked at an interrupt) for this session? If
             # not, the client reconciles against /history instead of
-            # waiting on a stream that will never resume. ``compacting``
-            # (2026-11-16 P5)：E3 摘要飞行中为 true——重连后前端据此
-            # 保住「压缩中」镜像（否则任何事件都会清掉它，还在压缩的
-            # turn 提前解锁 Composer）。
-            try:
-                from ....server_shared import _COMPACTING
+            # waiting on a stream that will never resume. The active phase
+            # also covers background /compact, which has no running turn.
+            from ....server_shared import _COMPACTING
 
-                _compacting = session_id in _COMPACTING
-            except Exception:  # noqa: BLE001 — 探针辅助
-                _compacting = False
+            compaction = _COMPACTING.get(session_id)
             turn_id = _RUNNING_TURNS.get(session_id, "")
             summaries = active_summaries(session_id, turn_id)
             try:
@@ -128,7 +123,8 @@ async def run_receive_loop(conn: WsConn) -> None:
                         {
                             "running": session_id in _RUNNING_TURNS,
                             "turn_id": turn_id,
-                            "compacting": _compacting,
+                            "compacting": compaction is not None,
+                            **({"compaction_stage": compaction["stage"]} if compaction else {}),
                             **({"reasoning_summaries": summaries} if summaries else {}),
                         },
                     )

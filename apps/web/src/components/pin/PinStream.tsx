@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { compactionStageAfterFrame, type CompactionStage } from "@/components/chat/engine/handlers/11-context";
 import { useEventI18nText } from "@/components/chat/blocks";
 import {
   appendEntry,
@@ -89,9 +90,7 @@ export function PinStream({
   // 悬浮窗会话视图的 UI 文案 catalog（i18n Wave2）
   const t = useTranslations("pin.stream");
   const evText = useEventI18nText();
-  // E3 压缩进行中（context.compacting）——live 气泡空块时 spinner 旁的
-  // 「压缩中…」文案开关。
-  const [compacting, setCompacting] = useState(false);
+  const [compactStage, setCompactStage] = useState<CompactionStage | null>(null);
   // P2-24：follow 团队广场时的团队上卷态。广场主会话自己不跑 turn（消息都
   // 路由给成员），成员活动经 team.changed 的 rollup 聚合到这里驱动徽标。
   const [teamRollup, setTeamRollup] = useState<{ working: number; blocked: number } | null>(null);
@@ -155,11 +154,10 @@ export function PinStream({
         }),
       }),
     mergeWithLive: mergeHistoryWithLive,
-    // 「压缩中…」瞬态：与主窗口同一契约——置位事件之外的任何事件都意味着
-    // 压缩已结束（压缩期间没有别的流事件）。流帧在公共 case 消化，故走
-    // onFrame（每帧钩子）而不是 onExtraEvent。
     onFrame: (ev) => {
-      if (ev.event !== "context.compacting") setCompacting(false);
+      if (ev.event === "context.compacting" || ev.event === "context.compacted" || ev.event === "turn.state") {
+        setCompactStage((previous) => compactionStageAfterFrame(previous, ev));
+      }
     },
     texts: {
       interruptedTool: () => t("interrupted"),
@@ -321,11 +319,6 @@ export function PinStream({
       }
       case "context.microcompacted":
         api.addSystemRow(t("clearedToolOutputs", { count: Number(ev.cleared_tool_outputs ?? 0) }));
-        break;
-      case "context.compacting":
-        // E3 总结 LLM 调用前的瞬态状态：live 气泡空块时的 spinner 旁显示
-        // 「压缩中…」（见下方 streaming && blocks.length===0 渲染分支）。
-        setCompacting(true);
         break;
       case "history.cleared":
         // /clear 清空了 checkpoint —— 本地 transcript 整体丢弃，live 气泡
@@ -785,15 +778,20 @@ export function PinStream({
               <div className="pin-compact">
                 <InnerBlocks blocks={m.blocks} streaming={streaming} offline={wsStatus !== "live"} />
               </div>
-              {streaming && m.blocks.length === 0 && (
+              {streaming && !compactStage && m.blocks.length === 0 && (
                 <span className="flex items-center gap-1.5 text-faint">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {compacting && t("compacting")}
                 </span>
               )}
             </div>
           );
         })}
+        {compactStage && wsStatus === "live" && (
+          <div role="status" className="flex items-center gap-1.5 text-xs text-muted">
+            <Loader2 aria-hidden className="h-3.5 w-3.5 motion-safe:animate-spin" />
+            {t(compactStage === "writing" ? "compactWriting" : "compacting")}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 

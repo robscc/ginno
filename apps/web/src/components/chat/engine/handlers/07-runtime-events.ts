@@ -11,16 +11,12 @@ import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { markDelivered } from "../liveBubble";
 
 export function onSessionStateChanged(ctx: EngineCtx, sid: string, ev: ServerEvent) {
-  // P1 状态机（2026-11-11）：compacting → spinner + 输入锁定；
-  // idle → 解除。running/paused 由既有 turn 事件驱动，此处只补
-  // compacting/swapping 两个新态的 UI 映射。
   const stSid = String(ev.session_id ?? "");
   if (!stSid) return;
-  const st = String(ev.state ?? "");
-  if (st === "compacting") {
-    ctx.compactingBySessionRef.current[stSid] = true;
-  } else if (st === "idle") {
-    ctx.compactingBySessionRef.current[stSid] = false;
+  if (ev.state === "compacting") {
+    ctx.compactStageRef.current[stSid] ??= "summarizing";
+  } else if (ev.state === "idle") {
+    ctx.compactStageRef.current[stSid] = null;
   }
   ctx.syncDisplay(stSid);
 }

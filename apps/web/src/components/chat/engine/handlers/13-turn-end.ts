@@ -17,6 +17,7 @@ import {
 import { isWatching, replyMerge } from "../notifyOut";
 import { notifyNative } from "@/lib/desktop";
 import { shouldNotify } from "@/lib/notifyHub";
+import { onContextCompacting } from "./11-context";
 
 export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   // Answer to the post-reconnect probe: is a turn still running (or
@@ -25,14 +26,7 @@ export function onTurnState(ctx: EngineCtx, sid: string, ev: ServerEvent) {
     clearTimeout(ctx.reconcileTimerRef.current[sid]!);
     ctx.reconcileTimerRef.current[sid] = null;
   }
-  // P5（2026-11-16）：探针报告摘要飞行中 → 恢复「压缩中」镜像。
-  // 断线期间 context.compacting 帧丢失，重连后没有这条恢复分支的话
-  // 一个还在压缩的 turn 会显示为普通 running（进度条消失）。
-  if (ev.compacting === true && !ctx.compactingBySessionRef.current[sid]) {
-    ctx.compactingBySessionRef.current[sid] = true;
-    ctx.compactStageRef.current[sid] = { stage: "summarizing", pct: 8 };
-    ctx.syncDisplay(sid);
-  }
+  onContextCompacting(ctx, sid, ev);
   if (ctx.serverRunningRef.current[sid] !== !!ev.running) {
     ctx.serverRunningRef.current[sid] = !!ev.running;
     // Mirror into React state — this is what makes a history-rebuilt

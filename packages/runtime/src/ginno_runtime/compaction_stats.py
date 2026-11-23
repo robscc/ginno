@@ -1,11 +1,7 @@
-"""压缩时长历史 + 进度预估（2026-11-14 用户需求：看历史压缩时长预估进度）。
+"""Observed history-compaction latency for diagnostics.
 
-每次压缩的摘要 LLM 调用是耗时大头（compaction.py on_summary_start→done 之间）。
-本模块记录历史时长，并在新压缩开始时按消息量给出预估秒数，供前端把进度条从
-「盲目缓动」升级为「按预估时长走 + 显示 ETA」。
-
-存储：home()/compaction_history.jsonl（append-only，保留最近 50 条）。
-零 LLM、纯统计；历史不足（<2 条）时 predict 返回 None，前端回退旧缓动。
+Stores the latest 50 summarizer calls in home()/compaction_history.jsonl.
+The chat uses explicit phase events for live status.
 """
 
 from __future__ import annotations
@@ -64,7 +60,7 @@ def _load() -> list[dict]:
 
 
 def predict(n_messages: int) -> float | None:
-    """按历史预估本次压缩秒数；样本不足返回 None（前端回退旧缓动）。
+    """按历史预估本次压缩秒数；样本不足返回 None。
 
     策略：取最近样本时长的中位数为基准，再按「本次消息数 / 历史消息数中位数」
     线性缩放（夹在 0.5~2.0 倍，防异常样本拉飞）。中位数对离群值稳健。

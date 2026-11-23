@@ -23,10 +23,10 @@ disturb a turn paused at a permission prompt.
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 from langchain_core.messages import (
@@ -53,10 +53,6 @@ from .world_state import (
 # 只能靠 usage/jsonl 侧写定罪。复用 _log（与 mods/tasks 等 8 个模块同
 # 路数）；server_shared import-light，顶部引入无循环。
 from .server_shared import _log as log
-
-# P3（2026-11-16）：摘要期间的进度心跳间隔。有 predicted_s 时每 30s 推一帧
-# 时间轴 pct——大历史摘要分钟级，8%→92% 之间前端只能干瞪着近乎冻结的条。
-_HEARTBEAT_S = 30.0
 
 # Structured summarization prompt (Claude-Code-style 9-section template with
 # Ginno adaptations: machine-marker guard + first-line UI preview contract +
@@ -245,14 +241,39 @@ def _effective_compact_threshold(settings: dict, session: dict | None = None) ->
     return threshold
 
 
+@asynccontextmanager
+async def compaction_activity(session_id: str, turn_id: str | None = None):
+    """Publish phase changes and expose the current phase to reconnects."""
+    from .server_shared import _COMPACTING, _push_session_event
+
+    state = {"stage": "summarizing"}
+    _COMPACTING[session_id] = state
+
+    async def publish(stage: str) -> None:
+        try:
+            await _push_session_event(session_id, "context.compacting", {"stage": stage}, turn_id)
+        except Exception:  # noqa: BLE001 — status delivery must not disrupt compaction
+            log.debug("compaction_status_failed session=%s stage=%s", session_id, stage, exc_info=True)
+
+    async def writing() -> None:
+        if _COMPACTING.get(session_id) is state:
+            state["stage"] = "writing"
+            await publish("writing")
+
+    try:
+        await publish("summarizing")
+        yield writing
+    finally:
+        if _COMPACTING.get(session_id) is state:
+            _COMPACTING.pop(session_id)
+            await publish("done")
+
+
 async def maybe_compact_history(
     session: dict[str, Any],
     config: dict,
     ctx_factory=None,
     force: bool = False,
-    on_summary_start=None,
-    on_summary_done=None,
-    on_heartbeat=None,
     abort_event=None,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
@@ -265,18 +286,6 @@ async def maybe_compact_history(
     it bypasses the token threshold AND the ``compaction_enabled`` auto flag.
     The interrupt guard below still applies — never rewrite state of a turn
     parked at a permission prompt.
-
-    ``on_summary_start`` (async callable) fires right before the summarizer
-    LLM call — i.e. only when compaction is actually decided, after every
-    cheap early-return check. Callers use it to push a "compacting…"
-    status event; the summary call is the only slow step, so the UI hint
-    brackets exactly the wait the user would otherwise stare at.
-
-    ``on_heartbeat(pct)`` (async callable, 2026-11-16 P3): progress ticks
-    every ``_HEARTBEAT_S`` while the summarizer runs, pct = time-axis
-    8+elapsed/predicted×84. Only wired when predicted_s exists — without an
-    ETA a heartbeat number would be fabricated motion; the frontend's
-    ease-out easing covers that case.
 
     ``abort_event`` (asyncio.Event, turn path only): the cooperative stop
     signal. The summarizer call can run for minutes on a huge history —
@@ -369,250 +378,189 @@ async def maybe_compact_history(
     if abort_event is not None and abort_event.is_set():
         log.info("compaction aborted before summary session=%s", session_id)
         return None
-    # 进度预估（2026-11-14 起；2026-11-16 与 on_summary_start 解耦）：按历史
-    # 压缩时长 + 本次消息量预测秒数——start 事件下发它（前端时间轴进度 +
-    # ETA），心跳循环也用它算时间轴 pct，两者是独立消费者，任何一方缺省
-    # 不应牵连另一方。
-    from . import compaction_stats
-
-    predicted_s = compaction_stats.predict(len(old))
-    _t_summary = time.perf_counter()
-    if on_summary_start is not None:
-        try:
-            await on_summary_start(predicted_s)
-        except TypeError:
-            # 向后兼容旧无参钩子（测试/旧调用方）
+    turn_id = (config.get("configurable") or {}).get("turn_id")
+    async with compaction_activity(session_id, turn_id) as writing:
+        started = time.perf_counter()
+        summary_input = [
+            _summary_system_message(),
+            HumanMessage(content=t(
+                f"Summarize the following conversation:\n\n{transcript}",
+                f"请总结以下对话记录:\n\n{transcript}",
+            )),
+        ]
+        if abort_event is None:
+            summary_resp = await model.ainvoke(summary_input)
+        else:
+            summary_task = asyncio.ensure_future(model.ainvoke(summary_input))
+            stop_task = asyncio.ensure_future(abort_event.wait())
             try:
-                await on_summary_start()
-            except Exception:
-                log.warning("compaction_status_callback_failed session=%s", session_id)
-        except Exception:
-            log.warning("compaction_status_callback_failed session=%s", session_id)
-    summary_task = asyncio.ensure_future(
-        model.ainvoke(
-            [
-                _summary_system_message(),
-                HumanMessage(
-                    content=t(
-                        f"Summarize the following conversation:\n\n{transcript}",
-                        f"请总结以下对话记录:\n\n{transcript}",
-                    )
-                ),
-            ]
-        )
-    )
-    # P5（2026-11-16）：摘要飞行期间登记到 server_shared._COMPACTING——
-    # turn.state 重连探针据此让前端保住「压缩中」镜像（断线不清锁）。
-    # 惰性 import 保持模块级无环（server_shared 不 import 本模块）。
-    try:
-        from .server_shared import _COMPACTING
-
-        _COMPACTING.add(session_id)
-    except Exception:  # noqa: BLE001 — 探针辅助，注册失败不影响压缩
-        pass
-    try:
-        while True:
-            if abort_event is not None:
-                stop_task = asyncio.ensure_future(abort_event.wait())
-                done, _pending = await asyncio.wait(
-                    {summary_task, stop_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                    # P3：无心跳需求的调用方维持原语义（等到完成为止）；
-                    # 有心跳时最多等 _HEARTBEAT_S 就醒来推一帧进度。
-                    timeout=(_HEARTBEAT_S if on_heartbeat is not None else None),
-                )
-                if stop_task in done and not summary_task.done():
-                    summary_task.cancel()
+                await asyncio.wait({summary_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                if not summary_task.done():
                     log.info("compaction aborted by stop session=%s", session_id)
                     return None
+                summary_resp = await summary_task
+            finally:
                 stop_task.cancel()
-            else:
-                done, _pending = await asyncio.wait(
-                    {summary_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=(_HEARTBEAT_S if on_heartbeat is not None else None),
-                )
-            if summary_task.done():
-                break
-            # timeout 分支（P3 心跳）：任务还活着 → 推时间轴 pct。elapsed 对
-            # predicted 的比值线性映射到 8..92（与 writing 档衔接）。
-            if on_heartbeat is not None and predicted_s:
-                elapsed = time.perf_counter() - _t_summary
-                pct = int(min(90, 8 + (elapsed / max(1.0, predicted_s)) * 82))
-                try:
-                    await on_heartbeat(pct)
-                except Exception:
-                    log.warning("compaction_heartbeat_failed session=%s", session_id)
-    finally:
-        try:
-            from .server_shared import _COMPACTING
+                if not summary_task.done():
+                    summary_task.cancel()
 
-            _COMPACTING.discard(session_id)
-        except Exception:  # noqa: BLE001
-            pass
-    summary_resp = await summary_task
-    # 记录本次摘要耗时（进度预估的历史样本）。
-    try:
-        from . import compaction_stats
-
-        compaction_stats.record(time.perf_counter() - _t_summary, len(old))
-    except Exception:
-        log.warning("compaction_stats_record_failed session=%s", session_id)
-    if on_summary_done is not None:
-        # 摘要已返回、写回前（进度条 92% 档——最后一步是廉价的消息替换）。
+        # Record actual summary latency for diagnostics.
         try:
-            await on_summary_done()
+            from . import compaction_stats
+
+            compaction_stats.record(time.perf_counter() - started, len(old))
         except Exception:
-            log.warning("compaction_status_callback_failed session=%s", session_id)
-    # 压缩摘要也是真金白银的模型调用：记入用量流水（source="compaction"，
-    # 会话归属）。此前完全没记账——记账点挂在 _stream_graph 的消息流上，
-    # 这里直连 model.ainvoke 绕过了它（2026-10-12 用户指出「压缩的也要
-    # 算进去」）。best-effort：绝不影响压缩主流程。
-    try:
-        from . import usage_store
-        from .usage import extract_usage
+            log.warning("compaction_stats_record_failed session=%s", session_id)
+        # 压缩摘要也是真金白银的模型调用：记入用量流水（source="compaction"，
+        # 会话归属）。此前完全没记账——记账点挂在 _stream_graph 的消息流上，
+        # 这里直连 model.ainvoke 绕过了它（2026-10-12 用户指出「压缩的也要
+        # 算进去」）。best-effort：绝不影响压缩主流程。
+        try:
+            from . import usage_store
+            from .usage import extract_usage
 
-        u = extract_usage(summary_resp)
-        if u:
-            _sreg: dict = {}
-            try:
-                from .server_shared import _SESSIONS
+            u = extract_usage(summary_resp)
+            if u:
+                _sreg: dict = {}
+                try:
+                    from .server_shared import _SESSIONS
 
-                _sreg = _SESSIONS.get(session_id) or {}
-            except Exception:  # noqa: BLE001 — 注册表不可用也照记（缺 provider）
-                pass
-            _cfg_slug = (config.get("configurable") or {}).get("project_slug") or "default"
-            usage_store.record(
-                input_tokens=u["input_tokens"],
-                output_tokens=u["output_tokens"],
-                cache_read_tokens=u["cache_read_tokens"],
-                cache_creation_tokens=u["cache_creation_tokens"],
-                provider=_sreg.get("model_provider") or "",
-                model=_sreg.get("model_name") or "",
-                source="compaction",
-                session_id=session_id or None,
-                project_slug=_cfg_slug,
-                agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
-            )
-            log.info(
-                "compaction_usage_recorded session=%s in=%d out=%d",
-                session_id, u["input_tokens"], u["output_tokens"],
-            )
-    except Exception:  # noqa: BLE001
-        log.debug("compaction_usage_record_failed session=%s", session_id, exc_info=True)
-    summary = _parse_summary_output(str(getattr(summary_resp, "content", "") or "")).strip()
-    if not summary:
-        return None
+                    _sreg = _SESSIONS.get(session_id) or {}
+                except Exception:  # noqa: BLE001 — 注册表不可用也照记（缺 provider）
+                    pass
+                _cfg_slug = (config.get("configurable") or {}).get("project_slug") or "default"
+                usage_store.record(
+                    input_tokens=u["input_tokens"],
+                    output_tokens=u["output_tokens"],
+                    cache_read_tokens=u["cache_read_tokens"],
+                    cache_creation_tokens=u["cache_creation_tokens"],
+                    provider=_sreg.get("model_provider") or "",
+                    model=_sreg.get("model_name") or "",
+                    source="compaction",
+                    session_id=session_id or None,
+                    project_slug=_cfg_slug,
+                    agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
+                )
+                log.info(
+                    "compaction_usage_recorded session=%s in=%d out=%d",
+                    session_id, u["input_tokens"], u["output_tokens"],
+                )
+        except Exception:  # noqa: BLE001
+            log.debug("compaction_usage_record_failed session=%s", session_id, exc_info=True)
+        summary = _parse_summary_output(str(getattr(summary_resp, "content", "") or "")).strip()
+        if not summary:
+            return None
 
-    new_messages: list[BaseMessage] = [
-        RemoveMessage(id=m.id) for m in messages if getattr(m, "id", None)
-    ]
-    summary_msg = HumanMessage(
-        content=f"{SUMMARY_MSG_PREFIX}\n{summary_lead_in()}\n\n{summary}",
-        id=f"summary_{uuid.uuid4().hex[:10]}",
-    )
-    new_messages.append(summary_msg)
-    new_messages.extend(_copy_with_new_id(m) for m in keep)
-    try:
-        await graph.aupdate_state(config, {"messages": new_messages}, as_node="agent")
-    except ValueError:
-        # 写回竞态自愈（2026-11-21，会话 7978b…）：summarizer 是分钟级窗口，
-        # 期间并发 turn 可能推进 checkpoint——旧快照构造的 RemoveMessage 引用
-        # 的 id 在新 checkpoint 中不存在时，langgraph add_messages 的严格删除
-        # 校验抛 ValueError（此前直接 compaction_failed：压缩白跑、摘要作废、
-        # ERROR 撒日志吓人）。分两种情况：
-        #   1) 批次其实已落盘（本例实况：writer 已 put 成功，branch 路由阶段
-        #      重放应用才炸）→ summary id 已在最新 state，视为成功，绝不重放
-        #      （重放会叠加重复摘要）；
-        #   2) 快照漂移且未落盘 → 重读最新 state，全删当前消息 + 依序重建
-        #      [summary] + keep 副本 + 并发消息副本（并发追加的消息不在旧
-        #      快照、也不在摘要覆盖范围，复制到尾部保信息不丢），重试一次；
-        #      再失败由调用方兜底（下 turn 再评估）。
-        state2 = await graph.aget_state(config)
-        if state2 is None or getattr(state2, "next", None):
-            raise
-        msgs2 = list((state2.values or {}).get("messages", []))
-        ids2 = {getattr(m, "id", None) for m in msgs2}
-        if summary_msg.id in ids2:
-            log.info(
-                "compaction_race_already_applied session=%s msgs_after=%d",
-                session_id, len(msgs2),
-            )
-        else:
-            old_ids = {m.id for m in messages if getattr(m, "id", None)}
-            if [getattr(m, "id", None) for m in msgs2] == [
-                getattr(m, "id", None) for m in messages
-            ]:
-                raise  # 快照未漂移：同批次重放无意义，按失败上报
-            # 审计 F（2026-11-21）：重试批次改为「全删 + 依序重建」。
-            # 旧实现交集删除保留并发消息在原位、[summary, keep] 追加其后
-            # ——落盘顺序变成 [并发消息, summary, keep]，摘要排到了最新消息
-            # 之后：时序与正常压缩结果（summary 在最前）相反，后续
-            # find_split_index / 尾窗语义都会把 keep 误当更旧内容。新时序
-            # 依序追加 [summary] + keep 副本 + 并发消息副本（msgs2 中不在
-            # 旧快照 id 集的，复制换新 id），与无竞态路径的产物一致。
-            retry: list[BaseMessage] = [
-                RemoveMessage(id=m.id)
-                for m in msgs2
-                if getattr(m, "id", None) is not None
-            ]
-            retry.append(summary_msg)
-            retry.extend(_copy_with_new_id(m) for m in keep)
-            retry.extend(
-                _copy_with_new_id(m)
-                for m in msgs2
-                if getattr(m, "id", None) is not None and m.id not in old_ids
-            )
-            await graph.aupdate_state(config, {"messages": retry}, as_node="agent")
-            log.info(
-                "compaction_race_retried session=%s snapshot_msgs=%d current_msgs=%d",
-                session_id, len(messages), len(msgs2),
-            )
-            new_messages = retry
-    log.info(
-        "compaction_done session=%s old_msgs=%d new_msgs=%d est_tokens_after=%d",
-        session_id, len(messages), len(new_messages),
-        estimate_messages_tokens(new_messages),
-    )
-
-    # P0（2026-11-21，会话 7978b…）：压缩成功后立即落一条上下文基线，堵
-    # 「压完立即再压」——E3 阈值判定的 usage 口径（last_chat_input_tokens）
-    # 取最近一条非 sideband 记录，压缩后到下个真实对话记录之间它仍是压缩
-    # 前的巨值，紧接着的 turn（task 回传类自动 turn）E3 会立即再触发一次
-    # 压缩：白跑摘要，还放大写回竞态窗口。context_baseline 不在
-    # NON_CONTEXT_SOURCES，last_chat_input_tokens / TopBar 圆环（同分子）
-    # 即时校正到压缩后水位。
-    try:
-        from . import usage_store
-
-        usage_store.record(
-            input_tokens=estimate_messages_tokens(new_messages),
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_creation_tokens=0,
-            provider="",
-            model="",
-            source="context_baseline",
-            session_id=session_id or None,
-            project_slug=str(
-                (config.get("configurable") or {}).get("project_slug") or "default"
-            ),
-            agent_id=None,
+        new_messages: list[BaseMessage] = [
+            RemoveMessage(id=m.id) for m in messages if getattr(m, "id", None)
+        ]
+        summary_msg = HumanMessage(
+            content=f"{SUMMARY_MSG_PREFIX}\n{summary_lead_in()}\n\n{summary}",
+            id=f"summary_{uuid.uuid4().hex[:10]}",
         )
-    except Exception:  # noqa: BLE001 — 基线是辅助，失败不影响压缩结果
-        log.debug("compaction_baseline_record_failed session=%s", session_id, exc_info=True)
+        new_messages.append(summary_msg)
+        new_messages.extend(_copy_with_new_id(m) for m in keep)
+        await writing()
+        try:
+            await graph.aupdate_state(config, {"messages": new_messages}, as_node="agent")
+        except ValueError:
+            # 写回竞态自愈（2026-11-21，会话 7978b…）：summarizer 是分钟级窗口，
+            # 期间并发 turn 可能推进 checkpoint——旧快照构造的 RemoveMessage 引用
+            # 的 id 在新 checkpoint 中不存在时，langgraph add_messages 的严格删除
+            # 校验抛 ValueError（此前直接 compaction_failed：压缩白跑、摘要作废、
+            # ERROR 撒日志吓人）。分两种情况：
+            #   1) 批次其实已落盘（本例实况：writer 已 put 成功，branch 路由阶段
+            #      重放应用才炸）→ summary id 已在最新 state，视为成功，绝不重放
+            #      （重放会叠加重复摘要）；
+            #   2) 快照漂移且未落盘 → 重读最新 state，全删当前消息 + 依序重建
+            #      [summary] + keep 副本 + 并发消息副本（并发追加的消息不在旧
+            #      快照、也不在摘要覆盖范围，复制到尾部保信息不丢），重试一次；
+            #      再失败由调用方兜底（下 turn 再评估）。
+            state2 = await graph.aget_state(config)
+            if state2 is None or getattr(state2, "next", None):
+                raise
+            msgs2 = list((state2.values or {}).get("messages", []))
+            ids2 = {getattr(m, "id", None) for m in msgs2}
+            if summary_msg.id in ids2:
+                log.info(
+                    "compaction_race_already_applied session=%s msgs_after=%d",
+                    session_id, len(msgs2),
+                )
+            else:
+                old_ids = {m.id for m in messages if getattr(m, "id", None)}
+                if [getattr(m, "id", None) for m in msgs2] == [
+                    getattr(m, "id", None) for m in messages
+                ]:
+                    raise  # 快照未漂移：同批次重放无意义，按失败上报
+                # 审计 F（2026-11-21）：重试批次改为「全删 + 依序重建」。
+                # 旧实现交集删除保留并发消息在原位、[summary, keep] 追加其后
+                # ——落盘顺序变成 [并发消息, summary, keep]，摘要排到了最新消息
+                # 之后：时序与正常压缩结果（summary 在最前）相反，后续
+                # find_split_index / 尾窗语义都会把 keep 误当更旧内容。新时序
+                # 依序追加 [summary] + keep 副本 + 并发消息副本（msgs2 中不在
+                # 旧快照 id 集的，复制换新 id），与无竞态路径的产物一致。
+                retry: list[BaseMessage] = [
+                    RemoveMessage(id=m.id)
+                    for m in msgs2
+                    if getattr(m, "id", None) is not None
+                ]
+                retry.append(summary_msg)
+                retry.extend(_copy_with_new_id(m) for m in keep)
+                retry.extend(
+                    _copy_with_new_id(m)
+                    for m in msgs2
+                    if getattr(m, "id", None) is not None and m.id not in old_ids
+                )
+                await graph.aupdate_state(config, {"messages": retry}, as_node="agent")
+                log.info(
+                    "compaction_race_retried session=%s snapshot_msgs=%d current_msgs=%d",
+                    session_id, len(messages), len(msgs2),
+                )
+                new_messages = retry
+        log.info(
+            "compaction_done session=%s old_msgs=%d new_msgs=%d est_tokens_after=%d",
+            session_id, len(messages), len(new_messages),
+            estimate_messages_tokens(new_messages),
+        )
 
-    # E4 — re-assert the world after compression.
-    reinject_text = None
-    if ctx_factory is not None:
-        reinject_text = render_reinjection(ctx_factory())
+        # P0（2026-11-21，会话 7978b…）：压缩成功后立即落一条上下文基线，堵
+        # 「压完立即再压」——E3 阈值判定的 usage 口径（last_chat_input_tokens）
+        # 取最近一条非 sideband 记录，压缩后到下个真实对话记录之间它仍是压缩
+        # 前的巨值，紧接着的 turn（task 回传类自动 turn）E3 会立即再触发一次
+        # 压缩：白跑摘要，还放大写回竞态窗口。context_baseline 不在
+        # NON_CONTEXT_SOURCES，last_chat_input_tokens / TopBar 圆环（同分子）
+        # 即时校正到压缩后水位。
+        try:
+            from . import usage_store
 
-    return {
-        "compacted_messages": len(old),
-        "kept_messages": len(keep),
-        "summary_chars": len(summary),
-        "reinject": reinject_text,
-    }
+            usage_store.record(
+                input_tokens=estimate_messages_tokens(new_messages),
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                provider="",
+                model="",
+                source="context_baseline",
+                session_id=session_id or None,
+                project_slug=str(
+                    (config.get("configurable") or {}).get("project_slug") or "default"
+                ),
+                agent_id=None,
+            )
+        except Exception:  # noqa: BLE001 — 基线是辅助，失败不影响压缩结果
+            log.debug("compaction_baseline_record_failed session=%s", session_id, exc_info=True)
+
+        # E4 — re-assert the world after compression.
+        reinject_text = None
+        if ctx_factory is not None:
+            reinject_text = render_reinjection(ctx_factory())
+
+        return {
+            "compacted_messages": len(old),
+            "kept_messages": len(keep),
+            "summary_chars": len(summary),
+            "reinject": reinject_text,
+        }
 
 
 _SUMMARY_TAG_RE = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)

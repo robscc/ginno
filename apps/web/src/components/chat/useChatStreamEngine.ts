@@ -18,6 +18,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import type { CompactionStage } from "./engine/handlers/11-context";
 import {
   listLastwordsPending,
   openSessionSocket,
@@ -114,12 +115,7 @@ export interface EngineDeps {
   setPropose: (v: VersionPropose | null | ((p: VersionPropose | null) => VersionPropose | null)) => void;
   setStreamAgent: (v: string | null | ((p: string | null) => string | null)) => void;
   setServerRunning: (v: boolean | ((p: boolean) => boolean)) => void;
-  // context.compacting 状态镜像（E3 压缩中的「压缩中…」提示）：set 仅写
-  // 当前显示会话的布尔值，真源是 compactingBySessionRef。
-  setCompacting: (v: boolean | ((p: boolean) => boolean)) => void;
-  setCompactStage: (
-    v: { stage: string; pct: number; predicted_s?: number; eta?: number } | null | ((p: { stage: string; pct: number; predicted_s?: number; eta?: number } | null) => { stage: string; pct: number; predicted_s?: number; eta?: number } | null),
-  ) => void;
+  setCompactStage: (v: CompactionStage | null) => void;
   setInput: (v: string | ((p: string) => string)) => void;
   setAttachments: (v: Attachment[] | ((p: Attachment[]) => Attachment[])) => void;
   setTarget: (v: string | null | ((p: string | null) => string | null)) => void;
@@ -169,7 +165,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
@@ -230,14 +226,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const hintTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-session mirror of the `serverRunning` state (see syncDisplay).
   const serverRunningRef = useRef<Record<string, boolean>>({});
-  // E3 压缩进行中（context.compacting 已到、压缩结果/后续流事件未到）。
-  // 置位只在总结 LLM 调用前发生,清除由「该会话任何下一个事件」兜底——
-  // 压缩期间没有别的流事件,首个到达的事件必属压缩之后。
-  const compactingBySessionRef = useRef<Record<string, boolean>>({});
-  // 压缩进度镜像（2026-11-12）：真源 compactStageRef（engine ctx），
-  // syncDisplay 时把当前显示会话的 stage 投到 React 状态供进度条渲染。
-  const compactStageRef = useRef<Record<string, { stage: string; pct: number; predicted_s?: number; eta?: number } | null>>({});
-  const [compactStage, setCompactStage] = useState<{ stage: string; pct: number; predicted_s?: number; eta?: number } | null>(null);
+  const compactStageRef = useRef<Record<string, CompactionStage | null>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
   // (remount mid-turn — the user navigated to another page while a reply was
@@ -301,7 +290,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
     setServerRunning(!!serverRunningRef.current[sid]);
-    setCompacting(!!compactingBySessionRef.current[sid]);
     setCompactStage(compactStageRef.current[sid] ?? null);
     // The steer queue is no longer mirrored here — useSteerQueue re-renders the
     // component itself when the queue changes, and `steerItems` reads it live.
@@ -312,14 +300,14 @@ export function useChatStreamEngine(deps: EngineDeps) {
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
     i18nRef,
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
     storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
-    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, compactStageRef, streamAgentRef, setCompactStage,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactStageRef, streamAgentRef,
     orphanStreamRef, adoptedTurnRef, retryNoticeRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
     sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,
@@ -444,7 +432,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
         clearSteerQueue(id);
         delete serverRunningRef.current[id];
-        delete compactingBySessionRef.current[id];
+        delete compactStageRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
         delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
@@ -555,7 +543,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // reconcileTurnFromHistory 从 checkpoint 重建（把 answered question 卡、
         // 终态 text 全部补齐）。sendSeq>probeSeq 守卫已存在，不会误伤刚发出的
         // 新 turn。30s 间隔 = 卡死上限一个探针周期。
-        if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
+        if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid] || compactStageRef.current[sid]) {
           const s = socketsRef.current[sid];
           if (s?.readyState === WebSocket.OPEN) {
             try {
@@ -698,7 +686,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       setPropose(null);
       setStreamAgent(null);
       setServerRunning(false);
-      setCompacting(false);
+      setCompactStage(null);
       const draft = draftCacheRef.current[HOME_SLOT];
       if (draft) {
         setInput(draft.input);
@@ -931,7 +919,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // refs
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
     storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
-    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, compactStageRef, streamAgentRef,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactStageRef, streamAgentRef,
     orphanStreamRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
     sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,

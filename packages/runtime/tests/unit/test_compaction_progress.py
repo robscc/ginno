@@ -1,13 +1,4 @@
-"""压缩过程硬化（2026-11-16 P3/P4/P5）：
-
-* P3 — 摘要期间的进度心跳：on_heartbeat 每 ``_HEARTBEAT_S`` 推一帧时间轴
-  pct（有 predicted_s 时），单调且封顶 90（writing=92 由事件接管）。
-* P5 — server_shared._COMPACTING 生命周期：摘要飞行中登记、结束（含
-  abort 路径）必清；turn.state 探针据此保住前端「压缩中」镜像。
-* P4 — microcompact 的持久痕迹：历史重放从 ``[old tool output`` placeholder
-  特征重建一行系统行（live 的 context.microcompacted 只落前端内存 store，
-  后台会话/断线场景此前完全无感知）。
-"""
+"""Compaction phases, stop cleanup, and the persisted microcompact marker."""
 
 from __future__ import annotations
 
@@ -46,43 +37,34 @@ async def _setup(isolated_home, thread: str, threshold: int = 10):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_ticks_and_compacting_registry(isolated_home, monkeypatch):
-    """P3+P5：慢摘要期间心跳按时间轴推进且 _COMPACTING 在册；结束必清。"""
-    session, config, model = await _setup(isolated_home, "comp-hb")
+async def test_registry_reports_summary_and_write_phases(isolated_home, monkeypatch):
+    from ginno_runtime import server_shared
 
-    import ginno_runtime.compaction as C
-    from ginno_runtime.server_shared import _COMPACTING
+    session, config, model = await _setup(isolated_home, "comp-phases")
+    sid = session["session_id"]
+    published = []
 
-    monkeypatch.setattr(C, "_HEARTBEAT_S", 0.05)
-    # 固定预估 10s → 心跳 pct = 8 + elapsed/10*82，帧间 0.05s → 每帧 ~+0.4%
-    from ginno_runtime import compaction_stats
-    monkeypatch.setattr(compaction_stats, "predict", lambda n: 10.0)
+    async def push(session_id, event, payload, turn_id):
+        assert session_id == sid and event == "context.compacting"
+        published.append(payload)
 
-    real_agenerate = model._agenerate
+    monkeypatch.setattr(server_shared, "_push_session_event", push)
+    generate = model._agenerate
+    write = session["graph"].aupdate_state
 
-    async def slow_agenerate(*a, **kw):
-        if model._i >= 2:  # the summarizer is the 3rd scripted call
-            await asyncio.sleep(0.22)
-        return await real_agenerate(*a, **kw)
+    async def summary(*args, **kwargs):
+        assert server_shared._COMPACTING[sid]["stage"] == "summarizing"
+        return await generate(*args, **kwargs)
 
-    monkeypatch.setattr(model, "_agenerate", slow_agenerate)
+    async def update(*args, **kwargs):
+        assert server_shared._COMPACTING[sid]["stage"] == "writing"
+        return await write(*args, **kwargs)
 
-    ticks: list[int] = []
-    registry_seen: list[bool] = []
-
-    async def on_heartbeat(pct: int) -> None:
-        ticks.append(pct)
-        registry_seen.append(session["session_id"] in _COMPACTING)
-
-    stats = await maybe_compact_history(
-        session, config, on_heartbeat=on_heartbeat
-    )
-    assert stats is not None, "slow-but-successful summarize must still compact"
-    assert len(ticks) >= 2, f"expected ≥2 heartbeat ticks in 0.22s, got {ticks}"
-    assert ticks == sorted(ticks), f"pct must be monotonic, got {ticks}"
-    assert all(p < 92 for p in ticks), "heartbeat caps below the writing stage"
-    assert all(registry_seen), "_COMPACTING must hold the session while summarizing"
-    assert session["session_id"] not in _COMPACTING, "registry cleared after compaction"
+    monkeypatch.setattr(model, "_agenerate", summary)
+    monkeypatch.setattr(session["graph"], "aupdate_state", update)
+    assert await maybe_compact_history(session, config) is not None
+    assert published == [{"stage": "summarizing"}, {"stage": "writing"}, {"stage": "done"}]
+    assert sid not in server_shared._COMPACTING
 
 
 @pytest.mark.asyncio
@@ -90,12 +72,7 @@ async def test_compacting_registry_cleared_on_abort(isolated_home, monkeypatch):
     """P5：abort 路径也必须清 _COMPACTING（finally 兜底），不留脏注册。"""
     session, config, model = await _setup(isolated_home, "comp-hb-abort")
 
-    import ginno_runtime.compaction as C
     from ginno_runtime.server_shared import _COMPACTING
-
-    monkeypatch.setattr(C, "_HEARTBEAT_S", 0.05)
-    from ginno_runtime import compaction_stats
-    monkeypatch.setattr(compaction_stats, "predict", lambda n: 10.0)
 
     hang = asyncio.Event()
     real_agenerate = model._agenerate

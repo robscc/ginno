@@ -298,8 +298,7 @@ agentName?: string;
 subagentTypeName?: string;
 blocks: Block[];
 streaming?: boolean;
-/** 瞬态状态行文案（如「压缩中…」）：非空时优先于 connecting/thinking 计时文案；
- *  有内容（hasInner）的流式气泡上头部状态行不渲染，此文案由尾部等待行承接 */
+/** Active compaction phase, shown once inside the bubble. */
 statusOverride?: string | null;
 turnId?: string;
 failed?: boolean;
@@ -422,7 +421,7 @@ const dsLabelOn = dsTail || (dsOwn && !connLost && streaming);
 // 都被强制点亮尾部行，而文案只在 dsOwn 时取 dev-swap 进度、其余回退成
 // 「等待下一轮」——正在思考/执行命令的气泡也顶着「等待下一轮」骗人
 // （用户反馈 2026-11-17，与 §4.5「其他会话不打扰」sid 门控意图一致）。
-const lineVisible = tailLineVisible({
+const lineVisible = !!statusOverride || tailLineVisible({
   streaming,
   connLost,
   waitingNextRound,
@@ -437,22 +436,22 @@ const tailAmber = dsLabelOn && !!dsLine?.slow;
 // Track elapsed time for dynamic status text during TTFT wait
 const [elapsed, setElapsed] = useState(0);
 useEffect(() => {
-  if (!streaming || hasInner) {
+  if (!streaming || hasInner || statusOverride) {
     setElapsed(0);
     return;
   }
   setElapsed(0);
   const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
   return () => clearInterval(timer);
-}, [streaming, hasInner]);
+}, [streaming, hasInner, statusOverride]);
 
 // Dynamic status text based on elapsed time
 const statusText = useMemo(() => {
-  if (statusOverride) return statusOverride;
+  if (statusOverride) return connLost ? waitText : statusOverride;
   if (elapsed < 2) return tc("stream.connecting");
   if (elapsed < 10) return tc("stream.thinking");
   return tc("stream.stillThinking", { seconds: elapsed });
-}, [statusOverride, elapsed, tc]);
+}, [statusOverride, connLost, waitText, elapsed, tc]);
 // 完成态相对时间要跟着墙钟走（2026-10-29 用户反馈：1h 后气泡仍显示「刚刚」）：
 // relTime 只在重渲染时重算，闲置会话没有天然的重渲染源——60s 一跳强制刷新
 // （relTime 最细粒度是分钟，60s 足够）；无 ts 不起定时器。
@@ -465,7 +464,7 @@ useEffect(() => {
 // 不渲染。旧的硬编码「刚刚」会说一小时的谎，宁可空着。
 // 已有内容的流式气泡头部不再显示状态行：elapsed 只在空气泡时计时，旧行为
 // 会把「正在连接模型……」冻在整个流式期；活性信号改由尾部等待行承担。
-const timeLabel = streaming ? (hasInner ? "" : statusText) : ts ? relTime(ts) : "";
+const timeLabel = streaming ? (hasInner || statusOverride ? "" : statusText) : ts ? relTime(ts) : "";
 return (
   <div className="min-w-0">
     {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
@@ -513,7 +512,7 @@ return (
                 期间升级为进度态（§4），超 P90 琥珀；发起 turn 已结束也由
                 dsTail 持续挂着，直到 run 终态。 */}
             {lineVisible && (
-              <div className="mt-1.5 flex justify-end">
+              <div role={statusOverride ? "status" : undefined} className="mt-1.5 flex justify-end">
                 <div className="flex items-center gap-2 px-1 py-0.5">
                 <div className="flex items-center gap-0.5">
                   <SonarDot color={connLost && !dsTail ? "#eab308" : hex} />
@@ -530,8 +529,8 @@ return (
               </div>
             )}
           </>
-        ) : streaming ? (
-          <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
+        ) : (streaming || statusOverride) ? (
+          <div role={statusOverride ? "status" : undefined} className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
             <div className="flex items-center gap-2">
               {/* Smaller animated wave dots */}
               <div className="flex items-center gap-0.5">
@@ -542,7 +541,7 @@ return (
                 {statusText}
               </span>
               {/* Subtle progress bar for long waits */}
-              {elapsed >= 10 && (
+              {!statusOverride && elapsed >= 10 && (
                 <div className="ml-auto flex-1 max-w-[80px]">
                   <div className="h-0.5 overflow-hidden rounded-full bg-muted/20">
                     <div

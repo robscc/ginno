@@ -59,33 +59,29 @@ export function onContextMicrocompacted(ctx: EngineCtx, sid: string, ev: ServerE
   ctx.syncDisplay(sid);
 }
 
-export function onContextCompacting(ctx: EngineCtx, sid: string, ev: ServerEvent) {
-  // E3 总结 LLM 调用前发出的瞬态状态:live 气泡状态行
-  // 从「正在思考…」切到「压缩中…」。不落 store,不进历史。
-  // 2026-11-12 payload 带 {stage,pct}（summarizing=8 / writing=92），
-  // 中间段由渲染层时间缓动推进——Claude Code 同款进度条体验。
-  const pl = ev as { stage?: string; pct?: number; predicted_s?: number | null };
-  if (pl.stage === "done") {
-    // 终态（2026-11-12 卡死修复）：compact 是后台任务，结束后若无
-    // 后续事件，compacting 镜像永不清 → Composer 永久 readOnly。
-    ctx.compactingBySessionRef.current[sid] = false;
-    ctx.compactStageRef.current[sid] = null;
-    ctx.syncDisplay(sid);
-    return;
+export type CompactionStage = "summarizing" | "writing";
+
+export function compactionStageAfterFrame(stage: CompactionStage | null, ev: ServerEvent): CompactionStage | null {
+  if (ev.event === "context.compacting") {
+    if (ev.stage === "done") return null;
+    return ev.stage === "writing" ? "writing" : "summarizing";
   }
-  ctx.compactingBySessionRef.current[sid] = true;
-  ctx.compactStageRef.current[sid] = {
-    stage: typeof pl.stage === "string" ? pl.stage : "summarizing",
-    predicted_s:
-      typeof pl.predicted_s === "number" && pl.predicted_s > 0
-        ? pl.predicted_s
-        : undefined,
-    pct: typeof pl.pct === "number" ? pl.pct : 8,
-  };
-  ctx.syncDisplay(sid);
+  if (ev.event === "turn.state") {
+    if (ev.compacting === false) return null;
+    if (ev.compacting === true) {
+      if (ev.compaction_stage === "writing" || ev.compaction_stage === "summarizing") return ev.compaction_stage;
+      return stage ?? "summarizing";
+    }
+  }
+  return ev.event === "context.compacted" ? null : stage;
+}
+
+export function onContextCompacting(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  ctx.compactStageRef.current[sid] = compactionStageAfterFrame(ctx.compactStageRef.current[sid] ?? null, ev);
 }
 
 export function onContextCompacted(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  onContextCompacting(ctx, sid, ev);
   // History compaction announcement (E3) — always visible.
   const n = Number(ev.compacted_messages ?? 0);
   ctx.storeRef.current[sid] = [
@@ -111,6 +107,7 @@ export function onHistoryCleared(ctx: EngineCtx, sid: string) {
   // 流式状态一并复位（ensureLive 会在空 store 上为紧随其后的 /clear
   // 收据 notice 新开一个气泡，作为新对话的第一条）。
   ctx.storeRef.current[sid] = [];
+  ctx.compactStageRef.current[sid] = null;
   ctx.liveBySessionRef.current[sid] = null;
   ctx.streamAgentRef.current[sid] = null;
   ctx.busyBySessionRef.current[sid] = false;

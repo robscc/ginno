@@ -1217,32 +1217,24 @@ def _compact_check_node_factory(model):
         old = non_system[:cut]
         transcript = "\n".join(_msg_line(m) for m in old)
 
-        # 事件（惰性 import 无环；失败不影响压缩本身）
-        async def _ev(payload: dict) -> None:
-            try:
-                from .server_shared import _push_session_event
+        from .compaction import compaction_activity
 
-                await _push_session_event(session_id, "context.compacting", payload, None)
-            except Exception:  # noqa: BLE001
-                pass
-
-        await _ev({"stage": "summarizing", "pct": 8, "reason": "mid-turn"})
         try:
-            summary = await model.ainvoke(
-                [
-                    _summary_system_message(),
-                    HumanMessage(
-                        content=(
-                            "Summarize the following earlier conversation "
-                            "(a long running task continues; keep task-relevant "
-                            f"facts, decisions and file paths):\n\n{transcript}"
-                        )
-                    ),
-                ]
-            )
+            async with compaction_activity(session_id, _cfg.get("turn_id")):
+                summary = await model.ainvoke(
+                    [
+                        _summary_system_message(),
+                        HumanMessage(
+                            content=(
+                                "Summarize the following earlier conversation "
+                                "(a long running task continues; keep task-relevant "
+                                f"facts, decisions and file paths):\n\n{transcript}"
+                            )
+                        ),
+                    ]
+                )
         except Exception:  # noqa: BLE001 — 摘要失败：放行（不破坏 turn）
             _mclog.warning("mid_compact_summary_failed session=%s", session_id or "?")
-            await _ev({"stage": "done", "pct": 100, "reason": "mid-turn-failed"})
             return {}
         drop = [
             RemoveMessage(id=m.id)
@@ -1254,7 +1246,6 @@ def _compact_check_node_factory(model):
             "mid_turn_compact session=%s est=%d soft=%d dropped=%d kept_tail=%d",
             session_id or "?", est, int(soft), len(drop), len(tail),
         )
-        await _ev({"stage": "done", "pct": 100, "reason": "mid-turn"})
         summary_msg = HumanMessage(
             content=(
                 "[compact] 前段对话已压缩摘要（turn 中自动压缩）：\n"

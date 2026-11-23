@@ -103,7 +103,7 @@
 
 | 事件 | 处理语义 | 状态副作用 |
 |---|---|---|
-| session.state_changed | P1 状态机：compacting 置位 / idle 解除（按事件内 session_id） | compactingBySessionRef；syncDisplay |
+| session.state_changed | P1 状态机：compacting 置位 / idle 解除（按事件内 session_id） | compactStageRef；syncDisplay |
 | runtime.devswap_progress | 热切换阶段事件推模块级总线（非本会话帧，不 markDelivered） | pushDevSwapRun |
 | runtime.lastwords_pending | 遗言恢复决策卡（常驻 + 恢复/忽略按钮真调 API）+ OS 通知（askUser 类即时弹） | pushNotice(kind:lastwords,duration:0)；notifyNative(askUser)；resume/dismissLastwords |
 | runtime.lastwords_restored | 恢复回执收件箱条目（跳回原会话） | pushNotice(kind:lastwords) |
@@ -143,7 +143,7 @@
 |---|---|---|
 | context.updated | WorldState 公告：非 environment 变化落居中 context 行（可带 i18n） | store context 块；syncDisplay |
 | context.microcompacted | 旧工具输出清占位公告（恒可见） | store context 块 |
-| context.compacting | 压缩瞬态镜像：{stage,pct,predicted_s} 置位 / stage=done 自清（与 handle() 前置段协议耦合） | compactingBySessionRef；compactStageRef |
+| context.compacting | 按运行时阶段显示压缩状态，收到 done / context.compacted 后清除，turn.state 恢复当前阶段 | compactStageRef |
 | context.compacted | 压缩完成公告（恒可见） | store context 块 |
 | history.cleared | /clear：本地 transcript 整体丢弃 + 流状态复位 | store=[]；live/streamAgent/busy/orphan/retryNotice refs |
 

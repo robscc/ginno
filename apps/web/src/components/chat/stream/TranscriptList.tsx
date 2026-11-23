@@ -31,6 +31,7 @@ import {
   TurnIdChip,
 } from "../streamCards";
 import { type ChatMsg, failedTurnBannerVisible } from "../streamCore";
+import type { CompactionStage } from "../engine/handlers/11-context";
 import { CopyBubbleButton } from "./CopyBubbleButton";
 import { useMarkdownFileLinks } from "./useMarkdownFileLinks";
 import type { SessionMeta } from "@/lib/types";
@@ -64,9 +65,7 @@ export function TranscriptList({
   session,
   liveId,
   running,
-  compacting,
-  compactPct = null,
-  compactEta = null,
+  compactStage,
   serverRunning,
   wsStatus,
   parked,
@@ -85,9 +84,7 @@ export function TranscriptList({
   session: SessionMeta | null;
   liveId: string | null;
   running: boolean;
-  compacting: boolean;
-  compactPct: number | null;
-  compactEta: number | null;
+  compactStage: CompactionStage | null;
   serverRunning: boolean;
   /** 本会话 WS 连接状态（ChatStream）：传给 live 气泡的等待行——断线期间
    *  改报连接中断，而不是让「等待下一轮」秒表空转。 */
@@ -661,7 +658,9 @@ export function TranscriptList({
               }
               blocks={m.blocks}
               streaming={m.id === liveId}
-              statusOverride={compacting ? `${tc("stream.compacting")}${compactPct != null ? ` · ${compactPct}%` : ""}${compactEta != null && compactEta > 0 ? ` · ${tc("stream.compactEta", { s: compactEta })}` : ""}` : null}
+              statusOverride={compactStage && m.id === (liveId ?? lastAssistantId)
+                ? tc(compactStage === "writing" ? "stream.compactWriting" : "stream.compacting")
+                : null}
               connState={wsStatus ?? null}
               parkedTurn={parked}
               turnId={m.turnId}
