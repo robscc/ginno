@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime.files import extractors as ex
 from ginno_runtime.files import reset_registries
 from ginno_runtime.testing.fake_model import script
 
@@ -127,6 +129,54 @@ def test_preview_pagination_params(client, sid):
     assert pv["ok"] is True
     assert pv["rows"] == [["2"]]
     assert pv["offset"] == 1 and pv["total_rows"] == 3
+
+
+def test_preview_table_parse_runs_off_event_loop(client, sid, monkeypatch):
+    preview_url = _upload_preview_table(client, sid)
+    loop_states = []
+    read_table = ex.read_table
+
+    def probe(path):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop_states.append(False)
+        else:
+            loop_states.append(True)
+        return read_table(path)
+
+    monkeypatch.setattr(ex, "read_table", probe)
+    assert client.get(preview_url).json()["ok"] is True
+    assert loop_states == [False]
+
+
+def test_preview_table_pages_share_parse(client, sid, monkeypatch):
+    preview_url = _upload_preview_table(client, sid)
+    calls = []
+    read_table = ex.read_table
+
+    def counted(path):
+        calls.append(path)
+        return read_table(path)
+
+    monkeypatch.setattr(ex, "read_table", counted)
+    for offset in (0, 500, 999):
+        page = client.get(preview_url, params={"offset": offset, "limit": 1}).json()
+        assert page["ok"] is True
+        assert page["total_rows"] == 1000
+        assert page["rows"] == [[str(offset)]]
+    assert len(calls) == 1
+
+
+def _upload_preview_table(client, sid):
+    csv = ("value\n" + "\n".join(map(str, range(1000))) + "\n").encode()
+    result = client.post(
+        "/api/files",
+        data={"session_id": sid},
+        files={"file": ("preview.csv", csv, "text/csv")},
+    ).json()
+    assert result["ok"] is True
+    return f"/api/files/{result['file']['id']}/preview"
 
 
 def test_preview_docx_returns_markdown(client, sid):

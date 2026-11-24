@@ -8,7 +8,9 @@ through :mod:`extractors` so lazy deps + graceful degrade apply.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
+from threading import Lock
 
 from ..lang import t
 from . import extractors as ex
@@ -16,15 +18,60 @@ from . import extractors as ex
 MAX_LIMIT = 500
 
 
-def _table_payload(path: Path, kind: str, sheet: str | None, offset: int, limit: int) -> dict:
+_TABLE_CACHE_MAX_ENTRIES = 16
+_TABLE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_FileVersion = tuple[int, int, int, int, int]
+_TABLE_CACHE: OrderedDict[Path, tuple[_FileVersion, dict, int]] = OrderedDict()
+_TABLE_CACHE_LOCK = Lock()
+# Fixed stripes bound lock memory while coalescing simultaneous misses for a path.
+_TABLE_PARSE_LOCKS = tuple(Lock() for _ in range(32))
+
+
+def _file_version(path: Path) -> _FileVersion | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None  # let the extractor report its usual error
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _load_table_frames(path: Path, kind: str) -> dict:
     if kind == "spreadsheet":
         _, frames = ex._read_spreadsheet(path)
-        if not isinstance(frames, dict):
-            frames = {path.stem: frames}
-    elif kind == "table":
-        frames = {path.stem: ex.read_table(path)}
-    else:  # pragma: no cover - guarded by caller
-        raise ValueError(f"not a table kind: {kind}")
+        return frames if isinstance(frames, dict) else {path.stem: frames}
+    return {path.stem: ex.read_table(path)}
+
+
+def _table_frames(path: Path, kind: str) -> dict:
+    key = path.absolute()
+    with _TABLE_PARSE_LOCKS[hash(key) % len(_TABLE_PARSE_LOCKS)]:
+        version = _file_version(path)
+        with _TABLE_CACHE_LOCK:
+            cached = _TABLE_CACHE.pop(key, None)
+            if cached is not None and cached[0] == version:
+                _TABLE_CACHE[key] = cached
+                return cached[1]
+
+        frames = _load_table_frames(path, kind)
+        if version is None:
+            return frames
+        size = sum(
+            int(frame.memory_usage(deep=True).sum()) + int(frame.columns.memory_usage(deep=True))
+            for frame in frames.values()
+        )
+        # A file replaced or edited during parsing must not populate the cache.
+        if size <= _TABLE_CACHE_MAX_BYTES and _file_version(path) == version:
+            with _TABLE_CACHE_LOCK:
+                _TABLE_CACHE[key] = (version, frames, size)
+                total = sum(item[2] for item in _TABLE_CACHE.values())
+                while len(_TABLE_CACHE) > _TABLE_CACHE_MAX_ENTRIES or total > _TABLE_CACHE_MAX_BYTES:
+                    _, (_, _, evicted_size) = _TABLE_CACHE.popitem(last=False)
+                    total -= evicted_size
+        return frames
+
+
+def _table_payload(path: Path, kind: str, sheet: str | None, offset: int, limit: int) -> dict:
+    frames = _table_frames(path, kind)
 
     names = list(frames.keys())
     active = sheet if sheet in frames else names[0]
