@@ -9,6 +9,7 @@ import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Thread
 
 import pytest
@@ -52,7 +53,9 @@ def playwright_mcp(isolated_home: Path, monkeypatch):
         chromium = pw.chromium.executable_path
     if not Path(chromium).is_file():
         pytest.fail(f"Chromium missing at {chromium}; run `python -m playwright install chromium`")
-    return cli, chromium
+    # Keep the MCP sockets and Chromium's temporary profile out of a deep pytest TMPDIR.
+    with TemporaryDirectory(prefix="ginno-pw-", dir="/tmp" if os.name == "posix" else None) as browser_tmp:
+        yield cli, chromium, browser_tmp
 
 
 @pytest.fixture
@@ -76,7 +79,7 @@ def ranking_url(tmp_path, playwright_mcp):
             thread.join()
 
 
-def _enable_playwright(home: Path, cli: str, chromium: str, output: Path) -> None:
+def _enable_playwright(home: Path, cli: str, chromium: str, output: Path, browser_tmp: str) -> None:
     (home / "mcp" / "mcp.json").write_text(
         json.dumps(
             {
@@ -84,6 +87,7 @@ def _enable_playwright(home: Path, cli: str, chromium: str, output: Path) -> Non
                     "playwright": {
                         "transport": "stdio",
                         "command": cli,
+                        "env": {"TMPDIR": browser_tmp, "PWTEST_SOCKETS_DIR": browser_tmp},
                         "args": [
                             "--headless",
                             "--isolated",
@@ -146,10 +150,10 @@ def test_session_opens_trending_screenshot_and_analyzes(
     ranking_url: str,
     patch_build_model,
 ):
-    cli, chromium = playwright_mcp
+    cli, chromium, browser_tmp = playwright_mcp
     output = isolated_home / "screenshots"
     output.mkdir()
-    _enable_playwright(isolated_home, cli, chromium, output)
+    _enable_playwright(isolated_home, cli, chromium, output, browser_tmp)
     workspace = isolated_home / "ws"
     workspace.mkdir()
 

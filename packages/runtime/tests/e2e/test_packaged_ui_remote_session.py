@@ -209,6 +209,8 @@ def _send_first_message(page, text: str) -> None:
 
 
 def test_home_peer_chip_alongside_agents(app):
+    from playwright.sync_api import expect
+
     page, port = app
     chip = page.get_by_test_id(f"remote-peer-chip-{PEER_SLUG}")
     chip.wait_for(state="visible", timeout=30_000)
@@ -223,9 +225,9 @@ def test_home_peer_chip_alongside_agents(app):
     # tooltip 带完整 endpoint
     assert PEER_ENDPOINT in (chip.get_attribute("title") or "")
 
-    # 与本地 agent chip 并列：同一 chip 行里既有「问 X」也有 peer chip
-    agent_chips = page.locator("button").filter(has_text=re.compile(r"^问 "))
-    assert agent_chips.count() >= 1, "本地 agent chips 应仍在（并列，不是替换）"
+    # /api/agents 与 /api/a2a/peers 独立加载，等同一行的本地 Agent 按钮出现。
+    agent_chips = chip.locator("xpath=..").get_by_role("button", name=re.compile(r"^问 "))
+    expect(agent_chips.first).to_be_visible()
 
     # disabled peer 不出现
     assert page.get_by_test_id("remote-peer-chip-off-node").count() == 0
