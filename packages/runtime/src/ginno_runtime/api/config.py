@@ -7,10 +7,12 @@ import asyncio
 import logging
 import time
 import uuid
+from threading import Lock
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ginno_runtime import jsonx as json
 
@@ -36,10 +38,14 @@ log = logging.getLogger(__name__)
 
 # ---- skills ----
 
+# HTTP readers and writers share the lock now that file operations run in workers.
+_SKILL_FILES_LOCK = Lock()
+
 
 @router.get("/api/skills")
-async def list_skills(project_slug: str | None = None) -> list[dict]:
-    skills = SkillLoader(project_slug=project_slug).load()
+def list_skills(project_slug: str | None = None) -> list[dict]:
+    with _SKILL_FILES_LOCK:
+        skills = SkillLoader(project_slug=project_slug).load()
     return [
         {
             "name": s.name,
@@ -53,8 +59,9 @@ async def list_skills(project_slug: str | None = None) -> list[dict]:
 
 
 @router.get("/api/skills/{name}/body")
-async def get_skill_body(name: str, project_slug: str | None = None) -> dict:
-    s = SkillLoader(project_slug=project_slug).get(name)
+def get_skill_body(name: str, project_slug: str | None = None) -> dict:
+    with _SKILL_FILES_LOCK:
+        s = SkillLoader(project_slug=project_slug).get(name)
     return {"ok": bool(s), "body": s.body if s else ""}
 
 
@@ -64,9 +71,13 @@ async def create_skill_endpoint(data: dict) -> dict:
     body = data.get("body") or ""
     if not name:
         return {"ok": False, "error": "name required"}
-    d = paths.global_skills_dir() / name
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(body, encoding="utf-8")
+    def write_skill() -> None:
+        with _SKILL_FILES_LOCK:
+            d = paths.global_skills_dir() / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(body, encoding="utf-8")
+
+    await run_in_threadpool(write_skill)
     await _push_global_event("skills.changed", {})
     return {"ok": True}
 
@@ -75,15 +86,21 @@ async def create_skill_endpoint(data: dict) -> dict:
 async def delete_skill_endpoint(name: str) -> dict:
     import shutil
 
-    d = paths.global_skills_dir() / name
-    if d.exists():
-        shutil.rmtree(d)
+    def delete_skill() -> dict:
+        with _SKILL_FILES_LOCK:
+            d = paths.global_skills_dir() / name
+            if d.exists():
+                shutil.rmtree(d)
+                return {"ok": True}
+            s = SkillLoader().get(name)
+            if s and s.builtin:
+                return {"ok": False, "error": "builtin skill cannot be deleted"}
+            return {"ok": False}
+
+    result = await run_in_threadpool(delete_skill)
+    if result["ok"]:
         await _push_global_event("skills.changed", {})
-        return {"ok": True}
-    s = SkillLoader().get(name)
-    if s and s.builtin:
-        return {"ok": False, "error": "builtin skill cannot be deleted"}
-    return {"ok": False}
+    return result
 
 
 @router.post("/api/skills/import-dir")
@@ -101,16 +118,23 @@ async def import_skills_dir(data: dict) -> dict:
     """
     from ..skills.installer import import_skills_from_dir
 
-    result = import_skills_from_dir(
-        (data or {}).get("path", ""),
-        overwrite=bool((data or {}).get("overwrite", False)),
-    )
+    def import_skills() -> dict:
+        with _SKILL_FILES_LOCK:
+            return import_skills_from_dir(
+                (data or {}).get("path", ""),
+                overwrite=bool((data or {}).get("overwrite", False)),
+            )
+
+    result = await run_in_threadpool(import_skills)
     if result.get("ok") and result.get("imported"):
         await _push_global_event("skills.changed", {})
     return result
 
 
 # ---- mcp ----
+
+# Serialize the REST config snapshot with its existing in-place write.
+_MCP_CONFIG_LOCK = asyncio.Lock()
 
 
 @router.get("/api/mcp")
@@ -140,8 +164,7 @@ async def list_mcp(tools: bool = False) -> dict:
     }
 
 
-@router.get("/api/mcp/config")
-async def get_mcp_config_endpoint() -> dict:
+def _read_mcp_config() -> dict:
     p = paths.mcp_config_path()
     if not p.exists():
         return {"mcpServers": {}}
@@ -155,9 +178,16 @@ async def get_mcp_config_endpoint() -> dict:
         return {"mcpServers": {}, "parseError": f"{type(e).__name__}: {e}"}
 
 
+@router.get("/api/mcp/config")
+async def get_mcp_config_endpoint() -> dict:
+    async with _MCP_CONFIG_LOCK:
+        return await asyncio.to_thread(_read_mcp_config)
+
+
 @router.put("/api/mcp")
 async def put_mcp_endpoint(data: dict) -> dict:
-    paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    async with _MCP_CONFIG_LOCK:
+        paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     # 落盘后热更新运行中 registry 的内存 configs（2026-10-09 开关无响应修复）。
     # 此前只写文件：status() 停留在 load() 时刻的旧 enabled，5s 轮询把前端
     # 乐观翻转的开关翻回去，reconnect?server= 也读旧配置而无法逐出已禁用的
@@ -226,7 +256,7 @@ async def reconnect_mcp_endpoint(server: str | None = None) -> dict:
 
 
 @router.get("/api/settings")
-async def get_settings() -> dict:
+def get_settings() -> dict:
     """三态呈现：missing → ``{}``；ok → 掩码后的文档；corrupt →
     ``{"parseError": ...}``（与 mcp config 端点同一约定）。
 
@@ -310,7 +340,7 @@ def _read_settings_file() -> dict:
 
 
 @router.get("/api/model_configs")
-async def get_model_configs() -> dict:
+def get_model_configs() -> dict:
     settings = _read_settings_file()
     configs = prov_mod.load_configs(settings)
     # SEC-01: masked on read; PUT/verify/list_models unmask before using them.
@@ -565,7 +595,7 @@ def _config_to_legacy(cfg: dict) -> dict:
 
 
 @router.get("/api/providers")
-async def get_providers() -> dict:
+def get_providers() -> dict:
     settings = _read_settings_file()
     configs = prov_mod.load_configs(settings)
     # kind="asr" 卡不进 legacy providers 视图——聊天侧（模型选择、agents

@@ -11,62 +11,40 @@ A. 打开→关闭生命周期：API 造文件 → 切「代码」tab → FileTr
 B. ⌘P quick-open：多文件时键盘唤起 QuickOpen 对话框 → 输入过滤 → 回车
    打开目标文件成 tab（打开文件的另一条入口，useCodeTabs 的 openFile）。
 C. ⌘B 树开关：非浏览态下 ⌘B 唤出 overlay drawer（树可见）再收起。
+D. 本地静态资源：代码高亮、冲突双方高亮和 editor worker 的真实 diff 回复。
 
 与 test_packaged_ui_llm_events.py 同基建：dist sidecar + 真实 Chromium，
 GINNO_HOME 隔离 tmp_path，bind(0) 随机空闲口（不碰 8787），语言钉 zh-CN
 （断言词取自 messages/zh-CN/code.json）。文件由 sidecar 的 HTTP API 造
 （mkdir → read → write 带版本），不经 UI——本文件测的是读侧交互。
 
-Skips gracefully when the binary isn't built or playwright isn't installed.
+GINNO_E2E_RUNTIME=source 使用源码 sidecar 提供同一静态导出。
+GINNO_E2E_STRICT=1 时，缺少 sidecar 或 Chromium 会报错。
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
+import re
 import subprocess
 import sys
 import time
 import urllib.request
 from contextlib import contextmanager
-from urllib.parse import urlencode
-from pathlib import Path
+from urllib.parse import urlencode, urlsplit
 
 import _sidecar as sc
 import pytest
+import test_packaged_ui_tasks_overview as smoke
 
 pytestmark = pytest.mark.e2e
-
-_RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
-RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
 
 # zh-CN 断言词（messages/zh-CN/code.json）
 CODE_TAB_LABEL = "代码"        # right.tabs.code
 TREE_LABEL = "文件树"          # code.tree.label
 QUICK_ARIA = "快速打开文件"     # code.quick.aria
 QUICK_PLACEHOLDER = "按文件名搜索…"  # code.quick.placeholder
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_health(port: int, timeout: float = 30) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/api/health", timeout=2
-            ) as r:
-                if r.status == 200:
-                    return
-        except Exception:
-            pass
-        time.sleep(0.3)
-    raise RuntimeError(f"sidecar on :{port} did not become healthy")
 
 
 def _settings() -> dict:
@@ -125,6 +103,10 @@ def _make_file(port: int, session_id: str, path: str, content: str) -> None:
         "kind": "file",
     })
     assert r.get("ok"), f"mkdir {path} 失败: {r}"
+    _write_file(port, session_id, path, content)
+
+
+def _write_file(port: int, session_id: str, path: str, content: str) -> None:
     qs = urlencode(
         {
             "project_slug": "default",
@@ -170,31 +152,35 @@ def _launch_chromium(pw):
 
 @contextmanager
 def _boot(tmp_path):
-    if not RUNTIME_BIN.exists():
-        pytest.skip("packaged sidecar not built (run `make runtime`)")
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip(
-            "playwright not installed (uv sync --group test && playwright install chromium)"
-        )
-    port = _free_port()
+    smoke._require_runtime()
+    from playwright.sync_api import sync_playwright
+
+    port = smoke._free_port()
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps(_settings()), encoding="utf-8")
     env = dict(os.environ, GINNO_HOME=str(home), GINNO_RUNTIME_PORT=str(port))
     env["GINNO_FAKE_LLM"] = "1"
-    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
-    try:
-        _wait_health(port)
-        with sync_playwright() as pw:
-            browser = _launch_chromium(pw)
-            page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
-            yield page, port
-            browser.close()
-    finally:
-        sc.stop_sidecar(proc)
+    with (tmp_path / "sidecar-stderr.log").open("wb") as log:
+        if smoke.RUNTIME_MODE == "source":
+            proc = subprocess.Popen(
+                ["uv", "run", "--no-sync", "ginno-runtime"],
+                cwd=smoke._REPO, env=env, stdout=subprocess.DEVNULL, stderr=log,
+                start_new_session=True,
+            )
+        else:
+            proc = sc.spawn_sidecar(str(smoke.RUNTIME_BIN), env, err=log)
+        try:
+            smoke._wait_health(port)
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch() if smoke.STRICT else _launch_chromium(pw)
+                page = browser.new_page()
+                page.add_init_script("localStorage.setItem('ginno.language', 'zh-CN')")
+                page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+                yield page, port
+                browser.close()
+        finally:
+            sc.stop_sidecar(proc)
 
 
 @pytest.fixture()
@@ -298,3 +284,104 @@ def test_code_panel_cmd_b_drawer(app):
     assert page.get_by_role("tree", name=TREE_LABEL).count() == 0, (
         "再次 ⌘B 应收起抽屉"
     )
+
+
+
+def _localhost_only(page, port: int) -> None:
+    def local_route(route):
+        if urlsplit(route.request.url).netloc == f"127.0.0.1:{port}":
+            route.continue_()
+        else:
+            route.abort()
+
+    page.context.route("**/*", local_route)
+
+
+def _expect_token(editor, text: str) -> None:
+    from playwright.sync_api import expect
+
+    # A plaintext model renders the entire line as a single span. Require
+    # Monaco's token class and an exact token boundary within the source line.
+    token = editor.locator('.view-lines span[class^="mtk"]').filter(
+        has_text=re.compile(rf"^{re.escape(text)}$")
+    )
+    expect(token.first).to_be_visible(timeout=15_000)
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "token"),
+    [
+        ("sample.js", "const value = 101;", "const"),
+        ("sample.py", "def sample(): pass", "def"),
+        ("sample.json", '{"value": 101}', "101"),
+        ("sample.yaml", "value: 101", "101"),
+    ],
+    ids=["javascript", "python", "json", "yaml"],
+)
+def test_code_panel_highlights_from_local_export(app, path, content, token):
+    page, port = app
+    _localhost_only(page, port)
+    _send_first_message(page, "hello highlighting")
+    session = _wait_session(port, lambda x: True)
+    _make_file(port, session["id"], path, content)
+
+    _open_code_tab(page)
+    page.get_by_role("treeitem", name=path, exact=False).first.click()
+    _expect_token(page.locator(".monaco-editor"), token)
+
+
+def test_code_panel_typescript_conflict_diff_uses_editor_worker(app):
+    from playwright.sync_api import expect
+
+    page, port = app
+    _localhost_only(page, port)
+    # Observe a real worker reply for $computeDiff, which distinguishes a
+    # healthy generic worker from Monaco's synchronous fallback.
+    page.evaluate("""() => {
+        const post = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function(message, ...args) {
+            if (message?.method === '$computeDiff') {
+                const onReply = ({data}) => {
+                    if (data?.seq !== message.req) return;
+                    this.removeEventListener('message', onReply);
+                    if (data.res && !data.err) window.testEditorWorkerDiff = true;
+                };
+                this.addEventListener('message', onReply);
+            }
+            return post.call(this, message, ...args);
+        };
+    }""")
+    workers = []
+    page.on("worker", lambda worker: workers.append(worker.url))
+    _send_first_message(page, "hello diff")
+    session = _wait_session(port, lambda x: True)
+    path = "sample.ts"
+    _make_file(port, session["id"], path, "const initial: number = 100;")
+
+    _open_code_tab(page)
+    page.get_by_role("treeitem", name=path, exact=False).first.click()
+    editor = page.locator(".monaco-editor")
+    _expect_token(editor, "const")
+    _expect_token(editor, "number")
+    editor.locator(".view-lines").click()
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.insert_text("const buffer: number = 200;")
+    expect(editor.locator(".view-lines")).to_contain_text("buffer")
+    _write_file(port, session["id"], path, "const disk: number = 300;")
+    with page.expect_response(
+        lambda response: response.url.endswith("/api/code/write")
+        and response.request.method == "PUT"
+    ) as saved:
+        page.keyboard.press("ControlOrMeta+s")
+    assert saved.value.status == 409
+
+    page.get_by_role("button", name="查看差异", exact=True).click()
+    diff = page.locator(".monaco-diff-editor")
+    mine = diff.locator(".editor.original")
+    theirs = diff.locator(".editor.modified")
+    _expect_token(mine, "number")
+    _expect_token(theirs, "number")
+    expect(mine.locator(".view-lines")).to_contain_text("buffer")
+    expect(theirs.locator(".view-lines")).to_contain_text("disk")
+    page.wait_for_function("window.testEditorWorkerDiff === true", timeout=10_000)
+    assert workers and all(urlsplit(url).netloc == f"127.0.0.1:{port}" for url in workers)

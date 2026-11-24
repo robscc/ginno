@@ -27,8 +27,8 @@ import {
   type Monaco,
 } from "./MonacoEditor";
 
-type DiffEditor = import("monaco-editor").editor.IStandaloneDiffEditor;
-type TextModel = import("monaco-editor").editor.ITextModel;
+type DiffEditor = import("monaco-editor/esm/vs/editor/editor.api.js").editor.IStandaloneDiffEditor;
+type TextModel = import("monaco-editor/esm/vs/editor/editor.api.js").editor.ITextModel;
 
 export interface ConflictDiffProps {
   /** Display only (header label / title). */
@@ -115,7 +115,7 @@ export function ConflictDiff({ path, mine, theirs, className }: ConflictDiffProp
 
       // Dynamic import is MANDATORY. A module-scope `import * as monaco` fails
       // the static-export prerender with "ReferenceError: window is not defined".
-      const monaco = await import("monaco-editor");
+      const monaco = await import("./monaco");
       if (disposed || !hostRef.current) return;
       monacoRef.current = monaco;
       ensureThemes(monaco);

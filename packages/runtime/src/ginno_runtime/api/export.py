@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import time
 import zipfile
+from contextlib import suppress
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
@@ -125,7 +127,7 @@ def _render_markdown(slug: str, session_id: str, meta: dict) -> str:
 
 
 @router.get("/api/export/session/{session_id}")
-async def export_session(
+def export_session(
     session_id: str, format: str = Query("md"), project_slug: str | None = None
 ) -> PlainTextResponse:
     found = _find_meta(session_id)
@@ -152,7 +154,7 @@ async def export_session(
 
 
 @router.post("/api/export/project")
-async def export_project(body: dict | None = None) -> FileResponse:
+def export_project(body: dict | None = None) -> FileResponse:
     """Zip the project: sessions (+world side-cars), artifacts, files registry.
 
     Excludes caches and the session-file giant blobs only if they live outside
@@ -167,28 +169,40 @@ async def export_project(body: dict | None = None) -> FileResponse:
     out_dir = paths.home() / "index" / "exports"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = out_dir / f"{slug}-{stamp}.zip"
-    tmp = out.with_suffix(".zip.tmp")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in src.rglob("*"):
-            if not p.is_file():
-                continue
-            # Skip per-session checkpoint side-cars of the type only used for
-            # live UI state? They are small; keep everything for fidelity.
-            arc = Path(slug) / p.relative_to(src)
-            try:
-                zf.write(p, str(arc))
-            except OSError:
-                continue
-        manifest = {
-            "project_slug": slug,
-            "exported_at": time.time(),
-            "source": str(src),
-        }
-        zf.writestr(f"{slug}/EXPORT_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    tmp.replace(out)
+    filename = f"{slug}-{stamp}.zip"
+    target = out_dir / filename
+    # Keep the archive in its original destination directory and give each
+    # response its own backing file until it finishes streaming.
+    with NamedTemporaryFile(
+        dir=target.parent, prefix=f"{target.stem}-", suffix=".zip.tmp", delete=False,
+    ) as f:
+        tmp = Path(f.name)
+    out = tmp.with_suffix("")
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p in src.rglob("*"):
+                if not p.is_file():
+                    continue
+                # Skip per-session checkpoint side-cars of the type only used for
+                # live UI state? They are small; keep everything for fidelity.
+                arc = Path(slug) / p.relative_to(src)
+                try:
+                    zf.write(p, str(arc))
+                except OSError:
+                    continue
+            manifest = {
+                "project_slug": slug,
+                "exported_at": time.time(),
+                "source": str(src),
+            }
+            zf.writestr(f"{slug}/EXPORT_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        tmp.replace(out)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
     return FileResponse(
         out,
         media_type="application/zip",
-        filename=f"{slug}-{stamp}.zip",
+        filename=filename,
     )

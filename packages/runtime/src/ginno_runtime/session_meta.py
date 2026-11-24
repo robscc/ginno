@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
+from pathlib import Path
+from typing import NamedTuple
 
 from ginno_runtime import jsonx as json
 
@@ -23,13 +26,31 @@ from .server_shared import _SESSIONS
 # 线程)+ 原子落盘(tmp+rename),读端永远只见完整文件。
 _IDX_LOCK = threading.RLock()
 
+_IndexVersion = tuple[int, int, int, int, int]
+
+
+class _IndexSnapshot(NamedTuple):
+    version: _IndexVersion
+    rows: list[dict]
+    nested_fields: tuple[tuple[int, str], ...]
+
+
+_IDX_CACHE_LIMIT = 32
+_IDX_CACHE: OrderedDict[Path, _IndexSnapshot] = OrderedDict()
+
+
+def _index_version(stat: os.stat_result) -> _IndexVersion:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
 
 def _write_index(slug: str, items: list[dict]) -> None:
-    paths.project_sessions_dir(slug).mkdir(parents=True, exist_ok=True)
-    p = paths.session_index_path(slug)
+    # Callers hold _IDX_LOCK across the full read-modify-write transaction.
+    p = paths.session_index_path(slug).absolute()
+    p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(items, indent=2, ensure_ascii=False))
     os.replace(tmp, p)
+    _IDX_CACHE.pop(p, None)
 
 
 def _session_meta_rewrite_all(slug: str, metas: list[dict]) -> None:
@@ -58,13 +79,49 @@ def backfill_session_types() -> int:
 
 
 def _session_meta_list(slug: str) -> list[dict]:
-    p = paths.session_index_path(slug)
-    if not p.exists():
-        return []
-    try:
-        return json.loads(p.read_text() or "[]")
-    except json.JSONDecodeError:
-        return []
+    p = paths.session_index_path(slug).absolute()
+    with _IDX_LOCK:
+        try:
+            version = _index_version(p.stat())
+            snapshot = _IDX_CACHE.pop(p, None)
+            if snapshot is None or snapshot.version != version:
+                # Bind the bytes to the opened inode. The path can be replaced
+                # between stat and open, or the open file edited during read.
+                with p.open("rb") as source:
+                    version = _index_version(os.fstat(source.fileno()))
+                    rows = json.loads(source.read() or b"[]")
+                    if _index_version(os.fstat(source.fileno())) != version:
+                        return rows
+                if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                    return rows
+                nested_fields = tuple(
+                    (i, key)
+                    for i, row in enumerate(rows)
+                    for key, value in row.items()
+                    if isinstance(value, (dict, list))
+                )
+                snapshot = _IndexSnapshot(version, rows, nested_fields)
+            _IDX_CACHE[p] = snapshot
+            if len(_IDX_CACHE) > _IDX_CACHE_LIMIT:
+                _IDX_CACHE.popitem(last=False)
+        except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
+            _IDX_CACHE.pop(p, None)
+            return []
+
+    # The cache owns the snapshot. Callers can mutate their copy, including
+    # nested subagent fields and link stamps. Skip scanning scalar row fields
+    # on every hit by recording the nested fields at parse time.
+    rows = [row.copy() for row in snapshot.rows]
+    pending = [(rows[i], key) for i, key in snapshot.nested_fields]
+    while pending:
+        parent, key = pending.pop()
+        child = parent[key].copy()
+        parent[key] = child
+        entries = child.items() if isinstance(child, dict) else enumerate(child)
+        for field, value in entries:
+            if isinstance(value, (dict, list)):
+                pending.append((child, field))
+    return rows
 
 
 def _session_meta_update_all(slug: str, update: Callable[[dict], dict]) -> None:

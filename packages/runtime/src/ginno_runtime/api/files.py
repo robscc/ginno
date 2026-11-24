@@ -513,7 +513,7 @@ async def file_inline_endpoint(file_id: str) -> Any:
             detail={"ok": False, "error": f"not previewable inline: {entry.get('kind')}"},
         )
     try:
-        body = p.read_bytes()
+        body = await asyncio.to_thread(p.read_bytes)
     except OSError as e:
         raise HTTPException(
             status_code=404, detail={"ok": False, "error": "File has been moved or deleted"}
