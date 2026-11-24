@@ -36,7 +36,7 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 
 **处理**：完全退出并重启 Ginno 应用即可，会话数据不受影响。
 
-**规则：`make app` 之后必须完全退出并重新打开 Ginno 再验证，否则必然复现此错误。**
+**规则：如果构建时 Ginno 仍在运行，出包后须用 ⌘Q 完全退出，再打开新包验证。**
 
 ### 2. 时间敏感测试在 CI（UTC runner）翻车
 
@@ -46,10 +46,12 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 
 ## 构建
 
-- 改完代码后跑 `make app`（见全局 memory）。
-- `make app` = web + PyInstaller sidecar bundle + Tauri 桌面应用（含签名校验，
-  仅 linker-signed 会导致 webview 白屏）；构建前有防呆：检测到 Ginno 在运行或
-  8787 被 Ginno sidecar 占用即报错退出（对应上面 zlib 已知故障），`FORCE=1` 跳过。
+- **本地桌面打包**：Ginno 已退出时跑 `make app`。如果构建时需要保持 Ginno 运行，
+  用 `make app-force`（等价于 `make app FORCE=1`）。它会跳过进程守卫，出包后须用
+  ⌘Q 完全退出旧进程、再打开新包。用 `/api/health` 确认构建指纹已更新且
+  `runtime_stale` 为 `false`，再做桌面验证。
+- 两条命令都构建 web、PyInstaller sidecar 和 Tauri 桌面应用并校验签名。
+  普通 `make app` 在 Ginno 运行或其 sidecar 占用 8787 时会退出，避免运行中换包。
 - `make app TAURI_ARGS="--config <json>"` 可透传 tauri build 参数——CI 的 release.yml
   用它把 `signingIdentity` 覆盖为 ad-hoc（`"-"`，runner 无本地自签 identity）。
 - `make mod-broker` / `make mod-runner`：mods 兼容层两个组件——broker CLI

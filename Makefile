@@ -161,11 +161,11 @@ guard-app-not-running:
 	@if [ "$(FORCE)" = "1" ]; then \
 	  echo "⚠️  FORCE=1 — running-app guard skipped"; exit 0; \
 	fi; \
-	if pgrep -f "Ginno\.app/Contents/MacOS/Ginno" >/dev/null 2>&1; then \
+	if ps -Aww -o args= | grep -qE '/[G]inno\.app/Contents/MacOS/(ginno-desktop|Ginno)([[:space:]]|$$)'; then \
 	  echo "❌ Ginno.app is running. Replacing its bundle under a live process"; \
 	  echo "   corrupts lazy PyInstaller extracts (zlib errors until restart)."; \
-	  echo "   先完全退出 Ginno 再构建 (⌘Q, not just closing the window)."; \
-	  echo "   (FORCE=1 to override)"; exit 1; \
+	  echo "   先用 ⌘Q 退出 Ginno，再运行 make app。"; \
+	  echo "   如需保持运行，使用 make app-force，出包后用 ⌘Q 退出并打开新包。"; exit 1; \
 	fi; \
 	pids=$$(lsof -t -iTCP:8787 -sTCP:LISTEN 2>/dev/null); \
 	if [ -n "$$pids" ]; then \
@@ -177,7 +177,7 @@ guard-app-not-running:
 	  done; \
 	  if [ -n "$$busy" ]; then \
 	    echo "❌ Port 8787 is held by a Ginno sidecar ($$busy)."; \
-	    echo "   退出 Ginno（或停掉 pnpm dev:runtime）再构建。(FORCE=1 to override)"; \
+	    echo "   停掉 sidecar 后运行 make app。如需保持运行，使用 make app-force 并在出包后重启。"; \
 	    exit 1; \
 	  fi; \
 	fi; \

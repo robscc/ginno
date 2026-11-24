@@ -82,6 +82,20 @@ def test_get_unknown_returns_none(isolated_home):
     assert SkillLoader().get("nope") is None
 
 
+def test_get_handles_skill_removed_after_indexing(isolated_home, monkeypatch):
+    directory = _write_skill(paths.global_skills_dir(), "summarize-notes")
+    loader = SkillLoader()
+    load = loader.load
+
+    def load_then_remove(*, include_body=True):
+        skills = load(include_body=include_body)
+        (directory / "SKILL.md").unlink()
+        return skills
+
+    monkeypatch.setattr(loader, "load", load_then_remove)
+    assert loader.get("summarize-notes") is None
+
+
 # ------------------------------ builtin tier ------------------------------ #
 def test_builtin_todo_skill_always_present(isolated_home):
     s = SkillLoader().get("todo")

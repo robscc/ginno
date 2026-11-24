@@ -251,7 +251,11 @@ class SkillLoader:
     def get(self, name: str) -> Skill | None:
         skill = next((s for s in self.load(include_body=False) if s.name == name), None)
         if skill is not None and skill.path is not None:
-            parsed = _parse_skill_file(skill.path, builtin=skill.builtin)
+            try:
+                parsed = _parse_skill_file(skill.path, builtin=skill.builtin)
+            except FileNotFoundError:
+                # A skill can disappear between indexing and reading its body.
+                return None
             if parsed is None:
                 return None
             skill.body = parsed.body
