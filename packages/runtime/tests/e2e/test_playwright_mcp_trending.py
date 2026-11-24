@@ -1,20 +1,18 @@
-"""E2E: default Playwright MCP lets a Ginno session operate a real web page.
-
-Flow (as the product intends): in a chat session the agent opens
-https://github.com/trending via the Playwright MCP, takes a screenshot, then
-produces an analysis of the project ranking. The LLM is scripted (deterministic
-tool calls) but the Playwright MCP server + headless Chrome are REAL, so this
-genuinely exercises web operation end-to-end.
-
-Skips gracefully when the Playwright MCP / a browser is unavailable in the env.
-"""
+"""Run a real Playwright MCP session against a loopback ranking page."""
 
 from __future__ import annotations
 
+import base64
 import os
+import shutil
+import time
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 import pytest
+from conftest import WSConversation, events_of
 from fastapi.testclient import TestClient
 
 from ginno_runtime import jsonx as json
@@ -23,23 +21,80 @@ from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_t
 
 pytestmark = pytest.mark.e2e
 
-NAV = "mcp_playwright_browser_navigate"
-SHOT = "mcp_playwright_browser_screenshot"
+NAV = "browser_navigate"
+SHOT = "browser_take_screenshot"
+NAV_ID = "audit-navigate"
+SHOT_ID = "audit-screenshot"
+LEADER = "1. Ginno Audit Fixture"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def _enable_playwright(home: Path) -> None:
-    mcp = home / "mcp"
-    mcp.mkdir(parents=True, exist_ok=True)
-    (mcp / "mcp.json").write_text(
+@pytest.fixture
+def playwright_mcp(isolated_home: Path, monkeypatch):
+    configured = os.environ.get("GINNO_TEST_PLAYWRIGHT_MCP")
+    cli = shutil.which(configured) if configured else None
+    if not cli:
+        reason = "Set GINNO_TEST_PLAYWRIGHT_MCP to the installed @playwright/mcp CLI"
+        if configured or os.environ.get("GINNO_PACKAGED_MCP_STRICT") == "1":
+            pytest.fail(f"{reason}; configured path: {configured!r}")
+        pytest.skip(reason)
+    if not shutil.which("node"):
+        pytest.fail("Playwright MCP requires node on PATH")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        pytest.fail(f"Python Playwright unavailable: {exc}")
+    # Isolate native-host manifests and browser state before TestClient startup.
+    os_home = isolated_home / "os-home"
+    os_home.mkdir()
+    monkeypatch.setenv("HOME", str(os_home))
+    with sync_playwright() as pw:
+        chromium = pw.chromium.executable_path
+    if not Path(chromium).is_file():
+        pytest.fail(f"Chromium missing at {chromium}; run `python -m playwright install chromium`")
+    return cli, chromium
+
+
+@pytest.fixture
+def ranking_url(tmp_path, playwright_mcp):
+    web = tmp_path / "ranking"
+    web.mkdir()
+    (web / "index.html").write_text(
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<link rel="icon" href="data:,"><title>Audit Trending</title><h1>Audit Trending</h1>'
+        f"<p>{LEADER}</p><p>2. Tool Ledger</p></html>",
+        encoding="utf-8",
+    )
+    handler = partial(SimpleHTTPRequestHandler, directory=web)
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as http:
+        thread = Thread(target=http.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{http.server_port}/"
+        finally:
+            http.shutdown()
+            thread.join()
+
+
+def _enable_playwright(home: Path, cli: str, chromium: str, output: Path) -> None:
+    (home / "mcp" / "mcp.json").write_text(
         json.dumps(
             {
                 "mcpServers": {
                     "playwright": {
                         "transport": "stdio",
-                        "command": "npx",
-                        "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chrome"],
-                        "connect_timeout": 60,
-                    }
+                        "command": cli,
+                        "args": [
+                            "--headless",
+                            "--isolated",
+                            "--browser",
+                            "chromium",
+                            "--executable-path",
+                            chromium,
+                            "--output-dir",
+                            str(output),
+                        ],
+                    },
                 }
             }
         )
@@ -47,50 +102,109 @@ def _enable_playwright(home: Path) -> None:
     (home / "settings.json").write_text(json.dumps({"bypass_permissions": True}))
 
 
-def test_session_opens_trending_screenshot_and_analyzes(isolated_home: Path, monkeypatch):
-    home = isolated_home
-    _enable_playwright(home)
-    ws = home / "ws"
-    ws.mkdir(parents=True, exist_ok=True)
+def _wait_for_playwright(client: TestClient) -> None:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        response = client.get("/api/mcp?tools=1")
+        response.raise_for_status()
+        status = response.json()
+        for row in status["status"]:
+            if row["name"] != "playwright":
+                continue
+            assert not row["error"], f"Playwright MCP connection failed: {row}"
+            if row["connected"]:
+                assert row["enabled"] and {NAV, SHOT} <= set(status["tools"]), status
+                print(f"MCP connected: playwright ({row['tools']} tools, {NAV}, {SHOT})")
+                return
+        time.sleep(0.2)
+    pytest.fail(f"Playwright MCP did not connect: /api/mcp={status!r}")
 
-    model = ScriptedChatModel(
-        scripts=[
-            script(text="", tool_calls=[script_tool_call(NAV, {"url": "https://github.com/trending"})]),
-            script(text="", tool_calls=[script_tool_call(SHOT, {})]),
-            script(text="今日 GitHub Trending 排行：1) 某仓库 …；分析：Python 智能体类项目占主导。"),
-        ]
+
+def _screenshot_from_history(client: TestClient, sid: str):
+    # Live tool.end truncates large payloads. History contains the complete image block.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/sessions/{sid}/history")
+        response.raise_for_status()
+        for message in response.json()["messages"]:
+            for block in message.get("blocks", []):
+                if block.get("kind") == "tool" and block.get("id") == SHOT_ID:
+                    assert block["name"] == f"mcp_playwright_{SHOT}" and not block.get("failed")
+                    for line in block["content"].splitlines():
+                        if line.startswith("{"):
+                            image = json.loads(line)
+                            if image.get("type") == "image":
+                                return image
+                    pytest.fail(f"Screenshot tool returned no image: {block['content'][:500]}")
+        time.sleep(0.1)
+    pytest.fail("Screenshot tool result missing from session history")
+
+
+def test_session_opens_trending_screenshot_and_analyzes(
+    isolated_home: Path,
+    playwright_mcp,
+    ranking_url: str,
+    patch_build_model,
+):
+    cli, chromium = playwright_mcp
+    output = isolated_home / "screenshots"
+    output.mkdir()
+    _enable_playwright(isolated_home, cli, chromium, output)
+    workspace = isolated_home / "ws"
+    workspace.mkdir()
+
+    analysis = f"Audit Trending 排行分析：{LEADER}。"
+    patch_build_model(
+        ScriptedChatModel(
+            scripts=[
+                script(
+                    text="",
+                    tool_calls=[
+                        script_tool_call(f"mcp_playwright_{NAV}", {"url": ranking_url}, NAV_ID)
+                    ],
+                ),
+                script(
+                    text="",
+                    tool_calls=[
+                        script_tool_call(
+                            f"mcp_playwright_{SHOT}", {"type": "png", "scale": "css"}, SHOT_ID
+                        )
+                    ],
+                ),
+                script(text=analysis),
+            ]
+        )
     )
 
     with TestClient(server.app) as client:
-        # /api/mcp lists RAW mcp tool names (browser_navigate); the graph-facing
-        # LangChain tools are prefixed mcp_playwright_*. Only skip if truly absent.
-        avail = client.get("/api/mcp").json()
-        if not any("browser_navigate" in t for t in avail.get("tools", [])):
-            pytest.skip("Playwright MCP unavailable (no browser / npx) in this environment")
+        _wait_for_playwright(client)
+        response = client.post(
+            "/api/sessions",
+            json={"project_slug": "default", "workspace": str(workspace), "agent_id": "dev"},
+        )
+        response.raise_for_status()
+        sid = response.json()["id"]
+        with WSConversation(client, sid) as conv:
+            conv.invoke("打开本地项目排行，截图并分析")
+            events = conv.recv_until("message.end", "error")
 
-        # scripted LLM decides the tool calls; Playwright MCP + Chrome are real.
-        monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: model)
+        assert events[-1]["event"] == "message.end", events[-1]
+        assert [(e["id"], e["name"]) for e in events_of(events, "tool.start")] == [
+            (NAV_ID, f"mcp_playwright_{NAV}"),
+            (SHOT_ID, f"mcp_playwright_{SHOT}"),
+        ]
+        nav, shot = events_of(events, "tool.end")
+        assert [nav["id"], shot["id"]] == [NAV_ID, SHOT_ID]
+        assert not nav.get("failed") and f"Page URL: {ranking_url}" in nav["content"], nav
+        [snapshot] = output.glob("page-*.yml")
+        assert snapshot.name in nav["content"] and LEADER in snapshot.read_text(), nav
+        assert not shot.get("failed") and "Screenshot" in shot["content"], shot["content"][:500]
 
-        r = client.post("/api/sessions", json={"project_slug": "default", "workspace": str(ws), "agent_id": "dev"})
-        assert r.status_code == 200
-        sid = r.json()["id"]
-
-        events = []
-        with client.websocket_connect(f"/api/ws/sessions/{sid}") as w:
-            w.send_json({"type": "invoke", "message": "打开 github trending，截图并分析项目排行"})
-            while True:
-                ev = w.receive_json()
-                events.append(ev)
-                if ev.get("event") in ("message.end", "error"):
-                    break
-
-    names = [e.get("event") for e in events]
-    # tool.start carries the tool name; tool.end only carries id+content.
-    tool_names = " ".join(str(e.get("name")) for e in events if e.get("event") == "tool.start")
-    assert "mcp_playwright_browser_navigate" in tool_names, (names, tool_names)
-    assert "mcp_playwright_browser_screenshot" in tool_names, (names, tool_names)
-    # both tools actually returned results
-    assert sum(1 for e in events if e.get("event") == "tool.end") >= 2
-    # final analysis text streamed
-    text = "".join(str(e.get("content", "")) for e in events if e.get("event") == "token.delta")
-    assert "Trending" in text or "排行" in text
+        image = _screenshot_from_history(client, sid)
+        assert image["mimeType"] == "image/png"
+        png = base64.b64decode(image["data"], validate=True)
+        assert png.startswith(PNG_SIGNATURE)
+        [file] = output.glob("page-*.png")
+        assert file.read_bytes() == png
+        assert "".join(e["content"] for e in events_of(events, "token.delta")) == analysis
+        print(f"{NAV}: {ranking_url} → {LEADER}; {SHOT}: image/png, {len(png)} bytes → {file}")
