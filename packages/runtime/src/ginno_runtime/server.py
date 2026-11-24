@@ -13,14 +13,15 @@ live in ``session_meta``. The many re-exports at the bottom keep historical
 from __future__ import annotations
 
 import asyncio
+import gzip
 import sys
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import lang, paths
@@ -482,10 +483,50 @@ from .session_meta import (  # noqa: E402, F401
 )
 
 
+_DRAWIO_VIEWER = "vendor/viewer-static.min.js"
+
+
+def _accepts_gzip(accept_encoding: str) -> bool:
+    wildcard = False
+    for item in accept_encoding.lower().split(","):
+        coding, _, weight = item.strip().partition(";")
+        coding = coding.strip()
+        if coding not in {"gzip", "*"}:
+            continue
+        key, _, value = weight.strip().partition("=")
+        try:
+            accepted = not weight or (key.strip() == "q" and 0 < float(value) <= 1)
+        except ValueError:
+            accepted = False
+        if coding == "gzip":
+            return accepted
+        wildcard = accepted
+    return wildcard
+
+
+@app.get(f"/{_DRAWIO_VIEWER}", include_in_schema=False)
+async def _serve_drawio_viewer(request: Request):
+    # Only the PyInstaller onedir bundle stores the gzip representation.
+    # Source sidecars serve the ordinary Next export (as do generic file servers).
+    packed = WEB_OUT / f"{_DRAWIO_VIEWER}.gz" if WEB_OUT is not None else None
+    if packed is None or not packed.is_file():
+        return await _serve_web(_DRAWIO_VIEWER)
+
+    headers = {"Vary": "Accept-Encoding"}
+    media_type = "text/javascript"
+    if _accepts_gzip(",".join(request.headers.getlist("accept-encoding"))):
+        headers["Content-Encoding"] = "gzip"
+        return FileResponse(packed, headers=headers, media_type=media_type)
+
+    # Clients requesting identity still receive the same script at the same URL.
+    content = await asyncio.to_thread(lambda: gzip.decompress(packed.read_bytes()))
+    return Response(content, headers=headers, media_type=media_type)
+
+
 @app.get("/{full_path:path}")
 async def _serve_web(full_path: str):
     """Serve the bundled Next static export (same origin as the API)."""
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import HTMLResponse
 
     # NEW-01 (harness run-20261118): an unknown ``/api/*`` path must fall into
     # the API error contract (404 JSON), never into the SPA fallback below —
