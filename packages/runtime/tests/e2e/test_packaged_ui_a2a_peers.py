@@ -137,7 +137,7 @@ def app(tmp_path):
     if not RUNTIME_BIN.exists():
         pytest.skip("packaged sidecar not built (run `make runtime`)")
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import expect, sync_playwright
     except Exception:
         pytest.skip(
             "playwright not installed (uv sync --group test && playwright install chromium)"
@@ -159,8 +159,11 @@ def app(tmp_path):
         _wait_health(port)
         with sync_playwright() as pw:
             browser = _launch_chromium(pw)
-            page = browser.new_page()
+            page = browser.new_page(locale="zh-CN")
+            # 首帧从语言镜像恢复，避免等待 settings 时先渲染英文或发出英文详情请求。
+            page.add_init_script("localStorage.setItem('ginno.language', 'zh-CN')")
             page.goto(f"http://127.0.0.1:{port}/connectors", wait_until="load")
+            expect(page.locator("html")).to_have_attribute("lang", "zh-CN")
             yield page, port
             browser.close()
     finally:
@@ -177,7 +180,7 @@ def _open_a2a(page):
     card.click()
     drawer = page.locator('[role="dialog"][aria-label*="A2A"]')
     drawer.wait_for(state="visible", timeout=15_000)
-    # 等 zh-CN locale 生效（settings 异步加载；后续断言词依赖它）
+    # 等详情抽屉的入站面板渲染。
     drawer.get_by_text("入站 · 被其他 Agent 连接", exact=False).wait_for(timeout=15_000)
     return drawer
 

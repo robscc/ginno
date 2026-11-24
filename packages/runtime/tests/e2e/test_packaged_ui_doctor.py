@@ -4,16 +4,8 @@ CLAUDE.md 红线：前端交互改动必须配 packaged UI 用例。vitest（doc
 api/sessions.test.ts）守纯逻辑——分组/计数/修复映射/i18n/降级 union；这里守
 渲染层交互：
 
-覆盖（2026-11-19）：
-1. 诊断页出现「配置健康检查」区（doctor-panel）与运行按钮；
-2. 点击运行 → 旧 runtime（未实现 GET /api/doctor，当前 main 构建）返回 404
-   → 优雅降级为「引擎不可用」提示（doctor-unavailable），不白屏、
-   页面其余部分（标题/体检按钮）仍在；
-3. 降级后按钮回到可点状态（可重试）。
-
-正向路径（契约体渲染五面分组/三色徽标）需要后端 /api/doctor 合入后再补；
-届时 mock 响应由 dist sidecar 提供，本文件的降级用例继续有效（真实场景：
-旧 runtime 配新前端）。
+覆盖诊断页的 Doctor 交互：模拟旧 runtime 的 404，检查降级提示与页面可用性，
+再重试并读取真包的检查结果。固定契约体覆盖分组、徽标、折叠和明细。
 """
 
 import os
@@ -31,19 +23,12 @@ pytestmark = pytest.mark.e2e
 
 _RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
 RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
-PORT = 8907
 
 
-def _port_open(port: int) -> bool:
-    s = socket.socket()
-    s.settimeout(0.3)
-    try:
-        s.connect(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _wait_health(port: int, timeout: float = 40) -> None:
@@ -78,66 +63,68 @@ def test_packaged_ui_doctor_degrades_gracefully(tmp_path):
     if not RUNTIME_BIN.exists():
         pytest.skip("packaged sidecar not built (run `make runtime`)")
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import expect, sync_playwright
     except Exception:
         pytest.skip("playwright not installed")
-    if _port_open(PORT):
-        pytest.skip(f"port {PORT} already in use")
+    port = _free_port()
 
     home = tmp_path / "home"
     home.mkdir()
     (home / "settings.json").write_text(json.dumps(_settings()))
 
-    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(PORT))
+    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(port))
     proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
-        _wait_health(PORT)
+        _wait_health(port)
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
-            page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{PORT}/settings/diagnostics", wait_until="load")
+            page = browser.new_page(locale="en-US")
+            page.goto(f"http://127.0.0.1:{port}/settings/diagnostics", wait_until="load")
 
-            # ── 1. 配置健康检查区 + 运行按钮出现 ──
-            panel = page.locator('[data-testid="doctor-panel"]')
-            panel.wait_for(timeout=15000)
-            assert "Config Doctor" in panel.inner_text()
-            run_btn = page.locator('[data-testid="doctor-run"]')
-            assert run_btn.is_enabled()
+            panel = page.get_by_test_id("doctor-panel")
+            expect(panel.get_by_role("heading", name="Config Doctor")).to_be_visible()
+            run_btn = panel.get_by_test_id("doctor-run")
+            expect(run_btn).to_be_enabled()
 
-            # ── 2. 点击运行：旧 runtime 404 → 优雅降级（不白屏）──
-            run_btn.click()
-            unavailable = page.locator('[data-testid="doctor-unavailable"]')
-            unavailable.wait_for(timeout=10000)
-            assert "Engine unavailable" in unavailable.inner_text()
+            doctor_url = f"http://127.0.0.1:{port}/api/doctor"
 
-            # 页面其余部分仍在（降级不拖垮整页）
-            assert "Diagnostics" in page.locator("h2").first.inner_text()
+            def is_doctor_get(response):
+                return response.url == doctor_url and response.request.method == "GET"
 
-            # ── 3. 降级后按钮恢复可点（可重试）──
-            page.wait_for_timeout(200)
-            assert run_btn.is_enabled()
+            # 在 HTTP 边界模拟旧 runtime 缺少端点，页面及其余 API 仍由真包提供。
+            page.route(doctor_url, lambda route: route.fulfill(status=404))
+            with page.expect_response(is_doctor_get) as failed:
+                run_btn.click()
+            assert failed.value.status == 404
+            unavailable = panel.get_by_test_id("doctor-unavailable")
+            expect(unavailable).to_contain_text("Engine unavailable")
+            expect(page.get_by_role("heading", name="Diagnostics", exact=True)).to_be_visible()
+            result = panel.get_by_test_id("doctor-result")
+            expect(result).to_have_count(0)
+            expect(run_btn).to_be_enabled()
+
+            page.unroute(doctor_url)
+            with page.expect_response(is_doctor_get) as recovered:
+                run_btn.click()
+            assert recovered.value.status == 200
+            expect(result).to_be_visible()
+            expect(unavailable).to_have_count(0)
+            expect(run_btn).to_be_enabled()
 
             browser.close()
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            proc.kill()
+        sc.stop_sidecar(proc)
 
 
 def test_packaged_ui_doctor_renders_contract(tmp_path):
-    """正向路径：后端 /api/doctor 未合入 main，用 playwright route 拦截回填
-    契约体（goal 固定契约），在真 Chromium 里验证分组/徽标/折叠/明细渲染。
-    后端合入后本用例继续有效（拦截优先于真实端点，mock 数据稳定）。"""
+    """用固定的 HTTP 契约体验证分组、徽标、折叠和明细渲染。"""
     if not RUNTIME_BIN.exists():
         pytest.skip("packaged sidecar not built (run `make runtime`)")
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
         pytest.skip("playwright not installed")
-    if _port_open(PORT):
-        pytest.skip(f"port {PORT} already in use")
+    port = _free_port()
 
     contract = {
         "ok": True,
@@ -169,18 +156,18 @@ def test_packaged_ui_doctor_renders_contract(tmp_path):
     home.mkdir()
     (home / "settings.json").write_text(json.dumps(_settings()))
 
-    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(PORT))
+    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(port))
     proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
-        _wait_health(PORT)
+        _wait_health(port)
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
-            page = browser.new_page()
+            page = browser.new_page(locale="en-US")
             page.route(
                 "**/api/doctor",
                 lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(contract)),
             )
-            page.goto(f"http://127.0.0.1:{PORT}/settings/diagnostics", wait_until="load")
+            page.goto(f"http://127.0.0.1:{port}/settings/diagnostics", wait_until="load")
             page.locator('[data-testid="doctor-panel"]').wait_for(timeout=15000)
             page.locator('[data-testid="doctor-run"]').click()
 
@@ -213,8 +200,4 @@ def test_packaged_ui_doctor_renders_contract(tmp_path):
 
             browser.close()
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            proc.kill()
+        sc.stop_sidecar(proc)
