@@ -1,4 +1,9 @@
-"""Assistant Markdown file citations open the mounted file at its line."""
+"""Assistant Markdown file citations open the mounted file at its line.
+
+A citation outside every workspace root opens the code panel on the design §3.2
+guidance; its "Add to workspace" action mounts the file's folder and then opens
+the file through the regular rooted path.
+"""
 
 from __future__ import annotations
 
@@ -40,7 +45,10 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
     source = (nested / "示例.py").resolve()
     source_text = "\n".join(f"# Sample line {i}" for i in range(1, 25))
     source.write_text(source_text, encoding="utf-8")
-    outside = (tmp_path / "outside.py").resolve()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = (outside_dir / "outside.py").resolve()
+    outside_dir = outside.parent
     outside.write_text("# Outside the mounted workspace\n", encoding="utf-8")
     web_url = "https://example.test/docs"
     preview_url = "http://127.0.0.1:28632/excel"
@@ -110,7 +118,7 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
                     assert response.ok
                     body = response.json()
                     assert body["ok"] and body["text"] == source_text
-                    assert code_reads == [expected_query] * count
+                    assert code_reads[-count:] == [expected_query] * count
 
                 file_only = page.get_by_role("button", name="File only", exact=True)
                 expect(file_only).to_have_attribute("title", f"Open {source} in the code panel")
@@ -121,8 +129,50 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
                 assert code_reads == [expected_query]
 
                 page.get_by_role("button", name="Outside file", exact=True).click()
-                expect(page.get_by_text("This file is outside the current workspace root")).to_be_visible()
-                assert code_reads == [expected_query]
+                guidance = page.get_by_test_id("code-outside-root")
+                outside_text = guidance.get_by_text("This file is outside the current workspace root")
+                expect(outside_text).to_be_visible()
+                expect(outside_text).to_have_attribute("title", str(outside))
+                assert code_reads == [expected_query], "an out-of-root click must not read any file"
+
+                add_folder = guidance.get_by_role("button", name="Add to workspace", exact=True)
+                expect(add_folder).to_have_attribute(
+                    "title", f"Add {outside_dir} to this session's workspace"
+                )
+                context_path = f"/api/sessions/{session_id}/context"
+                with (
+                    page.expect_request(
+                        lambda r: r.method == "POST" and urlsplit(r.url).path == "/api/folders"
+                    ) as folder_request,
+                    page.expect_request(
+                        lambda r: r.method == "PUT" and urlsplit(r.url).path == context_path
+                    ) as context_request,
+                    page.expect_response(
+                        lambda res: urlsplit(res.url).path == "/api/code/read"
+                    ) as opened,
+                ):
+                    add_folder.click()
+                assert folder_request.value.post_data_json == {
+                    "path": str(outside_dir), "access": "rw", "load_rules": True,
+                }
+                folder = next(
+                    f for f in smoke._api(port, "GET", "/api/folders")["folders"]
+                    if f["path"] == str(outside_dir)
+                )
+                assert context_request.value.post_data_json == {
+                    "folder_ids": [*mounts, folder["id"]], "primary_id": mounts[0],
+                }
+                opened_query = {
+                    "project_slug": ["default"], "session_id": [session_id],
+                    "root": [folder["id"]], "path": ["outside.py"],
+                }
+                assert opened.value.ok
+                assert opened.value.json()["text"] == "# Outside the mounted workspace\n"
+                assert code_reads == [expected_query, opened_query]
+                expect(guidance).to_have_count(0)
+                meta = smoke._api(port, "GET", f"/api/sessions/{session_id}")
+                assert meta["primary_folder"] == mounts[0]
+                assert {d["path"]: d["id"] for d in meta["context_dirs"]}[str(outside_dir)] == folder["id"]
 
                 page.route("**/api/open-external", lambda route: route.fulfill(json={"ok": True}))
                 web = page.get_by_role("link", name="Web docs", exact=True)
@@ -145,7 +195,8 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
                     for block in message["blocks"]
                 )
                 expect(local).to_be_visible(timeout=15_000)
-                assert_code_read(local.click, 2)
+                assert_code_read(local.click, 1)
+                assert code_reads == [expected_query, opened_query, expected_query]
                 expect(active_line).to_have_text("12")
             finally:
                 browser.close()

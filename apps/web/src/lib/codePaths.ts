@@ -19,6 +19,23 @@ export function parseMarkdownFileTarget(href: string | undefined): MarkdownFileT
   }
 }
 
+/** Directories the one-click guidance never offers to mount: a file sitting
+ *  directly in one of them names no project, and mounting it would hand the
+ *  session a system-wide tree. */
+const TOO_BROAD_TO_MOUNT = new Set([
+  "/tmp", "/private/tmp", "/var", "/private/var", "/Volumes", "/Users/Shared",
+]);
+
+/** The folder the out-of-root guidance offers to add (design §3.2): the
+ *  file's containing directory — or null when that directory is too broad to
+ *  mount on one click (filesystem root, /Users, /tmp, …). */
+export function folderToMountFor(absolute: string): string | null {
+  if (!absolute.startsWith("/") || absolute.endsWith("/")) return null;
+  const dir = absolute.slice(0, absolute.lastIndexOf("/"));
+  if (dir.split("/").filter(Boolean).length < 2 || TOO_BROAD_TO_MOUNT.has(dir)) return null;
+  return dir;
+}
+
 /** Pick the most specific mount before passing the relative path to /api/code. */
 export function splitRootPathIn(roots: CodeRoot[], absolute: string): { rootId: string; rel: string } | null {
   let best: { rootId: string; rel: string } | null = null;

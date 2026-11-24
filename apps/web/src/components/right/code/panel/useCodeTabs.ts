@@ -73,10 +73,14 @@ export interface UseCodeTabsOpts {
   codeOpenRequest: CodeOpenRequest | null;
   clearCodeOpenRequest: () => void;
   setCodeRootId: (id: string) => void;
+  /** Design §3.2: a request carrying an ABSOLUTE path is outside every root.
+   *  The panel renders the guidance (notice + "add its folder"); `null` clears
+   *  it once a rooted open succeeds. */
+  onOutsideRoot: (req: { path: string; line: number | null } | null) => void;
 }
 
 export function useCodeTabs(opts: UseCodeTabsOpts) {
-  const { sessionId, t, setNotice, cancelInlineDiff, codeOpenRequest, clearCodeOpenRequest, setCodeRootId } =
+  const { sessionId, t, setNotice, cancelInlineDiff, codeOpenRequest, clearCodeOpenRequest, setCodeRootId, onOutsideRoot } =
     opts;
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
@@ -264,13 +268,17 @@ export function useCodeTabs(opts: UseCodeTabsOpts) {
     const req = codeOpenRequest;
     if (!req) return;
     if (req.path.startsWith("/")) {
-      setNotice(t("notice.outsideRoot"));
+      // An absolute path is outside every root — surface the §3.2 guidance
+      // (notice + "add its folder") instead of pretending to open it.
+      setNotice(null);
+      onOutsideRoot({ path: req.path, line: req.line ?? null });
     } else {
+      onOutsideRoot(null);
       setCodeRootId(req.rootId);
       openFile(req.rootId, req.path, req.line ?? null);
     }
     clearCodeOpenRequest();
-  }, [codeOpenRequest, openFile, setCodeRootId, clearCodeOpenRequest, t, setNotice]);
+  }, [codeOpenRequest, openFile, setCodeRootId, clearCodeOpenRequest, setNotice, onOutsideRoot]);
 
   return {
     // state (for rendering)

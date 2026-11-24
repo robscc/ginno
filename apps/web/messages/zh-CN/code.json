@@ -29,6 +29,8 @@
       "forceSaveFailed": "强制保存失败",
       "readFailed": "读取失败",
       "outsideRoot": "此文件在当前工作区根目录之外",
+      "addFolder": "加为工作区",
+      "addFolderTitle": "把 {dir} 加入本会话的工作区",
       "copied": "已复制：{path}",
       "copyFailed": "复制失败",
       "revealFailed": "无法在文件管理器中显示",
