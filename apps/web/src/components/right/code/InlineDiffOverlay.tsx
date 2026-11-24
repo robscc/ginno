@@ -28,7 +28,7 @@ import {
   type Monaco,
 } from "./MonacoEditor";
 
-type DiffEditor = import("monaco-editor").editor.IStandaloneDiffEditor;
+type DiffEditor = import("monaco-editor/esm/vs/editor/editor.api.js").editor.IStandaloneDiffEditor;
 
 /** version 形如 "{mtime}:{inode}"（files/baselines.py）。整串太长太丑
  *  （2026-11-04 用户反馈），只展示 mtime 段转成的 HH:MM:SS；解析不了
@@ -43,7 +43,7 @@ function shortVersion(v?: string | null): string {
   }
   return v.slice(0, 8);
 }
-type TextModel = import("monaco-editor").editor.ITextModel;
+type TextModel = import("monaco-editor/esm/vs/editor/editor.api.js").editor.ITextModel;
 
 /** Diff-size caps (design §4.1: >4000 行或内容 >1MB 降级懒加载). */
 const INLINE_DIFF_MAX_LINES = 4000;
@@ -144,7 +144,7 @@ export function InlineDiffOverlay({
 
     void (async () => {
       installMonacoEnvironment();
-      const monaco = await import("monaco-editor");
+      const monaco = await import("./monaco");
       if (disposed || !hostRef.current) return;
       monacoRef.current = monaco;
       ensureThemes(monaco);
