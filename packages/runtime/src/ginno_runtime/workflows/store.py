@@ -19,7 +19,6 @@ Runs stay global (``~/.ginno/workflow_runs/<run_id>.json``) and now pin the
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import Any
 from ginno_runtime import jsonx as json
 
 from .. import paths
+from ..atomic_json import write_json
 from . import dsl as wf_dsl
 from . import expr as wf_expr
 
@@ -36,7 +36,7 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:10]
 
 
-# ---- low-level io (atomic write lifted from checkpointer) ----
+# ---- low-level io ----
 def _read_json(p: Path, default: Any) -> Any:
     if not p.exists():
         return default
@@ -48,9 +48,7 @@ def _read_json(p: Path, default: Any) -> Any:
 
 def _write_json(p: Path, data: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    os.replace(tmp, p)
+    write_json(p, data)
 
 
 # ---- layout helpers ----
