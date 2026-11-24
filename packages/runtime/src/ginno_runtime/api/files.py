@@ -243,8 +243,7 @@ async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "defa
         if override:
             schema, schema_source = override, "override"
         elif effective_kind in ("spreadsheet", "table"):
-            # schema_summary 走真实解析（openpyxl/pandas）——下沉工作线程。
-            schema = await asyncio.to_thread(_compact_schema, path)
+            schema = _compact_schema(path)
             schema_source = "computed" if schema else ""
     return {
         "ok": True,
@@ -308,14 +307,9 @@ async def upload_file_endpoint(
             "error": f"File too large (max {UPLOAD_MAX_BYTES // 1024 // 1024}MB)",
         }
     dest_dir = paths.session_uploads_dir(slug, session_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
-
-    def _write_upload() -> None:
-        # 100MB 上限内的整文件落盘是纯阻塞 IO，不能占事件循环线程。
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-
-    await asyncio.to_thread(_write_upload)
+    dest.write_bytes(data)
     # ref must match the registry's normalized path (symlink-safe), or the
     # UI's artifact → preview/download lookup by path misses (macOS /tmp).
     art = art_store.add_artifact(slug, "file", name, files_mod.norm_path(dest), session_id)
@@ -373,24 +367,19 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
         }
     name = p.name
     dest_dir = paths.session_uploads_dir(slug, session_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
-
-    def _copy_in() -> tuple[str, int]:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(p, dest)
-        # classify 打开真实文件嗅探内容；与拷贝同为阻塞 IO，一并下沉。
-        return files_ex.classify(dest), dest.stat().st_size
-
     try:
-        kind, size = await asyncio.to_thread(_copy_in)
+        shutil.copyfile(p, dest)
     except OSError as e:
         return {"ok": False, "error": f"Failed to read file: {e}"}
+    kind = files_ex.classify(dest)
     art = art_store.add_artifact(slug, "file", name, files_mod.norm_path(dest), session_id)
     entry = files_mod.get_registry(slug).register(
         name,
         dest,
         kind=kind,
-        size=size,
+        size=dest.stat().st_size,
         session_id=session_id,
         artifact_id=art.get("id"),
     )
@@ -583,8 +572,8 @@ async def file_download_endpoint(
         )
     if fmt == "csv":
         try:
-            name, data = await asyncio.to_thread(
-                files_preview.build_csv_export, p, sheet=sheet, name=entry.get("name")
+            name, data = files_preview.build_csv_export(
+                p, sheet=sheet, name=entry.get("name")
             )
         except files_ex.UnsupportedFormat as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -632,28 +621,21 @@ async def save_file_to_downloads_endpoint(
     p = Path(entry["path"])
     if not p.is_file():
         return {"ok": False, "error": "File has been moved or deleted"}
-    if fmt not in ("raw", "csv"):
-        return {"ok": False, "error": f"unsupported fmt: {fmt}"}
     downloads = Path(os.environ.get("GINNO_DOWNLOADS") or (Path.home() / "Downloads"))
-    dest: Path = downloads  # overwritten inside _export; typed for mypy-ish readers
-
-    def _export() -> Path:
-        nonlocal dest
+    try:
         downloads.mkdir(parents=True, exist_ok=True)
         if fmt == "raw":
             name = entry.get("name") or p.name
             dest = _unique_dest(downloads / name)
             shutil.copyfile(p, dest)
-        else:
+        elif fmt == "csv":
             name, data = files_preview.build_csv_export(
                 p, sheet=sheet, name=entry.get("name")
             )
             dest = _unique_dest(downloads / name)
             dest.write_bytes(data)
-        return dest
-
-    try:
-        dest = await asyncio.to_thread(_export)
+        else:
+            return {"ok": False, "error": f"unsupported fmt: {fmt}"}
     except files_ex.UnsupportedFormat as e:
         return {"ok": False, "error": str(e)}
     except files_ex.ExtractorUnavailable as e:
@@ -773,43 +755,37 @@ def _dir_stats(d: Path) -> tuple[int, int, float]:
 async def list_session_file_dirs_endpoint() -> dict:
     """List every per-session files directory across all projects, including
     orphaned ones (session deleted but its files preserved)."""
-
-    def _collect() -> list[dict]:
-        # _dir_stats 对每个会话目录整树 rglob+stat——跨项目全量扫描，
-        # 阻塞 IO 一并收进这一个函数，整体下沉工作线程。
-        out: list[dict] = []
-        projects_root = paths.home() / "projects"
-        if projects_root.is_dir():
-            for proj in sorted(projects_root.iterdir()):
-                if not proj.is_dir():
+    out: list[dict] = []
+    projects_root = paths.home() / "projects"
+    if projects_root.is_dir():
+        for proj in sorted(projects_root.iterdir()):
+            if not proj.is_dir():
+                continue
+            slug = proj.name
+            sessions_root = paths.project_sessions_dir(slug)
+            if not sessions_root.is_dir():
+                continue
+            metas = {m.get("id"): m for m in _session_meta_list(slug)}
+            for d in sorted(sessions_root.iterdir()):
+                if not d.is_dir():  # skips _index.json and <sid>.json checkpoints
                     continue
-                slug = proj.name
-                sessions_root = paths.project_sessions_dir(slug)
-                if not sessions_root.is_dir():
-                    continue
-                metas = {m.get("id"): m for m in _session_meta_list(slug)}
-                for d in sorted(sessions_root.iterdir()):
-                    if not d.is_dir():  # skips _index.json and <sid>.json checkpoints
-                        continue
-                    sid = d.name
-                    meta = metas.get(sid)
-                    n, size, mtime = _dir_stats(d)
-                    out.append(
-                        {
-                            "project_slug": slug,
-                            "session_id": sid,
-                            "title": (meta or {}).get("title"),
-                            "orphaned": meta is None,
-                            "dir": str(d),
-                            "file_count": n,
-                            "total_bytes": size,
-                            "mtime": mtime,
-                        }
-                    )
-        out.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-        return out
-
-    return {"ok": True, "sessions": await asyncio.to_thread(_collect)}
+                sid = d.name
+                meta = metas.get(sid)
+                n, size, mtime = _dir_stats(d)
+                out.append(
+                    {
+                        "project_slug": slug,
+                        "session_id": sid,
+                        "title": (meta or {}).get("title"),
+                        "orphaned": meta is None,
+                        "dir": str(d),
+                        "file_count": n,
+                        "total_bytes": size,
+                        "mtime": mtime,
+                    }
+                )
+    out.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+    return {"ok": True, "sessions": out}
 
 
 @router.get("/api/session-files/list")
@@ -936,7 +912,7 @@ async def delete_session_dir_endpoint(req: dict) -> dict:
                 art_store.delete_artifact(slug, art_id)
             removed += 1
     try:
-        await asyncio.to_thread(shutil.rmtree, target)
+        shutil.rmtree(target)
     except OSError as e:
         return {"ok": False, "error": f"Failed to delete: {e}"}
     return {"ok": True, "files_removed": removed}
@@ -951,50 +927,45 @@ async def cleanup_orphan_session_dirs_endpoint() -> dict:
     and skipped, not fatal — the rest still cleans."""
     import shutil
 
-    def _cleanup() -> tuple[list[dict], list[dict], int]:
-        removed: list[dict] = []
-        failed: list[dict] = []
-        freed_bytes = 0
-        projects_root = paths.home() / "projects"
-        if not projects_root.is_dir():
-            return removed, failed, freed_bytes
-        for proj in sorted(projects_root.iterdir()):
-            if not proj.is_dir():
+    removed: list[dict] = []
+    failed: list[dict] = []
+    freed_bytes = 0
+    projects_root = paths.home() / "projects"
+    if not projects_root.is_dir():
+        return {"ok": True, "removed": [], "failed": [], "freed_bytes": 0}
+    for proj in sorted(projects_root.iterdir()):
+        if not proj.is_dir():
+            continue
+        slug = proj.name
+        sessions_root = paths.project_sessions_dir(slug)
+        if not sessions_root.is_dir():
+            continue
+        for d in sorted(sessions_root.iterdir()):
+            if not d.is_dir():  # _index.json / checkpoints
                 continue
-            slug = proj.name
-            sessions_root = paths.project_sessions_dir(slug)
-            if not sessions_root.is_dir():
+            sid = d.name
+            if not _is_orphaned_session(slug, sid):
                 continue
-            for d in sorted(sessions_root.iterdir()):
-                if not d.is_dir():  # _index.json / checkpoints
-                    continue
-                sid = d.name
-                if not _is_orphaned_session(slug, sid):
-                    continue
-                _n, size, _mt = _dir_stats(d)
-                reg = files_mod.get_registry(slug)
-                purged = 0
-                prefix = str(d.resolve())
-                for e in reg.list_all():
-                    p = e.get("path") or ""
-                    if p == prefix or p.startswith(prefix + "/") or p.startswith(prefix + "\\"):
-                        art_id = e.get("artifact_id")
-                        reg.unregister(e["id"])
-                        if art_id:
-                            art_store.delete_artifact(slug, art_id)
-                        purged += 1
-                try:
-                    shutil.rmtree(d)
-                    freed_bytes += size
-                    removed.append({"project_slug": slug, "session_id": sid, "bytes": size})
-                except OSError as e:
-                    failed.append(
-                        {"project_slug": slug, "session_id": sid, "error": f"{type(e).__name__}: {e}"[:200]}
-                    )
-        return removed, failed, freed_bytes
-
-    # 整树统计 + 多目录 rmtree 的批量阻塞 IO，下沉工作线程。
-    removed, failed, freed_bytes = await asyncio.to_thread(_cleanup)
+            _n, size, _mt = _dir_stats(d)
+            reg = files_mod.get_registry(slug)
+            purged = 0
+            prefix = str(d.resolve())
+            for e in reg.list_all():
+                p = e.get("path") or ""
+                if p == prefix or p.startswith(prefix + "/") or p.startswith(prefix + "\\"):
+                    art_id = e.get("artifact_id")
+                    reg.unregister(e["id"])
+                    if art_id:
+                        art_store.delete_artifact(slug, art_id)
+                    purged += 1
+            try:
+                shutil.rmtree(d)
+                freed_bytes += size
+                removed.append({"project_slug": slug, "session_id": sid, "bytes": size})
+            except OSError as e:
+                failed.append(
+                    {"project_slug": slug, "session_id": sid, "error": f"{type(e).__name__}: {e}"[:200]}
+                )
     return {
         "ok": len(failed) == 0,
         "removed": removed,
