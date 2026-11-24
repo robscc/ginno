@@ -170,10 +170,11 @@ def export_project(body: dict | None = None) -> FileResponse:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"{slug}-{stamp}.zip"
-    # The download name is stable. Each response needs its own backing file,
-    # since another request can export the same project before this one streams.
+    target = out_dir / filename
+    # Keep the archive in its original destination directory and give each
+    # response its own backing file until it finishes streaming.
     with NamedTemporaryFile(
-        dir=out_dir, prefix=f"{src.name}-{stamp}-", suffix=".zip.tmp", delete=False,
+        dir=target.parent, prefix=f"{target.stem}-", suffix=".zip.tmp", delete=False,
     ) as f:
         tmp = Path(f.name)
     out = tmp.with_suffix("")

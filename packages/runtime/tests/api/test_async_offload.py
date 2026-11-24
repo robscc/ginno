@@ -174,6 +174,22 @@ async def test_same_second_project_exports_keep_separate_downloads(monkeypatch):
             assert archive.read("archive-project/sample.dat") == expected
 
 
+async def test_project_export_keeps_destination_parent_for_nested_slug():
+    project_slug = "group/sample"
+    paths.project_dir(project_slug).mkdir(parents=True)
+    transport = httpx.ASGITransport(app=server.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/export/project", json={"project_slug": project_slug})
+        assert response.status_code == 500
+
+        parent = paths.home() / "index" / "exports" / "group"
+        parent.mkdir()
+        response = await client.post("/api/export/project", json={"project_slug": project_slug})
+        assert response.status_code == 200
+        (archive,) = parent.glob("sample-*.zip")
+        assert response.content == archive.read_bytes()
+
+
 async def test_project_export_io_error_does_not_leave_partial_archive(monkeypatch):
     paths.project_dir("archive-project").mkdir(parents=True)
 
