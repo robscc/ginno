@@ -31,7 +31,7 @@ export type Block =
   // 历史投影（messages_ui 标签路径）不带该标记，靠 session.remote_peer 兜底。
   | { kind: "ref"; refKind: string; name: string; refId?: string;
       remote?: boolean; peer?: string }
-  | { kind: "tool"; id?: string; requestId?: string; name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: EditDiffPayload }
+  | { kind: "tool"; id?: string; requestId?: string; name: string; content: string; pending: boolean; failed?: boolean; argsPreview?: string; argsStream?: string; diff?: EditDiffPayload }
   // ask_user parked the turn on an ambiguity: the card REPLACES the pending
   // ask_user tool bubble (same tool-call id), and the tool's JSON result folds
   // back into status/answer on tool.end (a stop while parked → "skipped").

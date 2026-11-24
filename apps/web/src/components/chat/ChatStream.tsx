@@ -988,6 +988,7 @@ export function ChatStream({
       <FindBar state={sessionFind} />
       <div
         ref={scrollRef}
+        data-chat-scroll
         onScroll={(e) => {
           const el = e.currentTarget;
           const away = el.scrollHeight - el.scrollTop - el.clientHeight;

@@ -501,6 +501,8 @@ async def _updates_tools(ctx: StreamTurnCtx, delta) -> None:
                 "id": tc_id,
                 "content": eng._truncate_for_ws(eng._tool_content_str(raw)),
             }
+            if getattr(m, "status", None) == "error":
+                payload["failed"] = True
             # 编辑 diff 显示（2026-11-21 P0/P1）：edit_file/write_file 成功
             # 时附纯展示 diff——edit 从 args 取 old/new（零竞态），write 的
             # 旧内容取首写前 baseline。best-effort：绝不因 diff 失败破坏
@@ -569,6 +571,7 @@ async def _updates_permission(ctx: StreamTurnCtx, delta) -> None:
                         "id": getattr(m, "tool_call_id", None),
                         "name": name.strip(),
                         "content": reason.strip() or c,
+                        "failed": True,
                     },
                 )
             )

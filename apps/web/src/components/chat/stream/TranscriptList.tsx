@@ -5,7 +5,7 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, RefObject } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -114,6 +114,9 @@ export function TranscriptList({
   const tc = useTranslations("chat");
   const router = useRouter();
   const onFileLink = useMarkdownFileLinks(session);
+  const onInspectProcess = useCallback(() => {
+    if (stickRef) stickRef.current = false;
+  }, [stickRef]);
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tr = tc as unknown as {
@@ -670,6 +673,7 @@ export function TranscriptList({
               isLatestTurn={m.id === lastAssistantId}
               sessionKey={session?.id ?? null}
               onFileLink={onFileLink}
+              onInspectProcess={onInspectProcess}
               onAnswerQuestion={answerQuestion}
               // questionLive: is this session's turn actually alive? A
               // parked question keeps the server turn running WITHOUT a

@@ -42,7 +42,7 @@ describe("sessionFind（find-bar-design §3）", () => {
     expect(t).toContain("A");
   });
 
-  it("索引跨消息、blockIdx 只数可搜块", () => {
+  it("索引跨消息并保留原始块序号", () => {
     const idx = buildFindIndex(
       [
         { id: "m1", blocks: [{ kind: "text", text: "甲" }, { kind: "image", url: "x" }, { kind: "text", text: "乙" }] },
@@ -50,7 +50,17 @@ describe("sessionFind（find-bar-design §3）", () => {
       ],
       null,
     );
-    expect(idx.map((e) => `${e.msgId}:${e.blockIdx}`)).toEqual(["m1:0", "m1:1", "m2:0"]);
+    expect(idx.map((e) => `${e.msgId}:${e.blockIdx}`)).toEqual(["m1:0", "m1:2", "m2:0"]);
+  });
+
+  it("finds folded summary text and diff by their source ordinal", () => {
+    const idx = buildFindIndex([{ id: "folded", blocks: [
+      { kind: "llm_call" },
+      { kind: "reasoning_summary", parts: [{ text: "Read config" }] },
+      { kind: "tool", name: "edit_file", pending: false, diff: { text: "+ enable_preview" } },
+    ] }], null);
+    expect(searchFindIndex(idx, "Read config")[0]?.blockIdx).toBe(1);
+    expect(searchFindIndex(idx, "enable_preview")[0]?.blockIdx).toBe(2);
   });
 
   it("搜索：大小写不敏感、多命中有序、空串零命中", () => {

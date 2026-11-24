@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ginno · 执行过程自动折叠</title>
+<style>
+:root{color-scheme:dark;--base:#0a0a0f;--panel:#0e0e15;--card:#15151d;--hover:#1e1d29;--line:#2b2b38;--text:#ecebf2;--muted:#a6a4b5;--purple:#c3a8ff;--amber:#f2bb77;--red:#f1a1ab;font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--base);color:var(--text)}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,textarea:focus-visible{outline:2px solid var(--purple);outline-offset:2px}p,h1,h2{margin:0}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}code{font-size:.92em;overflow-wrap:anywhere}
+.page{width:min(1060px,calc(100% - 44px));margin:27px auto}.controls,.tabs,.actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px}.controls{justify-content:space-between;margin-bottom:12px}.controls h1{font-size:15px;font-weight:650}.tabs{gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tabs button,.btn{padding:4px 9px;border:1px solid transparent;border-radius:6px;background:none;color:var(--muted);font-size:12px}.tabs button:hover,.tabs button[aria-pressed=true],.btn:hover{background:var(--hover);color:var(--text)}.tabs button[aria-pressed=true]{color:var(--purple)}.btn{border-color:var(--line);background:var(--card)}.primary{border-color:#5b427f;background:#281e3b;color:var(--purple)}.btn:disabled{opacity:.45;cursor:default}
+.window{display:grid;grid-template-columns:188px minmax(0,1fr);height:clamp(500px,78dvh,730px);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 16px 50px #0005}aside{padding:16px 10px;background:var(--panel);border-right:1px solid var(--line)}.brand{font-weight:650;margin:1px 7px 25px;display:flex;align-items:center;gap:8px}.logo,.agent-icon{display:grid;place-items:center;flex:none;border-radius:6px;background:#2b2141;color:var(--purple);width:23px;height:23px}.sidebar-label{color:var(--muted);font-size:11px;margin:0 8px 6px}.session{padding:7px 8px;border-radius:7px;background:var(--hover);font-size:12px}.chat{min-width:0;min-height:0;display:flex;flex-direction:column}.topbar{padding:11px 17px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}.topbar h2{font-size:14px}.topbar button{flex:none}.scroll{flex:1;min-height:0;overflow:auto;overflow-anchor:none;scrollbar-width:thin}.thread,.composer-wrap{max-width:720px;margin:auto;padding:15px 20px}.thread{padding-top:20px}.user{width:fit-content;max-width:90%;margin:0 0 16px auto;padding:7px 11px;background:var(--hover);border:1px solid var(--line);border-radius:11px 11px 3px 11px}.agent{display:flex;align-items:center;gap:7px;margin-bottom:8px;color:var(--muted);font-size:12px}.agent-icon{width:19px;height:19px}.reply{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:11px;display:grid;gap:10px}.reply>p{margin:1px 1px}.artifact{display:flex;align-items:center;gap:8px;width:fit-content;border:1px solid var(--line);border-radius:7px;padding:6px 9px;background:var(--panel);color:var(--purple);font-size:12px;text-align:left}
+.group{border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}.group-button{display:flex;align-items:center;gap:7px;border:0;background:none;padding:6px 9px;min-height:33px;width:100%;border-radius:7px;text-align:left;color:var(--muted);font-size:12px}.group-button:hover{background:var(--hover);color:var(--text)}.chevron{flex:none;width:6px;height:6px;border:solid currentColor;border-width:0 1.5px 1.5px 0;transform:rotate(-45deg);margin-inline-end:3px}[aria-expanded=true] .chevron{transform:rotate(45deg) translateY(-2px)}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-button strong{color:var(--text);font-weight:550}.count{margin-left:auto;flex:none;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}.dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--purple);animation:pulse 1.5s ease-in-out infinite}.group[data-state=running]{border-color:#473650}.group[data-state=running] .dot{background:var(--amber)}@keyframes pulse{50%{box-shadow:0 0 0 3px #c3a8ff35}}.records{padding:6px 8px 8px;border-top:1px solid var(--line);max-height:262px;overflow:auto;scrollbar-width:thin}.unfolded .records{padding:0;border:0;max-height:none;overflow:visible}.item{margin:4px 0;border:1px solid var(--line);border-radius:6px;background:#101016;min-width:0}.item summary{display:flex;gap:7px;align-items:center;min-height:28px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px;list-style:none}.item summary::-webkit-details-marker{display:none}.item summary::before{content:'›';font-size:15px;line-height:1}.item[open] summary::before{transform:rotate(90deg)}.item[data-kind=thinking] summary{color:var(--purple)}.item .result{margin-left:auto;white-space:nowrap;font-size:10px}.item pre{margin:0;border-top:1px solid var(--line);padding:8px;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}.diff-del,.diff-add{display:block}.diff-del{background:#f7768a16;color:var(--red)}.diff-add{background:#6ed49e18;color:#a1e7ba}.matched{outline:2px solid var(--purple);outline-offset:1px}
+.callout{border:1px solid #634d35;border-left:2px solid var(--amber);background:#221c17;border-radius:7px;padding:8px 10px;font-size:12px}.callout p{margin-top:4px;color:var(--muted)}.callout .btn{margin-top:7px}.callout.error{border-color:#6a3e47;border-left-color:var(--red);background:#271820}.error > summary{cursor:pointer;color:var(--red)}.composer-wrap{width:100%;padding-block:9px 12px}.composer{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:7px 9px}.composer textarea{width:100%;border:0;resize:none;background:none;color:var(--text);font:inherit;padding:3px;min-height:36px}.composer-bar{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:12px}.model{padding:2px 6px;border:1px solid var(--line);border-radius:5px}
+dialog{width:min(540px,calc(100% - 28px));color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:11px;padding:15px}dialog::backdrop{background:#0009}dialog header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}dialog ul{margin:0;padding-left:20px}dialog li+li{margin-top:6px}
+@media(max-width:690px){.window{grid-template-columns:minmax(0,1fr);height:clamp(490px,80dvh,660px)}aside{display:none}.page{width:calc(100% - 20px);margin:12px auto}.thread,.composer-wrap{padding-inline:10px}.topbar{padding-inline:10px}.reply{padding:8px}.count{font-size:10px}}@media(prefers-reduced-motion:reduce){.dot{animation:none}}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="controls">
+    <h1>Ginno · 执行过程自动折叠</h1>
+    <div class="actions">
+      <div class="tabs" aria-label="显示方式"><button id="fold" type="button" aria-pressed="true">自动折叠</button><button id="original" type="button" aria-pressed="false">原有显示</button></div>
+      <button class="btn" id="exceptions" type="button" aria-pressed="false">等待与失败</button>
+      <button class="btn primary" id="play" type="button">播放执行过程</button>
+    </div>
+  </header>
+  <section class="window" aria-label="Ginno 聊天预览">
+    <aside><div class="brand"><span class="logo" aria-hidden="true">✦</span>GinnoWork</div><div class="sidebar-label">今天</div><div class="session">工作台方案与原型校验</div></aside>
+    <div class="chat">
+      <header class="topbar"><h2>工作台方案与原型校验</h2><button class="btn" id="jump" type="button">定位到 Diff</button></header>
+      <div class="scroll" id="scroll" tabindex="0" aria-label="聊天记录">
+        <div class="thread">
+          <p class="user">整理需求方案，更新 HTML 原型，再跑一遍验收。</p>
+          <div class="agent"><span class="agent-icon" aria-hidden="true">✦</span>Dev Agent</div>
+          <article class="reply">
+            <div id="prepare"></div>
+            <p id="progress">已整理完需求清单，接下来校验 HTML 和验收映射。</p>
+            <div id="validate"></div>
+            <div id="issue" hidden>
+              <div id="approval" class="callout" hidden><strong>等待确认</strong><p>是否允许执行浏览器验收，检查窄屏与键盘操作？</p><button class="btn primary" id="approve" type="button">确认并继续</button></div>
+              <details id="error" class="callout error" hidden><summary>浏览器验收失败 · 找不到「提交」按钮</summary><p>TimeoutError：等待 3 秒后仍未找到按钮。</p></details>
+            </div>
+            <div id="answer"><p>方案和原型已更新，验收检查全部通过。</p><button type="button" class="artifact" id="artifact">▤ 工作台评审原型.html</button></div>
+          </article>
+        </div>
+      </div>
+      <div class="composer-wrap"><div class="composer"><textarea aria-label="消息输入框" placeholder="说点什么…… / 命令 · @ 提及" rows="1" readonly></textarea><div class="composer-bar"><span aria-hidden="true">＋ &nbsp; /</span><span class="model">◎ codex/gpt-6.2-astra⌄</span></div></div></div>
+    </div>
+  </section>
+</main>
+<dialog id="file" aria-labelledby="file-title"><header><h2 id="file-title">工作台评审原型.html</h2><form method="dialog"><button class="btn">关闭</button></form></header><ul><li>需求清单与验收映射</li><li>窄屏布局</li><li>键盘操作</li></ul></dialog>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const prepare = [
+  ['thinking', '梳理原型和现有表单', '沿用设置页和聊天输入框的布局。'],
+  ['read', '读取需求清单', 'docs/requirements.md'],
+  ['read', '读取模型设置', 'apps/web/src/components/settings/ModelConfigForm.tsx'],
+  ['read', '读取菜单交互', 'apps/web/src/components/chat/stream/ModelChipMenu.tsx'],
+  ['read', '读取验收标准', 'docs/acceptance.md'],
+  ['read', '读取现有原型', 'design-mocks/workbench.html'],
+  ['thinking', '确认改动范围', '保留模型选择和删除操作，更新设置页的验收示例。'],
+  ['edit', '更新原型布局', '<span class="diff-del">− &lt;div class="settings"&gt;</span><span class="diff-add">+ &lt;section class="settings" aria-label="模型设置"&gt;</span>'],
+  ['edit', '更新验收映射', 'docs/acceptance.md · 补充保存后生效的检查'],
+  ['command', '检查 JavaScript 语法', '$ node --check demo.js\n检查通过'],
+  ['command', '检查页面结构', '$ python check_markup.py\n所有标题与表单标签均可定位'],
+  ['command', '核对配置字段', '$ pnpm typecheck\n检查通过'],
+  ['command', '检查编辑差异', '$ git diff --check\n检查通过'],
+  ['command', '核对验收条目', '$ python verify_acceptance.py\n检查通过'],
+];
+const validate = [
+  ['thinking', '确认浏览器验收步骤', '覆盖桌面、窄屏和键盘三条路径。'],
+  ['command', '检查桌面布局', '桌面窗口布局通过'],
+  ['command', '检查窄屏布局', '390px 窗口布局通过'],
+  ['command', '检查键盘操作', 'Tab、Enter 和 Escape 检查通过'],
+  ['command', '检查提交按钮', '提交按钮可定位'],
+];
+const labels = {thinking:'思考摘要',read:'读取',edit:'修改',command:'命令'};
+const list = $('scroll');
+
+function makeGroup(id, records) {
+  const root = $(id);
+  root.className = 'group';
+  root.innerHTML = `<button class="group-button" type="button" aria-expanded="false" aria-controls="${id}-records"><span class="chevron" aria-hidden="true"></span><span class="dot" aria-hidden="true" hidden></span><span class="title"><strong></strong><span class="action"></span></span><span class="count"></span></button><div class="records" id="${id}-records" tabindex="0" aria-label="执行明细" hidden></div>`;
+  const button = root.querySelector('button');
+  const details = root.querySelector('.records');
+  const items = records.map(([kind, title, content], index) => {
+    const item = document.createElement('details');
+    item.className = 'item';
+    item.dataset.kind = kind;
+    if (id === 'prepare' && index === 7) item.id = 'target-diff';
+    const head = document.createElement('summary');
+    head.append(`${labels[kind]} · ${title}`);
+    const status = document.createElement('span');
+    status.className = 'result';
+    head.append(status);
+    const body = document.createElement('pre');
+    if (item.id === 'target-diff') body.innerHTML = content;
+    else body.textContent = content;
+    item.append(head, body);
+    details.append(item);
+    return {item, status, kind};
+  });
+  const view = {root, button, details, items, records, choice:false};
+  button.addEventListener('click', () => {
+    const top = button.getBoundingClientRect().top;
+    view.choice = !view.choice;
+    updateGroup(view);
+    list.scrollTop += button.getBoundingClientRect().top - top;
+  });
+  return view;
+}
+
+const first = makeGroup('prepare', prepare);
+const second = makeGroup('validate', validate);
+let folded = true;
+let exception = false;
+let cursor = 0;
+let timer;
+let playing = false;
+let waiting = false;
+let follow = true;
+let highlightTimer;
+const firstEnd = prepare.length;
+const last = prepare.length + validate.length;
+cursor = last;
+
+function updateGroup(view) {
+  const local = view === first ? cursor : cursor - firstEnd;
+  const count = Math.min(Math.max(0, local), view.records.length);
+  const done = count === view.records.length;
+  const current = local >= 0 && !done && !waiting ? view.records[count] : null;
+  const tally = {read:0, edit:0, command:0};
+  view.items.forEach(({item, status, kind}, i) => {
+    const failed = exception && view === second && done && i === view.items.length - 1;
+    const finished = i < count && !failed;
+    if (finished && kind !== 'thinking') tally[kind]++;
+    item.hidden = failed || (!finished && (!current || i !== count));
+    status.textContent = kind === 'thinking' ? '' : finished ? '完成' : '执行中';
+  });
+  const completed = Object.values(tally).reduce((a,b) => a+b, 0);
+  const stats = Object.entries(tally).filter(([,n]) => n > 0).map(([kind,n]) => `${labels[kind]} ${n}`);
+  view.root.hidden = !count && !current;
+  view.root.dataset.state = current ? (current[0] === 'thinking' ? 'thinking' : 'running') : 'done';
+  view.root.classList.toggle('unfolded', !folded);
+  view.button.hidden = !folded;
+  view.button.setAttribute('aria-expanded', String(view.choice));
+  view.button.querySelector('.dot').hidden = !current;
+  view.button.querySelector('strong').textContent = current ? (current[0] === 'thinking' ? '正在思考' : '正在执行') : `已完成 ${completed} 项操作`;
+  view.button.querySelector('.action').textContent = current ? ` · ${current[1]}` : '';
+  view.button.querySelector('.count').textContent = current ? `已完成 ${completed} 项` : stats.join(' · ');
+  view.details.hidden = folded && !view.choice;
+}
+
+function update() {
+  updateGroup(first);
+  updateGroup(second);
+  $('progress').hidden = cursor < firstEnd;
+  $('approval').hidden = !waiting;
+  $('error').hidden = !(exception && cursor === last);
+  $('issue').hidden = $('approval').hidden && $('error').hidden;
+  $('answer').hidden = cursor !== last;
+  $('answer').querySelector('p').textContent = exception
+    ? '方案和原型已更新。浏览器验收有一项待修复。'
+    : '方案和原型已更新，验收检查全部通过。';
+  $('play').textContent = playing ? '暂停' : cursor < last ? '继续播放' : '播放执行过程';
+  $('play').disabled = waiting;
+  $('jump').disabled = cursor <= 7;
+  if (follow) list.scrollTop = list.scrollHeight;
+}
+
+function tick() {
+  cursor++;
+  if (cursor === firstEnd && exception) {
+    waiting = true;
+    playing = false;
+  } else if (cursor === last) {
+    playing = false;
+  }
+  update();
+  if (playing) timer = setTimeout(tick, 720);
+}
+
+function pause() {
+  clearTimeout(timer);
+  playing = false;
+}
+
+$('play').addEventListener('click', () => {
+  if (playing) { pause(); update(); return; }
+  if (cursor === last) {
+    cursor = 0;
+    follow = true;
+    first.choice = second.choice = false;
+    for (const item of document.querySelectorAll('.item[open]')) item.open = false;
+  }
+  playing = true;
+  update();
+  timer = setTimeout(tick, 1000);
+});
+$('approve').addEventListener('click', () => {
+  waiting = false;
+  playing = true;
+  update();
+  timer = setTimeout(tick, 720);
+});
+$('exceptions').addEventListener('click', () => {
+  pause();
+  exception = !exception;
+  $('exceptions').setAttribute('aria-pressed', String(exception));
+  cursor = exception ? firstEnd : last;
+  waiting = exception;
+  follow = true;
+  first.choice = second.choice = false;
+  $('error').open = false;
+  update();
+});
+function setFold(value) {
+  folded = value;
+  $('fold').setAttribute('aria-pressed', String(value));
+  $('original').setAttribute('aria-pressed', String(!value));
+  updateGroup(first);
+  updateGroup(second);
+}
+$('fold').addEventListener('click', () => setFold(true));
+$('original').addEventListener('click', () => setFold(false));
+$('artifact').addEventListener('click', () => $('file').showModal());
+$('jump').addEventListener('click', () => {
+  first.choice = true;
+  updateGroup(first);
+  const target = $('target-diff');
+  target.open = true;
+  target.querySelector('summary').focus({preventScroll: true});
+  target.scrollIntoView({block:'center'});
+  follow = false;
+  target.classList.add('matched');
+  clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => target.classList.remove('matched'), 2200);
+});
+list.addEventListener('scroll', () => {
+  follow = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+}, {passive:true});
+update();
+</script>
+</body>
+</html>

@@ -152,7 +152,9 @@ def build_stable_system(
         "with a one-line summary. To attach a reference chip (file/workflow/doc) below your "
         "answer, call attach_ref(kind, name). Prefer these over long plain-text lists. "
         "These two tools render silently on the user's screen — do NOT quote or repeat "
-        "their return values; just add a brief human summary."
+        "their return values; just add a brief human summary. Call render_widget as a tool; "
+        "never print <ginno-block> tags or a widget payload in your answer. If the tool is "
+        "unavailable, use a short Markdown list or table."
     )
     parts.append(
         "Charts: when a trend (line/area), comparison (bar), or composition (pie) is "

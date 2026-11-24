@@ -41,6 +41,8 @@ export function useSessionFind(
   const [activeIdx, setActiveIdx] = useState(0);
   const [focusRequest, setFocusRequest] = useState(0);
   const hitsRef = useRef<ReturnType<typeof searchFindIndex>>([]);
+  const cancelJump = useRef<(() => void) | undefined>();
+  useEffect(() => () => cancelJump.current?.(), [sessionId]);
 
   // 防抖 150ms（§3.1）。
   useEffect(() => {
@@ -135,7 +137,8 @@ export function useSessionFind(
       if (scrollRef.current) {
         // 目标行可能刚扩窗/刚分片挂载：落定后补刷一次 paint——否则首次
         // paint 时行还不存在，active 高亮会漏（时间分片挂载后同理）。
-        painter.focusActiveHit(scrollRef.current, hit, debounced, () => {
+        cancelJump.current?.();
+        cancelJump.current = painter.focusActiveHit(scrollRef.current, hit, debounced, () => {
           if (scrollRef.current) {
             painter.paint(scrollRef.current, hitsRef.current, bounded, debounced);
           }
@@ -145,9 +148,14 @@ export function useSessionFind(
     [debounced, scrollRef],
   );
 
+  useEffect(() => {
+    if (open && debounced.trim()) jump(0);
+  }, [open, debounced, jump]);
+
   const next = useCallback(() => jump(activeIdx + 1), [jump, activeIdx]);
   const prev = useCallback(() => jump(activeIdx - 1), [jump, activeIdx]);
   const close = useCallback(() => {
+    cancelJump.current?.();
     setOpen(false);
     painter.clear();
   }, []);

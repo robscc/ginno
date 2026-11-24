@@ -10,6 +10,7 @@
  */
 
 import type { FindHit } from "@/lib/sessionFind";
+import { REVEAL_PROCESS_BLOCK } from "../blocks/ProcessFold";
 
 export const HIGHLIGHT_SUPPORTED =
   typeof CSS !== "undefined" &&
@@ -88,24 +89,40 @@ export function focusActiveHit(
   hit: FindHit,
   query: string,
   onSettled?: () => void,
-): void {
+): () => void {
   const needle = query.trim();
   let tries = 0;
-  const tick = () => {
-    const row = scrollEl.querySelector(`[data-msg-id="${cssEscape(hit.msgId)}"]`);
-    if (row) {
-      const blockEl = row.querySelector(`[data-block-idx="${hit.blockIdx}"]`) ?? row;
-      if (needle && HIGHLIGHT_SUPPORTED) {
-        const ranges = locateRanges(blockEl, needle);
-        if (ranges[0]) {
-          ranges[0].startContainer.parentElement?.scrollIntoView({ block: "center" });
-        }
-      }
-      onSettled?.();
-      return;
-    }
-    if (++tries < 60) requestAnimationFrame(tick);
+  let revealedGroup = false;
+  let revealedRecord = false;
+  let frame = 0;
+  const retry = () => {
+    if (++tries < 60) frame = requestAnimationFrame(tick);
     else onSettled?.();
   };
-  tick();
+  const tick = () => {
+    const row = scrollEl.querySelector(`[data-msg-id="${cssEscape(hit.msgId)}"]`);
+    if (!row) { retry(); return; }
+    const group = row.querySelector(`[data-process-blocks~="${hit.blockIdx}"]`);
+    const groupButton = group?.querySelector(":scope > button[aria-expanded=false]");
+    if (groupButton && !revealedGroup) {
+      revealedGroup = true;
+      group?.dispatchEvent(new Event(REVEAL_PROCESS_BLOCK));
+      retry();
+      return;
+    }
+    const blockEl = row.querySelector(`[data-block-idx="${hit.blockIdx}"]`) ?? row;
+    const record = blockEl.querySelector<HTMLButtonElement>("[data-reveal-record][aria-expanded=false]");
+    if (record && !revealedRecord) {
+      revealedRecord = true;
+      record.click();
+      retry();
+      return;
+    }
+    const target = needle ? locateRanges(blockEl, needle).find((range) => range.getBoundingClientRect().height) : null;
+    (target?.startContainer.parentElement ?? blockEl).scrollIntoView({ block: "center" });
+    onSettled?.();
+  };
+  // Let transcript virtualization handle the message anchor before refining it.
+  frame = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(frame);
 }

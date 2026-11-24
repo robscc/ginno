@@ -889,6 +889,7 @@ def _messages_to_ui(
 
     results: dict[str, str] = {}
     raw_results: dict[str, str] = {}
+    failed_tools: set[str] = set()
     # turn-meta（turn 右下角耗时+token）：读 session 的 turns.jsonl，按
     # message_id 对齐 assistant bubble（engine 收尾追加；缺失=老会话/工具轮）。
     _turn_metas: dict[str, dict] = {}
@@ -908,8 +909,11 @@ def _messages_to_ui(
     for m in messages:
         if isinstance(m, ToolMessage):
             raw = getattr(m, "content", "")
-            raw_results[getattr(m, "tool_call_id", None)] = raw if isinstance(raw, str) else ""
-            results[getattr(m, "tool_call_id", None)] = _tool_content_str(raw)
+            tool_id = m.tool_call_id
+            raw_results[tool_id] = raw if isinstance(raw, str) else ""
+            results[tool_id] = _tool_content_str(raw)
+            if m.status == "error":
+                failed_tools.add(tool_id)
     # Citation ids (web|sN) resolve against the web_search outputs of the SAME
     # transcript — build the map once, apply to every sources block below.
     # Z.ai/GLM server-side searches have no ToolMessage: their synthesized
@@ -1220,6 +1224,7 @@ def _messages_to_ui(
                     step.append({
                         "kind": "tool", "id": tid, "name": nm, "content": res,
                         "pending": False, "argsPreview": _tool_args_preview(nm, args),
+                        **({"failed": True} if tid in failed_tools else {}),
                         **_replay_edit_diff(nm, args, project_slug, session_id),
                     })
                     # Fallback path for code-generated images: if the turn ended

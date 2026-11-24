@@ -443,7 +443,7 @@ switch (ev.event) {
     // Hide tool blocks that returned "no results" to reduce noise.
     // 只删**这一个**目标块：旧实现在 name-only 时走 filter 全删，会把一个 turn 里
     // 所有同名工具块一次删光（实测 2 → 0）。
-    if (isEmptyToolResult(content)) {
+    if (ev.failed !== true && isEmptyToolResult(content)) {
       if (ti < 0) return blocks;
       return blocks.filter((_, i) => i !== ti);
     }
@@ -453,6 +453,7 @@ switch (ev.event) {
         ...(next[ti] as Extract<Block, { kind: "tool" }>),
         content,
         pending: false,
+        ...(ev.failed === true ? { failed: true } : {}),
         // 编辑 diff（2026-11-21）：展示字段随终态落块；无 diff 的工具端
         // （旧 sidecar / 非编辑类）字段缺省，渲染退化现状。
         ...(ev.diff ? { diff: ev.diff as ImportDiff } : {}),
@@ -468,6 +469,7 @@ switch (ev.event) {
       ...blocks,
       {
         kind: "tool", id, name: name ?? "tool", content, pending: false,
+        ...(ev.failed === true ? { failed: true } : {}),
         ...(requestId && { requestId }),
         ...(ev.diff ? { diff: ev.diff as ImportDiff } : {}),
       },

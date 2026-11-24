@@ -41,6 +41,9 @@ import { FileChips, SkillChips } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 import { ReasoningSummary } from "./blocks/ReasoningSummary";
+import { ProcessFold } from "./blocks/ProcessFold";
+import { splitInlineWidgets } from "./blocks/inlineWidgets";
+import { processGroups } from "./blocks/processGroups";
 import { LlmCallLine } from "./blocks/llmCallLine";
 import { TaskEventBand } from "./TaskCard";
 import { imageUrl, ImageGallery } from "./blocks/media";
@@ -374,6 +377,8 @@ export function InnerBlocks({
   isLatestTurn,
   onAnswerQuestion,
   questionLive,
+  foldProcess = false,
+  onInspectProcess,
 }: {
   blocks: Block[];
   streaming?: boolean;
@@ -383,8 +388,10 @@ export function InnerBlocks({
   isLatestTurn?: boolean;
   onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
   questionLive?: boolean;
+  foldProcess?: boolean;
+  onInspectProcess?: () => void;
 }) {
-  const out: React.ReactNode[] = [];
+  const result: React.ReactNode[] = [];
   let i = 0;
   let key = 0;
   const mcpUiMap = useMcpToolsWithUi();
@@ -405,8 +412,34 @@ export function InnerBlocks({
   // 不能让真正的末尾 text 块失去光标与 partial-citation 掩码）。
   let contentEnd = blocks.length - 1;
   while (contentEnd >= 0 && blocks[contentEnd].kind === "turn_meta") contentEnd--;
+  const grouped = new Map<number, React.ReactNode[]>();
+  const starts = new Map<number, React.ReactNode>();
+  if (foldProcess) {
+    for (const indexes of processGroups(blocks, new Set(Object.keys(mcpUiMap)))) {
+      const children: React.ReactNode[] = [];
+      const first = blocks[indexes[0]];
+      const key = first.kind === "tool" && first.id ? `tool-${first.id}`
+        : first.kind === "reasoning_summary" && first.requestId ? `request-${first.requestId}` : `index-${indexes[0]}`;
+      for (const index of indexes) grouped.set(index, children);
+      starts.set(indexes[0], (
+        <ProcessFold key={`process-${key}`} blocks={indexes.map(index => blocks[index])}
+          indexes={indexes} streaming={!!streaming} tail={indexes.at(-1) === contentEnd}
+          offline={offline} onInspect={onInspectProcess}>
+          {children}
+        </ProcessFold>
+      ));
+    }
+  }
   while (i < blocks.length) {
     const b = blocks[i];
+    const group = starts.get(i);
+    if (group) result.push(group);
+    const out = grouped.get(i) ?? result;
+    const blockIndex = i;
+    const rowKey = "id" in b && b.id ? b.id : blockIndex;
+    const appendRecord = (node: React.ReactNode) => {
+      out.push(<div key={`record-${rowKey}`} data-block-idx={blockIndex}>{node}</div>);
+    };
     if (b.kind === "turn_meta") {
       i++;
       continue;
@@ -432,13 +465,22 @@ export function InnerBlocks({
       // (2026-08-21: turn b1463216 emitted an empty block).
       let text = stripSources(b.text);
       if (streaming && last && !cited.length) text = maskPartialSources(text);
+      const live = !!(streaming && last);
+      const parts = splitInlineWidgets(cleanAgentText(text), live);
+      const prose = parts.flatMap(part => "text" in part ? [part.text] : []).join(" ");
+      const hasWidgets = parts.some(part => "widget" in part);
       out.push(
-        <div key={key++}>
-          <Markdown
-            text={cleanAgentText(text)}
-            streaming={!!(streaming && last)}
-            onFileLink={onFileLink}
-          />
+        <div key={key++} data-block-idx={blockIndex}>
+          {parts.map((part, index) => "widget" in part ? (
+            <React.Fragment key={index}>
+              <WidgetBlock kind={part.widget.kind} data={part.widget.data} />
+              {part.widget.summary && !prose.includes(part.widget.summary) && (
+                <Markdown text={part.widget.summary} onFileLink={onFileLink} />
+              )}
+            </React.Fragment>
+          ) : (!hasWidgets || part.text.trim()) && (
+            <Markdown key={index} text={part.text} streaming={live && index === parts.length - 1} onFileLink={onFileLink} />
+          ))}
           {streaming && last && (
             <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-violet" />
           )}
@@ -463,7 +505,7 @@ export function InnerBlocks({
           <McpAppCard key={`mcpapp-${key++}`} server={mcpUi.server} tool={mcpUi.tool} data={b.content} />,
         );
       }
-      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} isLatestTurn={isLatestTurn} />);
+      appendRecord(<ToolBlock name={b.name} failed={b.failed} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} isLatestTurn={isLatestTurn} />);
     } else if (b.kind === "question") {
       out.push(
         <AskUserCard
@@ -474,9 +516,9 @@ export function InnerBlocks({
         />,
       );
     } else if (b.kind === "reasoning_summary") {
-      out.push(<ReasoningSummary key={`responses-summary-${b.requestId ?? key++}`} block={b} live={!!streaming} offline={offline} />);
+      appendRecord(<ReasoningSummary block={b} live={!!streaming} offline={offline} />);
     } else if (b.kind === "thinking") {
-      out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
+      appendRecord(<ThinkingBlock text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
       out.push(<FileChips key={key++} files={[b]} />);
     } else if (b.kind === "steer") {
@@ -522,7 +564,7 @@ export function InnerBlocks({
   }
   return (
     <>
-      {out}
+      {result}
       {tmBlock && <TurnMetaLine key="tm" block={tmBlock} />}
       {dsResult && <DevSwapResultLine key="dsr" block={dsResult} />}
     </>

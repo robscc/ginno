@@ -285,6 +285,20 @@
       "sandbox": "沙箱",
       "permissions": "此应用请求了额外权限：{perms}"
     },
+      "process": {
+      "interrupted": "已中断",
+        "offline": "连接已中断",
+        "parallel": "正在执行 {count} 项",
+        "running": "正在执行 · {action}",
+        "thinking": "正在思考",
+        "completed": "已完成 {count} 项操作",
+        "completedCount": "已完成 {count} 项",
+        "read": "读取 {count}",
+        "edit": "修改 {count}",
+        "command": "命令 {count}",
+        "other": "其他 {count}",
+        "reviewed": "思考摘要"
+      },
     "reasoningSummary": {
       "title": "思考摘要",
       "receiving": "接收中",

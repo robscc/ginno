@@ -285,6 +285,20 @@
       "sandbox": "sandboxed",
       "permissions": "This app requested extra permissions: {perms}"
     },
+      "process": {
+      "interrupted": "Interrupted",
+        "offline": "Connection lost",
+        "parallel": "Running {count} tools",
+        "running": "Running · {action}",
+        "thinking": "Thinking",
+        "completed": "Completed {count} actions",
+        "completedCount": "{count} done",
+        "read": "Read {count}",
+        "edit": "Edited {count}",
+        "command": "Commands {count}",
+        "other": "Other {count}",
+        "reviewed": "Thinking summaries"
+      },
     "reasoningSummary": {
       "title": "Reasoning summary",
       "receiving": "Receiving",

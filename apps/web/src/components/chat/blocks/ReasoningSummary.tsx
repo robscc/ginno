@@ -41,7 +41,7 @@ export function ReasoningSummary({ block, live, offline }: {
   const status = disconnected ? "offline" : receiving ? "receiving" : "saved";
   return (
     <section className={`my-2 min-w-0 overflow-hidden rounded-r-lg border-l-2 ${disconnected ? "border-amber-500/70 bg-amber-500/[0.07]" : "border-violet/70 bg-violet/[0.07]"}`}>
-      <button type="button" aria-expanded={open} aria-controls={id}
+      <button type="button" data-reveal-record aria-expanded={open} aria-controls={id}
         onClick={() => { follow.current = true; setChoice(!open); }}
         className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-card2/40 focus-visible:outline-violet">
         <Sparkles aria-hidden className={`h-3.5 w-3.5 shrink-0 text-violet ${receiving ? "motion-safe:animate-pulse" : ""}`} />

@@ -23,56 +23,51 @@ export interface FindHit {
 
 /** 每条消息一个版本缓存条目：blocks 数组引用变才重提取（§3.1）。 */
 interface MsgCacheEntry {
-  text: string;
   version: unknown;
-  kinds: string[];
+  entries: Array<Pick<FindIndexEntry, "blockIdx" | "kind" | "text">>;
 }
 
 const msgCache = new Map<string, MsgCacheEntry>();
 
-/** §3.2 提取表：每个 block 一段可搜文本（与索引条目一一对应）。 */
-export function extractSearchableText(blocks: Array<Record<string, unknown>>): string[] {
-  const out: string[] = [];
-  for (const b of blocks) {
-    switch (b.kind) {
-      case "text":
-      case "thinking":
-      case "steer":
-      case "context":
-        if (typeof b.text === "string") out.push(b.text);
-        break;
-      case "tool":
-        // pending（content="…"）不搜；工具输出是「报错在哪条消息」的主目标。
-        if (b.pending === true) break;
-        out.push(
-          `${String(b.name ?? "")}\n${String(b.argsPreview ?? "")}\n${String(b.content ?? "")}`,
-        );
-        break;
-      case "question": {
-        const q = [
-          String(b.question ?? ""),
-          ...(Array.isArray(b.options) ? (b.options as string[]).map(String) : []),
-          String(b.answer ?? ""),
-        ].join("\n");
-        out.push(q);
-        break;
-      }
-      case "skill":
-        out.push(`/${String(b.name ?? "")} ${String(b.text ?? "")}`);
-        break;
-      case "subagent_result":
-      case "worker_result":
-        out.push(`${String(b.goal ?? "")}\n${String(b.summary ?? "")}\n${String(b.text ?? "")}`);
-        break;
-      case "file":
-      case "ref":
-        out.push(String(b.name ?? ""));
-        break;
-      default:
-        break; // image/widget/workflow/sources/turn_meta/… 不入索引（§3.2）
+function searchableText(block: Record<string, unknown>): string | null {
+  switch (block.kind) {
+    case "text":
+    case "thinking":
+    case "steer":
+    case "context":
+      return typeof block.text === "string" ? block.text : null;
+    case "reasoning_summary": {
+      if (!Array.isArray(block.parts)) return null;
+      return block.parts.map((part) => String(part?.text ?? "")).join("\n");
     }
+    case "tool": {
+      if (block.pending === true) return null;
+      const diff = block.diff as { text?: string; path?: string } | undefined;
+      const fields = [block.name, block.argsPreview, block.content];
+      if (diff) fields.push(diff.path, diff.text);
+      return fields.map((value) => String(value ?? "")).join("\n");
+    }
+    case "question":
+      return [block.question, ...(Array.isArray(block.options) ? block.options : []), block.answer]
+        .map((value) => String(value ?? "")).join("\n");
+    case "skill":
+      return `/${String(block.name ?? "")} ${String(block.text ?? "")}`;
+    case "subagent_result":
+    case "worker_result":
+      return [block.goal, block.summary, block.text].map((value) => String(value ?? "")).join("\n");
+    case "file":
+    case "ref":
+      return String(block.name ?? "");
+    default:
+      return null;
   }
-  return out;
+}
+
+export function extractSearchableText(blocks: Array<Record<string, unknown>>): string[] {
+  return blocks.flatMap((block) => {
+    const text = searchableText(block);
+    return text === null ? [] : [text];
+  });
 }
 
 export function buildFindIndex(
@@ -80,40 +75,22 @@ export function buildFindIndex(
   liveId: string | null | undefined,
 ): FindIndexEntry[] {
   const entries: FindIndexEntry[] = [];
-  for (const m of messages) {
-    const blocks = m.blocks ?? [];
-    let cached = msgCache.get(m.id);
+  for (const message of messages) {
+    const blocks = message.blocks ?? [];
+    let cached = msgCache.get(message.id);
     if (!cached || cached.version !== blocks) {
-      cached = {
-        text: "",
-        version: blocks,
-        kinds: [],
-      };
-      // 段间用 \u0000 分隔，检索时每段独立 indexOf（start 为段内偏移）。
-      const parts = extractSearchableText(blocks);
-      cached.text = parts.join("\u0000");
-      cached.kinds = blocks.map((b) => String(b.kind));
-      msgCache.set(m.id, cached);
-    }
-    // blockIdx 只数入索引的 block（与 extractSearchableText 的输出序一致）。
-    let outIdx = -1;
-    let cursor = 0;
-    const parts = cached.text.split("\u0000");
-    for (let bi = 0; bi < blocks.length; bi++) {
-      const seg = extractSearchableText([blocks[bi]]);
-      if (seg.length === 0) continue;
-      outIdx += 1;
-      const text = parts[outIdx] ?? seg[0];
-      entries.push({
-        msgId: m.id,
-        blockIdx: outIdx,
-        kind: cached.kinds[bi],
-        text,
-        streaming: liveId != null && m.id === liveId,
+      // Keep the original ordinal so the hit still finds its DOM wrapper
+      // when earlier process records are folded or excluded from the index.
+      const entries = blocks.flatMap((block, blockIdx) => {
+        const text = searchableText(block);
+        return text === null ? [] : [{ blockIdx, text, kind: String(block.kind) }];
       });
-      cursor += text.length + 1;
+      cached = { version: blocks, entries };
+      msgCache.set(message.id, cached);
     }
-    void cursor;
+    for (const entry of cached.entries) {
+      entries.push({ ...entry, msgId: message.id, streaming: message.id === liveId });
+    }
   }
   return entries;
 }

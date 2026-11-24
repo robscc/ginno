@@ -8,6 +8,7 @@ import { parseDelegation } from "./delegation";
 import { useChatT } from "./i18n";
 import { TaskCard, parseBgTaskId } from "../TaskCard";
 import { parseShellOutput } from "@/lib/toolOutput";
+import { toolFailed, toolInterrupted } from "./processGroups";
 import { DiffView } from "./diffView";
 import type { EditDiffPayload as ImportDiffPayload } from "./types";
 
@@ -44,7 +45,7 @@ function BrowserHandoffCard() {
   );
 }
 
-export function ToolBlock({ name, content, pending, argsPreview, argsStream, diff, isLatestTurn = true }: { name: string; content: string; pending: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload; isLatestTurn?: boolean }) {
+export function ToolBlock({ name, content, pending, failed, argsPreview, argsStream, diff, isLatestTurn = true }: { name: string; content: string; pending: boolean; failed?: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload; isLatestTurn?: boolean }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
@@ -112,7 +113,9 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream, dif
   // 编辑 diff（2026-11-21）：历史 turn 默认收起（长会话里旧 diff 铺满屏），
   // 只有最新 turn 保持默认展开；用户手动点开/收起（open 非 null）恒优先。
   const expanded = open ?? (diff && !isLatestTurn ? false : !isLong);
-  const fail = shell?.ok === false;
+  const fail = toolFailed(content, failed);
+  const interrupted = !fail && toolInterrupted(content);
+  const reason = fail ? shell?.stderr?.trim().split("\n")[0] || content.trim().split("\n")[0] : "";
   return (
     // 2026-11-11 样式打磨：状态色左缘条（绿/红一眼分）+ 圆角升级 + 状态
     // 点图标化；hover 边框反馈。视觉层级：条 > 标签 > 预览 > 统计。
@@ -123,10 +126,11 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream, dif
     >
       <span
         className={`absolute inset-y-1 left-1 w-0.5 rounded-full ${
-          fail ? "bg-red-500/60" : "bg-emerald-500/50"
+          fail ? "bg-red-500/60" : interrupted ? "bg-line2" : "bg-emerald-500/50"
         }`}
       />
       <button
+        type="button" aria-expanded={expanded} data-reveal-record
         onClick={() => setOpen(!expanded)}
         className="flex w-full cursor-pointer items-center gap-1.5 py-1.5 pl-3.5 pr-2.5 text-left transition-colors hover:bg-card2/50"
         title={`${name} — ${expanded ? tc("tools.collapse") : tc("tools.expand")}`}
@@ -138,6 +142,8 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream, dif
           {tc("tools.prefix")}<span className="font-medium text-txt/80">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
+        {interrupted && <span className="shrink-0 text-faint">{tc("process.interrupted")}</span>}
+        {reason && <span className="max-w-[42%] truncate text-red-500" title={reason}>{reason}</span>}
         {diff && (
           <span className="flex shrink-0 gap-1 font-semibold text-[11px]">
             <span className="text-emerald-600 dark:text-emerald-400">+{diff.added}</span>
@@ -148,10 +154,10 @@ export function ToolBlock({ name, content, pending, argsPreview, argsStream, dif
           className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] leading-none ${
             fail
               ? "bg-red-500/15 text-red-500"
-              : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              : interrupted ? "bg-card2 text-faint" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
           }`}
         >
-          {fail ? "✗" : "✓"}
+          {fail ? "✗" : interrupted ? "–" : "✓"}
         </span>
         {del && (
           <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
@@ -242,6 +248,7 @@ export function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
   return (
     <div className="my-2 overflow-hidden rounded-r-lg border-l-2 border-violet/70 bg-violet/[0.07]">
       <button
+        type="button" aria-expanded={open} data-reveal-record
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
         title={open ? tc("thinking.collapse") : tc("thinking.expand")}
