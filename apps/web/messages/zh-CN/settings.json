@@ -12,6 +12,7 @@
     "general": {
       "title": "常规",
       "themeLabel": "主题",
+      "operationMotion": "播放操作卡流光",
       "mermaidLabel": "在对话里渲染 Mermaid 图形",
       "mermaidHelp": "开启后，回答里的 mermaid 代码块（流程图 / 时序图 / 状态机 / ER 图等）直接渲染为图形，可复制为图片、下载 SVG、放大查看；关闭则始终显示源码。图形只影响显示，会话数据里保存的始终是原始源码。",
       "privileged": "特权模式（跳过全部权限确认，允许任意命令）",

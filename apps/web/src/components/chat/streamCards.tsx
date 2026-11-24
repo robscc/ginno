@@ -151,7 +151,7 @@ const decide = (d: "allow" | "deny") => {
 };
 return (
   <div className="mx-auto w-full max-w-3xl px-6">
-    <div className="mb-2 rounded-xl border border-yellow/30 bg-yellow/[0.04] p-3">
+    <div data-operation-state="waiting" className="mb-2 rounded-xl border border-yellow/30 bg-yellow/[0.04] p-3">
       <div className="mb-1 flex items-center gap-2 text-sm font-medium text-yellow">
         <FileEdit className="h-3.5 w-3.5" />
         {tc("propose.title")}
@@ -215,6 +215,7 @@ const { tc } = useChatT();
 return (
   <div
     data-testid="error-card"
+    data-operation-state="failed"
     className="rounded-xl border border-red/40 bg-red/10 px-4 py-3"
   >
     <div className="mb-1.5 flex items-center gap-2">
@@ -507,6 +508,7 @@ return (
               streaming={streaming}
               onFileLink={onFileLink}
               offline={connLost}
+              parked={parkedTurn}
               isLatestTurn={isLatestTurn}
               onAnswerQuestion={onAnswerQuestion}
               questionLive={questionLive}

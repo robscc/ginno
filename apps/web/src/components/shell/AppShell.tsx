@@ -11,6 +11,7 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { SettingsCorruptBanner } from "@/components/settings/SettingsCorruptBanner";
 import { filterByText } from "@/lib/sessionTextFilter";
 import { applyFontPrefs, readFontPrefs } from "@/lib/fontPrefs";
+import { applyOperationMotion, OPERATION_MOTION_KEY, readOperationMotion } from "@/lib/operationMotion";
 import { initialTheme } from "@/lib/themeInit";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
@@ -261,6 +262,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     applyTheme(initialTheme(), false);
     // 字体族 + 字号偏好（纯前端 localStorage，与 theme 同范式）：首帧即应用。
     applyFontPrefs(readFontPrefs());
+    const syncOperationMotion = (event?: StorageEvent) => {
+      if (!event || event.key === OPERATION_MOTION_KEY || event.key === null) {
+        applyOperationMotion(readOperationMotion(), false);
+      }
+    };
+    syncOperationMotion();
+    window.addEventListener("storage", syncOperationMotion);
+    return () => window.removeEventListener("storage", syncOperationMotion);
   }, []);
 
   const {

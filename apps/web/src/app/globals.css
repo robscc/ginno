@@ -425,6 +425,60 @@ html.light .hljs-name {
   animation: ginno-rainbow-edge 2s linear infinite;
 }
 
+/* Chat operation cards use the same left edge for live and settled states. */
+[data-operation-state] {
+  position: relative;
+}
+[data-operation-state]::before {
+  content: "";
+  position: absolute;
+  inset-block: 4px;
+  left: 0;
+  width: 3px;
+  border-radius: 9999px;
+  pointer-events: none;
+  background-image: linear-gradient(180deg, var(--operation-edge-colors));
+}
+[data-operation-state="running"] {
+  --operation-edge-colors: #f17cba, #f5ba78, #7cdeb7, #7dafff, #b693ff, #f17cba;
+}
+[data-operation-state="waiting"] {
+  --operation-edge-colors: #ffe1a4, #efad64, #e7837d;
+}
+[data-operation-state="completed"] {
+  --operation-edge-colors: #75c2e0, #6ecead, #94d4a0;
+}
+[data-operation-state="failed"] {
+  --operation-edge-colors: #ff977c, #ef698a, #d480b7;
+}
+[data-operation-state="interrupted"] {
+  --operation-edge-colors: #7b8fae, #626679, #8b8da8;
+}
+html.light [data-operation-state="running"] {
+  --operation-edge-colors: #b73880, #a4601e, #227f62, #426fc5, #784eb9, #b73880;
+}
+html.light [data-operation-state="waiting"] {
+  --operation-edge-colors: #9d651b, #ad5726, #aa4750;
+}
+html.light [data-operation-state="completed"] {
+  --operation-edge-colors: #27798e, #227a63, #47794a;
+}
+html.light [data-operation-state="failed"] {
+  --operation-edge-colors: #b14938, #bc3860, #9b427e;
+}
+html.light [data-operation-state="interrupted"] {
+  --operation-edge-colors: #566b88, #50536c, #696f88;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-operation-motion-paused]) [data-operation-state="running"]::before {
+    background-size: 100% 200%;
+    animation: ginno-operation-edge-flow 4.8s linear infinite;
+  }
+}
+@keyframes ginno-operation-edge-flow {
+  to { background-position: 0 200%; }
+}
+
 /* ---- Running rainbow dot / badge（彩虹=running；TopBar 点 + 后台任务徽标，
    与 running-rainbow-edge 同色谱。2026-11-19 补提交：PR #228 只带了 tsx
    引用，此块 CSS 在中断中丢失导致点变空框）---- */

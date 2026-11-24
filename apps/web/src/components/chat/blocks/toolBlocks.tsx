@@ -24,7 +24,7 @@ function BrowserHandoffCard() {
   const [released, setReleased] = useState(false);
   const { tc } = useChatT();
   return (
-    <div className="my-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2.5 text-xs">
+    <div data-operation-state={released ? undefined : "waiting"} className="my-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2.5 text-xs">
       <div className="font-medium text-txt">{tc("browserHandoff.title")}</div>
       <div className="mt-0.5 text-faint">
         {tc("browserHandoff.body")}
@@ -120,15 +120,14 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
     // 2026-11-11 样式打磨：状态色左缘条（绿/红一眼分）+ 圆角升级 + 状态
     // 点图标化；hover 边框反馈。视觉层级：条 > 标签 > 预览 > 统计。
     <div
+      data-operation-state={fail ? "failed" : interrupted ? "interrupted" : undefined}
       className={`group relative my-1.5 overflow-hidden rounded-lg border bg-base/40 font-mono text-xs transition-colors hover:border-line2 ${
         fail ? "border-red-500/30" : "border-line"
       }`}
     >
-      <span
-        className={`absolute inset-y-1 left-1 w-0.5 rounded-full ${
-          fail ? "bg-red-500/60" : interrupted ? "bg-line2" : "bg-emerald-500/50"
-        }`}
-      />
+      {!fail && !interrupted && (
+        <span aria-hidden className="absolute inset-y-1 left-1 w-0.5 rounded-full bg-emerald-500/50" />
+      )}
       <button
         type="button" aria-expanded={expanded} data-reveal-record
         onClick={() => setOpen(!expanded)}

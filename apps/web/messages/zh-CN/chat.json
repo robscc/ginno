@@ -288,6 +288,7 @@
       "process": {
       "interrupted": "已中断",
         "offline": "连接已中断",
+        "waiting": "等待确认",
         "parallel": "正在执行 {count} 项",
         "running": "正在执行 · {action}",
         "thinking": "正在思考",

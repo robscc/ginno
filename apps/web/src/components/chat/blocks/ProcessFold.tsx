@@ -10,13 +10,14 @@ import { processFileName, processStatus } from "./processGroups";
 export const REVEAL_PROCESS_BLOCK = "ginno:reveal-process-block";
 
 export function ProcessFold({
-  blocks, indexes, streaming, tail, offline, onInspect, children,
+  blocks, indexes, streaming, tail, offline, parked, onInspect, children,
 }: {
   blocks: Block[];
   indexes: number[];
   streaming: boolean;
   tail: boolean;
   offline: boolean;
+  parked: boolean;
   onInspect?: () => void;
   children: ReactNode;
 }) {
@@ -29,6 +30,7 @@ export function ProcessFold({
   const { completed, pending, count, thinking, compact } = processStatus(blocks, streaming, tail);
   const running = streaming && pending.length > 0;
   const active = running || thinking;
+  const state = !active ? "completed" : offline ? "interrupted" : parked ? "waiting" : "running";
   const open = choice === true;
   // Keep the container and its key stable across deltas and short-group transitions.
   const folded = compact || active || choice !== null;
@@ -53,7 +55,8 @@ export function ProcessFold({
 
   const latest = pending.at(-1);
   const action = latest ? [toolLabel(latest.name), processFileName(latest)].filter(Boolean).join(" ") : "";
-  const title = offline && active ? tc("process.offline")
+  const title = state === "interrupted" ? tc("process.offline")
+    : state === "waiting" ? tc("process.waiting")
     : pending.length > 1 && running ? tc("process.parallel", { count: pending.length })
     : running ? tc("process.running", { action })
     : thinking ? tc("process.thinking")
@@ -66,6 +69,7 @@ export function ProcessFold({
     <section ref={root} data-process-blocks={indexes.join(" ")}
       data-process-fold={folded ? "" : undefined}
       data-process-active={active ? "" : undefined}
+      data-operation-state={folded ? state : undefined}
       className={folded ? "my-2 min-w-0 rounded-lg border border-line bg-base/40" : "min-w-0"}>
       {folded && (
         <button ref={button} type="button" aria-expanded={open} aria-controls={id}
@@ -77,9 +81,9 @@ export function ProcessFold({
           }}
           className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1 text-left text-xs text-muted hover:bg-card2/50 focus-visible:outline-violet">
           <ChevronRight aria-hidden className={`h-3 w-3 shrink-0 motion-safe:transition-transform ${open ? "rotate-90" : ""}`} />
-          {active && !offline && (running
-            ? <Loader2 aria-hidden className="h-3 w-3 shrink-0 text-amber-500 motion-safe:animate-spin" />
-            : <Sparkles aria-hidden className="h-3 w-3 shrink-0 text-violet motion-safe:animate-pulse" />)}
+          {state === "running" && (running
+            ? <Loader2 aria-hidden className="h-3 w-3 shrink-0 text-amber-500" />
+            : <Sparkles aria-hidden className="h-3 w-3 shrink-0 text-violet" />)}
           <span className="min-w-0 flex-1 truncate font-medium text-txt/80">{title}</span>
           <span className="max-w-[60%] shrink-0 truncate text-[10px] text-faint" title={stats || undefined}>{active ? tc("process.completedCount", { count }) : stats}</span>
         </button>
