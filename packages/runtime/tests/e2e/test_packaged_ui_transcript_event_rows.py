@@ -90,19 +90,28 @@ def test_task_and_plan_after_reload(app, legacy):
 def capture_socket(page):
     page.add_init_script('''
         window.__transcriptTestSockets = [];
+        window.__transcriptProbedSockets = new WeakSet();
         const OriginalWebSocket = window.WebSocket;
         window.WebSocket = class extends OriginalWebSocket {
           constructor(...args) {
             super(...args);
             window.__transcriptTestSockets.push(this);
+            this.addEventListener('message', event => {
+              if (event.isTrusted && JSON.parse(event.data).event === 'turn.state') {
+                window.__transcriptProbedSockets.add(this);
+              }
+            });
           }
         };
     ''')
 
 
-def wait_for_session_socket(page, sid):
-    page.wait_for_function('''sid => window.__transcriptTestSockets.some(ws =>
-        new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN)''', arg=sid)
+def wait_for_session_socket(page, sid, *, require_turn_state=False):
+    page.wait_for_function('''([sid, requireTurnState]) => window.__transcriptTestSockets.some(ws =>
+        new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN &&
+        (!requireTurnState || window.__transcriptProbedSockets.has(ws)))''',
+        arg=[sid, require_turn_state],
+    )
 
 
 def send_frame(page, sid, event, **payload):
