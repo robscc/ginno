@@ -298,7 +298,15 @@
         "edit": "修改 {count}",
         "command": "命令 {count}",
         "other": "其他 {count}",
-        "reviewed": "思考摘要"
+        "reviewed": "思考摘要",
+        "reports": "{count} 份子代理回报",
+        "planUpdates": "清单更新 {count} 条",
+        "planProgress": "清单 {done}/{total}",
+        "planProgressOpen": "清单 {done} 项完成",
+        "failedCount": "{count} 项失败",
+        "failedTitle": "失败或已停止的回报显示在折叠组下方，不会被折叠藏起",
+        "waitingCount": "{count} 项等你回答",
+        "waitingTitle": "子代理在等你回答，卡片显示在折叠组下方"
       },
     "reasoningSummary": {
       "title": "思考摘要",
@@ -415,6 +423,8 @@
       "correctInChildTitle": "跳转到子代理会话并在输入框预填纠偏提示（steering / 继续对话）",
       "escalate": "让主对话处理",
       "escalateTitle": "在当前会话发送一条引用此结果的消息，由主对话决定如何处理",
+      "expandReport": "展开汇报",
+      "collapseReport": "收起汇报",
       "verdictsInReport": "验收判定以主代理的汇报为准",
       "briefTitle": "任务简报",
       "goalSection": "目标",
@@ -503,6 +513,10 @@
       "expand": "展开清单",
       "collapse": "折叠清单",
       "updateTitle": "清单状态更新",
+      "updateRowTitle": "清单更新",
+      "planProgress": "清单 {done}/{total}",
+      "planProgressOpen": "清单 {done} 项完成",
+      "planSettled": "清单完成 · {done} 完成 · {failed} 失败",
       "dismiss": "不再显示（出错未终态的清单会一并取消）",
       "remoteNote": "此会话由远端节点 {name} 执行，计划在对端管理，本地不展示"
     },

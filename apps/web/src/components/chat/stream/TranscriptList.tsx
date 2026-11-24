@@ -12,6 +12,7 @@ import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import {
   ContextBlocks,
+  InnerBlocks,
   SteerBand,
   SubagentBlocks,
   UserBlocks,
@@ -20,6 +21,7 @@ import {
 } from "@/components/chat/blocks";
 import { TaskEventBand } from "../TaskCard";
 import { PlanUpdateCard } from "../blocks/subagentCards";
+import { foldReportRows, isReportRow, reportAttention } from "../blocks/reportFold";
 import { SubagentPlanCard } from "../subagentPlanCard";
 import { TeamReplyCard, requestOpenMemberWorkspace } from "../TeamReplyCard";
 import { stashOpenMemberIntent } from "@/components/team/openMemberIntent";
@@ -114,6 +116,29 @@ export function TranscriptList({
   const tc = useTranslations("chat");
   const router = useRouter();
   const onFileLink = useMarkdownFileLinks(session);
+  // 回报折叠（方案 A，2026-11-25）：紧跟助手消息的子代理结果/清单更新并入该
+  // 消息尾部，与它的工具步骤合成同一个「执行过程」折叠组；失败、停止、等待
+  // 回答的留在组外。纯逻辑在 reportFold（vitest 覆盖），行数与顺序不变，所以
+  // 窗口化、分片挂载和消息锚点照旧按原列表寻址。
+  const planItemsById = useMemo(() => {
+    const byId = new Map<string, number>();
+    for (const plan of g.plansBySession[session?.id ?? ""] ?? []) {
+      byId.set(plan.plan_id, plan.items.length);
+    }
+    return byId;
+  }, [g.plansBySession, session?.id]);
+  const folded = useMemo(() => {
+    const childStatus = new Map(g.sessions.map((s) => [s.id, s.subagent?.status]));
+    return foldReportRows(messages, {
+      attention: (block) =>
+        reportAttention(
+          block,
+          block.kind === "subagent_result" ? childStatus.get(block.sessionId) : undefined,
+        ),
+      planTotal: (planId) => planItemsById.get(planId) ?? null,
+    });
+  }, [messages, g.sessions, planItemsById]);
+  const rows = folded.rows;
   const onInspectProcess = useCallback(() => {
     if (stickRef) stickRef.current = false;
   }, [stickRef]);
@@ -170,8 +195,8 @@ export function TranscriptList({
   useEffect(() => {
     setHeadKeep(WINDOW_INITIAL);
   }, [sessionId]);
-  const hiddenCount = Math.max(0, messages.length - headKeep);
-  const visible = hiddenCount > 0 ? messages.slice(-headKeep) : messages;
+  const hiddenCount = Math.max(0, rows.length - headKeep);
+  const visible = hiddenCount > 0 ? rows.slice(-headKeep) : rows;
   const visibleOffset = messages.length - visible.length; // 窗口首条的全量索引
 
   // ── 时间分片挂载（2026-11-17 perf）─────────────────────────────────────
@@ -384,7 +409,15 @@ export function TranscriptList({
         </div>
       )}
       {rendered.map((m, idx) =>
-        m.role === "system" ? (
+        folded.absorbed.has(visibleOffset + skip + idx) ? null
+        : isReportRow(m) ? (
+          // 带回报的系统行：走与助手气泡同一个折叠渲染器——没挂靠到助手消息的
+          // 回报串在这里自成一行「执行过程」，需要用户处理的卡留在组外；与员工
+          // 回传等合并在一条的回报，实时与回放因此折得一样。
+          <div key={m.id} className="mx-auto w-full max-w-[85%]">
+            <InnerBlocks blocks={m.blocks} foldProcess onFileLink={onFileLink} onInspectProcess={onInspectProcess} />
+          </div>
+        ) : m.role === "system" ? (
           <div key={m.id} className="flex flex-col items-center gap-2">
             <ContextBlocks
               blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}

@@ -20,9 +20,12 @@ export function resolvePlanItemStatuses(items: PlanItem[]): PlanItem[] {
   );
 }
 
-export function PlanItemStatusLabel({ status }: { status: PlanItemStatus }) {
-  const t = useTranslations("chat");
-  const meta = PLAN_ITEM_STATUS[status] ?? PLAN_ITEM_STATUS.pending;
+/** `status` also takes the raw strings off plan notes (`- [done] it_1 …`):
+ *  an unknown value falls back to the pending look rather than throwing. */
+export function PlanItemStatusLabel({ status }: { status: PlanItemStatus | string }) {
+  const t = useTranslations("chat") as unknown as (key: string) => string;
+  const meta = (PLAN_ITEM_STATUS as Record<string, { label: string; color: string }>)[status]
+    ?? PLAN_ITEM_STATUS.pending;
   return (
     <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] font-medium leading-4 text-txt">
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.color}`} aria-hidden />

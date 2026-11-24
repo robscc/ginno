@@ -42,6 +42,8 @@ import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 import { ReasoningSummary } from "./blocks/ReasoningSummary";
 import { ProcessFold } from "./blocks/ProcessFold";
+import { attentionAfter } from "./blocks/processGroups";
+import { useReportAttention } from "./blocks/reportAttention";
 import { splitInlineWidgets } from "./blocks/inlineWidgets";
 import { processGroups } from "./blocks/processGroups";
 import { LlmCallLine } from "./blocks/llmCallLine";
@@ -397,6 +399,9 @@ export function InnerBlocks({
   let i = 0;
   let key = 0;
   const mcpUiMap = useMcpToolsWithUi();
+  // 回报折叠（方案 A）：并入本消息尾部的子代理结果/清单更新按「是否需要用户
+  // 处理」划界——失败、停止、等待回答的不进折叠组，张数记到组标题上。
+  const attention = useReportAttention();
   // Resolve `web|sN` citation ids against this bubble's web_search results.
   const refMap = webRefMap(blocks);
   // turn_meta（耗时+token 小字）是「卡片角落 chrome」而非内容：live 期插入
@@ -417,7 +422,7 @@ export function InnerBlocks({
   const grouped = new Map<number, React.ReactNode[]>();
   const starts = new Map<number, React.ReactNode>();
   if (foldProcess) {
-    for (const indexes of processGroups(blocks, new Set(Object.keys(mcpUiMap)))) {
+    for (const indexes of processGroups(blocks, new Set(Object.keys(mcpUiMap)), attention)) {
       const children: React.ReactNode[] = [];
       const first = blocks[indexes[0]];
       const key = first.kind === "tool" && first.id ? `tool-${first.id}`
@@ -426,7 +431,8 @@ export function InnerBlocks({
       starts.set(indexes[0], (
         <ProcessFold key={`process-${key}`} blocks={indexes.map(index => blocks[index])}
           indexes={indexes} streaming={!!streaming} tail={indexes.at(-1) === contentEnd}
-          offline={offline} parked={parked} onInspect={onInspectProcess}>
+          offline={offline} parked={parked} onInspect={onInspectProcess}
+          attention={attentionAfter(blocks, indexes.at(-1)! + 1, attention)}>
           {children}
         </ProcessFold>
       ));
@@ -541,9 +547,9 @@ export function InnerBlocks({
     } else if (b.kind === "subagent_spawn") {
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
-      out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} />);
+      out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} onFileLink={onFileLink} />);
     } else if (b.kind === "plan_update") {
-      out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} />);
+      out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} row={grouped.has(i)} />);
     } else if (b.kind === "subagent_brief") {
       out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
     } else if (b.kind === "worker_result") {
