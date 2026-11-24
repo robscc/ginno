@@ -99,9 +99,10 @@ async def import_skills_dir(data: dict) -> dict:
     Shares its implementation with the agent-side ``install_skills`` tool
     (:mod:`ginno_runtime.skills.installer`).
     """
-    from ..skills.installer import import_skills_from_dir
+    from ..skills.installer import import_skills_from_dir as _import_from_dir
 
-    result = import_skills_from_dir(
+    result = await asyncio.to_thread(
+        _import_from_dir,
         (data or {}).get("path", ""),
         overwrite=bool((data or {}).get("overwrite", False)),
     )
@@ -664,7 +665,9 @@ def _refresh_session_metas(previous: dict[str, dict] | None = None) -> dict[str,
 async def _apply_model_config_changes(previous: dict[str, dict]) -> None:
     from .sessions._base import build_model
 
-    bindings = _refresh_session_metas(previous)
+    # 全项目 session meta 的目录扫描 + 逐条重解析在 _refresh_session_metas
+    # 里是纯磁盘工作；它对 _SESSIONS 只做成员读，下沉不影响其后的循环。
+    bindings = await asyncio.to_thread(_refresh_session_metas, previous)
     events = []
     for sid, session in list(_SESSIONS.items()):
         binding = bindings.get(sid)

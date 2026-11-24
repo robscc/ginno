@@ -8,6 +8,7 @@ endpoints stay as aliases for one version so older web bundles keep working.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException, Query
@@ -59,8 +60,14 @@ async def get_memory(agent_id: str | None = None) -> dict:
     from ..memory import draft_summary, has_draft, list_drafts, memory_status, pool_count
 
     p = paths.memory_index_path()
-    content = p.read_text(encoding="utf-8") if p.exists() else ""
-    pending = [draft_summary(m) for m in list_drafts(status="pending")]
+
+    def _collect() -> tuple[str, list[dict]]:
+        # MEMORY.md 全文读取 + 草稿队列目录扫描同为阻塞 IO，一并下沉。
+        content = p.read_text(encoding="utf-8") if p.exists() else ""
+        pending = [draft_summary(m) for m in list_drafts(status="pending")]
+        return content, pending
+
+    content, pending = await asyncio.to_thread(_collect)
     return {
         "ok": True,
         "content": content,
