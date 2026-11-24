@@ -13,6 +13,26 @@ from ginno_runtime.web.config import WebConfig, load_web_config
 pytestmark = pytest.mark.unit
 
 
+def test_open_external_allows_clicked_loopback_preview_only(monkeypatch):
+    import webbrowser
+
+    from ginno_runtime.server import open_external
+
+    opened = []
+
+    def launch(url):
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", launch)
+    preview = "http://127.0.0.1:28632/excel"
+    assert open_external({"url": preview})["ok"] is False
+    for url in ("http://192.168.1.2:28632/", "http://localhost/", "file:///tmp/preview.html"):
+        assert open_external({"url": url, "local_preview": True})["ok"] is False
+    assert open_external({"url": preview, "local_preview": True}) == {"ok": True}
+    assert opened == [preview]
+
+
 # ------------------------------ engines ------------------------------ #
 def test_ddg_unwrap():
     assert engines._ddg_unwrap("//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com%2Fx&foo=1") == "https://a.com/x"

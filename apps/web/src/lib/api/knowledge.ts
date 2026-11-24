@@ -275,11 +275,11 @@ export async function kbPromoteApply(path: string, raw: string, removeFromMemory
 // ---- citations & web sources (docs/citations-design.md) ----
 export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
-export async function openExternal(url: string) {
+export async function openExternal(url: string, localPreview = false) {
   return json<{ ok: boolean; error?: string }>(`${BASE}/open-external`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ url }),
+    body: JSON.stringify(localPreview ? { url, local_preview: true } : { url }),
   });
 }
 
@@ -288,8 +288,8 @@ export async function openExternal(url: string) {
  *  /api/open-external (which launches the OS default browser, with the
  *  public-host guard). window.open stays as the fallback for a down
  *  sidecar (covers plain-browser dev, where it actually works). */
-export function openLinkExternal(url: string) {
-  openExternal(url)
+export function openLinkExternal(url: string, localPreview = false) {
+  openExternal(url, localPreview)
     .then((r) => {
       if (!r.ok) window.open(url, "_blank", "noopener");
     })

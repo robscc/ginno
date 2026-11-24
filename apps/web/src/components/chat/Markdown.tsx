@@ -287,7 +287,8 @@ export const Markdown = memo(function Markdown({
                   // keep the default anchor behavior.
                   if (href && /^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    openLinkExternal(href);
+                    const localPreview = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+(?:[/?#]|$)/i.test(href);
+                    openLinkExternal(href, localPreview);
                   }
                 }}
                 className="text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:decoration-violet"

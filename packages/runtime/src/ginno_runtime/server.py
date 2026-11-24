@@ -16,7 +16,7 @@ import asyncio
 import gzip
 import sys
 from contextlib import asynccontextmanager
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -355,6 +355,7 @@ def open_external(body: dict) -> dict:
     NO DNS probe — the browser resolves under its own proxy rules, and a
     local fake-IP resolver (Clash/Surge 198.18.0.0/15) must not make every
     external link read as reserved (2026-11-03: all link clicks dead).
+    Explicit Markdown preview clicks may also open loopback URLs with a port.
 
     Sync (not ``async def``): the guard + browser launch are blocking, so
     FastAPI runs this in the threadpool instead of stalling the event loop
@@ -368,8 +369,21 @@ def open_external(body: dict) -> dict:
 
         from .web.fetch import _assert_openable_host
 
-        _assert_openable_host(url.strip())
-        webbrowser.open(url.strip())
+        url = url.strip()
+        parts = urlsplit(url)
+        # Markdown clicks may open a local development preview in the OS
+        # browser. Use canonical loopback hosts and an explicit preview port.
+        port = parts.port
+        local_preview = (
+            body.get("local_preview") is True
+            and parts.scheme in {"http", "https"}
+            and port is not None and port > 0
+            and parts.netloc.lower() in {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+        )
+        if not local_preview:
+            _assert_openable_host(url)
+        if not webbrowser.open(url):
+            return {"ok": False, "error": "Could not launch the system browser"}
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}

@@ -22,10 +22,11 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
     source.write_text("\n".join(f"# Sample line {i}" for i in range(1, 25)), encoding="utf-8")
     outside = (tmp_path / "outside.py").resolve()
     web_url = "https://example.test/docs"
+    preview_url = "http://127.0.0.1:28632/excel"
     scripts = tmp_path / "responses.json"
     scripts.write_text(json.dumps([{"content": (
         f"[Local line](<{source}:12>) · [File only]({quote(str(source))}) · "
-        f"[Outside file]({outside}:6) · [Web docs]({web_url})"
+        f"[Outside file]({outside}:6) · [Web docs]({web_url}) · [Local preview]({preview_url})"
     )}]))
     monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts))
     port = smoke._free_port()
@@ -70,6 +71,9 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
                 with page.expect_request("**/api/open-external") as navigation:
                     web.click()
                 assert navigation.value.post_data_json == {"url": web_url}
+                with page.expect_request("**/api/open-external") as preview:
+                    page.get_by_role("link", name="Local preview", exact=True).click()
+                assert preview.value.post_data_json == {"url": preview_url, "local_preview": True}
                 assert len(page.context.pages) == 1
 
                 page.reload(wait_until="load")
