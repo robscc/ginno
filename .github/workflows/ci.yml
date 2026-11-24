@@ -274,9 +274,20 @@ jobs:
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_import_health.py -q
 
       - name: Install Chromium (playwright)
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ginno-ui-chromium
         run: uv run --group test python -m playwright install chromium
 
+      - name: Install Playwright MCP
+        env:
+          MCP_PREFIX: ${{ runner.temp }}/ginno-playwright-mcp
+        run: npm install --prefix "$MCP_PREFIX" --no-package-lock --no-audit --no-fund @playwright/mcp@0.0.86
+
       - name: Run packaged UI e2e
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ginno-ui-chromium
+          GINNO_PACKAGED_MCP_STRICT: "1"
+          GINNO_TEST_PLAYWRIGHT_MCP: ${{ runner.temp }}/ginno-playwright-mcp/node_modules/.bin/playwright-mcp
         # 用 glob 而非硬编码文件清单：原清单只列 4 个文件，而仓库已有 12 个
         # test_packaged_ui_*.py —— team/a2a/notify/context_panel/idle_perf/
         # instincts/model_effort/plan_dag/web_search_fix 共 8 个被漏，新增用例
