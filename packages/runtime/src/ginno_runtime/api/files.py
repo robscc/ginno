@@ -7,6 +7,7 @@ and the Settings → 会话文件 browser (dirs/list/reveal/delete).
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from pathlib import Path
@@ -446,9 +447,10 @@ async def file_preview_endpoint(
         art = art_store.get_artifact(slug, entry["artifact_id"])
         if art is not None and _heal_artifact_ref(art, slug):
             entry = files_mod.get_by_id(file_id) or entry
+    path = entry["path"]
     try:
-        payload = files_preview.build_preview(
-            entry["path"], sheet=sheet, offset=offset, limit=limit
+        payload = await asyncio.to_thread(
+            files_preview.build_preview, path, sheet=sheet, offset=offset, limit=limit
         )
     except (files_ex.UnsupportedFormat, files_ex.ExtractorUnavailable) as e:
         return {"ok": False, "error": str(e)}
@@ -459,19 +461,21 @@ async def file_preview_endpoint(
         )
     except Exception as e:  # parse failure → actionable error, not 500
         return {"ok": False, "error": f"Preview failed: {type(e).__name__}: {e}"}
-    # a fresh preview counts as "seen": clear the stale badge + sync mtime
-    try:
-        entry["mtime"] = Path(entry["path"]).stat().st_mtime
-    except OSError:
-        pass
-    entry["stale"] = False
+    # A fresh preview counts as seen unless the registry moved to another path
+    # while the worker was reading this one.
+    if entry["path"] == path:
+        try:
+            entry["mtime"] = Path(path).stat().st_mtime
+        except OSError:
+            pass
+        entry["stale"] = False
     return {
         "ok": True,
         "file": {
             "id": entry["id"],
             "name": entry["name"],
             "kind": entry.get("kind", ""),
-            "path": entry["path"],
+            "path": path,
             "stale": entry.get("stale", False),
         },
         **payload,
