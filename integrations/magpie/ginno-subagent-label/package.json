@@ -1,0 +1,8 @@
+{
+  "name": "ginno-subagent-label",
+  "version": "0.1.0",
+  "magpie": {
+    "hooks": "./identity.hooks.js",
+    "middleware": "./strip.middleware.js"
+  }
+}
