@@ -85,6 +85,10 @@ export function isNotifyOwnerWindow(): boolean {
   }
 }
 
+// 同一个调度 run 的完成与摘要补写都经过这里。记录随 webview 存活，
+// 与用于点击回跳、会淘汰旧行的缓存独立。
+const scheduledRunNotifications = new Set<string>();
+
 /**
  * Fire a native macOS notification via the Tauri shell.
  *
@@ -98,8 +102,9 @@ export function isNotifyOwnerWindow(): boolean {
  * （总开关 ∧ 分类开关 ∧ 不在勿扰窗）→ 隐私裁正文 → 推导提示音 → emit。
  * 调用点自己的 `shouldNotify` 与此幂等重叠，是有意的双保险。
  *
- * Returns true when the event was handed to the shell. Returns false when not
- * running in Tauri, when this window is not the notification owner, when the
+ * Returns true for a successful handoff or a duplicate scheduled run with a
+ * handoff in progress or already completed. Returns false outside Tauri,
+ * when this window is not the notification owner, when the
  * prefs gate is closed, or when the bridge is unavailable (e.g. the splash-page
  * location.replace path) — callers may fall back to the HTML5 Notification API,
  * which covers plain-browser dev (it is a no-op inside WKWebView anyway).
@@ -116,6 +121,12 @@ export async function notifyNative(n: NativeNotification): Promise<boolean> {
   const body = n.notifyKind === "test" ? n.body : applyPrivacy(n.body, np);
   const sound =
     n.sound ?? (n.notifyKind === "test" ? undefined : soundFor(n.notifyKind));
+  const scheduled = n.kind === "schedule-run";
+  if (scheduled) {
+    if (scheduledRunNotifications.has(n.id)) return true;
+    // emit 尚未返回时也拦住并发补写帧。
+    scheduledRunNotifications.add(n.id);
+  }
   try {
     await emit("ginno:notify", {
       kind: n.kind,
@@ -128,6 +139,7 @@ export async function notifyNative(n: NativeNotification): Promise<boolean> {
     });
     return true;
   } catch {
+    if (scheduled) scheduledRunNotifications.delete(n.id);
     return false;
   }
 }

@@ -50,6 +50,7 @@ OPTION = "就这个"
 INIT_JS = r"""
 (() => {
   window.__notifyLog = [];
+  window.__scheduleSockets = [];
   window.__wsStats = { deltaIn: 0, deltaAmp: 0, questionIn: 0 };
 
   // ---- Tauri 桥桩：isDesktop() 认 __TAURI_INTERNALS__；emit 走 invoke ----
@@ -87,10 +88,14 @@ INIT_JS = r"""
     constructor(...a) {
       super(...a);
       if (new URL(this.url).pathname === "/api/ws/schedule") {
-        window.__scheduleSocket = this;
+        this.scheduleFrames = [];
+        window.__scheduleSockets.push(this);
       }
       this.addEventListener("message", (e) => {
         let d; try { d = JSON.parse(e.data); } catch { return; }
+        if (this.scheduleFrames && (d.type === "snapshot" || d.type === "run_finished")) {
+          this.scheduleFrames.push(d);
+        }
         const ev = d && d.event;
         if (ev === "token.delta") {
           window.__wsStats.deltaIn++;
@@ -133,6 +138,7 @@ def _settings(notify: dict | None = None) -> dict:
     base = {
         "default_provider": "custom",
         "bypass_permissions": True,
+        "language": "en",
         "providers": {
             "anthropic": {
                 "enabled": False, "protocol": "anthropic", "api_key": "",
@@ -205,8 +211,9 @@ def app(tmp_path, request, monkeypatch):
         with sync_playwright() as pw:
             browser = _launch_chromium(pw)
             try:
-                page = browser.new_page()
-                page.add_init_script(INIT_JS.replace("__AMP__", str(AMP)))
+                context = browser.new_context()
+                context.add_init_script(INIT_JS.replace("__AMP__", str(AMP)))
+                page = context.new_page()
                 page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
                 page.locator("textarea:visible").first.wait_for()
                 yield page, port
@@ -338,43 +345,99 @@ def test_privacy_title_only_strips_body(app):
     assert got[0].get("title"), "标题应保留（titleOnly 不是静音）"
 
 
-@pytest.mark.parametrize("app", [{"scripts": [{"content": "Schedule finished."}]}], indirect=True)
-def test_schedule_notification_bridge_marks_seen_and_route_change_closes_replay(app):
-    from playwright.sync_api import expect
+def _wait_schedule_subscriptions(page, count: int) -> None:
+    page.wait_for_function(
+        """count => window.__scheduleSockets.filter(ws => ws.scheduleFrames.some(
+            frame => frame.type === 'snapshot')).length >= count""",
+        arg=count,
+    )
 
-    page, port = app
-    base = f"http://127.0.0.1:{port}"
-    # 等真实连接建立后触发运行，避免 run_finished 早于订阅。
-    page.wait_for_function("window.__scheduleSocket?.readyState === WebSocket.OPEN")
-    name = "Bridge replay schedule"
+
+def _finish_rows(page, run_id: str, count: int) -> list[dict]:
+    return page.wait_for_function(
+        """([id, count]) => {
+            const rows = window.__scheduleSockets[0].scheduleFrames
+                .filter(frame => frame.type === 'run_finished' && frame.run.run_id === id)
+                .map(frame => frame.run);
+            return rows.length >= count && rows;
+        }""",
+        arg=[run_id, count],
+    ).json_value()
+
+
+def _start_schedule(port: int, name: str, target: dict) -> str:
     task = smoke._api(port, "POST", "/api/schedule/tasks", {
         "name": name,
-        "target": {"type": "prompt", "prompt": "Exercise the schedule notification bridge"},
+        "target": target,
         "schedule": {"kind": "interval", "minutes": 60},
         "enabled": True,
     })
     run = smoke._api(port, "POST", f"/api/schedule/tasks/{task['id']}/run", {})
     assert run["ok"], run
-    rid = run["run_id"]
-    page.wait_for_function("id => window.__notifyLog.some(n => n.kind === 'schedule-run' && n.id === id)", arg=rid)
-    # 摘要更新也可能补发同 run_id 的 run_finished；这里核对通知的回跳目标。
-    assert {n["id"] for n in _emits(page) if n["kind"] == "schedule-run"} == {rid}
+    return run["run_id"]
 
-    # 模拟原生通知被点击，验证缓存命中、单条已读和当前路由内的回放。
-    with page.expect_response(f"{base}/api/schedule/runs/seen") as receipt:
+
+# 占位模型回显输入，任务与摘要调用的输入不同，因此能得到两个不同的真实摘要。
+@pytest.mark.parametrize("app", [{"scripts": []}], indirect=True)
+def test_schedule_notification_bridge_marks_seen_and_route_change_closes_replay(app):
+    from playwright.sync_api import expect
+
+    page, port = app
+    base = f"http://127.0.0.1:{port}"
+    page.locator('a[href="/scheduled"]').click()
+    page.get_by_role("button", name="Runs", exact=True).click()
+    # AppShell 和执行记录页各有一条订阅。等 snapshot 才能确认服务端已订阅。
+    _wait_schedule_subscriptions(page, 2)
+    pin = page.context.new_page()
+    pin.goto(base + "/pin")
+    _wait_schedule_subscriptions(pin, 1)
+    name = "Bridge replay schedule"
+    rid = _start_schedule(port, name, {
+        "type": "prompt", "prompt": "Exercise the schedule notification bridge",
+    })
+    first, updated = _finish_rows(page, rid, 2)
+    assert first["status"] == "ok"
+    assert first["summary"] != updated["summary"]
+    assert updated == {**first, "summary": updated["summary"]}
+    expect(page.get_by_title(updated["summary"], exact=True)).to_be_visible()
+    _finish_rows(pin, rid, 2)
+    assert _emits(pin) == []
+
+    # 失败走同一调度通知分类，正文保留原始错误。
+    failed_id = _start_schedule(port, "Failed schedule", {
+        "type": "team", "team_id": "missing-team", "prompt": "Exercise the failure notification",
+    })
+    failed, = _finish_rows(page, failed_id, 1)
+    assert failed["status"] == "error" and failed["error"]
+    _finish_rows(pin, failed_id, 1)
+    assert _emits(pin) == []
+    pin.close()
+    assert [(n["id"], n["body"]) for n in _emits(page) if n["kind"] == "schedule-run"] == [
+        (rid, first["summary"]), (failed_id, failed["error"]),
+    ]
+
+    # 模拟原生通知点击，验证单次已读及在当前路由打开影子会话。
+    seen_url = f"{base}/api/schedule/runs/seen"
+    seen_requests = []
+    page.on("request", lambda req: seen_requests.append(req.post_data_json) if req.url == seen_url else None)
+    history_url = f"{base}/api/sessions/{updated['session_id']}/history"
+    with page.expect_response(seen_url) as receipt, page.expect_response(history_url) as history:
         page.evaluate("id => window.__ginnoOpenScheduleRun(id)", rid)
     assert receipt.value.ok
-    assert receipt.value.request.post_data_json == {"run_id": rid}
-    replay_title = page.get_by_title(name, exact=True)
+    assert history.value.ok and history.value.json()["messages"]
+    assert receipt.value.json()["unseen"] == {"total": 1, "error": 1, "missed": 0, "running": 0}
+    replay_title = page.locator("span[title]").and_(page.get_by_title(name, exact=True))
     expect(replay_title).to_be_visible()
-    expect(page).to_have_url(base + "/")
+    expect(page).to_have_url(base + "/scheduled")
 
     page.locator('a[href="/team"]').click()
     expect(page).to_have_url(base + "/team")
     expect(replay_title).to_have_count(0)
 
-    # 重载后缓存为空，系统通知的旧 ID 应落到执行记录页。
+    # 重载会重新订阅，snapshot 不补发旧通知，旧 ID 回退到执行记录页。
     page.reload()
-    page.wait_for_function("typeof window.__ginnoOpenScheduleRun === 'function'")
+    _wait_schedule_subscriptions(page, 1)
     page.evaluate("id => window.__ginnoOpenScheduleRun(id)", rid)
     expect(page).to_have_url(base + "/scheduled")
+    assert _emits(page) == []
+    assert seen_requests == [{"run_id": rid}]
