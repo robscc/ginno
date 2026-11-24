@@ -67,8 +67,27 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    outputs:
+      smoke: ${{ steps.filter.outputs.smoke }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The PR merge checkout and its base are needed for the smoke path diff.
+          fetch-depth: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+
+      - name: Detect product UX and tasks-overview changes (path filter)
+        id: filter
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          CHANGED="$(git diff --name-only "$BASE_SHA...HEAD")"
+          echo "$CHANGED"
+          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_(tasks_overview|product_ux|ask_user|settings_schedule)\.py$)|(^apps/web/src/components/(ConfirmModal|settings/(EnvVarsSettings|SettingsCorruptBanner|SettingsView|WorkflowsSettings))\.tsx$)|(^apps/web/src/components/scheduled/)|(^apps/web/src/lib/(workflows/|envVarsRows\.ts$|api/(workspace|workflows|settings)\.ts$))|(^apps/web/messages/(en|zh-CN)/(sched|tools)\.json$)|(^packages/runtime/src/ginno_runtime/(api/(workflows|settings|env_settings)\.py$|workflows/|settings_store\.py$|settings_gate\.py$|env_store\.py$|scheduler\.py$|schedule_store\.py$|startup_tasks\.py$|paths\.py$))|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
+            echo "smoke=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "smoke=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: pnpm/action-setup@v4
 
@@ -105,6 +124,19 @@ jobs:
       - name: Build (Next.js static export)
         working-directory: apps/web
         run: pnpm build
+
+      - name: Archive static export for PR smoke
+        if: steps.filter.outputs.smoke == 'true'
+        run: tar -cf "$RUNNER_TEMP/web-static-export.tar" -C apps/web out
+
+      - name: Upload static export for PR smoke
+        if: steps.filter.outputs.smoke == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-static-export
+          path: ${{ runner.temp }}/web-static-export.tar
+          if-no-files-found: error
+          overwrite: true
 
   rust:
     # macOS runner: the desktop crate pulls Tauri, whose Linux build needs
@@ -260,71 +292,64 @@ jobs:
   # junit 断言 2 用例全 passed（skipped/failed 都算红）。
   ui-e2e-smoke:
     if: github.event_name == 'pull_request'
+    needs: web
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect product UX and tasks-overview changes (path filter)
-        id: filter
+      - name: Check smoke path decision
+        env:
+          SMOKE: ${{ needs.web.outputs.smoke }}
         run: |
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          CHANGED="$(git diff --name-only "$BASE_SHA...HEAD")"
-          echo "$CHANGED"
-          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_(tasks_overview|product_ux|ask_user|settings_schedule)\.py$)|(^apps/web/src/components/(ConfirmModal|settings/(EnvVarsSettings|SettingsCorruptBanner|SettingsView|WorkflowsSettings))\.tsx$)|(^apps/web/src/components/scheduled/)|(^apps/web/src/lib/(workflows/|envVarsRows\.ts$|api/(workspace|workflows|settings)\.ts$))|(^apps/web/messages/(en|zh-CN)/(sched|tools)\.json$)|(^packages/runtime/src/ginno_runtime/(api/(workflows|settings|env_settings)\.py$|workflows/|settings_store\.py$|settings_gate\.py$|env_store\.py$|scheduler\.py$|schedule_store\.py$|startup_tasks\.py$|paths\.py$))|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
-            echo "smoke=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "smoke=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "$SMOKE" in
+            true|false) ;;
+            *) echo "Missing or invalid smoke path decision from web" >&2; exit 1 ;;
+          esac
 
-      - name: Not applicable (no tasks-overview changes)
-        if: steps.filter.outputs.smoke != 'true'
-        run: echo "PR does not touch tasks-overview surfaces — smoke skipped by path filter"
+      - uses: actions/checkout@v4
+        if: needs.web.outputs.smoke == 'true'
+
+      - name: Not applicable (no smoke paths changed)
+        if: needs.web.outputs.smoke != 'true'
+        run: echo "PR does not touch configured UI smoke paths"
 
       - name: Install uv
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - name: Set up Python
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         run: uv python install 3.12
 
-      - name: Install pnpm
-        if: steps.filter.outputs.smoke == 'true'
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node
-        if: steps.filter.outputs.smoke == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
       - name: Install runtime test deps
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         run: uv sync --group test --extra docs
 
-      - name: Install workspace dependencies
-        if: steps.filter.outputs.smoke == 'true'
-        run: pnpm install --frozen-lockfile
+      # Both jobs check out the same PR merge ref. The source sidecar serves
+      # the static files from apps/web/out without Node at runtime.
+      - name: Download web static export from this run
+        if: needs.web.outputs.smoke == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: web-static-export
+          path: ${{ runner.temp }}
 
-      - name: Build web static export (source sidecar serves apps/web/out)
-        if: steps.filter.outputs.smoke == 'true'
-        working-directory: apps/web
-        run: pnpm build
+      - name: Restore web static export for the source sidecar
+        if: needs.web.outputs.smoke == 'true'
+        run: |
+          tar -xf "$RUNNER_TEMP/web-static-export.tar" -C apps/web
+          test -s apps/web/out/index.html
+          test -d apps/web/out/_next
 
       - name: Install Chromium (playwright)
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         run: uv run --group test python -m playwright install --with-deps chromium
 
       - name: Run tasks-overview UI smoke (source sidecar, isolated port)
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         env:
           GINNO_E2E_RUNTIME: source
@@ -332,7 +357,7 @@ jobs:
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_tasks_overview.py -q --junitxml=smoke-junit.xml
 
       - name: Run product UX regression (separate suite; keep smoke count at two)
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         env:
           GINNO_E2E_RUNTIME: source
@@ -343,7 +368,7 @@ jobs:
       # 拒写/掩码/双窗口 CAS/once 生命周期/丢回执对账。含真实调度等待的用例，
       # timeout 放宽到 12 分钟。
       - name: Run settings/schedule integrity regression (source sidecar)
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         env:
           GINNO_E2E_RUNTIME: source
@@ -351,7 +376,7 @@ jobs:
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_settings_schedule.py -q --timeout=720
 
       - name: Assert smoke actually ran (skip = fail, anti fake-green)
-        if: steps.filter.outputs.smoke == 'true'
+        if: needs.web.outputs.smoke == 'true'
         working-directory: packages/runtime
         run: |
           uv run --group test python - <<'PY'
