@@ -235,6 +235,8 @@ RUNTIME_STRIP_FLAG := $(if $(filter Darwin-arm64,$(shell uname -s)-$(shell uname
 # 只按精确文案过滤这 5 类；其他任何新 WARNING 仍然照常输出（不要改成
 # --log-level ERROR，会连真问题一起吞掉）。`set -o pipefail` 保证
 # PyInstaller 失败时管道不把非零退出码吞掉（macOS /bin/sh = bash 3.2 支持）。
+# Compress only the copied draw.io asset before recording the runtime stamp.
+# The Next export and dev server keep their ordinary JavaScript asset.
 runtime: web
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(RUNTIME)/src $(RUNTIME)/bin $(ROOT)/packages/extension/src $(ROOT)/packages/extension/native-host -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
@@ -278,6 +280,7 @@ runtime: web
 	  $(if $(wildcard $(TK_VOCAB)),--add-data "$(TK_VOCAB):tiktoken_cache",) \
 	  bin/ginno-runtime.py 2>&1 \
 	    | grep -vE "WARNING: (Failed to collect submodules for .(langchain_openai|langchain_anthropic)\.middleware.|Failed to collect submodules for .pandas\.plotting\._matplotlib.|Library (user32|msvcrt) required via ctypes not found)" \
+	  && gzip -n -9 $(RUNTIME)/dist/ginno-runtime/_internal/web_out/vendor/viewer-static.min.js \
 	  && echo "$$h" > $(CACHE)/runtime.stamp; \
 	fi
 	@# 2026-11-18 瘦身（零风险通道）：剥 collect_all 附带的 *.dist-info。
