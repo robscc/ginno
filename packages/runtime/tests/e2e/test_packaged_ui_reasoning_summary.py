@@ -142,7 +142,8 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
                 page.evaluate('window.dispatchEvent(new Event("ginno:find-open"))')
                 page.get_by_placeholder(re.compile("Find in (this )?session", re.I)).fill("Prepare sample")
                 expect(fold).to_have_attribute("aria-expanded", "true")
-                expect(page.get_by_text("Prepare sample", exact=True)).to_be_visible()
+                details = page.get_by_role("list", name="Reasoning summary", exact=True)
+                expect(details.get_by_role("listitem").get_by_text("Prepare sample", exact=True)).to_be_visible()
             finally:
                 browser.close()
     finally:

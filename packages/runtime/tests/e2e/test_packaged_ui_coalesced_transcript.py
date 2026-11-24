@@ -28,14 +28,17 @@ def test_mixed_callbacks_live_and_reloaded(app):
     page, port, sid = app
     capture_socket(page)
     open_session(page, port, sid)
-    wait_for_session_socket(page, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    transcript = page.locator("[data-chat-scroll]")
+    callback_titles = ["Coalesced plan", "Subagent result · Coalesced result", "Worker return: BatchWorker"]
     send_frame(page, sid, "turn.start", turn_id="batch-turn", agent_id="dev", text=COMBINED)
-    expect(page.get_by_text("Coalesced plan", exact=True)).to_be_visible()
-    expect(page.get_by_text("Subagent result · Coalesced result", exact=True)).to_be_visible()
-    expect(page.get_by_text("Worker return: BatchWorker", exact=True)).to_be_visible()
+    for title in callback_titles:
+        expect(transcript.get_by_text(title, exact=True)).to_be_visible()
+    send_frame(page, sid, "message.end", turn_id="batch-turn", origin="subagent")
     send_frame(page, sid, "turn.start", turn_id="batch-tasks", agent_id="dev", task_events=TASKS)
     for task in TASKS:
-        expect(page.get_by_text(task["title"], exact=True)).to_be_visible()
+        expect(transcript.get_by_text(task["title"], exact=True)).to_be_visible()
+    send_frame(page, sid, "message.end", turn_id="batch-tasks", origin="subagent")
 
     save_messages(sid, [
         HumanMessage(content=COMBINED, id="returns", additional_kwargs={"ginno_subagent_result": "plan-pl_batch,s_batch,w_batch"}),
@@ -44,8 +47,8 @@ def test_mixed_callbacks_live_and_reloaded(app):
         AIMessage(content="Acknowledged", id="ack"),
     ])
     open_session(page, port, sid)
-    expect(page.get_by_text("Coalesced plan", exact=True)).to_have_count(1)
-    expect(page.get_by_text("Subagent result · Coalesced result", exact=True)).to_have_count(1)
-    expect(page.get_by_text("Worker return: BatchWorker", exact=True)).to_have_count(1)
-    for task in TASKS:
-        expect(page.get_by_text(task["title"], exact=True)).to_have_count(1)
+    expect(transcript.get_by_text("Acknowledged", exact=True)).to_be_visible()
+    for title in [*callback_titles, *(task["title"] for task in TASKS)]:
+        entry = transcript.get_by_text(title, exact=True)
+        expect(entry).to_have_count(1)
+        expect(entry).to_be_visible()

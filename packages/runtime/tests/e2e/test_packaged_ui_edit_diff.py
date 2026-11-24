@@ -1,118 +1,72 @@
-"""Playwright e2e: 编辑 diff 显示（CI 安全性：无 dist bundle 时
-fixture 首行即 skip，runtime-tests 全量收集零副作用——本地实录
-main 同批 e2e 失败均为 8787 占用噪声，与本文件无关）（2026-11-21 P0/P1）在 REAL browser 对
-PACKAGED sidecar 的端到端验证——scripted turn 让 agent 跑一次 edit_file，
-断言工具气泡：① 标题行 +N −M 红绿徽标；② 展开态 unified diff 行渲染
-（红删绿增）；③ hunk 头可见。
-
-确定性判据：徽标/差分行是渲染事实（不依赖视觉回弹）。
-"""
-
-from __future__ import annotations
+"""A real edit_file call renders its diff inside the packaged chat."""
 
 import json
-import os
-from pathlib import Path
+import re
 
 import pytest
+import test_packaged_ui_tasks_overview as harness
+from test_packaged_ui_transcript_event_rows import capture_socket, open_session, wait_for_session_socket
 
-import _sidecar as sc
-from test_packaged_ui_ask_user import (  # noqa: F401 — shared boot helpers
-    _send,
-    RUNTIME_BIN,
-    _launch_chromium,
-    _port_open,
-    _settings,
-    _wait_health,
-)
+from ginno_runtime.paths import session_files_dir
 
-PORT = 8893
+pytestmark = pytest.mark.e2e
 
 
-def _edit_scripts(path: Path, target_rel: str, old: str, new: str) -> None:
-    """One scripted turn: edit_file → done. The fake model emits the tool
-    call; the REAL builtin edit_file runs against the fixture workspace."""
-    path.write_text(
-        json.dumps(
-            [
-                {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "name": "write_file",
-                            "args": {"path": "demo.py", "content": "x=1\ny=2\n"},
-                        }
-                    ],
-                },
-                {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "name": "edit_file",
-                            "args": {"path": "demo.py", "old": "y=2", "new": "y=42"},
-                        }
-                    ],
-                },
-                {"content": "改好了。"},
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_edit_diff_renders(tmp_path, monkeypatch):
+    harness._require_runtime()
+    from playwright.sync_api import expect, sync_playwright
 
-
-@pytest.fixture
-def app(tmp_path, request):
-    port = request.param
-    if not RUNTIME_BIN.exists():
-        pytest.skip("packaged sidecar not built (run `make runtime`)")
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright not installed")
-    if _port_open(port):
-        pytest.skip(f"port {port} already in use")
-
-    # tmp_path（/private/var/folders）会撞路径守卫的 deny 区——用 /tmp
-    home = Path("/tmp/ginno-editdiff-e2e") / f"home-{port}"
-    import shutil
-    shutil.rmtree(home, ignore_errors=True)
-    home.mkdir(parents=True)
-    (home / "settings.json").write_text(json.dumps(_settings()))
+    filename = "demo.py"
     scripts = tmp_path / "scripts.json"
-    _edit_scripts(scripts, "", "", "")
-
-    env = dict(
-        os.environ,
-        GINNO_HOME=str(home),
-        GINNO_FAKE_LLM="1",
-        GINNO_FAKE_LLM_SCRIPTS=str(scripts),
-        GINNO_RUNTIME_PORT=str(port),
-    )
-    _err = open("/tmp/editdiff_sidecar_err.log", "w")
-    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env, err=_err)
+    scripts.write_text(json.dumps([
+        {"content": "", "tool_calls": [
+            {"name": "write_file", "args": {"path": filename, "content": "x=1\ny=2\n"}},
+        ]},
+        {"content": "", "tool_calls": [
+            {"name": "edit_file", "args": {"path": filename, "old": "y=2", "new": "y=42"}},
+        ]},
+        {"content": "Updated demo.py."},
+    ]), encoding="utf-8")
+    monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts))
+    port = harness._free_port()
+    proc, log = harness._spawn(tmp_path, port)
     try:
-        _wait_health(port)
+        harness._wait_health(port)
+        sid = harness._api(port, "POST", "/api/sessions", {
+            "project_slug": "default", "workspace": str(tmp_path), "title": "Edit diff",
+        })["id"]
+        target = session_files_dir("default", sid) / filename
         with sync_playwright() as pw:
-            browser = _launch_chromium(pw)
-            page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
-            yield page, home
-            browser.close()
+            browser, page = harness._new_page(pw)
+            try:
+                capture_socket(page)
+                open_session(page, port, sid)
+                wait_for_session_socket(page, sid, require_turn_state=True)
+                composer = page.locator("textarea")
+                composer.fill("Fix demo.py")
+                composer.press("Enter")
+                expect(page.get_by_text("Updated demo.py.", exact=True)).to_be_visible()
+                assert target.read_text(encoding="utf-8") == "x=1\ny=42\n"
+
+                process = page.locator("[data-process-fold]")
+                toggle = process.locator(":scope > button")
+                edit = process.get_by_title(re.compile(r"^edit_file — "))
+                expect(toggle).to_contain_text("Completed 2 actions")
+                expect(toggle).to_have_attribute("aria-expanded", "false")
+                expect(edit).not_to_be_visible()
+                toggle.click()
+                expect(toggle).to_have_attribute("aria-expanded", "true")
+                expect(edit).to_have_attribute("aria-expanded", "true")
+                expect(edit.get_by_text("+1", exact=True)).to_be_visible()
+                expect(edit.get_by_text("−1", exact=True)).to_be_visible()
+
+                diff = edit.locator("..").locator(".diff")
+                expect(diff.get_by_text("@@ -1 +1 @@", exact=True)).to_be_visible()
+                for line, marker in (("y=2", "−"), ("y=42", "+")):
+                    content = diff.get_by_text(line, exact=True)
+                    expect(content).to_be_visible()
+                    expect(content.locator("..").get_by_text(marker, exact=True)).to_be_visible()
+            finally:
+                browser.close()
     finally:
-        sc.stop_sidecar(proc)
-
-
-@pytest.mark.parametrize("app", [PORT], indirect=True)
-def test_edit_diff_renders(app):
-    page, _home = app
-    # UI locale 为 en（packaged e2e 惯例）——气泡 label 是 i18n 标签
-    # "Editing file"，非工具名 edit_file。
-    _send(page, "fix demo.py please")
-    page.wait_for_selector("text=Editing file", timeout=30_000)
-    # 徽标：标题行 +1 −1（红绿两个计数 span）
-    page.locator("span.font-semibold >> text=+1").first.wait_for(timeout=15_000)
-    page.locator("span.font-semibold >> text=−1").first.wait_for(timeout=15_000)
-    # 气泡默认展开（title=—Collapse）——无需点击，直接断言 diff 行
-    page.wait_for_selector("text=@@ -1 +1 @@", timeout=10_000)
-    page.wait_for_selector("text=−y=2", timeout=10_000)
-    page.wait_for_selector("text=+y=42", timeout=10_000)
+        harness._stop(proc, log)

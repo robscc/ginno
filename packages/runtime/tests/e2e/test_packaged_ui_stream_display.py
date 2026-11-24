@@ -5,8 +5,10 @@ import test_packaged_ui_tasks_overview as harness
 from playwright.sync_api import expect
 from test_packaged_ui_transcript_event_rows import (
     app as app,
+    capture_socket,
     open_session,
     send_frame,
+    wait_for_session_socket,
 )
 
 pytestmark = pytest.mark.e2e
@@ -18,35 +20,20 @@ def test_stream_frames_and_display_boundaries(app, tmp_path):
         port, "POST", "/api/sessions",
         {"project_slug": "default", "workspace": str(tmp_path), "title": "Second stream display session"},
     )["id"]
-    # Wait for the real open-time turn.state reply before injecting a turn.
-    page.add_init_script('''
-        window.__transcriptTestSockets = [];
-        window.__probedDisplaySockets = new WeakSet();
-        const OriginalWebSocket = window.WebSocket;
-        window.WebSocket = class extends OriginalWebSocket {
-          constructor(...args) {
-            super(...args);
-            window.__transcriptTestSockets.push(this);
-            this.addEventListener('message', ({data}) => {
-              if (JSON.parse(data).event === 'turn.state') window.__probedDisplaySockets.add(this);
-            });
-          }
-        };
-    ''')
-    def wait_for_probe(session_id):
-        page.wait_for_function('''sid => window.__transcriptTestSockets.some(ws =>
-            new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN &&
-            window.__probedDisplaySockets.has(ws))''', arg=session_id)
-
+    capture_socket(page)
     open_session(page, port, sid)
-    wait_for_probe(sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
     send_frame(page, sid, "turn.start", turn_id="display-turn", agent_id="dev")
 
     send_frame(page, sid, "tool.start", turn_id="display-turn", id="display-tool", name="bash")
     send_frame(page, sid, "tool.args_delta", turn_id="display-turn", id="display-tool", tail="pending argument")
-    expect(page.get_by_text("pending argument", exact=False)).to_be_visible()
+    process = page.locator("[data-process-active]")
+    toggle = process.locator(":scope > button")
+    expect(toggle).to_have_attribute("aria-expanded", "false")
+    toggle.click()
+    expect(process.get_by_text("· pending argument", exact=True)).to_be_visible()
     send_frame(page, sid, "tool.args", turn_id="display-turn", id="display-tool", preview="final argument")
-    expect(page.get_by_text("final argument", exact=False)).to_be_visible()
+    expect(process.get_by_text("· final argument", exact=True)).to_be_visible()
     send_frame(page, sid, "tool.end", turn_id="display-turn", id="display-tool", name="bash", content="ok")
 
     chunks = [f"chunk-{i:02d} " for i in range(50)]
@@ -109,7 +96,7 @@ def test_stream_frames_and_display_boundaries(app, tmp_path):
         window.requestAnimationFrame = window.__realDisplayRaf;
     }''', sid)
     page.evaluate("window.__ginnoOpenSession", second)
-    wait_for_probe(second)
+    wait_for_session_socket(page, second, require_turn_state=True)
     send_frame(page, second, "turn.start", turn_id="second-turn", agent_id="dev", text="second-session-only")
     expect(page.get_by_text("second-session-only", exact=True)).to_be_visible()
     page.evaluate("window.__lateDisplayFrame(performance.now())")
