@@ -2,8 +2,7 @@
 
 // PlanDag — 任务清单依赖图视图（PlanBoard 的 list/dag 双视图之一）。
 // 视觉语言与 workflow 编辑器 WorkflowDag 同构：横向左→右、纯 SVG 圆角节点
-// + 左侧状态点 + 水平 S 形贝塞尔边 + 箭头。状态色沿用清单自己的 ITEM_META
-// （同一面板内不引入第二套颜色语义，running 绿与列表视图鸭子一致）。
+// + 水平 S 形贝塞尔边 + 箭头。节点与列表共用状态标签。
 //
 // 2026-11-15 用户约束：
 // ① 同步缩小不横滚——viewBox 等比缩放适配容器宽（ResizeObserver 实测），
@@ -17,29 +16,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
-import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
+import type { PlanItem } from "@/lib/types";
 import {
   DAG_NODE_H,
   DAG_NODE_W,
   dependencyChain,
   layoutPlanDag,
 } from "@/lib/planDagLayout";
-import { ITEM_META } from "@/components/chat/PlanBoard";
-
-/** blocked 派生态（与 PlanBoard 同规则）：pending 但依赖未全 done。 */
-function withBlocked(items: PlanItem[]): PlanItem[] {
-  const byId = new Map(items.map((x) => [x.item_id, x.status]));
-  return items.map((it) =>
-    it.status === "pending" && (it.depends_on ?? []).some((d) => byId.get(d) !== "done")
-      ? { ...it, status: "blocked" as PlanItemStatus }
-      : it,
-  );
-}
+import { PLAN_ITEM_STATUS, PlanItemStatusLabel } from "@/components/chat/planItemStatus";
 
 const TIP_W = 248;
 const TIP_H_EST = 96;
 
-export function PlanDag({ plan }: { plan: Plan }) {
+export function PlanDag({ items }: { items: PlanItem[] }) {
   const g = useGinno();
   const t = useTranslations("chat");
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -58,7 +47,6 @@ export function PlanDag({ plan }: { plan: Plan }) {
     return () => ro.disconnect();
   }, []);
 
-  const items = useMemo(() => withBlocked(plan.items), [plan.items]);
   const layout = useMemo(() => layoutPlanDag(items), [items]);
   const byId = useMemo(() => new Map(items.map((i) => [i.item_id, i])), [items]);
   const chain = useMemo(
@@ -88,7 +76,10 @@ export function PlanDag({ plan }: { plan: Plan }) {
       ref={wrapRef}
       className="relative rounded-lg border border-line bg-base/40 p-1"
       role="img"
-      aria-label={t("planBoard.dagAria")}
+      aria-label={`${t("planBoard.dagAria")}. ${items.map((item) => {
+        const { label } = PLAN_ITEM_STATUS[item.status] ?? PLAN_ITEM_STATUS.pending;
+        return `${item.item_id}: ${t(label)}`;
+      }).join(", ")}`}
     >
       <svg
         width={svgW}
@@ -132,15 +123,12 @@ export function PlanDag({ plan }: { plan: Plan }) {
             />
           );
         })}
-        {/* 节点：圆角矩形 + 左状态点 + id 标题 + goal 副标题（字随 viewBox 缩放） */}
+        {/* 节点文字随 viewBox 缩放，状态保留完整，较长的任务 ID 和目标可截断。 */}
         {layout.nodes.map((n) => {
           const it = byId.get(n.id)!;
-          const meta = ITEM_META[it.status] ?? ITEM_META.pending;
           const clickable = !!it.child_session_id;
           const dimmed = chain ? !chain.has(n.id) : false;
           const isSel = selected === n.id;
-          const goalShort =
-            it.goal.length > 14 ? it.goal.slice(0, 14) + "…" : it.goal;
           return (
             <g
               key={n.id}
@@ -164,44 +152,25 @@ export function PlanDag({ plan }: { plan: Plan }) {
                 height={DAG_NODE_H}
                 rx={8}
                 fill="rgb(var(--card))"
-                stroke={isSel ? meta.color : "rgb(var(--line2))"}
+                stroke={isSel ? "currentColor" : "rgb(var(--line2))"}
+                className="text-violet"
                 strokeWidth={isSel ? 2 : 1}
               />
-              <circle cx={n.x + 12} cy={n.y + DAG_NODE_H / 2} r={4} fill={meta.color} />
-              <text
-                x={n.x + 22}
-                y={n.y + 17}
-                fill="rgb(var(--txt))"
-                fontSize={11}
-                fontWeight={600}
-              >
-                {it.item_id}
-              </text>
-              <text x={n.x + 22} y={n.y + 31} fill="rgb(var(--faint))" fontSize={9}>
-                {goalShort}
-              </text>
-              {it.backend && it.backend !== "ginno" && (
-                <text
-                  x={n.x + DAG_NODE_W - 8}
-                  y={n.y + 17}
-                  textAnchor="end"
-                  fill="rgb(var(--amber))"
-                  fontSize={8}
-                >
-                  {it.backend}
-                </text>
-              )}
-              {(it.attempts ?? 0) > 1 && (
-                <text
-                  x={n.x + DAG_NODE_W - 8}
-                  y={n.y + 31}
-                  textAnchor="end"
-                  fill="rgb(var(--faint))"
-                  fontSize={8}
-                >
-                  ×{it.attempts}
-                </text>
-              )}
+              <foreignObject x={n.x + 8} y={n.y + 4} width={DAG_NODE_W - 16} height={DAG_NODE_H - 8}>
+                <div className="flex h-full flex-col justify-center gap-px">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="min-w-0 truncate text-[11px] font-semibold leading-4 text-txt">{it.item_id}</span>
+                    <PlanItemStatusLabel status={it.status} />
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] leading-4">
+                    <span className="min-w-0 flex-1 truncate text-muted">{it.goal}</span>
+                    {it.backend && it.backend !== "ginno" && (
+                      <span className="shrink-0 text-amber">{it.backend}</span>
+                    )}
+                    {(it.attempts ?? 0) > 1 && <span className="shrink-0 text-faint">×{it.attempts}</span>}
+                  </div>
+                </div>
+              </foreignObject>
             </g>
           );
         })}
@@ -214,12 +183,8 @@ export function PlanDag({ plan }: { plan: Plan }) {
           data-testid="plan-dag-tip"
         >
           <div className="flex items-center gap-1.5">
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ background: (ITEM_META[hovItem.status] ?? ITEM_META.pending).color }}
-            />
-            <span className="text-[11px] font-semibold text-txt">{hovItem.item_id}</span>
-            <span className="text-[10px] text-faint">{hovItem.status}</span>
+            <span className="min-w-0 truncate text-[11px] font-semibold text-txt">{hovItem.item_id}</span>
+            <PlanItemStatusLabel status={hovItem.status} />
             {hovItem.backend && hovItem.backend !== "ginno" && (
               <span className="rounded bg-amber/10 px-1 text-[9px] text-amber">
                 {hovItem.backend}

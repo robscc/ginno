@@ -4,8 +4,7 @@
 // plan board / §8 P3）。数据 = store.plansBySession（打开会话 REST 拉取 +
 // plan.updated WS 事件实时刷，watcher 每次落盘推整张快照）。
 //
-// 渲染：清单级折叠 + 进度计数 + 逐条状态（running/done/failed/stopped 与
-// 子代理五态同词汇同 glyph；pending/blocked 本地补齐）+ 依赖/后端/类型
+// 渲染：清单级折叠 + 进度计数 + 逐条状态 + 依赖/后端/类型
 // 徽标；有条目子会话时点行跳过去。写面只保留用户侧动作：pending_confirm →
 // 确认/取消、active → 取消（增删改/重试是主 agent 的 amend_plan 工具面，
 // UI 不重复）。终态清单默认折叠，收在底部不抢注意力。
@@ -16,21 +15,9 @@ import { ChevronDown, ChevronRight, ClipboardList, List, Loader2, Network, X } f
 import { useGinno } from "@/lib/store";
 import { isRemoteSession, remotePeerDisplayName } from "@/components/chat/remoteGuard";
 import { cancelSessionPlan, confirmSessionPlan } from "@/lib/runtime";
-import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
-import { SUBAGENT_STATUS_META } from "@/components/chat/blocks/types";
-import { DuckStatusIcon } from "@/components/chat/blocks/duckStatus";
+import type { Plan, PlanItem } from "@/lib/types";
 import { PlanDag } from "@/components/chat/PlanDag";
-
-/** 条目五态的展示元数据：running 及终态复用子代理词汇（设计 §2「前端零
- * 新词汇」），pending/blocked 是清单特有态、本地补齐。导出供 PlanDag 复用。 */
-export const ITEM_META: Record<PlanItemStatus, { glyph: string; color: string }> = {
-  pending: { glyph: "•", color: "#a1a1aa" },
-  blocked: { glyph: "⊘", color: "#a1a1aa" },
-  running: { glyph: SUBAGENT_STATUS_META.running.glyph, color: SUBAGENT_STATUS_META.running.color },
-  done: { glyph: SUBAGENT_STATUS_META.done.glyph, color: SUBAGENT_STATUS_META.done.color },
-  failed: { glyph: SUBAGENT_STATUS_META.failed.glyph, color: SUBAGENT_STATUS_META.failed.color },
-  stopped: { glyph: SUBAGENT_STATUS_META.stopped.glyph, color: SUBAGENT_STATUS_META.stopped.color },
-};
+import { PlanItemStatusLabel, resolvePlanItemStatuses } from "@/components/chat/planItemStatus";
 
 // as const：值是字面量类型，next-intl 的严格消息键检查才接受（动态拼串不行）。
 const PLAN_STATUS_KEY = {
@@ -140,13 +127,15 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
         const terminal = plan.status === "completed" || plan.status === "cancelled";
         const fold = collapsed[plan.plan_id] ?? terminal;
         const done = plan.items.filter((i) => i.status === "done").length;
-        const failed = plan.items.filter((i) => (i.status === "failed" || i.status === "stopped")).length;
+        const failed = plan.items.filter((i) => i.status === "failed").length;
+        const stopped = plan.items.filter((i) => i.status === "stopped").length;
         // 可关：终态；或「出错收场」——有失败条目且没有在跑的（失败依赖会卡死
         // pending 清单，永远到不了 completed）。执行中/纯 pending 不给关。
         const anyRunning = plan.items.some((i) => i.status === "running");
-        const dismissable = terminal || (failed > 0 && !anyRunning);
+        const dismissable = terminal || (failed + stopped > 0 && !anyRunning);
         const hasDeps = plan.items.some((i) => (i.depends_on?.length ?? 0) > 0);
         const view = viewOverride[plan.plan_id] ?? (hasDeps ? "dag" : "list");
+        const items = fold ? [] : resolvePlanItemStatuses(plan.items);
         return (
           <div
             key={plan.plan_id}
@@ -202,6 +191,7 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
               <span className="shrink-0 whitespace-nowrap tabular-nums text-faint">
                 {t("planBoard.progress", { done, total: plan.items.length })}
                 {failed > 0 && t("planBoard.failedCount", { count: failed })}
+                {stopped > 0 && t("planBoard.stoppedCount", { count: stopped })}
               </span>
               <span className="shrink-0 whitespace-nowrap rounded-md border border-line2 bg-card2/60 px-1.5 py-0.5 text-[10px] text-muted">
                 {t(PLAN_STATUS_KEY[plan.status ?? "active"])}
@@ -220,19 +210,11 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
             {!fold &&
               (view === "dag" ? (
                 <div className="mt-2">
-                  <PlanDag plan={plan} />
+                  <PlanDag items={items} />
                 </div>
               ) : (
                 <div className="mt-2 flex flex-col gap-1.5">
-                  {plan.items.map((it) => {
-                    // blocked 是派生态（设计 §2）：pending 但依赖未全 done —— 快照
-                    // 不落盘，前端按同一条规则推导。
-                    const byId = new Map(plan.items.map((x) => [x.item_id, x.status]));
-                    const blocked =
-                      it.status === "pending" &&
-                      (it.depends_on ?? []).some((d) => byId.get(d) !== "done");
-                    return <PlanItemRow key={it.item_id} item={blocked ? { ...it, status: "blocked" } : it} />;
-                  })}
+                  {items.map((item) => <PlanItemRow key={item.item_id} item={item} />)}
                 </div>
               ))}
 
@@ -279,7 +261,6 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
 function PlanItemRow({ item }: { item: PlanItem }) {
   const g = useGinno();
   const t = useTranslations("chat");
-  const meta = ITEM_META[item.status] ?? ITEM_META.pending;
   const clickable = !!item.child_session_id;
   const detail = item.status === "failed" || item.status === "stopped" ? item.error || item.result_summary : item.result_summary;
   return (
@@ -291,32 +272,14 @@ function PlanItemRow({ item }: { item: PlanItem }) {
         clickable ? "cursor-pointer hover:border-violet/40" : "cursor-default"
       }`}
     >
-      <div className="flex items-center gap-1.5">
-        {/* 鸭子状态点（设计 §1「复用五态/鸭子三色」）：三桶态用动画鸭；pending/
-            blocked 无对应桶，保留灰点 glyph。 */}
-        {item.status === "pending" || item.status === "blocked" ? (
-          <span className="shrink-0 text-[11px] leading-none" style={{ color: meta.color }}>
-            {meta.glyph}
-          </span>
-        ) : (
-          <DuckStatusIcon
-            size={14}
-            live={item.status === "running"}
-            status={
-              item.status === "done"
-                ? "done"
-                : item.status === "failed" || item.status === "stopped"
-                  ? "failed"
-                  : "running"
-            }
-          />
-        )}
-        <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-medium text-violet">{item.item_id}</span>
-        <span className="min-w-0 flex-1 truncate text-left text-muted" title={item.goal}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="max-w-full truncate rounded bg-violet/10 px-1 py-px font-medium text-violet">{item.item_id}</span>
+        <PlanItemStatusLabel status={item.status} />
+        <span className="min-w-[4rem] flex-1 truncate text-left text-muted" title={item.goal}>
           {item.goal}
         </span>
         {(item.depends_on?.length ?? 0) > 0 && (
-          <span className="shrink-0 text-[10px] text-faint" title={t("planBoard.dependsTitle", { ids: item.depends_on!.join(", ") })}>
+          <span className="max-w-full truncate text-[10px] text-faint" title={t("planBoard.dependsTitle", { ids: item.depends_on!.join(", ") })}>
             ⇐ {item.depends_on!.join(" ⇐ ")}
           </span>
         )}
