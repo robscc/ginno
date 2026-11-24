@@ -26,7 +26,6 @@ touches the item; artifact linkage is explicit (todo_link tool / UI).
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -35,6 +34,7 @@ from typing import Any
 from ginno_runtime import jsonx as json
 
 from .. import paths
+from ..atomic_json import write_json
 
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -109,12 +109,9 @@ def _normalize(it: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write(items: list[dict[str, Any]]) -> None:
-    # 原子写：tmp + os.replace，杜绝并发/中断留下半截 JSON。
     p = paths.todos_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(items, indent=2, ensure_ascii=False))
-    os.replace(tmp, p)
+    write_json(p, items)
 
 
 def _new_id() -> str:
