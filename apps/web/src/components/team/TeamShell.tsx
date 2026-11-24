@@ -15,13 +15,13 @@
 //
 // 状态一律来自 runtime teams.status（§5.9 唯一权威来源），本页不自己判态。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArchiveRestore, Loader2, PanelRight, PenLine, Plus, RefreshCw, Sparkles, Trash2, Users, WifiOff, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import type { SessionMeta, Team, TeamMemberRow } from "@/lib/types";
+import type { SessionMeta, Team } from "@/lib/types";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { MemberPanel, MemberPanelSkeleton } from "./MemberPanel";
 import { AddMemberModal } from "./AddMemberModal";
@@ -31,7 +31,8 @@ import { TeamMemoryModal } from "./TeamMemoryModal";
 import { DeliveryBriefCard } from "./DeliveryBriefCard";
 import { fmtTokens, useTeamUsage, type TeamUsage } from "./useTeamUsage";
 import { useEscClose } from "./useEscClose";
-import { consumeOpenMemberIntent } from "./openMemberIntent";
+import { useTeamList, useTeamListSync } from "./useTeamList";
+import { useTeamMemberNavigation, useTeamPinFollow, type TeamView } from "./useTeamMemberNavigation";
 
 function fmtAway(s: number): string {
   if (!s || s < 0) return "—";
@@ -55,19 +56,11 @@ const LAST_VIEW_KEY = (teamId: string) => `ginno-team-last-view:${teamId}`;
 /** P1-19 成员面板开合的手动覆盖（"1"/"0"；无记录 = 随窗口宽度自动）。 */
 const PANEL_OPEN_KEY = "ginno-team-panel-open";
 
-type View =
-  | { kind: "main" }
-  | { kind: "overview" }
-  | { kind: "member"; instanceId: string; sessionId: string };
-
 export function TeamShell() {
   const g = useGinno();
   const tc = useTranslations("chat");
 
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [teamId, setTeamId] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<View>({ kind: "main" });
+  const [view, setView] = useState<TeamView>({ kind: "main" });
   const [addOpen, setAddOpen] = useState(false);
   const [newTeamOpen, setNewTeamOpen] = useState(false);
   // P2-2：一句话建队（先预览后创建）与创建回执（成员失败 / 首个任务投递）。
@@ -91,17 +84,14 @@ export function TeamShell() {
   const [awaySince, setAwaySince] = useState<number | null>(null);
   // P2-18：用户可见的错误提示（rename/patch/解散/刷新失败）+ 离线横幅。
   const [notice, setNotice] = useState<string | null>(null);
-  const [offline, setOffline] = useState(false);
   // P1-19：窄窗口（<1280px）成员面板抽屉化；手动开合持久化覆盖自动判定。
   const [wide, setWide] = useState(true);
   const [panelOverride, setPanelOverride] = useState<boolean | null>(null);
   // P2-4：新建团队引导卡按团队 id 记录「已读」（localStorage，跨启动保留）
   const [guideDismissed, setGuideDismissed] = useState<Record<string, boolean>>({});
 
-  const team = useMemo(
-    () => teams.find((t) => t.id === teamId) ?? null,
-    [teams, teamId],
-  );
+  const teamList = useTeamList(tc, setNotice);
+  const { teams, teamId, setTeamId, team, loaded, offline, refresh } = teamList;
 
   // P2-5：团队成本聚合——低频拉取（团队切换时一次 + 60s 定时 + 手动刷新），
   // 下发给 MemberPanel 与 TeamOverview 纯渲染；绝不塞进状态刷新热路径。
@@ -112,65 +102,7 @@ export function TeamShell() {
     refresh: refreshUsage,
   } = useTeamUsage(team?.id);
 
-  // ---- P2-24：pin 浮窗 follow 联动 ----
-  // 核实结论：pin 的 follow 模式经 BroadcastChannel "ginno-active-session"
-  // 镜像主窗口 store 的 activeSessionId（useSessions.ts 广播 / PinApp.tsx
-  // 订阅）。但 /team 导航不改 store.activeSessionId，TeamShell 的视图状态
-  // 自包含 → pin 停留在最后一个普通聊天会话，团队活动完全不可见。
-  // 最小修复：把团队空间当前展示的会话（广场主会话 / 成员工作台会话）广播
-  // 到同一频道——团队会话是真实 session，runtime 把 turn 广播给该会话的
-  // 所有 socket，pin 的 PinStream 直接跟流（含权限代答）；team.reply /
-  // team.changed 由 PinStream 新增的 case 消费（状态徽标与主窗口同语义）。
-  // 离开 /team（unmount）时恢复广播 store 的 activeSessionId，follow 语义
-  // 交还主窗口导航。
-  const storeActiveRef = useRef<string | null>(g.activeSessionId);
-  useEffect(() => {
-    storeActiveRef.current = g.activeSessionId;
-  });
-  const pinFollowSid =
-    view.kind === "member" ? view.sessionId : team?.main_session_id ?? null;
-  useEffect(() => {
-    if (!pinFollowSid) return;
-    let bc: BroadcastChannel | null = null;
-    try {
-      bc = new BroadcastChannel("ginno-active-session");
-      // 晚到的 pin（主窗口已在 /team 时才打开浮窗）：PinApp 挂载发 hello，
-      // 这里应答当前会话——否则 pin 只能拿到 localStorage 里的旧 seed。
-      bc.onmessage = (e) => {
-        const d = e.data as { type?: string } | null;
-        if (d?.type === "hello") {
-          try {
-            bc?.postMessage({ type: "active", sessionId: pinFollowSid });
-          } catch {
-            /* noop */
-          }
-        }
-      };
-      bc.postMessage({ type: "active", sessionId: pinFollowSid });
-    } catch {
-      /* BroadcastChannel 不可用——pin 回退 localStorage seed */
-      bc = null;
-    }
-    return () => {
-      try {
-        bc?.close();
-      } catch {
-        /* noop */
-      }
-    };
-  }, [pinFollowSid]);
-  useEffect(
-    () => () => {
-      try {
-        const bc = new BroadcastChannel("ginno-active-session");
-        bc.postMessage({ type: "active", sessionId: storeActiveRef.current });
-        bc.close();
-      } catch {
-        /* noop */
-      }
-    },
-    [],
-  );
+  useTeamPinFollow(g.activeSessionId, view, team?.main_session_id);
 
   // 切换团队时从 localStorage 恢复该团队的引导卡「已读」状态（私密窗口
   // 可能抛错 → 当作未读，功能不依赖存储）。
@@ -291,32 +223,7 @@ export function TeamShell() {
     setTimeout(() => setIdCopied(false), 1200);
   };
 
-  // ---- 拉团队列表 ----
-  const refresh = useCallback(async (): Promise<Team[]> => {
-    try {
-      const r = await api.listTeams();
-      const list = r.teams ?? [];
-      setTeams(list);
-      setOffline(false);
-      // 默认选第一个未归档团队（或保持当前选择）。
-      setTeamId((cur) =>
-        cur && list.some((t) => t.id === cur) ? cur : list.find((t) => !t.archived)?.id ?? list[0]?.id ?? null,
-      );
-      return list;
-    } catch {
-      // P2-18：sidecar 未起——保留上次数据，但不再静默：离线横幅 +
-      // 错误提示告诉用户「这是缓存」，可手动重试。
-      setOffline(true);
-      setNotice(tc("team.refreshFailed"));
-      return [];
-    } finally {
-      setLoaded(true);
-    }
-  }, [tc]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useTeamListSync(teamList);
 
   // 成员/团队增删后，会话列表也要刷新（成员 session 是真实 session）。
   const afterMutate = useCallback(async () => {
@@ -335,7 +242,7 @@ export function TeamShell() {
       setView({ kind: "main" });
       setCreateNotice(meta);
     },
-    [refresh, g],
+    [refresh, g, setTeamId],
   );
 
   // ---- 团队管理动作 ----
@@ -386,144 +293,12 @@ export function TeamShell() {
       if (teamId === id) setTeamId(null);
       await afterMutate();
     },
-    [teamId, afterMutate, tc],
+    [teamId, afterMutate, tc, setTeamId],
   );
 
-  // ---- 订阅主会话 WS 的 team.changed（状态回流，§5.3）----
-  // 只订阅当前团队主会话；事件里带完整 team payload，直接替换本地那份。
-  // P1-11：断线自动重连（指数退避 1s→30s 封顶，照 useChatStreamEngine 的
-  // onclose→setTimeout 重连范式）；重连成功后全量重拉团队数据——断线期间
-  // 错过的 team.changed 无法补帧，只有重拉能对账。sidecar 重启不再永久 stale。
-  const mainSid = team?.main_session_id;
-  useEffect(() => {
-    if (!mainSid) return;
-    // 守卫后固化成 string：TS 不把外层 narrowing 带进下面嵌套的 connect()
-    // 闭包，直接用 mainSid 会报 string|undefined（真实 tsc 抓到）。
-    const sid: string = mainSid;
-    let ws: WebSocket | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let disposed = false;
-    let attempt = 0;
-    let dropped = false; // 是否断过线（重连成功才需要全量重拉）
-
-    function scheduleReconnect() {
-      if (disposed) return;
-      const delay = Math.min(30_000, 1000 * 2 ** attempt);
-      attempt += 1;
-      timer = setTimeout(connect, delay);
-    }
-
-    function connect() {
-      if (disposed) return;
-      try {
-        ws = api.openSessionSocket(sid);
-      } catch {
-        scheduleReconnect(); // 预渲染等无 WebSocket 环境
-        return;
-      }
-      ws.onopen = () => {
-        attempt = 0;
-        setOffline(false);
-        if (dropped) void refresh();
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data) as {
-            event?: string;
-            team_id?: string;
-            team?: Team;
-          };
-          if (msg.event === "team.changed" && msg.team && msg.team_id) {
-            setTeams((prev) =>
-              prev.map((t) => (t.id === msg.team_id ? (msg.team as Team) : t)),
-            );
-          }
-        } catch {
-          /* 非 JSON 帧 */
-        }
-      };
-      ws.onerror = () => {
-        try {
-          ws?.close();
-        } catch {
-          /* noop */
-        }
-      };
-      ws.onclose = () => {
-        if (disposed) return;
-        dropped = true;
-        setOffline(true);
-        scheduleReconnect();
-      };
-    }
-
-    connect();
-    return () => {
-      disposed = true;
-      if (timer) clearTimeout(timer);
-      try {
-        ws?.close();
-      } catch {
-        /* noop */
-      }
-    };
-  }, [mainSid, refresh]);
-
-  // ---- 成员工作台跳转（TeamReplyCard 的「进入工作台」也走这个事件）----
-  const openMemberSession = useCallback(
-    (instanceId: string, sessionId: string, teamIdOverride?: string) => {
-      // P2-25：跨团队跳转（回帖卡带 team_id）先选中团队再进工作台。
-      const tid = teamIdOverride ?? teamId;
-      if (teamIdOverride && teamIdOverride !== teamId) setTeamId(teamIdOverride);
-      setView({ kind: "member", instanceId, sessionId });
-      // 打开即标记 seen：done → idle（§3.3 收件箱语义）。P2-18：seen 失败
-      // 不阻塞跳转（下次刷新会对账），不再裸 .then。
-      if (tid) {
-        void api
-          .markTeamMemberSeen(tid, instanceId)
-          .then(() => refresh())
-          .catch(() => {});
-      }
-    },
-    [teamId, refresh],
-  );
-
-  const openMember = useCallback(
-    (row: TeamMemberRow) => openMemberSession(row.instance_id, row.session_id),
-    [openMemberSession],
-  );
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as {
-        sessionId?: string;
-        instanceId?: string;
-        teamId?: string;
-      };
-      if (detail?.sessionId && detail?.instanceId) {
-        openMemberSession(detail.instanceId, detail.sessionId, detail.teamId);
-      }
-    };
-    window.addEventListener("ginno:open-team-member", handler);
-    return () => window.removeEventListener("ginno:open-team-member", handler);
-  }, [openMemberSession]);
-
-  // P2-25：在 /team 之外点「进入工作台」——TeamReplyCard 先存一次性意图
-  // 再导航过来；挂载时消费（sessionStorage，读后即清，不会误重放）。
-  useEffect(() => {
-    const intent = consumeOpenMemberIntent();
-    if (!intent) return;
-    if (intent.teamId) setTeamId(intent.teamId);
-    setView({ kind: "member", instanceId: intent.instanceId, sessionId: intent.sessionId });
-    if (intent.teamId) {
-      void api
-        .markTeamMemberSeen(intent.teamId, intent.instanceId)
-        .then(() => refresh())
-        .catch(() => {});
-    }
-    // 只在挂载时消费一次；refresh 变化不得导致意图重放。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { openMemberSession, openMember } = useTeamMemberNavigation({
+    teamId, setTeamId, setView, refresh,
+  });
 
   // ---- 当前视图要渲染的 session ----
   const sessionById = useCallback(

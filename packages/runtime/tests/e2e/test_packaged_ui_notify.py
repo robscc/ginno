@@ -26,32 +26,19 @@ reducer 层的 vitest（handleNotify.test.ts）能抓到，但仍需一层证明
   · 注意力状态可切换——`visibilityState` 与 `hasFocus()` 都由 `__setAttention`
     控制，用来精确制造「在看 / 切走但窗口在屏上 / 最小化」三种状态。
 
-Skips gracefully when the binary isn't built, playwright isn't installed, or the
-port is taken.
+默认使用 packaged sidecar。也支持共享 harness 的 source/strict 模式。
 """
 
 from __future__ import annotations
 
 import json
-import os
-import socket
 import subprocess
 import time
-from pathlib import Path
 
-import _sidecar as sc
 import pytest
+import test_packaged_ui_tasks_overview as smoke
 
 pytestmark = pytest.mark.e2e
-
-_RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
-RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
-
-# 兄弟 packaged-UI 文件占了 8894-8899；每个 test 一个独立端口，避免前一个
-# sidecar 拆卸慢导致后一个 skip（那正是最该跑的断言）。
-PORT_MAIN = 8893
-PORT_MASTER_OFF = 8892
-PORT_PRIVACY = 8891
 
 # 放大倍数：80 帧 × 33ms ≈ 2.6s，足够证明「一帧一条」而不至于拖慢用例
 AMP = 80
@@ -99,6 +86,9 @@ INIT_JS = r"""
   class PatchedWS extends OrigWS {
     constructor(...a) {
       super(...a);
+      if (new URL(this.url).pathname === "/api/ws/schedule") {
+        window.__scheduleSocket = this;
+      }
       this.addEventListener("message", (e) => {
         let d; try { d = JSON.parse(e.data); } catch { return; }
         const ev = d && d.event;
@@ -127,18 +117,6 @@ INIT_JS = r"""
 """
 
 
-def _port_open(port: int) -> bool:
-    s = socket.socket()
-    s.settimeout(0.3)
-    try:
-        s.connect(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
-
-
 def _launch_chromium(pw):
     try:
         return pw.chromium.launch()
@@ -149,20 +127,6 @@ def _launch_chromium(pw):
             [sys.executable, "-m", "playwright", "install", "chromium"], check=False
         )
         return pw.chromium.launch()
-
-
-def _wait_health(port: int, timeout: float = 60) -> None:
-    import urllib.request
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as r:
-                if r.status == 200:
-                    return
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError(f"sidecar on :{port} did not become healthy")
 
 
 def _settings(notify: dict | None = None) -> dict:
@@ -224,54 +188,32 @@ def _ask(header: str) -> dict:
 
 
 @pytest.fixture
-def app(tmp_path, request):
-    """Boot packaged sidecar + Chromium；yield (page, home)。
+def app(tmp_path, request, monkeypatch):
+    """启动隔离 sidecar 和 Chromium，yield (page, port)。"""
+    smoke._require_runtime()
+    from playwright.sync_api import sync_playwright
 
-    间接参数化传一个 dict：``{"port": 8893, "notify": {...}, "scripts": [...]}``。
-    """
     cfg = request.param
-    port = cfg["port"]
-    if not RUNTIME_BIN.exists():
-        pytest.skip("packaged sidecar not built (run `make runtime`)")
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip(
-            "playwright not installed (uv sync --group test && playwright install chromium)"
-        )
-    if _port_open(port):
-        pytest.skip(f"port {port} already in use")
-
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "settings.json").write_text(
-        json.dumps(_settings(cfg.get("notify"))), encoding="utf-8"
-    )
     scripts = tmp_path / "scripts.json"
     scripts.write_text(json.dumps(cfg["scripts"], ensure_ascii=False), encoding="utf-8")
-
-    env = dict(
-        os.environ,
-        GINNO_HOME=str(home),
-        GINNO_FAKE_LLM="1",
-        GINNO_FAKE_LLM_SCRIPTS=str(scripts),
-        GINNO_RUNTIME_PORT=str(port),
-    )
-    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
+    monkeypatch.setenv("GINNO_FAKE_LLM_SCRIPTS", str(scripts))
+    monkeypatch.setattr(smoke, "_settings", lambda: _settings(cfg.get("notify")))
+    port = smoke._free_port()
+    proc, log = smoke._spawn(tmp_path, port)
     try:
-        _wait_health(port)
+        smoke._wait_health(port)
         with sync_playwright() as pw:
             browser = _launch_chromium(pw)
-            page = browser.new_page()
-            # 必须在 goto 之前：init script 要赶在 app bundle 之前把
-            # WebSocket / __TAURI_INTERNALS__ / visibilityState 都换掉
-            page.add_init_script(INIT_JS.replace("__AMP__", str(AMP)))
-            page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
-            page.wait_for_timeout(2000)
-            yield page, home
-            browser.close()
+            try:
+                page = browser.new_page()
+                page.add_init_script(INIT_JS.replace("__AMP__", str(AMP)))
+                page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+                page.locator("textarea:visible").first.wait_for()
+                yield page, port
+            finally:
+                browser.close()
     finally:
-        sc.stop_sidecar(proc)
+        smoke._stop(proc, log)
 
 
 def _send(page, text: str) -> None:
@@ -303,15 +245,14 @@ def _wait_emits(page, n: int, timeout_ms: int = 20_000) -> list[dict]:
 # ── 主链路：delta 零通知 + 真 ask_user 恰好一条 + 注意力两态 ─────────────────
 @pytest.mark.parametrize(
     "app",
-    [{"port": PORT_MAIN,
-      "scripts": [{"content": "第一段回复，纯文本，会被放大成 80 个 delta 帧。"},
+    [{"scripts": [{"content": "第一段回复，纯文本，会被放大成 80 个 delta 帧。"},
                   _ask(Q1_HEADER),
                   {"content": "收到，Q1 已答。"},
                   _ask(Q2_HEADER)]}],
     indirect=True,
 )
 def test_delta_stream_silent_and_ask_user_notifies(app):
-    page, _home = app
+    page, _port = app
 
     # 闸门全开的最强形式：窗口不可见（等价于用户最小化/切走）
     page.evaluate("window.__setAttention('hidden', false)")
@@ -359,12 +300,12 @@ def test_delta_stream_silent_and_ask_user_notifies(app):
 # ── P1：总开关关掉，出口闸门必须真的拦住 ─────────────────────────────────────
 @pytest.mark.parametrize(
     "app",
-    [{"port": PORT_MASTER_OFF, "notify": {"enabled": False},
+    [{"notify": {"enabled": False},
       "scripts": [_ask(Q1_HEADER)]}],
     indirect=True,
 )
 def test_master_switch_off_suppresses_ask_user(app):
-    page, _home = app
+    page, _port = app
     page.evaluate("window.__setAttention('hidden', false)")
     _send(page, "问我一下")
     page.locator(f"text={Q1_HEADER}").first.wait_for(timeout=20_000)
@@ -378,12 +319,12 @@ def test_master_switch_off_suppresses_ask_user(app):
 # ── P1：privacy=titleOnly 时正文必须在出口被抹空 ─────────────────────────────
 @pytest.mark.parametrize(
     "app",
-    [{"port": PORT_PRIVACY, "notify": {"privacy": "titleOnly"},
+    [{"notify": {"privacy": "titleOnly"},
       "scripts": [_ask(Q1_HEADER)]}],
     indirect=True,
 )
 def test_privacy_title_only_strips_body(app):
-    page, _home = app
+    page, _port = app
     page.evaluate("window.__setAttention('hidden', false)")
     _send(page, "问我一下")
     _wait_emits(page, 1)
@@ -395,3 +336,45 @@ def test_privacy_title_only_strips_body(app):
         "——修复前只有 4/7 个站点自己裁了正文（审计文档 P1-1）"
     )
     assert got[0].get("title"), "标题应保留（titleOnly 不是静音）"
+
+
+@pytest.mark.parametrize("app", [{"scripts": [{"content": "Schedule finished."}]}], indirect=True)
+def test_schedule_notification_bridge_marks_seen_and_route_change_closes_replay(app):
+    from playwright.sync_api import expect
+
+    page, port = app
+    base = f"http://127.0.0.1:{port}"
+    # 等真实连接建立后触发运行，避免 run_finished 早于订阅。
+    page.wait_for_function("window.__scheduleSocket?.readyState === WebSocket.OPEN")
+    name = "Bridge replay schedule"
+    task = smoke._api(port, "POST", "/api/schedule/tasks", {
+        "name": name,
+        "target": {"type": "prompt", "prompt": "Exercise the schedule notification bridge"},
+        "schedule": {"kind": "interval", "minutes": 60},
+        "enabled": True,
+    })
+    run = smoke._api(port, "POST", f"/api/schedule/tasks/{task['id']}/run", {})
+    assert run["ok"], run
+    rid = run["run_id"]
+    page.wait_for_function("id => window.__notifyLog.some(n => n.kind === 'schedule-run' && n.id === id)", arg=rid)
+    # 摘要更新也可能补发同 run_id 的 run_finished；这里核对通知的回跳目标。
+    assert {n["id"] for n in _emits(page) if n["kind"] == "schedule-run"} == {rid}
+
+    # 模拟原生通知被点击，验证缓存命中、单条已读和当前路由内的回放。
+    with page.expect_response(f"{base}/api/schedule/runs/seen") as receipt:
+        page.evaluate("id => window.__ginnoOpenScheduleRun(id)", rid)
+    assert receipt.value.ok
+    assert receipt.value.request.post_data_json == {"run_id": rid}
+    replay_title = page.get_by_title(name, exact=True)
+    expect(replay_title).to_be_visible()
+    expect(page).to_have_url(base + "/")
+
+    page.locator('a[href="/team"]').click()
+    expect(page).to_have_url(base + "/team")
+    expect(replay_title).to_have_count(0)
+
+    # 重载后缓存为空，系统通知的旧 ID 应落到执行记录页。
+    page.reload()
+    page.wait_for_function("typeof window.__ginnoOpenScheduleRun === 'function'")
+    page.evaluate("id => window.__ginnoOpenScheduleRun(id)", rid)
+    expect(page).to_have_url(base + "/scheduled")
