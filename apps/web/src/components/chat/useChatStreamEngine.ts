@@ -76,6 +76,7 @@ import {
   steerFrameSender as steerFrameSenderImpl,
 } from "./engine/steer";
 import {
+  createDisplayScheduler,
   markDelivered as markDeliveredImpl,
   adoptOrphanStream as adoptOrphanStreamImpl,
   ensureLive as ensureLiveImpl,
@@ -160,6 +161,9 @@ export interface EngineDeps {
 // Draft slot id for the session-less landing view (ChatStream 共用：上传完成的
 // 文件回执要按 slot 归还，不能串会话）。
 export const HOME_SLOT = "__home__";
+
+const EMPTY_MESSAGES: ChatMsg[] = [];
+const EMPTY_RUNS: WorkflowRun[] = [];
 
 export function useChatStreamEngine(deps: EngineDeps) {
   const {
@@ -277,13 +281,21 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
   const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
 
-  // Push the given session's ref state into React display state.
-  // No-op when sid is not the currently displayed session (background socket).
-  const syncDisplay = (sid: string) => {
-    if (sid !== curSessionIdRef.current) return;
+  const displayedRunsRef = useRef({ source: EMPTY_RUNS, snapshot: EMPTY_RUNS });
+
+  // The scheduler commits only the currently displayed session.
+  const commitDisplay = (sid: string) => {
     const lid = liveBySessionRef.current[sid] ?? null;
-    setMessages([...(storeRef.current[sid] ?? [])]);
-    setRuns([...(runsBySessionRef.current[sid] ?? [])]);
+    // Message reducers replace arrays and changed rows, so React can reuse the source.
+    setMessages(storeRef.current[sid] ?? EMPTY_MESSAGES);
+    const runs = runsBySessionRef.current[sid] ?? EMPTY_RUNS;
+    const previous = displayedRunsRef.current;
+    // Run handlers replace the list for structural edits, but update activity timestamps in place.
+    if (runs !== previous.source || runs.some((run, i) => run.updated !== previous.snapshot[i]?.updated)) {
+      const snapshot = runs.map((run) => ({ ...run }));
+      displayedRunsRef.current = { source: runs, snapshot };
+      setRuns(snapshot);
+    }
     setLiveId(lid);
     liveIdRef.current = lid;
     setWsStatus(statusRef.current[sid] ?? "connecting");
@@ -295,6 +307,17 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // The steer queue is no longer mirrored here — useSteerQueue re-renders the
     // component itself when the queue changes, and `steerItems` reads it live.
   };
+
+  // Socket callbacks keep this scheduler across renders and observe the current session via ref.
+  const [display] = useState(() => createDisplayScheduler(() => curSessionIdRef.current, commitDisplay));
+  const syncDisplay = display.sync;
+  useEffect(() => {
+    document.addEventListener("visibilitychange", display.flush);
+    return () => {
+      document.removeEventListener("visibilitychange", display.flush);
+      display.cancel();
+    };
+  }, [display]);
 
   // 子模块共用的 ctx：每 render 组装一次，闭包语义与拆分前逐 render 重建一致。
   const ctx: EngineCtx = {
@@ -670,6 +693,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       }
     }
     prevSlotRef.current = nextSlot;
+    display.cancel();
 
     if (!session || !sid) {
       curSessionIdRef.current = null;
@@ -681,8 +705,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
       // event ever heals it while home is shown). Per-session refs
       // (storeRef/liveBySessionRef/permsRef/…) stay untouched; re-entering a
       // session re-syncs everything via syncDisplay(sid).
-      setMessages([]);
-      setRuns([]);
+      setMessages(EMPTY_MESSAGES);
+      displayedRunsRef.current = { source: EMPTY_RUNS, snapshot: EMPTY_RUNS };
+      setRuns(EMPTY_RUNS);
       setLiveId(null);
       liveIdRef.current = null;
       setPermission(null);
@@ -845,7 +870,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     mutateLiveImpl(ctx, sid, ev);
   }
   function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
-    handleImpl(ctx, sid, ev);
+    handleImpl(ctx, sid, ev, display.defer);
   }
   function liveTurnIdFor(sid: string): string {
     return liveTurnIdForImpl(ctx, sid);

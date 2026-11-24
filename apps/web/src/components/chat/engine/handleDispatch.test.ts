@@ -84,7 +84,7 @@ vi.mock("@/lib/notifyHub", async (importOriginal) => ({
 }));
 
 import { ReplyMergeWindow } from "@/lib/notifyHub";
-import { handle } from "@/components/chat/engine/handle";
+import { createDisplayScheduler, handle } from "@/components/chat/engine/handle";
 import type { EngineCtx } from "@/components/chat/engine/ctx";
 
 const SID = "s1";
@@ -1025,5 +1025,85 @@ describe("③ 压缩阶段", () => {
     handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing" });
     handle(bag.ctx, SID, { event: "context.compacting", stage: "done" });
     expect(refOf(bag, "compactStageRef")).toBeNull();
+  });
+});
+
+// Run real reducers and the production scheduler with a manually advanced clock.
+function displayHarness() {
+  const callbacks: FrameRequestCallback[] = [];
+  const cancelFrame = vi.fn();
+  const document = { hidden: false };
+  vi.stubGlobal("document", document);
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => callbacks.push(cb));
+  vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+  let active = SID;
+  const bag = makeBag();
+  const commit = vi.fn((sid: string) => ({
+    text: blockOf(bag, "text", sid)?.text,
+    permission: bag.ctx.permsRef.current[sid]?.tool,
+    live: !!bag.ctx.liveBySessionRef.current[sid],
+  }));
+  const display = createDisplayScheduler(() => active, commit);
+  bag.ctx.syncDisplay = display.sync;
+  bag.ctx.seenTurnStartRef.current[SID] = true;
+  const dispatch = (event: string, payload = {}, sid = SID) => {
+    handle(bag.ctx, sid, { event, ...payload }, display.defer);
+  };
+  return {
+    dispatch, display, commit, document, cancelFrame, callbacks,
+    switchTo(sid: string) { display.cancel(); active = sid; display.sync(sid); },
+  };
+}
+
+describe("stream display commits", () => {
+  it("commits 50 same-frame deltas once, with every token in order", () => {
+    const { dispatch, commit, callbacks } = displayHarness();
+    const chunks = Array.from({ length: 50 }, (_, index) => `${index},`);
+    for (const content of chunks) dispatch("token.delta", { content });
+    expect(commit).toHaveBeenCalledTimes(0);
+    expect(callbacks).toHaveLength(1);
+    callbacks[0](0);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveReturnedWith({ text: chunks.join(""), permission: undefined, live: true });
+  });
+
+  it("shows prior deltas with permission and the last delta with the finished turn", () => {
+    const { dispatch, commit, callbacks, cancelFrame } = displayHarness();
+    dispatch("token.delta", { content: "before permission" });
+    dispatch("permission.request", { tool: "bash" });
+    dispatch("token.delta", { content: " and before finish" });
+    dispatch("message.end", { origin: "schedule" });
+    expect(commit.mock.results[0]?.value).toEqual({ text: "before permission", permission: "bash", live: true });
+    expect(commit.mock.results[1]?.value).toEqual({ text: "before permission and before finish", permission: "bash", live: false });
+    expect(cancelFrame.mock.calls).toEqual([[1], [2]]);
+    callbacks.forEach((callback) => callback(0));
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it("flushes on hide and ignores canceled callbacks across disconnect and session switches", () => {
+    const { dispatch, display, commit, document, callbacks, switchTo } = displayHarness();
+    dispatch("token.delta", { content: "visible" });
+    document.hidden = true;
+    display.flush();
+    dispatch("token.delta", { content: " hidden" });
+    expect(commit.mock.results[1]?.value).toEqual({ text: "visible hidden", permission: undefined, live: true });
+    expect(callbacks).toHaveLength(1);
+    document.hidden = false;
+    dispatch("token.delta", { content: " disconnect" });
+    display.sync(SID);
+    expect(commit.mock.results[2]?.value).toEqual({ text: "visible hidden disconnect", permission: undefined, live: true });
+    dispatch("token.delta", { content: " old" });
+    switchTo("s2");
+    dispatch("token.delta", { content: " background" });
+    dispatch("token.delta", { content: "new session" }, "s2");
+    expect(callbacks).toHaveLength(4);
+    callbacks.slice(0, 3).forEach((callback) => callback(0));
+    expect(commit).toHaveBeenCalledTimes(4);
+    callbacks[3](0);
+    expect(commit.mock.results[4]?.value).toEqual({ text: "new session", permission: undefined, live: true });
+    switchTo(SID);
+    callbacks[2](0);
+    expect(commit).toHaveBeenCalledTimes(6);
+    expect(commit.mock.results[5]?.value).toEqual({ text: "visible hidden disconnect old background", permission: undefined, live: true });
   });
 });
