@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -88,38 +89,46 @@ def test_nondetached_own_process_group(isolated_home: Path):
     reg = get_registry()
     rec = reg.spawn(command="sleep 30", title="pg", cwd=None, origin_session=None,
                     origin_turn=None)
+    proc = reg._get(rec["id"]).proc
     try:
         assert rec["pid"]
         assert os.getpgid(rec["pid"]) != os.getpgid(os.getpid())
     finally:
         reg.remove(rec["id"])
-        _reap_until(reg, rec["id"])
+        proc.wait(timeout=6)
 
 
 def test_watchdog_kills_group_when_sidecar_dies(isolated_home: Path, monkeypatch):
     """看守 wrapper：sidecar pid 消失（模拟 sidecar 被 SIGKILL，无 stop_all
     机会）→ wrapper killpg 自杀整组，命令不孤儿化。"""
     monkeypatch.setenv("GINNO_BG_WATCH_INTERVAL_S", "0.2")
-    probe = subprocess.Popen(["sleep", "0.3"])  # 短命进程充当「sidecar」
-    monkeypatch.setattr(
-        registry_mod, "_sidecar_pid_env", lambda: {"GINNO_SIDECAR_PID": str(probe.pid)}
-    )
     reg = get_registry()
-    rec = reg.spawn(command="sleep 30", title="wd", cwd=None, origin_session=None,
-                    origin_turn=None)
-    # 收割 probe：不 wait 的话僵尸 pid 的 kill -0 恒成功，看守永不触发
-    # （生产无此问题——壳持有 Child、sidecar 死后必然被 reap）。
-    probe.wait()
-    try:
-        proc = reg._get(rec["id"]).proc
-        # probe(0.3s) 死后，wrapper ≤0.2s 轮询发现 + SIGTERM 组；给足收敛余量
-        deadline = time.time() + 6.0
-        while time.time() < deadline and proc.poll() is None:
-            time.sleep(0.1)
-        assert proc.poll() is not None, "看守 wrapper 未在 sidecar 消失后回收命令组"
-    finally:
-        reg.remove(rec["id"])
-        _reap_until(reg, rec["id"])
+    with subprocess.Popen(["sleep", "30"]) as probe:
+        monkeypatch.setattr(
+            registry_mod, "_sidecar_pid_env", lambda: {"GINNO_SIDECAR_PID": str(probe.pid)}
+        )
+        try:
+            rec = reg.spawn(command=": > watchdog-ready; sleep 30", title="wd",
+                            cwd=str(isolated_home), origin_session=None, origin_turn=None)
+            proc = reg._get(rec["id"]).proc
+            try:
+                ready = isolated_home / "watchdog-ready"
+                deadline = time.monotonic() + 6
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert ready.exists()
+                assert proc.poll() is None
+                # Reap the probe so the watchdog sees a dead PID, then wait for
+                # the real wrapper to terminate on its own.
+                probe.kill()
+                probe.wait(timeout=6)
+                assert proc.wait(timeout=6) == -signal.SIGTERM
+            finally:
+                reg.remove(rec["id"])
+                proc.wait(timeout=6)
+        finally:
+            if probe.poll() is None:
+                probe.kill()
 
 
 def test_watchdog_exits_after_command_finishes(isolated_home: Path, monkeypatch):
@@ -166,11 +175,13 @@ def test_remove_kills_and_deletes(isolated_home: Path):
     reg = get_registry()
     rec = reg.spawn(command="sleep 30", title="r", cwd=None, origin_session=None,
                     origin_turn=None)
+    proc = reg._get(rec["id"]).proc
     reg.remove(rec["id"])
+    assert proc.wait(timeout=6) < 0
+    reg._reap_once()
     assert reg.try_get(rec["id"]) is None
     assert rec["id"] not in task_store.read_index()
     assert not task_store.task_dir(rec["id"]).exists()
-    _reap_until(reg, rec["id"])  # 不炸（已移除）
 
 
 def test_failed_to_start(isolated_home: Path):

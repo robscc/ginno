@@ -17,7 +17,8 @@ def test_pending_tool_shows_streamed_args(app):
     page, port, sid = app
     capture_socket(page)
     open_session(page, port, sid)
-    wait_for_session_socket(page, sid)
+    # A late idle turn.state reconciles from history and clears a synthetic turn.
+    wait_for_session_socket(page, sid, require_turn_state=True)
     send_frame(page, sid, "turn.start", turn_id="args-turn", agent_id="dev")
     send_frame(page, sid, "tool.start", id="call-args", name="bash")
     send_frame(page, sid, "tool.args_delta", id="call-args", tail="audit argument snapshot one", total=28)

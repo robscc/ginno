@@ -1,85 +1,50 @@
-"""Regression test for the WS keepalive that prevents the frontend's 45s
-watchdog from killing a turn during a long silent tool/LLM step (the
-"stuck at 'now creating doc'" symptom, root cause #2).
-
-We drive the keepalive coroutine in isolation against a fake websocket and
-assert that keepalive frames keep flowing even while no turn events are sent
-(i.e. the server would otherwise be silent). The interval in server.py is 15s,
-so we observe for ~18s.
-"""
+"""Exercise the turn's real 15-second keepalive without waiting on wall time."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+
+from ginno_runtime import server_shared
+from ginno_runtime.api.stream.stages import streamio
 
 pytestmark = pytest.mark.unit
 
 
-class _FakeWS:
-    def __init__(self):
-        self.sent: list[str] = []
+@pytest.mark.parametrize("connected", [True, False], ids=["silent", "disconnected"])
+async def test_keepalive_ticks_until_cancelled(monkeypatch, connected):
+    ticks = asyncio.Queue()
+    release = asyncio.Event()
 
-    async def send_text(self, data: str) -> None:
-        self.sent.append(data)
+    async def sleep(delay):
+        ticks.put_nowait(delay)
+        await release.wait()
+        release.clear()
 
+    monkeypatch.setattr(streamio, "asyncio", SimpleNamespace(
+        sleep=sleep, CancelledError=asyncio.CancelledError,
+    ))
+    ws = SimpleNamespace(send_text=AsyncMock())
+    ctx = SimpleNamespace(session_id="silent-turn", emit=server_shared._ev)
+    ctx.safe_send = streamio.make_safe_send(ctx)
+    monkeypatch.setitem(streamio.eng._SESSION_WS, ctx.session_id, [ws] if connected else [])
 
-def _build_keepalive(server_mod, ws, ws_closed_flag: list):
-    """Re-create the exact keepalive coroutine body from server._stream_graph so
-    the test pins its contract (15s cadence, stops on ws_closed, swallows send
-    errors) without standing up a full graph/WS handler."""
-
-    async def safe_send(data: str) -> None:
-        if ws_closed_flag[0]:
-            return
-        try:
-            await ws.send_text(data)
-        except Exception:
-            ws_closed_flag[0] = True
-
-    async def keepalive() -> None:
-        try:
-            while not ws_closed_flag[0]:
-                await asyncio.sleep(15)
-                if ws_closed_flag[0]:
-                    break
-                await safe_send(server_mod._ev("keepalive", {}))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-
-    return keepalive
-
-
-@pytest.mark.asyncio
-async def test_keepalive_emits_during_silence():
-    import ginno_runtime.server as server_mod
-
-    ws = _FakeWS()
-    ws_closed = [False]
-    ka = _build_keepalive(server_mod, ws, ws_closed)
-    task = asyncio.create_task(ka())
+    task = asyncio.create_task(streamio.keepalive(ctx))
     try:
-        # keepalive interval is 15s; observe past one tick
-        await asyncio.sleep(18)
+        for tick in range(2):
+            assert await asyncio.wait_for(ticks.get(), timeout=2) == 15
+            assert ws.send_text.await_count == (tick if connected else 0)
+            release.set()
+        assert await asyncio.wait_for(ticks.get(), timeout=2) == 15
+        assert ctx.ws_closed is not connected
+        assert [json.loads(call.args[0]) for call in ws.send_text.await_args_list] == (
+            [{"event": "keepalive"}] * 2 if connected else []
+        )
     finally:
         task.cancel()
-        try:
+        with pytest.raises(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
-    assert len(ws.sent) >= 1, "keepalive must emit at least one frame during a silent turn"
-    assert all("keepalive" in s for s in ws.sent)
-
-
-@pytest.mark.asyncio
-async def test_keepalive_stops_when_client_gone():
-    import ginno_runtime.server as server_mod
-
-    ws = _FakeWS()
-    ws_closed = [True]  # client already gone
-    ka = _build_keepalive(server_mod, ws, ws_closed)
-    await asyncio.wait_for(ka(), timeout=2)  # should return promptly, not loop
-    assert ws.sent == []

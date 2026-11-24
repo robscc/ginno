@@ -160,10 +160,12 @@ async def test_deliver_queues_when_concurrency_full(team, live_turns, monkeypatc
         sid = team_store.get_member(team_id, instance_id)["session_id"]
         server_shared._RUNNING_TURNS[sid] = "t-drain"
         started.append((instance_id, text))
-        await asyncio.sleep(0.05)
+        server_shared.notify_turn_started(sid)
         server_shared._RUNNING_TURNS.pop(sid, None)
+        team_deliver._release(team_id, instance_id)
 
     monkeypatch.setattr(team_deliver, "_run_member_turn", fake_turn)
+    monkeypatch.setattr(team_deliver, "_ACK_TIMEOUT_S", 0.1)
 
     # 单测没有真实 session：_ensure_session 给个假壳，让 deliver 走到 spawn。
     from ginno_runtime.api import sessions as sessions_api
@@ -180,10 +182,20 @@ async def test_deliver_queues_when_concurrency_full(team, live_turns, monkeypatc
     member = team_store.get_member(team["id"], _iid(team, "ops"))
     assert "Queued" in member["status_detail"]
 
+    drained = []
+    deliver = team_deliver.deliver
+
+    async def record_delivery(*args, **kwargs):
+        receipt = await deliver(*args, **kwargs)
+        drained.append((receipt["receipt"], receipt["channel"], receipt["instance_id"]))
+        return receipt
+
+    monkeypatch.setattr(team_deliver, "deliver", record_delivery)
     # 腾出一个额度 → drain 自动放行排队投递
     server_shared._RUNNING_TURNS.pop("sess-dev", None)
     await team_deliver._drain_queue(team["id"])
     assert started == [(_iid(team, "ops"), "盘点一下")]
+    assert drained == [("delivered", "turn", _iid(team, "ops"))]
     assert team_deliver._QUEUES.get(team["id"]) in (None, [])
 
 
