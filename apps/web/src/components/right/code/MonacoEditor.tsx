@@ -30,11 +30,11 @@ import type { CodeRead } from "@/lib/codeTypes";
 import { languageForPath } from "./language";
 
 /** Exported for `ConflictDiff` (S2), the code panel's second Monaco surface. */
-export type Monaco = typeof import("monaco-editor");
-type Editor = import("monaco-editor").editor.IStandaloneCodeEditor;
-type Model = import("monaco-editor").editor.ITextModel;
-type Disposable = import("monaco-editor").IDisposable;
-type ThemeData = import("monaco-editor").editor.IStandaloneThemeData;
+export type Monaco = typeof import("./monaco");
+type Editor = import("monaco-editor/esm/vs/editor/editor.api.js").editor.IStandaloneCodeEditor;
+type Model = import("monaco-editor/esm/vs/editor/editor.api.js").editor.ITextModel;
+type Disposable = import("monaco-editor/esm/vs/editor/editor.api.js").IDisposable;
+type ThemeData = import("monaco-editor/esm/vs/editor/editor.api.js").editor.IStandaloneThemeData;
 
 export interface MonacoEditorProps {
   /** Root id — part of the model URI (design §4.5). */
@@ -381,7 +381,7 @@ export function MonacoEditor({
 
       // Dynamic import is MANDATORY. A module-scope `import * as monaco` fails
       // the static-export prerender with "ReferenceError: window is not defined".
-      const monaco = await import("monaco-editor");
+      const monaco = await import("./monaco");
       if (disposed) return;
       monacoRef.current = monaco;
       ensureThemes(monaco);
