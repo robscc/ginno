@@ -1,130 +1,110 @@
-"""Packaged-UI e2e: running 会话侧栏「彩虹边缘条」（CLAUDE.md 红线：前端
-交互改动必须配 packaged UI 用例）。
+"""Only the running session's sidebar row animates during a packaged turn."""
 
-2026-11-17 用户选定方案 01：running 会话左边缘条由静态青色脉冲改为流动
-彩虹竖条。用 GINNO_FAKE_LLM_DELAY 制造运行窗，断言侧栏 running 行渲染
-.running-rainbow-edge（彩虹渐变 + ginno-rainbow-edge 动画）。
-"""
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import os
-import socket
-import time
-import urllib.request
-from pathlib import Path
-
-import _sidecar as sc
 import pytest
-
-from ginno_runtime import jsonx as json
+import test_packaged_ui_tasks_overview as harness
+from test_packaged_ui_transcript_event_rows import capture_socket, wait_for_session_socket
 
 pytestmark = pytest.mark.e2e
 
-_RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
-RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
-PORT = 8905
+PROMPT = "Check the running session"
+ANSWER = "Running session finished."
 
 
-def _port_open(port: int) -> bool:
-    s = socket.socket()
-    s.settimeout(0.3)
-    try:
-        s.connect(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
+@pytest.fixture
+def model_gateway():
+    harness._require_runtime()
+    started = threading.Event()
+    release = threading.Event()
 
-
-def _wait_health(port: int, timeout: float = 40) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as r:
-                if r.status == 200:
+    class Gateway(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path != "/v1/chat/completions":
+                self.send_error(404)
+                return
+            if PROMPT in json.dumps(request["messages"]):
+                started.set()
+                if not release.wait(20):
+                    self.send_error(504)
                     return
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError(f"sidecar on :{port} did not become healthy")
+            chunk = {"id": "chatcmpl_rainbow", "object": "chat.completion.chunk", "created": 1, "model": request["model"]}
+            events = [
+                dict(chunk, choices=[{"index": 0, "delta": {"role": "assistant", "content": ANSWER}, "finish_reason": None}]),
+                dict(chunk, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}]),
+            ]
+            body = ("".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Gateway) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}/v1", started, release
+        finally:
+            release.set()
+            server.shutdown()
+            thread.join()
 
 
-def _settings() -> dict:
-    return {
-        "default_provider": "custom",
-        "bypass_permissions": True,
-        "language": "zh-CN",
-        "providers": {
-            "anthropic": {"enabled": False, "protocol": "anthropic", "api_key": "", "default_model": "x", "base_url": "", "max_tokens": 1, "temperature": 0.7, "timeout_s": 5},
-            "openai": {"enabled": False, "protocol": "openai", "api_key": "", "default_model": "x", "base_url": "", "org_id": "", "max_tokens": 1},
-            "custom": {"enabled": True, "protocol": "openai-compatible", "name": "t", "api_key": "k", "base_url": "http://127.0.0.1:1", "model": "m", "max_tokens": 100, "temperature": 0.7, "timeout_s": 5},
-        },
-        "permissions": {"allow": [], "deny": [], "ask": []},
-        "hooks": {},
-        "knowledge": {"enabled": False},
-    }
+def test_packaged_ui_running_rainbow_edge(tmp_path, monkeypatch, model_gateway):
+    from playwright.sync_api import expect, sync_playwright
 
-
-def _api(port: int, path: str, payload: dict | None = None) -> dict:
-    data = None if payload is None else json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}", data=data,
-        headers={"Content-Type": "application/json"},
-        method="GET" if payload is None else "POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read().decode())
-
-
-def test_packaged_ui_running_rainbow_edge(tmp_path):
-    if not RUNTIME_BIN.exists():
-        pytest.skip("packaged sidecar not built (run `make runtime`)")
+    base_url, started, release = model_gateway
+    settings = harness._settings()
+    settings["providers"]["custom"].update(base_url=base_url, default_model="m", timeout_s=30)
+    monkeypatch.setattr(harness, "_settings", lambda: settings)
+    port = harness._free_port()
+    proc, log = harness._spawn(tmp_path, port, fake_llm=False)
     try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright not installed")
-    if _port_open(PORT):
-        pytest.skip(f"port {PORT} already in use")
-
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "settings.json").write_text(json.dumps(_settings()))
-    env = dict(
-        os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1",
-        GINNO_FAKE_LLM_DELAY="6", GINNO_RUNTIME_PORT=str(PORT),
-    )
-    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
-    try:
-        _wait_health(PORT)
-        sess = _api(PORT, "/api/sessions", {
-            "project_slug": "default", "workspace": str(tmp_path), "title": "Rainbow Edge E2E",
-        })
-        sid = sess.get("session_id") or sess.get("id")
-        assert sid, sess
+        harness._wait_health(port)
+        title = "Rainbow Edge E2E"
+        idle_title = "Idle Edge E2E"
+        sessions = [harness._api(port, "POST", "/api/sessions", {
+            "project_slug": "default", "workspace": str(tmp_path), "title": name,
+            "provider": "custom", "model": "m",
+        }) for name in (title, idle_title)]
+        sid = sessions[0]["id"]
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
-            page.wait_for_timeout(2000)
-            page.get_by_text("Rainbow Edge E2E", exact=False).first.click()
-            ta = page.locator("textarea").first
-            ta.fill("跑起来")
-            ta.press("Enter")
-            # running 指示来自 /api/running 5s 轮询——留足窗口
-            edge = page.locator(".running-rainbow-edge")
-            edge.first.wait_for(timeout=15000)
-            assert edge.count() >= 1
-            bg = edge.first.evaluate("el => getComputedStyle(el).backgroundImage")
-            assert "linear-gradient" in bg, bg
-            anim = edge.first.evaluate("el => getComputedStyle(el).animationName")
-            assert anim == "ginno-rainbow-edge", anim
-            # 几何：3px 宽左边缘条
-            box = edge.first.bounding_box()
-            assert box and box["width"] <= 4, box
-            browser.close()
+            browser, page = harness._new_page(pw)
+            try:
+                page.emulate_media(reduced_motion="no-preference")
+                capture_socket(page)
+                page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+                rows = page.locator(".nav-item")
+                target = rows.filter(has=page.get_by_text(title, exact=True))
+                idle = rows.filter(has=page.get_by_text(idle_title, exact=True))
+                target.get_by_text(title, exact=True).click()
+                wait_for_session_socket(page, sid, require_turn_state=True)
+                edge = target.locator(".running-rainbow-edge")
+                expect(idle).to_be_visible()
+                expect(edge).to_have_count(0)
+                composer = page.locator("textarea")
+                composer.fill(PROMPT)
+                composer.press("Enter")
+                assert started.wait(10), "The chat turn never reached its configured model"
+                running = harness._api(port, "GET", "/api/running")["sessions"]
+                assert {session["id"] for session in running} == {sid}
+                expect(edge).to_be_visible(timeout=10_000)
+                expect(idle.locator(".running-rainbow-edge")).to_have_count(0)
+                assert "linear-gradient" in edge.evaluate("el => getComputedStyle(el).backgroundImage")
+                expect(edge).to_have_css("animation-name", "ginno-rainbow-edge")
+                expect(edge).to_have_css("width", "3px")
+
+                release.set()
+                expect(page.get_by_text(ANSWER, exact=True)).to_be_visible()
+                expect(edge).to_have_count(0, timeout=10_000)
+                assert harness._api(port, "GET", "/api/running")["sessions"] == []
+            finally:
+                release.set()
+                browser.close()
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            proc.kill()
+        harness._stop(proc, log)
