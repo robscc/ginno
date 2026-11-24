@@ -244,6 +244,7 @@ runtime: web
 	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
 	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
 	else \
+	  rm -f $(CACHE)/runtime.stamp || exit $$?; \
 	  printf '{"fingerprint": "%s", "channel": "app", "built_at": "%s", "repo": "%s"}\n' \
 	    "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)$$(git diff --quiet 2>/dev/null || printf -- -dirty)" \
 	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$(cd $(ROOT) && pwd)" > $(RUNTIME)/build-info.json; \
