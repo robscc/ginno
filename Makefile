@@ -221,6 +221,9 @@ mod-runner: pnpm-deps
 # regardless, so no eager import at startup is needed (see _frozen_imports.py).
 # 内容戳：runtime 源/web_out/extension 未变且 bundle 在 → 跳过（改一行 web
 # 不再重跑几分钟的 PyInstaller）。FORCE_RUNTIME=1 强制重打。
+# arm64 macOS 实测：PyInstaller 的 --strip 用 strip -S 去除调试符号，
+# 并在调整 dylib 路径后重新签名。可用 RUNTIME_STRIP_FLAG= 重建对照包。
+RUNTIME_STRIP_FLAG := $(if $(filter Darwin-arm64,$(shell uname -s)-$(shell uname -m)),--strip)
 #
 # PyInstaller 的 5 条已知良性 WARNING 在这里过滤掉（否则每次 make app 都刷
 # 一屏警告）：
@@ -236,7 +239,8 @@ runtime: web
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(RUNTIME)/src $(RUNTIME)/bin $(ROOT)/packages/extension/src $(ROOT)/packages/extension/native-host -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
 	       find $(WEB_OUT) -type f 2>/dev/null | sort | xargs shasum 2>/dev/null; \
-	       cat $(RUNTIME)/pyproject.toml) | shasum | cut -d' ' -f1); \
+	       cat $(RUNTIME)/pyproject.toml $(ROOT)/Makefile; \
+	       printf '%s\n' '$(RUNTIME_STRIP_FLAG)') | shasum | cut -d' ' -f1); \
 	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
 	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
 	else \
@@ -244,7 +248,7 @@ runtime: web
 	    "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)$$(git diff --quiet 2>/dev/null || printf -- -dirty)" \
 	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$(cd $(ROOT) && pwd)" > $(RUNTIME)/build-info.json; \
 	  python3 $(RUNTIME)/scripts/fetch_tiktoken_vocab.py || true; \
-	  cd $(RUNTIME) && set -o pipefail && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
+	  cd $(RUNTIME) && set -o pipefail && uv run --locked --extra docs pyinstaller $(RUNTIME_STRIP_FLAG) --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all tiktoken \
 	  --collect-all tiktoken_ext \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
