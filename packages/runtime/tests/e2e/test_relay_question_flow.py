@@ -71,6 +71,58 @@ def _clean_relay_state():
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def reorder_subscriber_checkpoint(monkeypatch):
+    """Deliver a real interrupt before its checkpoint and writes finish landing."""
+    from ginno_runtime.api.stream.stages import run
+
+    subscriber = None
+    release = asyncio.Event()
+    writes_committed = asyncio.Event()
+    agent_checkpoint_committed = asyncio.Event()
+    aput = FileCheckpointer.aput
+    aput_writes = FileCheckpointer.aput_writes
+    chunked_stream = run.chunked_stream
+
+    async def hold_checkpoint(self, config, checkpoint, metadata, new_versions):
+        if config["configurable"]["thread_id"] == subscriber and metadata.get("step") == 1:
+            await asyncio.wait_for(release.wait(), timeout=5)
+            result = await aput(self, config, checkpoint, metadata, new_versions)
+            agent_checkpoint_committed.set()
+            return result
+        return await aput(self, config, checkpoint, metadata, new_versions)
+
+    async def record_writes(self, config, writes, task_id):
+        conf = config["configurable"]
+        channels = {channel for channel, _ in writes}
+        if conf["thread_id"] == subscriber and "branch:to:tools" in channels:
+            await asyncio.wait_for(agent_checkpoint_committed.wait(), timeout=5)
+        await aput_writes(self, config, writes, task_id)
+        if conf["thread_id"] == subscriber and "__interrupt__" in channels:
+            assert not agent_checkpoint_committed.is_set()
+            writes_committed.set()
+
+    async def stream(ctx):
+        async for mode, payload in chunked_stream(ctx):
+            if ctx.session_id == subscriber and mode == "updates" and "__interrupt__" in payload:
+                await asyncio.wait_for(writes_committed.wait(), timeout=5)
+                try:
+                    yield mode, payload
+                finally:
+                    release.set()
+            else:
+                yield mode, payload
+
+    def target(sid):
+        nonlocal subscriber
+        subscriber = sid
+
+    monkeypatch.setattr(FileCheckpointer, "aput", hold_checkpoint)
+    monkeypatch.setattr(FileCheckpointer, "aput_writes", record_writes)
+    monkeypatch.setattr(run, "chunked_stream", stream)
+    return target
+
+
 def _allow_relay_tool(isolated_home) -> None:
     """conftest client 关闭了 bypass_permissions；permission policy 默认 ask。
     给 relay_answer 写用户级 allow 规则（graph build 时 PermissionPolicy.
@@ -355,7 +407,7 @@ def test_worker_answered_first_late_relay_is_readonly(
 
 @pytest.mark.parametrize("restart", [False, True], ids=["live", "legacy-restart"])
 def test_worker_choice_resumes_subscriber_relay_card(
-    client, create_session, ws_conv, patch_build_model, restart,
+    client, create_session, ws_conv, patch_build_model, restart, reorder_subscriber_checkpoint,
 ):
     cp = FileCheckpointer("default")
     sub_call = "call_subscriber_ask"
@@ -366,6 +418,8 @@ def test_worker_choice_resumes_subscriber_relay_card(
         script(text="已收到订阅会话选的位置。"),
     ])
     sub = create_session(sub_model)
+    if not restart:
+        reorder_subscriber_checkpoint(sub)
     worker = create_session([
         script(tool_calls=[_ask_call()]), script(text="已按选择完成。"),
     ])
@@ -422,6 +476,7 @@ def test_worker_choice_resumes_subscriber_relay_card(
 
         frames = sconv.recv_until("message.end", "error")
         assert not events_of(frames, "error")
+        assert not events_of(frames, "user.question")
         settled = [e for e in events_of(frames, "tool.end") if e.get("id") == sub_call]
         assert len(settled) == 1 and settled[0]["turn_id"] == forwarded["turn_id"]
 
@@ -432,9 +487,9 @@ def test_worker_choice_resumes_subscriber_relay_card(
         assert cards[0]["answer"] == OPTS[0] and cards[0]["optionIndex"] == 1
 
 
-def test_worker_choice_before_subscriber_parks(client, create_session, ws_conv, monkeypatch):
-    from ginno_runtime.api.stream import resume
-
+def test_worker_choice_before_subscriber_parks(
+    client, create_session, ws_conv, reorder_subscriber_checkpoint,
+):
     release = asyncio.Event()
 
     class HeldModel(ScriptedChatModel):
@@ -455,11 +510,7 @@ def test_worker_choice_before_subscriber_parks(client, create_session, ws_conv, 
     ])
     assert client.portal.call(ww.watch_worker, sub, worker, "digest")["ok"]
 
-    # The stream can deliver the interrupt before its pending write becomes visible.
-    read_parked = resume._parked_user_question
-    monkeypatch.setattr(resume, "_parked_user_question", lambda session, sid: (
-        None if sid == sub else read_parked(session, sid)
-    ))
+    reorder_subscriber_checkpoint(sub)
 
     with ws_conv(worker) as wconv, ws_conv(sub) as sconv:
         wconv.invoke("跑迁移")
@@ -473,6 +524,9 @@ def test_worker_choice_before_subscriber_parks(client, create_session, ws_conv, 
         assert frames[-1]["event"] == "message.end"
         ends = [e for e in events_of(frames, "tool.end") if e.get("id") == sub_call]
         assert len(ends) == 1 and json.loads(ends[0]["content"])["answer"] == OPTS[1]
+        history = client.get(f"/api/sessions/{sub}/history").json()["messages"]
+        cards = [b for m in history for b in m["blocks"] if b.get("id") == sub_call]
+        assert len(cards) == 1 and cards[0]["status"] == "answered"
 
 
 # --------------------------------------------------------------------------- #

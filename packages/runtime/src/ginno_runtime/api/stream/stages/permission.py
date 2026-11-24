@@ -8,8 +8,8 @@ ws 层走 ``_run_resume`` → ``Command(resume=...)`` 再入本引擎，与 lega
 同一入口。
 
 **注册表写入点③**：``_PENDING_RESUME.add`` / ``_PENDING_KIND[...] = ...``
-三种 interrupt 各一处，与 legacy 同行序（saw_interrupt 置位 → 登记 →
-log → 事件帧）。
+permission/version 在流内登记。user_question 在流内设置 saw_interrupt，
+等 checkpoint 提交后再登记、同步答复或下发卡片。
 """
 
 from __future__ import annotations
@@ -66,49 +66,54 @@ async def handle_interrupt(ctx: StreamTurnCtx, delta) -> None:
                 )
             )
         elif isinstance(value, dict) and value.get("kind") == "user_question":
-            # ask_user parked the turn on an ambiguity. The
-            # card is a transcript block (not a ref like the
-            # permission prompt), so this event carries the
-            # tool_call id the client merges on.
             ctx.saw_interrupt = True
-            eng._PENDING_RESUME.add(ctx.session_id)
-            eng._PENDING_KIND[ctx.session_id] = "user_question"
-            eng._log.info(
-                "turn_interrupt session=%s turn=%s kind=%s set_id=%d",
-                ctx.session_id, ctx.turn_id, value.get("kind"),
-                id(eng._PENDING_RESUME),
-            )
-            # Worker ask_user 中断透传（relay-question 设计）：engine 层
-            # 登记钩子（不依赖 ws——headless wake turn 的 parked 同样过
-            # 这里）。无订阅者时 note_parked_question 直接返回 None，
-            # 既有行为零变化；qid 凭证由 ask_tools 在 interrupt payload
-            # 里生成并随 checkpoint 落盘（三层凭证链的第一层）。
-            try:
-                from ....worker_bus.question_sync import sync_parked_answer
-                from ....worker_bus.relay import note_parked_question
+            ctx.parked_questions.append(value)
 
-                if await sync_parked_answer(ctx.session_id, value):
-                    continue
-                await note_parked_question(ctx.session_id, ctx.turn_id, value)
-            except Exception:
-                eng._log.exception(
-                    "relay_parked_hook_failed session=%s turn=%s",
-                    ctx.session_id, ctx.turn_id,
-                )
-            await ctx.safe_send(
-                ctx.emit(
-                    "user.question",
-                    {
-                        "id": value.get("id"),
-                        "qid": value.get("qid"),
-                        "question": value.get("question", ""),
-                        "header": value.get("header", ""),
-                        "options": value.get("options") or [],
-                        "allow_free_text": value.get("allow_free_text", True),
-                        # 多问题（契约 v2，ask_tools questions 参数）：
-                        # 逐题字段原样透传，前端一张卡渲染全部子题。
-                        "multi": bool(value.get("multi")),
-                        "questions": value.get("questions") or [],
-                    },
-                )
-            )
+
+async def publish_parked_question(ctx: StreamTurnCtx, value: dict) -> None:
+    """Publish or settle the card after the graph committed the interrupt."""
+    # ask_user parked the turn on an ambiguity. The
+    # card is a transcript block (not a ref like the
+    # permission prompt), so this event carries the
+    # tool_call id the client merges on.
+    eng._PENDING_RESUME.add(ctx.session_id)
+    eng._PENDING_KIND[ctx.session_id] = "user_question"
+    eng._log.info(
+        "turn_interrupt session=%s turn=%s kind=%s set_id=%d",
+        ctx.session_id, ctx.turn_id, value.get("kind"),
+        id(eng._PENDING_RESUME),
+    )
+    # Worker ask_user 中断透传（relay-question 设计）：engine 层
+    # 登记钩子（不依赖 ws——headless wake turn 的 parked 同样过
+    # 这里）。无订阅者时 note_parked_question 直接返回 None，
+    # 既有行为零变化；qid 凭证由 ask_tools 在 interrupt payload
+    # 里生成并随 checkpoint 落盘（三层凭证链的第一层）。
+    try:
+        from ....worker_bus.question_sync import sync_parked_answer
+        from ....worker_bus.relay import note_parked_question
+
+        if await sync_parked_answer(ctx.session_id, value):
+            return
+        await note_parked_question(ctx.session_id, ctx.turn_id, value)
+    except Exception:
+        eng._log.exception(
+            "relay_parked_hook_failed session=%s turn=%s",
+            ctx.session_id, ctx.turn_id,
+        )
+    await ctx.safe_send(
+        ctx.emit(
+            "user.question",
+            {
+                "id": value.get("id"),
+                "qid": value.get("qid"),
+                "question": value.get("question", ""),
+                "header": value.get("header", ""),
+                "options": value.get("options") or [],
+                "allow_free_text": value.get("allow_free_text", True),
+                # 多问题（契约 v2，ask_tools questions 参数）：
+                # 逐题字段原样透传，前端一张卡渲染全部子题。
+                "multi": bool(value.get("multi")),
+                "questions": value.get("questions") or [],
+            },
+        )
+    )

@@ -201,6 +201,7 @@ def _fold_events(lines: list[str]) -> list[dict]:
     随换行之间死掉的半行；窗口读时窗口尾=文件尾，语义不变）。"""
     entries: list[dict] = []
     by_id: dict[str, dict] = {}
+    early_writes: dict[str, list] = {}
     last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
     for i, raw in enumerate(lines):
         if not raw.strip():
@@ -225,19 +226,20 @@ def _fold_events(lines: list[str]) -> list[dict]:
             cid = entry.get("checkpoint_id")
             if not cid:
                 continue
+            if pending := early_writes.pop(str(cid), None):
+                entry.setdefault("pending_writes", []).extend(pending)
             entries.append(entry)
             by_id[str(cid)] = entry
         elif op == "writes":
-            # put_writes: attach to its checkpoint, else to the head (v1 did
-            # the same when the config carried no checkpoint_id).
-            entry = by_id.get(str(event.get("checkpoint_id") or "")) or (
-                entries[-1] if entries else None
-            )
-            if entry is not None:
-                entry.setdefault("pending_writes", []).extend(
-                    event.get("items") or []
-                )
+            cid = str(event.get("checkpoint_id") or "")
+            items = event.get("items") or []
+            if cid and cid not in by_id:
+                # LangGraph can flush task writes before their checkpoint.
+                early_writes.setdefault(cid, []).extend(items)
+            elif entry := (by_id[cid] if cid else (entries[-1] if entries else None)):
+                entry.setdefault("pending_writes", []).extend(items)
         elif op == "truncate":
+            early_writes.clear()
             # rerun_from: the log stays append-only; the folded view drops
             # everything after the cut and re-arms the head for re-execution.
             cid = str(event.get("to") or "")
@@ -386,21 +388,12 @@ def _remember_list_suffix(path: Path, signature: tuple[int, ...], entries: list[
 #
 # 全量 fold 对 516MB 级日志是 O(日志)（实测 1.2s），而热路径（get_tuple 无
 # id / get_pending_interrupt / put 的 record 读）只需要「最新 checkpoint 及
-# 其 delta 链到最近 full 锚点」。尾窗读：从文件尾取窗口字节，丢弃窗口首
-# 条 cp 事件之前的残余（writes 的 checkpoint_id 引用总是指向更早的 cp，
-# 首条 cp 起的窗口内引用闭合），窗口 fold；链锚不在窗口内则翻倍重试，
+# 其 delta 链到最近 full 锚点」。尾窗读保留所有完整事件，包含可能先于
+# 首条 cp 提交的 writes；链锚不在窗口内则翻倍重试，
 # 上限后回退全量。零双写零缓存——纯函数，任何异常回退现状路径。
 
 _TAIL_WINDOW_MIN_B = 4 * 1024 * 1024
 _TAIL_WINDOW_MAX_B = 64 * 1024 * 1024
-
-
-def _line_op(raw: str) -> str | None:
-    try:
-        v = json.loads(raw)
-    except Exception:
-        return None
-    return v.get("op") if isinstance(v, dict) else None
 
 
 def _has_full_anchor(entries: list[dict]) -> bool:
@@ -439,11 +432,7 @@ def _read_tail(path: Path) -> list[dict]:
         lines = chunk.decode("utf-8", "replace").splitlines()
         if start > 0 and lines:
             lines = lines[1:]  # 窗口首行可能被切半
-        first_cp = next(
-            (i for i, ln in enumerate(lines) if _line_op(ln) == "cp"),
-            len(lines),
-        )
-        entries = _fold_events(lines[first_cp:])
+        entries = _fold_events(lines)
         if start == 0:
             return entries
         if entries and _has_full_anchor(entries):

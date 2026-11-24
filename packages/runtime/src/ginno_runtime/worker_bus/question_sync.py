@@ -153,7 +153,6 @@ async def sync_parked_answer(
         return False
     cp = FileCheckpointer(slug)
     config = {"configurable": {"thread_id": session_id}}
-    from_stream = question is not None
     if question is None:
         pending = await asyncio.to_thread(cp.get_pending_interrupt, config)
         for interrupt in pending or []:
@@ -188,9 +187,7 @@ async def sync_parked_answer(
         **answer,
         base_config=config,
         session=session,
-        # The interrupt delivered by the current stream is already authoritative.
-        # Its pending write can still be draining to disk during this callback.
-        expected_qid="" if from_stream else qid,
+        expected_qid=qid,
         arm_from_checkpoint=restore,
         answered_by="worker_sync",
     )
