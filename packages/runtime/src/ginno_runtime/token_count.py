@@ -22,13 +22,13 @@ import threading
 import time
 from pathlib import Path
 
-# 加载 tiktoken 词表的硬超时（秒）：冷缓存时 tiktoken.get_encoding 会从
-# openaipublic.blob 下载，无超时控制；TUN/断网环境下 socket 永久阻塞会
-# 拖死调用方（曾把 pytest worker 卡到 120s 被 pytest-timeout 杀掉）。
+# 调用者最多等待这么久。冷缓存时 tiktoken 的下载可能一直阻塞，
+# 只要原加载仍在途，就复用它，即使冷却期已经结束。
 _LOAD_TIMEOUT_S = 10.0
-# 失败/超时后的冷却窗口（秒）：避免每个请求都重新发起注定失败的加载。
 _OFFLINE_COOLDOWN_S = 600.0
 _offline_until = 0.0
+_load_lock = threading.Lock()
+_load_done: threading.Event | None = None
 
 # CJK + kana + hangul: ~1 token per character. Latin/digits/code: ~3.6 chars
 # per token (calibrated against mixed Chinese/code prompts; only used when
@@ -64,33 +64,55 @@ _cached_encoder: object | None = None
 _encoder_loaded = False
 
 
-def _encoder():
-    global _cached_encoder, _encoder_loaded
-    if _encoder_loaded:
-        return _cached_encoder
-    if time.monotonic() < _offline_until:
-        return None
+def _load_encoder(done: threading.Event) -> None:
+    global _cached_encoder, _encoder_loaded, _load_done, _offline_until
+    encoder = None
     try:
         os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(_cache_dir()))
         import tiktoken
 
-        result: list = []
-
-        def _load() -> None:
-            result.append(tiktoken.get_encoding("o200k_base"))
-
-        worker = threading.Thread(target=_load, daemon=True)
-        worker.start()
-        worker.join(_LOAD_TIMEOUT_S)
-        if worker.is_alive() or not result:
-            # 超时（下载卡死）或加载失败：进入冷却窗口，期间直接回退估算。
-            globals()["_offline_until"] = time.monotonic() + _OFFLINE_COOLDOWN_S
-            return None
-        _cached_encoder = result[0]
-        _encoder_loaded = True
-        return _cached_encoder
+        encoder = tiktoken.get_encoding("o200k_base")
     except Exception:  # noqa: BLE001 — counting is advisory, never fatal
-        globals()["_offline_until"] = time.monotonic() + _OFFLINE_COOLDOWN_S
+        pass
+    finally:
+        with _load_lock:
+            if encoder is None:
+                _offline_until = time.monotonic() + _OFFLINE_COOLDOWN_S
+            else:
+                _cached_encoder = encoder
+                _encoder_loaded = True
+                _offline_until = 0.0
+            _load_done = None
+            done.set()
+
+
+def _encoder():
+    global _load_done, _offline_until
+    with _load_lock:
+        if _encoder_loaded:
+            return _cached_encoder
+        if time.monotonic() < _offline_until:
+            return None
+        if _load_done is None:
+            _load_done = threading.Event()
+            try:
+                threading.Thread(target=_load_encoder, args=(_load_done,), daemon=True).start()
+            except Exception:  # noqa: BLE001 — thread startup may fail
+                _load_done = None
+                _offline_until = time.monotonic() + _OFFLINE_COOLDOWN_S
+                return None
+        done = _load_done
+
+    done.wait(_LOAD_TIMEOUT_S)
+    with _load_lock:
+        if _encoder_loaded:
+            return _cached_encoder
+        if _load_done is done:
+            # Only an unfinished load can enter cooldown here. Keep its event
+            # registered so a timeout cannot launch a second worker.
+            now = time.monotonic()
+            if now >= _offline_until:
+                _offline_until = now + _OFFLINE_COOLDOWN_S
         return None
 
 
