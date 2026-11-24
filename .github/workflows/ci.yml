@@ -238,6 +238,9 @@ jobs:
         run: make runtime
         working-directory: .
 
+      - name: Run packaged sidecar startup and import checks
+        run: uv run --group test --extra docs pytest tests/e2e/test_packaged_import_health.py -q
+
       - name: Install Chromium (playwright)
         run: uv run --group test python -m playwright install chromium
 

@@ -416,17 +416,10 @@ __all__ = [
 # e2e sidecar guard（原 tests/e2e/conftest.py，8d6cb13 引入；因 conftest 遮蔽
 # 问题上移到根 conftest，见文件头部注释）。
 #
-# e2e 会话级兜底：收割本测试会话泄漏的 dist sidecar。测试内的
-# ``finally: stop_sidecar(...)`` 是第一道防线（见 e2e/_sidecar.py）；这里兜
-# 第二道——测试函数崩溃/超时/pytest 中断时 finally 可能不执行。
-# 做法是快照 diff：会话开始前记一份 dist/ginno-runtime 的 pid，会话结束时
-# 只杀**新出现**的 pid。用户自己跑着的 sidecar（桌面 app / ginno exec）
-# 在快照里已存在，永远不会被碰。
+# e2e 会话级兜底只清理本进程通过 spawn_sidecar 启动的子进程。
+# 各用例的 finally 仍负责各自的清理，包括直接使用 Popen 的源码模式。
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
 def harvest_leaked_sidecars():
-    before = set(_sidecar.dist_sidecar_pids())
     yield
-    leaked = [pid for pid in _sidecar.dist_sidecar_pids() if pid not in before]
-    if leaked:
-        _sidecar.harvest(leaked)
+    _sidecar.stop_spawned_sidecars()

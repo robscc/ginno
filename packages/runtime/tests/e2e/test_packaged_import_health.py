@@ -41,11 +41,13 @@ BIN = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime" / "ginno-ru
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port = s.getsockname()[1]
+    assert port != 8787
+    return port
 
 
 @pytest.fixture(scope="module")
-def sidecar(tmp_path_factory):
+def running_sidecar(tmp_path_factory):
     if not BIN.exists():
         pytest.skip("dist bundle 未构建（make runtime）")
     home = tmp_path_factory.mktemp("import-health-home")
@@ -61,28 +63,51 @@ def sidecar(tmp_path_factory):
             },
         },
     }))
+    # 第一次正常启动必须能收编这个真实形状的孤儿记录。主进程就绪后，
+    # 再用同一记录模拟主进程已有运行中的子代理。
+    index = home / "projects" / "default" / "sessions" / "_index.json"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    running = [{
+        "created": now,
+        "updated": now,
+        "id": "startup-probe-child",
+        "type": "subagent",
+        "parent_session_id": "startup-probe-parent",
+        "subagent": {"status": "running"},
+    }]
+    index.write_text(json.dumps(running))
     port = _free_port()
     env = {
-        **os.environ,
+        "PATH": os.environ.get("PATH", os.defpath),
+        "HOME": str(home),
         "GINNO_HOME": str(home),
         "GINNO_RUNTIME_PORT": str(port),
+        "NO_PROXY": "127.0.0.1",
     }
-    proc = sc.spawn_sidecar(str(BIN), env)
-    deadline = time.time() + 30
-    while time.time() < deadline:
+    base = f"http://127.0.0.1:{port}"
+    log_path = home.parent / f"{home.name}.stderr.log"
+    with log_path.open("wb") as stderr:
+        proc = sc.spawn_sidecar(str(BIN.resolve()), env, err=stderr)
         try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/api/health", timeout=2
-            ) as r:
-                if r.status == 200:
-                    break
-        except Exception:
-            time.sleep(0.5)
-    else:
-        sc.stop_sidecar(proc)
-        pytest.fail("dist sidecar 30s 未就绪")
-    yield f"http://127.0.0.1:{port}"
-    sc.stop_sidecar(proc)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and proc.poll() is None:
+                try:
+                    with urllib.request.urlopen(base + "/api/health", timeout=2) as response:
+                        if response.status == 200 and json.load(response)["ok"] is True:
+                            break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                pytest.fail(f"dist sidecar 未就绪，exit={proc.poll()}: {log_path.read_text()[-4000:]}")
+            yield base, env, proc, index, running
+        finally:
+            sc.stop_sidecar(proc)
+
+
+@pytest.fixture(scope="module")
+def sidecar(running_sidecar):
+    return running_sidecar[0]
 
 
 def _get(base: str, path: str) -> tuple[int, str]:
@@ -124,3 +149,29 @@ def test_anthropic_lazy_import_ok(sidecar):
         assert isinstance(d, dict)
     except Exception:
         pytest.fail(f"verify 响应非 JSON: {body[:200]}")
+
+
+def test_duplicate_start_exits_before_reconciling_running_subagent(running_sidecar):
+    base, env, primary, index, running = running_sidecar
+    # 正对照：空闲端口上的同一 bundle 确实运行了这项 lifespan 任务。
+    assert json.loads(index.read_bytes())[0]["subagent"]["status"] == "stopped"
+    index.write_text(json.dumps(running))
+    settings = Path(env["GINNO_HOME"]) / "settings.json"
+    before = {path: path.read_bytes() for path in (index, settings)}
+    assert primary.poll() is None
+
+    duplicate = sc.spawn_sidecar(str(BIN.resolve()), env, err=subprocess.PIPE)
+    try:
+        _, stderr = duplicate.communicate(timeout=30)
+    finally:
+        sc.stop_sidecar(duplicate)
+
+    after = {path: path.read_bytes() for path in before}
+    status = json.loads(after[index])[0]["subagent"]["status"]
+    diagnostic = stderr.decode("utf-8", "replace")
+    assert (duplicate.returncode, status) == (3, "running"), diagnostic
+    assert "单实例守卫" in diagnostic
+    assert after == before
+    assert primary.poll() is None
+    code, body = _get(base, "/api/health")
+    assert code == 200 and json.loads(body)["ok"] is True
