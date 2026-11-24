@@ -1,136 +1,243 @@
-"""_session_meta_list 读缓存（P2 会话索引缓存）回归。
-
-覆盖：重复读 parse 次数下降、外部原子替换/就地改写失效、内部写路径
-（patch/upsert/rewrite）后读到最新、损坏与缺失文件的确定性、多 home
-隔离、可变字典不污染缓存。
-"""
+"""Regression tests for cached reads of the on-disk session index."""
 
 from __future__ import annotations
 
-import json as stdjson
 import os
-import types
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-import ginno_runtime.session_meta as sm
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from ginno_runtime import session_meta as sm
+from ginno_runtime.api.sessions.relations import router
 
 
-def _use_home(monkeypatch, tmp_path, slug="default"):
-    monkeypatch.setattr(sm.paths, "home", lambda: tmp_path)
-    proj = tmp_path / "projects" / slug / "sessions"
-    proj.mkdir(parents=True, exist_ok=True)
-    return proj / "_index.json"
+@pytest.fixture
+def index_path() -> Path:
+    path = sm.paths.session_index_path("default")
+    path.parent.mkdir(parents=True)
+    return path
 
 
-def _counting_loads(monkeypatch):
-    """替换 session_meta 内的 json 模块引用，仅计数 loads 调用。"""
-    calls = {"n": 0}
-    real_loads = sm.json.loads
-
-    def loads(data):
-        calls["n"] += 1
-        return real_loads(data)
-
-    shim = types.SimpleNamespace(
-        loads=loads, dumps=sm.json.dumps, JSONDecodeError=sm.json.JSONDecodeError
+@pytest.fixture
+def index_loads(monkeypatch):
+    loads = Mock(wraps=sm.json.loads)
+    monkeypatch.setattr(
+        sm, "json", SimpleNamespace(
+            loads=loads, dumps=sm.json.dumps, JSONDecodeError=sm.json.JSONDecodeError,
+        ),
     )
-    monkeypatch.setattr(sm, "json", shim)
-    return calls
+    return loads
 
 
-def test_repeated_reads_parse_once(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text(stdjson.dumps([{"id": "a"}, {"id": "b"}]))
-    calls = _counting_loads(monkeypatch)
-    for _ in range(10):
-        assert [m["id"] for m in sm._session_meta_list("default")] == ["a", "b"]
-    assert calls["n"] == 1  # 10 次读只 parse 一次
+def _write_rows(path: Path, *rows: dict) -> None:
+    path.write_text(sm.json.dumps(rows), encoding="utf-8")
 
 
-def test_external_atomic_replace_invalidates(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text(stdjson.dumps([{"id": "a"}]))
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["a"]
-    # 外部原子替换（tmp+rename，与 _write_index 同形态）
-    tmp = p.with_name(p.name + ".ext")
-    tmp.write_text(stdjson.dumps([{"id": "a"}, {"id": "b"}]))
-    os.replace(tmp, p)
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["a", "b"]
+def test_linked_requests_parse_unchanged_index_once(index_path, index_loads):
+    _write_rows(index_path, {"id": "source", "linked_user": ["target"]}, {"id": "target"})
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        for _ in range(3):
+            response = client.get("/api/sessions/source/linked")
+            assert response.status_code == 200
+            assert [row["id"] for row in response.json()["members"]] == ["target"]
+    assert index_loads.call_count == 1
 
 
-def test_external_inplace_write_invalidates(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text(stdjson.dumps([{"id": "a"}]))
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["a"]
-    p.write_text(stdjson.dumps([{"id": "c"}]))
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["c"]
+def test_external_atomic_replace_with_same_size_and_mtime(index_path):
+    _write_rows(index_path, {"id": "before"})
+    assert sm._session_meta_list("default") == [{"id": "before"}]
+    before = index_path.stat()
+    replacement = index_path.with_suffix(".swap")
+    _write_rows(replacement, {"id": "after!"})
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, index_path)
+    after = index_path.stat()
+    assert after.st_ino != before.st_ino
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert sm._session_meta_list("default") == [{"id": "after!"}]
 
 
-def test_internal_patch_then_read(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    sm._session_meta_upsert("default", {"id": "s1", "title": "t"})
-    got = sm._session_meta_patch("default", "s1", {"title": "t2"})
-    assert got is not None and got["title"] == "t2"
-    again = sm._session_meta_list("default")
-    assert again[0]["title"] == "t2" and again[0]["id"] == "s1"
+def test_external_inplace_edit_restoring_mtime(index_path, monkeypatch):
+    _write_rows(index_path, {"id": "before"})
+    assert sm._session_meta_list("default") == [{"id": "before"}]
+    before = index_path.stat()
+    _write_rows(index_path, {"id": "after!"})
+    os.utime(index_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = index_path.stat()
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_ino, before.st_size, before.st_mtime_ns,
+    )
+
+    # Report a changed ctime even on filesystems that round both writes to the
+    # same tick. The inode, mtime, size and bytes still come from the real file.
+    real_stat = Path.stat
+
+    def stat_with_changed_ctime(path, *args, **kwargs):
+        stat = real_stat(path, *args, **kwargs)
+        if path == index_path:
+            return SimpleNamespace(
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                st_size=stat.st_size,
+                st_mtime_ns=stat.st_mtime_ns,
+                st_ctime_ns=before.st_ctime_ns + 1,
+            )
+        return stat
+
+    monkeypatch.setattr(Path, "stat", stat_with_changed_ctime)
+    assert sm._session_meta_list("default") == [{"id": "after!"}]
 
 
-def test_rewrite_all_then_read(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text(stdjson.dumps([{"id": "old"}]))
-    sm._session_meta_list("default")
-    sm._session_meta_rewrite_all("default", [{"id": "new"}])
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["new"]
+def test_cache_version_tracks_the_file_actually_opened(index_path, monkeypatch):
+    original, replacement = (index_path.with_suffix(suffix) for suffix in (".a", ".b"))
+    _write_rows(original, {"id": "original"})
+    _write_rows(replacement, {"id": "replacement"})
+    index_path.symlink_to(original)
+    new_link = index_path.with_suffix(".new")
+    old_link = index_path.with_suffix(".old")
+    new_link.symlink_to(replacement)
+    old_link.symlink_to(original)
+    real_open = Path.open
+
+    def open_between_replacements(path, *args, **kwargs):
+        if path != index_path:
+            return real_open(path, *args, **kwargs)
+        # Change the path between stat and open, then restore the original
+        # target's exact version before the reader observes the path again.
+        os.replace(new_link, path)
+        try:
+            return real_open(path, *args, **kwargs)
+        finally:
+            os.replace(old_link, path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", open_between_replacements)
+        assert sm._session_meta_list("default") == [{"id": "replacement"}]
+    assert sm._session_meta_list("default") == [{"id": "original"}]
 
 
-def test_corrupt_file_returns_empty_and_recovers(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text("{not json")
+def test_missing_between_stat_and_open_then_recovered(index_path, monkeypatch):
+    _write_rows(index_path, {"id": "before"})
+    real_open = Path.open
+
+    def open_after_removal(path, *args, **kwargs):
+        if path == index_path:
+            path.unlink()
+        return real_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", open_after_removal)
+        assert sm._session_meta_list("default") == []
     assert sm._session_meta_list("default") == []
-    # 损坏不缓存：反复读仍确定性为空
+    _write_rows(index_path, {"id": "recreated"})
+    assert sm._session_meta_list("default") == [{"id": "recreated"}]
+
+
+@pytest.mark.parametrize("corrupt", [b"{broken", b"\xff"], ids=["json", "utf8"])
+def test_corrupt_index_is_retried_and_recovers(index_path, index_loads, corrupt):
+    _write_rows(index_path, {"id": "before"})
+    assert sm._session_meta_list("default") == [{"id": "before"}]
+    index_path.write_bytes(corrupt)
     assert sm._session_meta_list("default") == []
-    # heal 落盘后恢复
-    sm._session_meta_rewrite_all("default", [{"id": "ok"}])
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["ok"]
-
-
-def test_missing_file_returns_empty(monkeypatch, tmp_path):
-    _use_home(monkeypatch, tmp_path)
     assert sm._session_meta_list("default") == []
-    assert sm._session_meta_list("nope") == []
+    assert index_loads.call_count == 3
+    _write_rows(index_path, {"id": "repaired"})
+    assert sm._session_meta_list("default") == [{"id": "repaired"}]
+    assert index_loads.call_count == 4
 
 
-def test_multiple_homes_isolated(monkeypatch, tmp_path):
-    home_a = tmp_path / "a"
-    home_b = tmp_path / "b"
-    for h, ids in ((home_a, ["x"]), (home_b, ["y", "z"])):
-        proj = h / "projects" / "default" / "sessions"
-        proj.mkdir(parents=True)
-        (proj / "_index.json").write_text(stdjson.dumps([{"id": i} for i in ids]))
-    monkeypatch.setattr(sm.paths, "home", lambda: home_a)
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["x"]
-    monkeypatch.setattr(sm.paths, "home", lambda: home_b)
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["y", "z"]
-    monkeypatch.setattr(sm.paths, "home", lambda: home_a)
-    assert [m["id"] for m in sm._session_meta_list("default")] == ["x"]
+def test_internal_writes_invalidate_and_keep_patch_semantics(index_path, index_loads):
+    row = {"id": "sid", "title": "before", "updated": 42, "labels": ["keep"]}
+    _write_rows(index_path, row)
+    assert sm._session_meta_list("default") == [row]
+    result = sm._session_meta_patch("default", "sid", {"title": "after", "labels": None}, touch=False)
+    expected = dict(row, title="after")
+    assert result == expected
+    result["labels"].clear()
+    assert sm._session_meta_list("default") == [expected]
+    assert index_loads.call_count == 2
+
+    sm._session_meta_update_all("default", lambda _: {"provider": "new"})
+    assert sm._session_meta_list("default") == [dict(expected, provider="new")]
+    sm._session_meta_rewrite_all("default", [{"id": "rewritten"}])
+    assert sm._session_meta_list("default") == [{"id": "rewritten"}]
+    assert sm._session_meta_remove("default", "rewritten")
+    assert sm._session_meta_list("default") == []
 
 
-def test_returned_copies_do_not_pollute_cache(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    p.write_text(stdjson.dumps([{"id": "s1", "labels": ["a"]}]))
+def test_failed_patch_leaves_disk_and_cached_snapshot_intact(index_path, index_loads, monkeypatch):
+    initial = {"id": "sid", "title": "before"}
+    _write_rows(index_path, initial)
+    assert sm._session_meta_list("default") == [initial]
+    real_replace = os.replace
+
+    def fail_index_replace(source, dest):
+        if dest == index_path:
+            raise PermissionError("simulated index write failure")
+        return real_replace(source, dest)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_index_replace)
+        with pytest.raises(PermissionError, match="simulated index write failure"):
+            sm._session_meta_patch("default", "sid", {"title": "failed"}, touch=False)
+    assert sm._session_meta_list("default") == [initial]
+    assert index_loads.call_count == 1
+    sm._session_meta_patch("default", "sid", {"title": "retried"}, touch=False)
+    assert sm._session_meta_list("default") == [dict(initial, title="retried")]
+
+
+def test_index_read_permission_error_is_retryable(index_path, monkeypatch):
+    _write_rows(index_path, {"id": "available"})
+    real_stat = Path.stat
+
+    def permission_denied(path, *args, **kwargs):
+        if path == index_path:
+            raise PermissionError("simulated index read failure")
+        return real_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", permission_denied)
+        with pytest.raises(PermissionError, match="simulated index read failure"):
+            sm._session_meta_list("default")
+    assert sm._session_meta_list("default") == [{"id": "available"}]
+
+
+def test_cache_isolated_by_ginno_home_and_project(tmp_path, monkeypatch, index_loads):
+    cases = [
+        (tmp_path / "home-a", "default", "a"),
+        (tmp_path / "home-a", "other", "b"),
+        (tmp_path / "home-b", "default", "c"),
+    ]
+    for home, slug, sid in cases:
+        monkeypatch.setenv("GINNO_HOME", str(home))
+        path = sm.paths.session_index_path(slug)
+        path.parent.mkdir(parents=True)
+        _write_rows(path, {"id": sid})
+    for home, slug, sid in cases * 2:
+        monkeypatch.setenv("GINNO_HOME", str(home))
+        assert sm._session_meta_list(slug) == [{"id": sid}]
+    assert index_loads.call_count == len(cases)
+
+
+def test_mutating_a_read_cannot_change_nested_cached_data(index_path, index_loads):
+    row = {
+        "id": "sid",
+        "labels": ["keep"],
+        "subagent": {"status": "running"},
+        "linked_auto": [{"id": "peer", "rel": "assigned"}],
+    }
+    _write_rows(index_path, row)
     first = sm._session_meta_list("default")
-    # 顶 层改写 + 嵌套列表追加都不得影响后续读
-    first[0]["title"] = "polluted"
-    first[0]["labels"].append("polluted")
-    second = sm._session_meta_list("default")
-    assert "title" not in second[0]
-    assert second[0]["labels"] == ["a"]
-
-
-def test_patch_does_not_leak_mutations(monkeypatch, tmp_path):
-    p = _use_home(monkeypatch, tmp_path)
-    sm._session_meta_upsert("default", {"id": "s1", "labels": ["keep"]})
-    got = sm._session_meta_patch("default", "s1", {"title": "x"})
-    got["labels"].append("leak")
-    reread = sm._session_meta_list("default")
-    assert reread[0]["labels"] == ["keep"]
-    assert reread[0]["title"] == "x"
+    first[0]["title"] = "bad"
+    first[0]["labels"].append("bad")
+    first[0]["subagent"]["status"] = "bad"
+    first[0]["linked_auto"][0]["rel"] = "bad"
+    first.append({"id": "ghost"})
+    assert sm._session_meta_list("default") == [row]
+    assert index_loads.call_count == 1
