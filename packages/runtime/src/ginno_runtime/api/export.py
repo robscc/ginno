@@ -11,6 +11,7 @@ user cannot back it up or move it. Two shapes, deliberately simple:
 
 from __future__ import annotations
 
+import asyncio
 import time
 import zipfile
 from pathlib import Path
@@ -140,7 +141,8 @@ async def export_session(
         raise HTTPException(
             status_code=400, detail={"ok": False, "error": f"unsupported format: {format}"}
         )
-    md = _render_markdown(slug, session_id, meta)
+    # checkpoint JSONL 读取 + 全量消息渲染是纯阻塞 IO/CPU——下沉工作线程。
+    md = await asyncio.to_thread(_render_markdown, slug, session_id, meta)
     name = (str(meta.get("title") or session_id)[:60] or session_id).replace("/", "_")
     return PlainTextResponse(
         md,
@@ -164,31 +166,37 @@ async def export_project(body: dict | None = None) -> FileResponse:
         raise HTTPException(
             status_code=404, detail={"ok": False, "error": "unknown project"}
         )
-    out_dir = paths.home() / "index" / "exports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = out_dir / f"{slug}-{stamp}.zip"
-    tmp = out.with_suffix(".zip.tmp")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in src.rglob("*"):
-            if not p.is_file():
-                continue
-            # Skip per-session checkpoint side-cars of the type only used for
-            # live UI state? They are small; keep everything for fidelity.
-            arc = Path(slug) / p.relative_to(src)
-            try:
-                zf.write(p, str(arc))
-            except OSError:
-                continue
-        manifest = {
-            "project_slug": slug,
-            "exported_at": time.time(),
-            "source": str(src),
-        }
-        zf.writestr(f"{slug}/EXPORT_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    tmp.replace(out)
+    def _build_zip() -> tuple[Path, str]:
+        # 整项目目录 rglob + DEFLATED 压缩是最重的导出路径，全部留在
+        # 工作线程；FileResponse 只在线程外构造（含生成的 zip 路径）。
+        out_dir = paths.home() / "index" / "exports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        out = out_dir / f"{slug}-{stamp}.zip"
+        tmp = out.with_suffix(".zip.tmp")
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p in src.rglob("*"):
+                if not p.is_file():
+                    continue
+                # Skip per-session checkpoint side-cars of the type only used for
+                # live UI state? They are small; keep everything for fidelity.
+                arc = Path(slug) / p.relative_to(src)
+                try:
+                    zf.write(p, str(arc))
+                except OSError:
+                    continue
+            manifest = {
+                "project_slug": slug,
+                "exported_at": time.time(),
+                "source": str(src),
+            }
+            zf.writestr(f"{slug}/EXPORT_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        tmp.replace(out)
+        return out, f"{slug}-{stamp}.zip"
+
+    out, filename = await asyncio.to_thread(_build_zip)
     return FileResponse(
         out,
         media_type="application/zip",
-        filename=f"{slug}-{stamp}.zip",
+        filename=filename,
     )
