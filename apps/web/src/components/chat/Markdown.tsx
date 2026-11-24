@@ -4,6 +4,7 @@ import {
   Children,
   isValidElement,
   memo,
+  useCallback,
   useEffect,
   useState,
   type ReactElement,
@@ -11,7 +12,6 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { useTranslations } from "next-intl";
 import { FileText } from "lucide-react";
 import { openLinkExternal } from "@/lib/runtime";
@@ -23,6 +23,28 @@ import { MermaidBlock } from "./MermaidBlock";
 // in-page fragment links (#wl:<encoded>) so any URL transform keeps them; the
 // `a` renderer below intercepts the prefix when `onWikilink` is provided.
 const WIKILINK_RE = /\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]+?))?\]\]/g;
+
+const PLAIN_LANGUAGES = ["mermaid", "plaintext", "text", "txt"];
+type Highlight = ReturnType<typeof import("rehype-highlight").default>;
+
+// All Markdown instances share one request and grammar registry per document.
+// Cache a failed load too, so a broken chunk cannot trigger a request per message.
+let highlightPromise: Promise<Highlight | undefined> | undefined;
+function loadHighlight() {
+  return (highlightPromise ??= import("rehype-highlight")
+    .then(({ default: rehypeHighlight }) => {
+      const highlight = rehypeHighlight({ plainText: PLAIN_LANGUAGES });
+      const safelyHighlight: Highlight = (tree, file) => {
+        try {
+          highlight(tree, file);
+        } catch {
+          // A grammar error must leave the code and prose readable.
+        }
+      };
+      return safelyHighlight;
+    })
+    .catch(() => undefined));
+}
 
 /** Recursively extract plain text from rendered children (for the copy button). */
 function nodeText(n: ReactNode): string {
@@ -65,7 +87,43 @@ function FrontmatterBar({ entries }: { entries: FrontmatterEntry[] }) {
   );
 }
 
-function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {  const [copied, setCopied] = useState(false);
+function CodeBlock({
+  lang,
+  children,
+  streaming,
+  onHighlightReady,
+}: {
+  lang?: string;
+  children: ReactNode;
+  streaming?: boolean;
+  onHighlightReady?: (highlight: Highlight) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!lang || PLAIN_LANGUAGES.includes(lang) || !onHighlightReady) return;
+
+    let cancelled = false;
+    let cancelScheduled: (() => void) | undefined;
+    void loadHighlight().then((highlight) => {
+      if (!highlight || cancelled) return;
+      const apply = () => {
+        if (!cancelled) onHighlightReady(highlight);
+      };
+      if (streaming) {
+        apply();
+      } else if (typeof window.requestIdleCallback === "function") {
+        const id = window.requestIdleCallback(apply, { timeout: 1000 });
+        cancelScheduled = () => window.cancelIdleCallback(id);
+      } else {
+        const id = window.setTimeout(apply, 32);
+        cancelScheduled = () => window.clearTimeout(id);
+      }
+    });
+    return () => {
+      cancelled = true;
+      cancelScheduled?.();
+    };
+  }, [lang, onHighlightReady, streaming]);
   // composer 域 catalog（本组件也被其他域文件复用，文案统一收在 composer.markdown）
   const t = useTranslations("composer");
   const copy = async () => {
@@ -121,40 +179,36 @@ export const Markdown = memo(function Markdown({
   text: string;
   onWikilink?: (target: string) => void;
   onFileLink?: (target: MarkdownFileTarget) => void;
-  /** 本轮回答仍在生成。只为 mermaid 服务：图形必须等文本落定后再渲染
-   *  （半截 mermaid 语法必然解析失败，见 MermaidBlock 文件头第 1 条）。 */
+  /** 本轮回答仍在生成。高亮就绪后立即用于流式文本，Mermaid 等文本落定再出图。 */
   streaming?: boolean;
 }) {
   const t = useTranslations("composer");
-  // Syntax highlighting deferred to idle (2026-11-16 perf). Bench over 461
-  // history blocks: rehypeHighlight costs ~4× remarkGfm (343ms vs 81ms SSR).
-  // Static blocks first paint GFM-only — code chrome / copy / mermaid still
-  // work because the `language-*` class comes from the fence, not the
-  // highlighter — then each block upgrades to highlighted during idle via its
-  // OWN requestIdleCallback. Per-block, NOT a global batch: a single batched
-  // flip would re-create the very long task we're removing. Streaming blocks
-  // highlight immediately to avoid live flicker.
-  const [hl, setHl] = useState(!!streaming);
-  useEffect(() => {
-    if (streaming) {
-      setHl(true);
-      return;
+  const [highlight, setHighlight] = useState<Highlight>();
+  const onHighlightReady = useCallback((ready: Highlight) => {
+    setHighlight(() => ready);
+  }, []);
+  // Let parsed code blocks request the plugin. Markdown syntax inside a literal
+  // block, inline code, or prose never starts a load. Keep the renderer stable
+  // as streaming text changes so pending subscriptions survive those updates.
+  const renderPre = useCallback(({ children }: { children?: ReactNode }) => {
+    const el = Children.toArray(children).find(isValidElement) as
+      | ReactElement<{ className?: string; children?: ReactNode }>
+      | undefined;
+    const lang = /language-([\w+-]+)/.exec(el?.props?.className || "")?.[1];
+    if (lang === "mermaid") {
+      const source = nodeText(el?.props?.children).replace(/\n$/, "");
+      return <MermaidBlock source={source} streaming={streaming} />;
     }
-    let cancelled = false;
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-    const schedule =
-      w.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 32) as unknown as number);
-    const id = schedule(() => {
-      if (!cancelled) setHl(true);
-    }, { timeout: 1000 });
-    return () => {
-      cancelled = true;
-      w.cancelIdleCallback?.(id);
-    };
-  }, [streaming]);
+    return (
+      <CodeBlock
+        lang={lang}
+        streaming={streaming}
+        onHighlightReady={highlight ? undefined : onHighlightReady}
+      >
+        {el?.props?.children}
+      </CodeBlock>
+    );
+  }, [highlight, onHighlightReady, streaming]);
   // Frontmatter（Obsidian 属性块）：剥离正文交给属性条渲染——预览窗/知识库
   // 页阅读视图里的 .md 原文以 `---\ntitle: …` 开头时，YAML 不再被当正文裸奔。
   const { body: fmBody, entries: fmEntries } = splitFrontmatter(text);
@@ -178,25 +232,9 @@ export const Markdown = memo(function Markdown({
       {fmEntries.length > 0 && <FrontmatterBar entries={fmEntries} />}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        // plainText: mermaid 源码不是代码高亮对象——交给 MermaidBlock 出图。
-        // 不声明的话 lowlight 每块都会走一次 "Unknown language" 异常分支。
-        rehypePlugins={hl ? [[rehypeHighlight, { plainText: ["mermaid"] }]] : []}
+        rehypePlugins={highlight ? [() => highlight] : []}
         components={{
-          pre({ children }) {
-            // Fenced code: consume the inner <code> element, keep its highlighted
-            // children, and wrap in a labeled/copyable chrome.
-            const el = Children.toArray(children).find(isValidElement) as
-              | ReactElement<{ className?: string; children?: ReactNode }>
-              | undefined;
-            const lang = /language-([\w+-]+)/.exec(el?.props?.className || "")?.[1];
-            if (lang === "mermaid") {
-              // 源码从渲染树还原（nodeText 已在复制按钮里用同一套逻辑）。
-              // streaming 透传下去：生成中只显示骨架，落定后渲染一次。
-              const source = nodeText(el?.props?.children).replace(/\n$/, "");
-              return <MermaidBlock source={source} streaming={streaming} />;
-            }
-            return <CodeBlock lang={lang}>{el?.props?.children}</CodeBlock>;
-          },
+          pre: renderPre,
           code({ children }) {
             // Inline code only — block code is handled by the pre override above.
             return (
