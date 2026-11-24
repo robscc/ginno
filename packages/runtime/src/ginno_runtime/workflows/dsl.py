@@ -112,6 +112,9 @@ def validate_dsl(dsl: dict) -> list[str]:
     existing nodes, branch has default or >=1 case, loop has body + max_iters,
     step has goal, context.schema/initial are well-formed. Expression safety is
     enforced at compile/eval time (P2), not here.
+
+    Check common node fields and graph structure before dispatching node
+    parameters through the registry. Callers receive errors in validation order.
     """
     errs: list[str] = []
     if not isinstance(dsl, dict):
@@ -128,53 +131,77 @@ def validate_dsl(dsl: dict) -> list[str]:
 
     wf_nodes.load_plugins()
     for i, n in enumerate(nodes):
-        if not isinstance(n, dict):
-            errs.append(f"nodes[{i}] must be an object")
-            continue
-        nid = n.get("id")
-        if not nid:
-            errs.append(f"nodes[{i}] missing id")
-        nt = n.get("type")
-        if nt == "subflow":
-            errs.append(f"node '{nid}' type 'subflow' is not supported until v2")
-        elif nt == "extract":
-            errs.append(
-                f"node '{nid}' type 'extract' is compiler-internal — declare "
-                f"`writes` on a step node instead"
-            )
-        elif wf_nodes.get_node(nt) is None:
-            errs.append(f"node '{nid}' unknown type '{nt}'")
-        # The compiler synthesizes <id>__extract nodes; users must not collide.
-        if isinstance(nid, str) and nid.endswith("__extract"):
-            errs.append(f"node '{nid}' id must not end with '__extract' (reserved)")
-        # Same for the supervisor gates (design B §8.5).
-        if isinstance(nid, str) and nid.endswith("__sup"):
-            errs.append(f"node '{nid}' id must not end with '__sup' (reserved)")
-        # writes / extract_model shape (master-plan §2.2.3)
-        w = n.get("writes")
-        if w is not None:
-            if not isinstance(w, dict) or not w:
-                errs.append(f"node '{nid}' writes must be a non-empty object")
-            else:
-                for k, v in w.items():
-                    if not isinstance(k, str) or not re.match(r"^[a-zA-Z0-9_]+$", k):
-                        errs.append(f"node '{nid}' writes key '{k}' must match [a-zA-Z0-9_]+")
-                    if not isinstance(v, dict) or "type" not in v:
-                        errs.append(f"node '{nid}' writes['{k}'] must be an object with a 'type'")
-        em = n.get("extract_model")
-        if em is not None and not isinstance(em, str):
-            errs.append(f"node '{nid}' extract_model must be a string")
-        # Fault-tolerance fields (stability plan P2): all optional — absent
-        # means byte-identical legacy behaviour (no retry, global timeout,
-        # stop-on-error).
-        _validate_fault_tolerance(n, nid, errs)
+        _validate_node_shape(n, i, wf_nodes, errs)
     if len(ids) != len(set(ids)):
         errs.append("duplicate node id")
     idset = set(ids)
-    # a loop's body returns to the loop head structurally; it must not carry its
-    # own explicit out-edge (that would create an ambiguous second out-edge).
+
+    _validate_graph(dsl, nodes, edges, idset, by_type, errs)
+    _validate_multi_out_edges(edges, by_type, errs)
+    _validate_node_params(nodes, idset, by_id, wf_nodes, errs)
+    _validate_context(dsl, errs)
+    _validate_supervisor(dsl, errs)
+    return errs
+
+
+def _validate_node_shape(n: Any, i: int, wf_nodes, errs: list[str]) -> None:
+    """First pass over ``nodes``: per-node checks that need no global id set —
+    type known/allowed, reserved id suffixes, ``writes`` / ``extract_model``
+    shapes and the fault-tolerance fields."""
+    if not isinstance(n, dict):
+        errs.append(f"nodes[{i}] must be an object")
+        return
+    nid = n.get("id")
+    if not nid:
+        errs.append(f"nodes[{i}] missing id")
+    nt = n.get("type")
+    if nt == "subflow":
+        errs.append(f"node '{nid}' type 'subflow' is not supported until v2")
+    elif nt == "extract":
+        errs.append(
+            f"node '{nid}' type 'extract' is compiler-internal — declare "
+            f"`writes` on a step node instead"
+        )
+    elif wf_nodes.get_node(nt) is None:
+        errs.append(f"node '{nid}' unknown type '{nt}'")
+    # The compiler synthesizes <id>__extract nodes; users must not collide.
+    if isinstance(nid, str) and nid.endswith("__extract"):
+        errs.append(f"node '{nid}' id must not end with '__extract' (reserved)")
+    # Same for the supervisor gates (design B §8.5).
+    if isinstance(nid, str) and nid.endswith("__sup"):
+        errs.append(f"node '{nid}' id must not end with '__sup' (reserved)")
+    _validate_writes(n, nid, errs)
+    # Fault-tolerance fields (stability plan P2): all optional — absent
+    # means byte-identical legacy behaviour (no retry, global timeout,
+    # stop-on-error).
+    _validate_fault_tolerance(n, nid, errs)
+
+
+def _validate_writes(n: dict, nid: Any, errs: list[str]) -> None:
+    """writes / extract_model shape (master-plan §2.2.3)."""
+    w = n.get("writes")
+    if w is not None:
+        if not isinstance(w, dict) or not w:
+            errs.append(f"node '{nid}' writes must be a non-empty object")
+        else:
+            for k, v in w.items():
+                if not isinstance(k, str) or not re.match(r"^[a-zA-Z0-9_]+$", k):
+                    errs.append(f"node '{nid}' writes key '{k}' must match [a-zA-Z0-9_]+")
+                if not isinstance(v, dict) or "type" not in v:
+                    errs.append(f"node '{nid}' writes['{k}'] must be an object with a 'type'")
+    em = n.get("extract_model")
+    if em is not None and not isinstance(em, str):
+        errs.append(f"node '{nid}' extract_model must be a string")
+
+
+def _validate_graph(
+    dsl: dict, nodes: list, edges: list, idset: set, by_type: dict, errs: list[str]
+) -> None:
+    # Keep both indexes: a duplicate loop id can declare more than one body.
     loop_bodies = {n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"}
-    loop_body_of = {n.get("id"): n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"}
+    loop_body_of = {
+        n.get("id"): n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"
+    }
     loop_out_count: dict[str, int] = {}
 
     entry = dsl.get("entry")
@@ -183,39 +210,53 @@ def validate_dsl(dsl: dict) -> list[str]:
     elif entry not in idset:
         errs.append(f"entry '{entry}' is not a node id")
 
-    for i, e in enumerate(edges):
-        if not isinstance(e, dict):
+    for i, edge in enumerate(edges):
+        if not isinstance(edge, dict):
             errs.append(f"edges[{i}] must be an object")
             continue
-        f, t = e.get("from"), e.get("to")
-        if f not in idset:
-            errs.append(f"edges[{i}].from '{f}' unknown")
-        if t not in idset:
-            errs.append(f"edges[{i}].to '{t}' unknown")
-        # branch routes structurally via cases/default — never an explicit edge.
-        if by_type.get(f) == "branch":
-            errs.append(f"edge from '{f}' not allowed (branch routes via cases/default; put a transform on a case)")
-        # a loop's body back-edge is structural; but a loop MAY carry exactly ONE
-        # explicit out-edge = its "done/next" continuation (so fetch→loop→gate works).
-        if by_type.get(f) == "loop":
-            if t == (loop_body_of.get(f)):
-                errs.append(f"edge from '{f}' to its body not allowed (body returns to loop head)")
-            else:
-                loop_out_count[f] = loop_out_count.get(f, 0) + 1
-                if loop_out_count[f] > 1:
-                    errs.append(f"loop '{f}' may have at most one explicit out-edge (the done/next edge)")
-        if f in loop_bodies:
-            errs.append(f"edge from '{f}' not allowed (loop body returns to loop head)")
-        tr = e.get("transform")
-        if tr is not None and not isinstance(tr, dict):
-            errs.append(f"edges[{i}].transform must be an object")
-        elif isinstance(tr, dict) and "fn" in tr and not isinstance(tr.get("fn"), str):
-            errs.append(f"edges[{i}].transform.fn must be a string")
+        source, target = edge.get("from"), edge.get("to")
+        if source not in idset:
+            errs.append(f"edges[{i}].from '{source}' unknown")
+        if target not in idset:
+            errs.append(f"edges[{i}].to '{target}' unknown")
+        if by_type.get(source) == "branch":
+            errs.append(
+                f"edge from '{source}' not allowed (branch routes via cases/default; "
+                "put a transform on a case)"
+            )
+        if by_type.get(source) == "loop":
+            _validate_loop_edge(source, target, loop_body_of, loop_out_count, errs)
+        if source in loop_bodies:
+            errs.append(f"edge from '{source}' not allowed (loop body returns to loop head)")
+        _validate_edge_transform(edge, i, errs)
 
-    # Multi-out-edge graphs were silently mis-routed pre-P2 (the compiler only
-    # wired each node's FIRST out-edge). Strict mode (default on) rejects them
-    # instead of shipping a graph that drops edges; the settings flag is the
-    # rollback lever for any legacy DSL that relied on the silent behaviour.
+
+def _validate_loop_edge(
+    source: Any, target: Any, loop_body_of: dict, loop_out_count: dict, errs: list[str]
+) -> None:
+    # The body returns structurally. A single explicit edge can lead to the
+    # next node after the loop finishes.
+    if target == loop_body_of.get(source):
+        errs.append(f"edge from '{source}' to its body not allowed (body returns to loop head)")
+    else:
+        loop_out_count[source] = loop_out_count.get(source, 0) + 1
+        if loop_out_count[source] > 1:
+            errs.append(f"loop '{source}' may have at most one explicit out-edge (the done/next edge)")
+
+
+def _validate_edge_transform(edge: dict, i: int, errs: list[str]) -> None:
+    tr = edge.get("transform")
+    if tr is not None and not isinstance(tr, dict):
+        errs.append(f"edges[{i}].transform must be an object")
+    elif isinstance(tr, dict) and "fn" in tr and not isinstance(tr.get("fn"), str):
+        errs.append(f"edges[{i}].transform.fn must be a string")
+
+
+def _validate_multi_out_edges(edges: list, by_type: dict, errs: list[str]) -> None:
+    """Multi-out-edge graphs were silently mis-routed pre-P2 (the compiler only
+    wired each node's FIRST out-edge). Strict mode (default on) rejects them
+    instead of shipping a graph that drops edges; the settings flag is the
+    rollback lever for any legacy DSL that relied on the silent behaviour."""
     try:
         from .. import world_state as ws_mod
 
@@ -238,6 +279,10 @@ def validate_dsl(dsl: dict) -> list[str]:
                     "supported (parallel fan-out is not implemented for this node type)"
                 )
 
+
+def _validate_node_params(nodes: list, idset: set, by_id: dict, wf_nodes, errs: list[str]) -> None:
+    """Second pass over ``nodes``: registered type ``validate_params`` plus
+    cross-node reference checks that need the full id set."""
     for n in nodes:
         if not isinstance(n, dict):
             continue
@@ -247,47 +292,61 @@ def validate_dsl(dsl: dict) -> list[str]:
             errs.extend(cls.validate_params(n))
         # cross-node reference checks (need the full id set)
         if nt == "branch":
-            for j, c in enumerate(_as_list(n.get("cases"))):
-                if isinstance(c, dict) and c.get("then") and c["then"] not in idset:
-                    errs.append(f"branch '{nid}' case[{j}].then '{c.get('then')}' unknown")
-            if n.get("default") and n.get("default") not in idset:
-                errs.append(f"branch '{nid}' default '{n.get('default')}' unknown")
+            _validate_branch_refs(n, nid, idset, errs)
         if nt == "loop":
-            if n.get("body") and n["body"] not in idset:
-                errs.append(f"loop '{nid}' body '{n.get('body')}' unknown")
-            # parallel loops (stability plan P3): the body runs as a gather over
-            # all items, so its writes contract tightens to per-item appends.
-            p = n.get("parallel")
-            if p is not None:
-                if p is not True and not isinstance(p, dict):
-                    errs.append(f"loop '{nid}' parallel must be true or {{max_concurrency}}")
-                elif isinstance(p, dict):
-                    mc = p.get("max_concurrency", 4)
-                    if isinstance(mc, bool) or not isinstance(mc, int) or not 1 <= mc <= 8:
-                        errs.append(f"loop '{nid}' parallel.max_concurrency must be an int 1..8")
-                body = by_id.get(n.get("body"))
-                if isinstance(body, dict):
-                    bcls = wf_nodes.get_node(body.get("type"))
-                    btype = bcls.type if bcls is not None else body.get("type")
-                    if btype != "agent":
-                        errs.append(
-                            f"loop '{nid}' is parallel but body '{body.get('id')}' is "
-                            "not a step/agent node (only agent steps run per-item)"
-                        )
-                    bw = body.get("writes")
-                    if not bw or not isinstance(bw, dict):
-                        errs.append(
-                            f"loop '{nid}' is parallel: body '{body.get('id')}' must "
-                            "declare writes (per-item results are appended in index order)"
-                        )
-                    else:
-                        for k, v in bw.items():
-                            if not isinstance(v, dict) or v.get("type") != "array":
-                                errs.append(
-                                    f"loop '{nid}' is parallel: body writes key '{k}' "
-                                    'must be {"type":"array"} (one element per item)'
-                                )
+            _validate_loop_refs(n, nid, idset, by_id, wf_nodes, errs)
 
+
+def _validate_branch_refs(n: dict, nid: Any, idset: set, errs: list[str]) -> None:
+    for j, c in enumerate(_as_list(n.get("cases"))):
+        if isinstance(c, dict) and c.get("then") and c["then"] not in idset:
+            errs.append(f"branch '{nid}' case[{j}].then '{c.get('then')}' unknown")
+    if n.get("default") and n.get("default") not in idset:
+        errs.append(f"branch '{nid}' default '{n.get('default')}' unknown")
+
+
+def _validate_loop_refs(n: dict, nid: Any, idset: set, by_id: dict, wf_nodes, errs: list[str]) -> None:
+    if n.get("body") and n["body"] not in idset:
+        errs.append(f"loop '{nid}' body '{n.get('body')}' unknown")
+    # parallel loops (stability plan P3): the body runs as a gather over
+    # all items, so its writes contract tightens to per-item appends.
+    p = n.get("parallel")
+    if p is not None:
+        if p is not True and not isinstance(p, dict):
+            errs.append(f"loop '{nid}' parallel must be true or {{max_concurrency}}")
+        elif isinstance(p, dict):
+            mc = p.get("max_concurrency", 4)
+            if isinstance(mc, bool) or not isinstance(mc, int) or not 1 <= mc <= 8:
+                errs.append(f"loop '{nid}' parallel.max_concurrency must be an int 1..8")
+        body = by_id.get(n.get("body"))
+        if isinstance(body, dict):
+            _validate_loop_parallel_body(nid, body, wf_nodes, errs)
+
+
+def _validate_loop_parallel_body(nid: Any, body: dict, wf_nodes, errs: list[str]) -> None:
+    bcls = wf_nodes.get_node(body.get("type"))
+    btype = bcls.type if bcls is not None else body.get("type")
+    if btype != "agent":
+        errs.append(
+            f"loop '{nid}' is parallel but body '{body.get('id')}' is "
+            "not a step/agent node (only agent steps run per-item)"
+        )
+    bw = body.get("writes")
+    if not bw or not isinstance(bw, dict):
+        errs.append(
+            f"loop '{nid}' is parallel: body '{body.get('id')}' must "
+            "declare writes (per-item results are appended in index order)"
+        )
+    else:
+        for k, v in bw.items():
+            if not isinstance(v, dict) or v.get("type") != "array":
+                errs.append(
+                    f"loop '{nid}' is parallel: body writes key '{k}' "
+                    'must be {"type":"array"} (one element per item)'
+                )
+
+
+def _validate_context(dsl: dict, errs: list[str]) -> None:
     ctx = dsl.get("context")
     if ctx is not None:
         if not isinstance(ctx, dict):
@@ -299,6 +358,9 @@ def validate_dsl(dsl: dict) -> list[str]:
             initial = ctx.get("initial")
             if initial is not None and not isinstance(initial, dict):
                 errs.append("context.initial must be an object")
+
+
+def _validate_supervisor(dsl: dict, errs: list[str]) -> None:
     sup = dsl.get("supervisor")
     if sup is not None:
         if not isinstance(sup, dict):
@@ -307,7 +369,6 @@ def validate_dsl(dsl: dict) -> list[str]:
             if sup.get("mode") not in ("auto", "human"):
                 errs.append("supervisor.mode must be 'auto' or 'human' when enabled")
             errs.extend(_validate_supervisor_extra(sup))
-    return errs
 
 
 def _validate_supervisor_extra(sup: dict) -> list[str]:
