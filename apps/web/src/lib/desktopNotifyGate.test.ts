@@ -206,3 +206,42 @@ describe("notifyNative 的偏好闸门（P1-1：出口统一施加）", () => {
     expect(lastPayload()).toMatchObject({ notify_kind: "schedule", kind: "session" });
   });
 });
+
+
+describe("调度通知的原生投递去重", () => {
+  beforeEach(async () => {
+    emit.mockClear();
+    stubWindow("/");
+    await setPrefs({ enabled: true });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("跨桥途中和成功后收到同一运行的更新都只投递一次", async () => {
+    const run = { ...PAYLOAD, kind: "schedule-run", notifyKind: "schedule", id: "sr-repeat" } as const;
+    let resolveEmit!: () => void;
+    emit.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveEmit = resolve; }));
+    const first = notifyNative(run);
+    await expect(notifyNative({ ...run, body: "更新摘要" })).resolves.toBe(true);
+    expect(emit).toHaveBeenCalledTimes(1);
+    resolveEmit();
+    await expect(first).resolves.toBe(true);
+    await expect(notifyNative({ ...run, body: "再次更新" })).resolves.toBe(true);
+    await expect(notifyNative({ ...run, id: "sr-other" })).resolves.toBe(true);
+    await expect(notifyNative({ ...PAYLOAD, id: run.id })).resolves.toBe(true);
+    expect(emit).toHaveBeenCalledTimes(3);
+  });
+
+  it("浮窗拦截和跨桥失败后允许主窗口投递后续更新", async () => {
+    const run = { ...PAYLOAD, kind: "schedule-run", notifyKind: "schedule", id: "sr-retry" } as const;
+    stubWindow("/pin");
+    await expect(notifyNative(run)).resolves.toBe(false);
+    expect(emit).not.toHaveBeenCalled();
+    stubWindow("/");
+    emit.mockRejectedValueOnce(new Error("bridge unavailable"));
+    await expect(notifyNative(run)).resolves.toBe(false);
+    await expect(notifyNative({ ...run, body: "更新摘要" })).resolves.toBe(true);
+    await expect(notifyNative(run)).resolves.toBe(true);
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(lastPayload()).toMatchObject({ id: run.id, body: "更新摘要" });
+  });
+});
