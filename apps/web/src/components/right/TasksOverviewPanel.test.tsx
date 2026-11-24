@@ -26,6 +26,11 @@ const APP_SHELL = readFileSync(
   "utf8",
 );
 
+const SHELL_ACTIVITY = readFileSync(
+  fileURLToPath(new URL("../shell/useShellActivity.ts", import.meta.url)),
+  "utf8",
+);
+
 const KINDS = ["turn", "schedule", "plan", "run", "goal", "delegation"] as const;
 const PHASES = ["running", "waiting", "scheduled"] as const;
 
@@ -168,9 +173,10 @@ describe("RightPanel / 入口接线", () => {
   });
 
   it("AppShell 注册 __ginnoOpenTasksOverview 桥（menubar ▶N 下拉「查看全部」的落点）", () => {
-    expect(APP_SHELL).toContain("openTasksOverview = () => {");
-    expect(APP_SHELL).toContain(".__ginnoOpenTasksOverview =");
-    expect(APP_SHELL).toContain('setRightTab("running")');
+    expect(APP_SHELL).toContain("} = useShellActivity(g, router, pathname);");
+    expect(SHELL_ACTIVITY).toContain("openTasksOverview = () => {");
+    expect(SHELL_ACTIVITY).toContain(".__ginnoOpenTasksOverview =");
+    expect(SHELL_ACTIVITY).toContain('setRightTab("running")');
   });
 });
 

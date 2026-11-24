@@ -15,79 +15,41 @@ Chromium）。覆盖的都是**本轮修过的生产缺陷**，不是泛泛的 h
 4. P1-12：blocked 成员在 @ 菜单里禁选（aria-disabled / disabled）。
 """
 
-import os
-import socket
 import time
-import urllib.request
-from pathlib import Path
+from urllib.parse import urlparse
 
-import _sidecar as sc
 import pytest
-
-from ginno_runtime import jsonx as json
+import test_packaged_ui_tasks_overview as smoke
 
 pytestmark = pytest.mark.e2e
 
-_RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
-RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
-PORT = 8899
 
+@pytest.fixture
+def team_page(tmp_path):
+    smoke._require_runtime()
+    from playwright.sync_api import sync_playwright
 
-def _port_open(port: int) -> bool:
-    s = socket.socket()
-    s.settimeout(0.3)
+    port = smoke._free_port()
+    proc, log = smoke._spawn(tmp_path, port)
     try:
-        s.connect(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
+        smoke._wait_health(port)
+        created = smoke._api(port, "POST", "/api/teams", {"name": "E2E Team", "project_slug": "default"})
+        assert created["ok"], created
+        team = created["team"]
+        added = smoke._api(port, "POST", f"/api/teams/{team['id']}/members", {"agent_id": "dev"})
+        assert added["ok"], added
+        with sync_playwright() as pw:
+            browser, page = smoke._new_page(pw)
+            try:
+                yield page, port, team, added["member"]
+            finally:
+                browser.close()
     finally:
-        s.close()
-
-
-def _wait_health(port: int, timeout: float = 40) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as r:
-                if r.status == 200:
-                    return
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError(f"sidecar on :{port} did not become healthy")
-
-
-def _settings() -> dict:
-    # language pin en：断言词依赖 locale 固定（与 mention 用例同基线）。
-    return {
-        "default_provider": "custom",
-        "bypass_permissions": True,
-        "language": "en",
-        "providers": {
-            "anthropic": {"enabled": False, "protocol": "anthropic", "api_key": "", "default_model": "x", "base_url": "", "max_tokens": 1, "temperature": 0.7, "timeout_s": 5},
-            "openai": {"enabled": False, "protocol": "openai", "api_key": "", "default_model": "x", "base_url": "", "org_id": "", "max_tokens": 1},
-            "custom": {"enabled": True, "protocol": "openai-compatible", "name": "t", "api_key": "k", "base_url": "http://127.0.0.1:1", "model": "m", "max_tokens": 100, "temperature": 0.7, "timeout_s": 5},
-        },
-        "permissions": {"allow": [], "deny": [], "ask": []},
-        "hooks": {},
-        "knowledge": {"enabled": False},
-    }
-
-
-def _api(port: int, path: str, payload: dict | None = None) -> dict:
-    data = None if payload is None else json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="GET" if payload is None else "POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read().decode())
+        smoke._stop(proc, log)
 
 
 def _history(port: int, sid: str) -> list:
-    return _api(port, f"/api/sessions/{sid}/history").get("messages") or []
+    return smoke._api(port, "GET", f"/api/sessions/{sid}/history").get("messages") or []
 
 
 def _user_texts(msgs: list) -> list[str]:
@@ -103,134 +65,136 @@ def _user_texts(msgs: list) -> list[str]:
     return out
 
 
-def test_packaged_ui_team_plaza_delivery_keeps_composer_usable(tmp_path):
-    if not RUNTIME_BIN.exists():
-        pytest.skip("packaged sidecar not built (run `make runtime`)")
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception:
-        pytest.skip("playwright not installed")
-    if _port_open(PORT):
-        pytest.skip(f"port {PORT} already in use")
+def test_packaged_ui_team_plaza_delivery_keeps_composer_usable(team_page):
+    page, port, team, _member = team_page
+    main_sid = team["main_session_id"]
+    page.goto(f"http://127.0.0.1:{port}/team")
+    page.locator('[aria-current="true"][role="button"]').filter(has_text="E2E Team").wait_for()
 
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "settings.json").write_text(json.dumps(_settings()))
+    # 页面同时挂着广场与成员工作台两个 composer，其中一个 display:none。
+    # 裸 `.first` 会选中隐藏那个 → click 永久超时（2026-11-15 实测：
+    # textarea[0] visible=False / [1] visible=True，本用例因此静默红）。
+    # 一律按可见性过滤，别依赖 DOM 顺序。
+    ta = page.locator("textarea:visible").first
+    ta.click()
+    ta.fill("@")
+    page.wait_for_timeout(800)
+    menu = page.locator('[role="listbox"]')
+    assert menu.count() >= 1, "@ should open the mention menu in the plaza"
 
-    env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(PORT))
-    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
-    try:
-        _wait_health(PORT)
+    # 选成员条目（菜单里只有本团队成员 + 产物）
+    opt = page.locator('[role="option"]').first
+    assert opt.count() >= 1, "team @ menu should list member instances"
+    opt.click()
+    page.wait_for_timeout(400)
 
-        # 编制用 API 造（比 UI 点选稳，且本用例要验的是广场交互不是建队表单）。
-        team = _api(PORT, "/api/teams", {"name": "E2E Team", "project_slug": "default"})
-        assert team.get("ok"), team
-        team = team["team"]
-        main_sid = team["main_session_id"]
-        mr = _api(PORT, f"/api/teams/{team['id']}/members", {"agent_id": "dev"})
-        assert mr.get("ok"), mr
+    ta.click()
+    ta.press_sequentially("please check the repo", delay=10)
+    ta.press("Enter")
 
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{PORT}/team", wait_until="load")
-            page.wait_for_timeout(2500)
+    # ── P0-1 核心回归：composer 必须恢复可用 ──
+    # 此前无 message.end → busy 恒真 → 输入进 steer 死队列、再发无效。
+    deadline = time.time() + 20
+    sent = False
+    while time.time() < deadline:
+        texts = _user_texts(_history(port, main_sid))
+        if any("please check the repo" in t for t in texts):
+            sent = True
+            break
+        page.wait_for_timeout(400)
+    assert sent, "plaza message must be persisted to checkpoint (P0-1)"
 
-            # 选中这个团队（团队行 role=button，P2-17 已补键盘可达）
-            row = page.get_by_text("E2E Team", exact=False).first
-            if row.count():
-                row.click()
-                page.wait_for_timeout(1200)
+    # ── 2026-11-15 回归：投递后不许留下「(空回复)」空气泡 ──
+    # 广场投递不起主会话 turn，ChatStream 乐观插入的 blocks:[] 占位
+    # 永远等不到流事件。此前 team.delivered 只清 liveBySessionRef、
+    # 不删 store 里的空壳 → message.end 的 stampTurnTs 按 turnId 兜底
+    # 命中它并盖上 ts → 渲染成「(空回复)」+「刚刚」，每发一条必现一个。
+    # 判据取 DOM 而非 store：这是用户真正看到的东西（vitest 已在
+    # reducer 层覆盖，这里守渲染层——CLAUDE.md 红线的分工）。
+    def _empty_reply_bubbles() -> int:
+        return page.evaluate(
+            "() => Array.from(document.querySelectorAll('span'))"
+            ".filter(s => /^(（空回复）|\\(empty reply\\))$/.test((s.textContent||'').trim()))"
+            ".length"
+        )
 
-            # 页面同时挂着广场与成员工作台两个 composer，其中一个 display:none。
-            # 裸 `.first` 会选中隐藏那个 → click 永久超时（2026-11-15 实测：
-            # textarea[0] visible=False / [1] visible=True，本用例因此静默红）。
-            # 一律按可见性过滤，别依赖 DOM 顺序。
-            ta = page.locator("textarea:visible").first
-            ta.click()
-            ta.fill("@")
-            page.wait_for_timeout(800)
-            menu = page.locator('[role="listbox"]')
-            assert menu.count() >= 1, "@ should open the mention menu in the plaza"
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if _empty_reply_bubbles() == 0:
+            break
+        page.wait_for_timeout(300)
+    assert _empty_reply_bubbles() == 0, (
+        "plaza delivery left an empty assistant bubble rendering "
+        "「(空回复)」 — the optimistic placeholder must be dropped "
+        "when team.delivered arrives (2026-11-15 user screenshot)"
+    )
 
-            # 选成员条目（菜单里只有本团队成员 + 产物）
-            opt = page.locator('[role="option"]').first
-            assert opt.count() >= 1, "team @ menu should list member instances"
-            opt.click()
-            page.wait_for_timeout(400)
+    # 第二条必须还能发出去（锁死时这条进不了历史）
+    ta.click()
+    ta.fill("second message after delivery")
+    ta.press("Enter")
+    deadline = time.time() + 20
+    second = False
+    while time.time() < deadline:
+        texts = _user_texts(_history(port, main_sid))
+        if any("second message after delivery" in t for t in texts):
+            second = True
+            break
+        page.wait_for_timeout(400)
+    assert second, (
+        "composer locked after team delivery (P0-1): the second message "
+        "never reached the checkpoint"
+    )
 
-            ta.click()
-            ta.press_sequentially("please check the repo", delay=10)
-            ta.press("Enter")
+    # 第二条之后同样零空气泡——用户症状是「每发一条必现一个」，
+    # 只查第一条会漏掉「按 turnId 累积」的那一半。
+    page.wait_for_timeout(1200)
+    assert _empty_reply_bubbles() == 0, (
+        "empty reply bubbles accumulated across plaza deliveries"
+    )
 
-            # ── P0-1 核心回归：composer 必须恢复可用 ──
-            # 此前无 message.end → busy 恒真 → 输入进 steer 死队列、再发无效。
-            deadline = time.time() + 20
-            sent = False
-            while time.time() < deadline:
-                texts = _user_texts(_history(PORT, main_sid))
-                if any("please check the repo" in t for t in texts):
-                    sent = True
-                    break
-                page.wait_for_timeout(400)
-            assert sent, "plaza message must be persisted to checkpoint (P0-1)"
+    # 重载后两条都还在（落盘对账，不给「未送达」重试）
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+    texts = _user_texts(_history(port, main_sid))
+    assert any("please check the repo" in t for t in texts)
+    assert any("second message after delivery" in t for t in texts)
 
-            # ── 2026-11-15 回归：投递后不许留下「(空回复)」空气泡 ──
-            # 广场投递不起主会话 turn，ChatStream 乐观插入的 blocks:[] 占位
-            # 永远等不到流事件。此前 team.delivered 只清 liveBySessionRef、
-            # 不删 store 里的空壳 → message.end 的 stampTurnTs 按 turnId 兜底
-            # 命中它并盖上 ts → 渲染成「(空回复)」+「刚刚」，每发一条必现一个。
-            # 判据取 DOM 而非 store：这是用户真正看到的东西（vitest 已在
-            # reducer 层覆盖，这里守渲染层——CLAUDE.md 红线的分工）。
-            def _empty_reply_bubbles() -> int:
-                return page.evaluate(
-                    "() => Array.from(document.querySelectorAll('span'))"
-                    ".filter(s => /^(（空回复）|\\(empty reply\\))$/.test((s.textContent||'').trim()))"
-                    ".length"
-                )
 
-            deadline = time.time() + 8
-            while time.time() < deadline:
-                if _empty_reply_bubbles() == 0:
-                    break
-                page.wait_for_timeout(300)
-            assert _empty_reply_bubbles() == 0, (
-                "plaza delivery left an empty assistant bubble rendering "
-                "「(空回复)」 — the optimistic placeholder must be dropped "
-                "when team.delivered arrives (2026-11-15 user screenshot)"
-            )
+def test_team_member_intent_is_consumed_once(team_page):
+    from playwright.sync_api import expect
 
-            # 第二条必须还能发出去（锁死时这条进不了历史）
-            ta.click()
-            ta.fill("second message after delivery")
-            ta.press("Enter")
-            deadline = time.time() + 20
-            second = False
-            while time.time() < deadline:
-                texts = _user_texts(_history(PORT, main_sid))
-                if any("second message after delivery" in t for t in texts):
-                    second = True
-                    break
-                page.wait_for_timeout(400)
-            assert second, (
-                "composer locked after team delivery (P0-1): the second message "
-                "never reached the checkpoint"
-            )
+    page, port, team, member = team_page
+    base = f"http://127.0.0.1:{port}"
+    intent = {"teamId": team["id"], "instanceId": member["instance_id"], "sessionId": member["session_id"]}
+    key = "ginno-team-open-member-intent"
+    seen_url = f"{base}/api/teams/{team['id']}/members/{member['instance_id']}/seen?client=main"
+    seen = []
+    page.on("request", lambda req: seen.append(req.url) if req.method == "POST" and req.url == seen_url else None)
 
-            # 第二条之后同样零空气泡——用户症状是「每发一条必现一个」，
-            # 只查第一条会漏掉「按 turnId 累积」的那一半。
-            page.wait_for_timeout(1200)
-            assert _empty_reply_bubbles() == 0, (
-                "empty reply bubbles accumulated across plaza deliveries"
-            )
+    page.goto(base)
+    page.evaluate("([key, intent]) => sessionStorage.setItem(key, JSON.stringify(intent))", [key, intent])
+    main_ws_path = f"/api/ws/sessions/{team['main_session_id']}"
+    with page.expect_event("websocket", lambda ws: urlparse(ws.url).path == main_ws_path) as connected:
+        with page.expect_response(seen_url) as receipt:
+            page.locator('a[href="/team"]').click()
+    assert receipt.value.ok
+    back = page.get_by_role("button", name="Back to main session")
+    expect(back).to_be_visible()
+    assert page.evaluate("key => sessionStorage.getItem(key)", key) is None
 
-            # 重载后两条都还在（落盘对账，不给「未送达」重试）
-            page.reload(wait_until="load")
-            page.wait_for_timeout(2500)
-            texts = _user_texts(_history(PORT, main_sid))
-            assert any("please check the repo" in t for t in texts)
-            assert any("second message after delivery" in t for t in texts)
+    with connected.value.expect_event("close"):
+        page.get_by_title("Back to the landing home; the session is created on first send", exact=True).click()
+        page.wait_for_url(base + "/")
+    assert connected.value.is_closed()
+    page.locator('a[href="/team"]').click()
+    expect(page.locator('[aria-current="true"][role="button"]')).to_contain_text("E2E Team")
+    expect(back).to_have_count(0)
+    assert seen == [seen_url]
 
-            browser.close()
-    finally:
-        sc.stop_sidecar(proc)
+    # 同路由回帖事件仍然进入成员工作台，并只发出一次已读请求。
+    with page.expect_response(seen_url) as receipt:
+        page.evaluate("detail => dispatchEvent(new CustomEvent('ginno:open-team-member', {detail}))", intent)
+    assert receipt.value.ok
+    expect(back).to_be_visible()
+    assert seen == [seen_url, seen_url]
