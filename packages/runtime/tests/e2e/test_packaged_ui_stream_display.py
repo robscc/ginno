@@ -7,7 +7,6 @@ from test_packaged_ui_transcript_event_rows import (
     app as app,
     open_session,
     send_frame,
-    wait_for_session_socket,
 )
 
 pytestmark = pytest.mark.e2e
@@ -34,9 +33,13 @@ def test_stream_frames_and_display_boundaries(app, tmp_path):
           }
         };
     ''')
+    def wait_for_probe(session_id):
+        page.wait_for_function('''sid => window.__transcriptTestSockets.some(ws =>
+            new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN &&
+            window.__probedDisplaySockets.has(ws))''', arg=session_id)
+
     open_session(page, port, sid)
-    page.wait_for_function('''sid => window.__transcriptTestSockets.some(ws =>
-        new URL(ws.url).pathname.endsWith('/' + sid) && window.__probedDisplaySockets.has(ws))''', arg=sid)
+    wait_for_probe(sid)
     send_frame(page, sid, "turn.start", turn_id="display-turn", agent_id="dev")
 
     send_frame(page, sid, "tool.start", turn_id="display-turn", id="display-tool", name="bash")
@@ -106,7 +109,7 @@ def test_stream_frames_and_display_boundaries(app, tmp_path):
         window.requestAnimationFrame = window.__realDisplayRaf;
     }''', sid)
     page.evaluate("window.__ginnoOpenSession", second)
-    wait_for_session_socket(page, second)
+    wait_for_probe(second)
     send_frame(page, second, "turn.start", turn_id="second-turn", agent_id="dev", text="second-session-only")
     expect(page.get_by_text("second-session-only", exact=True)).to_be_visible()
     page.evaluate("window.__lateDisplayFrame(performance.now())")
@@ -114,3 +117,16 @@ def test_stream_frames_and_display_boundaries(app, tmp_path):
     page.evaluate("window.__ginnoOpenSession", sid)
     expect(page.get_by_text("visible-to-hidden still streaming old-session-only", exact=True)).to_be_visible()
     expect(page.get_by_text("second-session-only", exact=True)).to_have_count(0)
+
+    # A real socket close commits the pending text even with frames paused.
+    page.evaluate('''sid => {
+        window.requestAnimationFrame = () => -1;
+        const ws = window.__transcriptTestSockets.find(ws => new URL(ws.url).pathname.endsWith('/' + sid));
+        ws.dispatchEvent(new MessageEvent('message', {data: JSON.stringify({
+            event: 'token.delta', turn_id: 'hidden-turn', content: ' before disconnect',
+        })}));
+        ws.close();
+    }''', sid)
+    expect(page.get_by_text(
+        "visible-to-hidden still streaming old-session-only before disconnect", exact=True,
+    )).to_be_visible()
