@@ -298,7 +298,15 @@
         "edit": "Edited {count}",
         "command": "Commands {count}",
         "other": "Other {count}",
-        "reviewed": "Thinking summaries"
+        "reviewed": "Thinking summaries",
+        "reports": "{count} subagent reports",
+        "planUpdates": "{count} plan updates",
+        "planProgress": "Plan {done}/{total}",
+        "planProgressOpen": "Plan {done} done",
+        "failedCount": "{count} failed",
+        "failedTitle": "Failed or stopped reports stay visible below this group — the fold never hides them",
+        "waitingCount": "{count} waiting for you",
+        "waitingTitle": "A subagent is waiting for your answer; its card stays visible below this group"
       },
     "reasoningSummary": {
       "title": "Reasoning summary",
@@ -415,6 +423,8 @@
       "correctInChildTitle": "Jump to the subagent session and prefill a correction prompt in the input (steering / continue the conversation)",
       "escalate": "Let main conversation handle it",
       "escalateTitle": "Send a message referencing this result in the current session; the main conversation decides how to handle it",
+      "expandReport": "Expand report",
+      "collapseReport": "Collapse report",
       "verdictsInReport": "See the main agent's report for acceptance verdicts",
       "briefTitle": "Task brief",
       "goalSection": "Goal",
@@ -503,6 +513,10 @@
       "expand": "Expand plan",
       "collapse": "Collapse plan",
       "updateTitle": "Plan status update",
+      "updateRowTitle": "Plan update",
+      "planProgress": "Plan {done}/{total}",
+      "planProgressOpen": "Plan {done} done",
+      "planSettled": "Plan finished · {done} done · {failed} failed",
       "dismiss": "Hide (an errored non-terminal plan is also cancelled)",
       "remoteNote": "This session runs on remote node {name} — plans are managed there and not shown locally"
     },

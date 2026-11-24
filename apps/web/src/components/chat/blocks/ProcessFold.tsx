@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, Loader2, Sparkles } from "lucide-react";
+import { AlertCircle, ChevronRight, HelpCircle, Loader2, Sparkles } from "lucide-react";
 import { toolLabel } from "@/lib/toolLabels";
 import { useChatT } from "./i18n";
 import type { Block } from "./types";
@@ -10,7 +10,7 @@ import { processFileName, processStatus } from "./processGroups";
 export const REVEAL_PROCESS_BLOCK = "ginno:reveal-process-block";
 
 export function ProcessFold({
-  blocks, indexes, streaming, tail, offline, parked, onInspect, children,
+  blocks, indexes, streaming, tail, offline, parked, onInspect, attention, children,
 }: {
   blocks: Block[];
   indexes: number[];
@@ -19,6 +19,10 @@ export function ProcessFold({
   offline: boolean;
   parked: boolean;
   onInspect?: () => void;
+  /** Reports that must stay visible and render right below this group (failed /
+   *  waiting for the user). Counted in the header so the chevron never looks
+   *  like "everything went fine". */
+  attention?: { failed: number; waiting: number };
   children: ReactNode;
 }) {
   const { tc } = useChatT();
@@ -27,7 +31,8 @@ export function ProcessFold({
   const button = useRef<HTMLButtonElement>(null);
   const anchor = useRef<number | null>(null);
   const [choice, setChoice] = useState<boolean | null>(null);
-  const { completed, pending, count, thinking, compact } = processStatus(blocks, streaming, tail);
+  const { completed, pending, count, thinking, compact, reports, planUpdates, plan } =
+    processStatus(blocks, streaming, tail);
   const running = streaming && pending.length > 0;
   const active = running || thinking;
   const state = !active ? "completed" : offline ? "interrupted" : parked ? "waiting" : "running";
@@ -55,12 +60,20 @@ export function ProcessFold({
 
   const latest = pending.at(-1);
   const action = latest ? [toolLabel(latest.name), processFileName(latest)].filter(Boolean).join(" ") : "";
-  const title = state === "interrupted" ? tc("process.offline")
+  const stepTitle = state === "interrupted" ? tc("process.offline")
     : state === "waiting" ? tc("process.waiting")
     : pending.length > 1 && running ? tc("process.parallel", { count: pending.length })
     : running ? tc("process.running", { action })
     : thinking ? tc("process.thinking")
-    : count ? tc("process.completed", { count }) : tc("process.reviewed");
+    : count ? tc("process.completed", { count }) : "";
+  // 回报与清单进度接在步数后面：一行读出这一步做了什么、收到几份回报、清单
+  // 走到哪（方案 A）。
+  const reportTitle = reports ? tc("process.reports", { count: reports })
+    : planUpdates ? tc("process.planUpdates", { count: planUpdates }) : "";
+  const planTitle = plan ? (plan.total != null
+    ? tc("process.planProgress", { done: plan.done, total: plan.total })
+    : tc("process.planProgressOpen", { done: plan.done })) : "";
+  const title = [stepTitle, reportTitle, planTitle].filter(Boolean).join(" · ") || tc("process.reviewed");
   const stats = (["read", "edit", "command", "other"] as const).flatMap((key) =>
     completed[key] ? [tc(`process.${key}`, { count: completed[key] })] : [],
   ).join(" · ");
@@ -85,6 +98,18 @@ export function ProcessFold({
             ? <Loader2 aria-hidden className="h-3 w-3 shrink-0 text-amber-500" />
             : <Sparkles aria-hidden className="h-3 w-3 shrink-0 text-violet" />)}
           <span className="min-w-0 flex-1 truncate font-medium text-txt/80">{title}</span>
+          {attention && attention.failed > 0 && (
+            <span className="flex shrink-0 items-center gap-1 text-txt" title={tc("process.failedTitle")}>
+              <AlertCircle aria-hidden className="h-3 w-3 text-red" />
+              {tc("process.failedCount", { count: attention.failed })}
+            </span>
+          )}
+          {attention && attention.waiting > 0 && (
+            <span className="flex shrink-0 items-center gap-1 text-txt" title={tc("process.waitingTitle")}>
+              <HelpCircle aria-hidden className="h-3 w-3 text-amber" />
+              {tc("process.waitingCount", { count: attention.waiting })}
+            </span>
+          )}
           <span className="max-w-[60%] shrink-0 truncate text-[10px] text-faint" title={stats || undefined}>{active ? tc("process.completedCount", { count }) : stats}</span>
         </button>
       )}

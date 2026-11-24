@@ -1,14 +1,19 @@
 "use client";
 
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronRight, ClipboardList } from "lucide-react";
+import { Markdown } from "../Markdown";
+import { PlanItemStatusLabel } from "../planItemStatus";
+import type { MarkdownFileTarget } from "@/lib/codePaths";
 import type { SessionMeta } from "@/lib/types";
 import { useGinno } from "@/lib/store";
 import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfirm";
 import { t } from "@/i18n/provider";
 import { useChatT } from "./i18n";
 import { parseDelegation } from "./delegation";
+import { reportPreview } from "./reportFold";
+import { parsePlanUpdate, type PlanUpdateItem } from "./planUpdateParse";
 import {
   SUBAGENT_BUCKET_ORDER,
   subagentStatusBucket,
@@ -148,40 +153,122 @@ export function SubagentSpawnCard({
  * 有问题 = 两个出口：去子会话纠偏（steering，设计 §5.4）或让主对话处理
  * （invoke/steer 一条引用该结果的消息，主 agent 决定重拆/追问/接手）。
  * 验收判定不在这里解析——runtime 会在注入消息里引导主 agent 逐条对照
- * acceptance 给出一行判定（P2 共享契约 5），卡片只展示 acceptance 原文。 */
+ * acceptance 给出一行判定（P2 共享契约 5），卡片只展示 acceptance 原文。
+ *
+ * 2026-11-25（回报折叠方案 A）：正文默认收成两行预览，点标题行展开；展开后
+ * 是渲染后的 Markdown（此前是 pre-wrap 原文 + 卡内滚动条，长汇报在会话底部
+ * 堆成一面墙）。状态与错误行不收起——折叠与否都不影响「失败了」这个信号。 */
+
 /** 清单状态卡（plan-orchestration §4/§8 P3）：去抖合流注入的 <ginno_plan_update>
  *  信封折成专用卡——区别于子代理结果卡（无单会话可跳，主体是多条目状态简报）。
- *  常驻 PlanBoard 是清单的第一展示面，这张卡是时序留痕（何时报了什么）。 */
+ *  常驻 PlanBoard 是清单的第一展示面，这张卡是时序留痕（何时报了什么）。
+ *  2026-11-25 起只显示条目状态变化：正文里的 detail 是子代理摘要的开头，结果卡
+ *  已有全文，这里不再重复；给模型看的抬头在解析层丢掉。失败/停止条目保留
+ *  detail——启动失败的条目没有结果卡，错误只在这一行。`row` 是折叠组内的单行。 */
 export function PlanUpdateCard({
   block,
+  row = false,
 }: {
   block: Extract<Block, { kind: "plan_update" }>;
+  row?: boolean;
 }) {
   const { tc } = useChatT();
+  const parsed = useMemo(() => parsePlanUpdate(block.text), [block.text]);
+  const needsUser = (item: PlanUpdateItem) => item.status === "failed" || item.status === "stopped";
+  const progress = block.progress
+    ? block.progress.total != null
+      ? tc("planBoard.planProgress", { done: block.progress.done, total: block.progress.total })
+      : tc("planBoard.planProgressOpen", { done: block.progress.done })
+    : "";
+  const itemNodes = parsed.items.map((item) => (
+    <span key={item.id} className="inline-flex max-w-full items-center gap-1.5 align-middle">
+      <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-mono text-[10px] font-medium text-violet">
+        {item.id}
+      </span>
+      <PlanItemStatusLabel status={item.status} />
+      {needsUser(item) && item.detail && (
+        <span className="min-w-0 max-w-[28rem] truncate text-muted" title={item.detail}>
+          {firstLine(item.detail)}
+        </span>
+      )}
+    </span>
+  ));
+  if (row) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 py-0.5 text-[11px]" data-testid="plan-update-row">
+        <ClipboardList className="h-3 w-3 shrink-0 text-violet" aria-hidden />
+        <span className="shrink-0 text-muted">{tc("planBoard.updateRowTitle")}</span>
+        {progress && <span className="shrink-0 text-faint">{progress}</span>}
+        {parsed.items.length > 0 ? (
+          <span className="min-w-0 flex-1 truncate">{itemNodes}</span>
+        ) : parsed.notes.length > 0 ? (
+          <span className="min-w-0 flex-1 truncate text-muted" title={block.text}>
+            {parsed.notes.join(" · ")}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
   return (
-    <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2 text-xs">
+    <div
+      className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2 text-xs"
+      data-testid="plan-update-card"
+    >
       <div className="flex items-center gap-1.5">
         <ClipboardList className="h-3.5 w-3.5 shrink-0 text-violet" />
-        <span className="min-w-0 flex-1 font-medium text-txt">
-          {tc("planBoard.updateTitle")}
-        </span>
+        <span className="min-w-0 flex-1 font-medium text-txt">{tc("planBoard.updateTitle")}</span>
+        {progress && <span className="shrink-0 text-faint">{progress}</span>}
         {block.planId && (
           <span className="shrink-0 rounded bg-violet/15 px-1 py-px font-mono text-[10px] text-violet">
             {block.planId}
           </span>
         )}
       </div>
-      <div className="selectable mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
-        {block.text}
-      </div>
+      {parsed.items.length > 0 && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {parsed.items.map((item) => (
+            <div key={item.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-mono text-[10px] font-medium text-violet">
+                {item.id}
+              </span>
+              <PlanItemStatusLabel status={item.status} />
+              {needsUser(item) && item.detail && (
+                <span className="min-w-0 flex-1 basis-48 truncate text-muted" title={item.detail}>
+                  {firstLine(item.detail)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {parsed.completed && (
+        <div className="mt-1.5 text-[11px] text-muted">
+          {tc("planBoard.planSettled", {
+            done: parsed.completed.done,
+            failed: parsed.completed.failed,
+          })}
+        </div>
+      )}
+      {parsed.notes.length > 0 && (
+        <div className="selectable mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+          {parsed.notes.join("\n")}
+        </div>
+      )}
     </div>
   );
 }
 
+function firstLine(text: string): string {
+  return text.split("\n", 1)[0].trim();
+}
+
 export function SubagentResultCard({
   block,
+  onFileLink,
 }: {
   block: Extract<Block, { kind: "subagent_result" }>;
+  /** 汇报里的本地文件引用走聊天同一条打开路径（代码面板）。 */
+  onFileLink?: (target: MarkdownFileTarget) => void;
 }) {
   const g = useGinno();
   const router = useRouter();
@@ -197,15 +284,23 @@ export function SubagentResultCard({
   const isDelegation = live?.type === "delegation" || !!del;
   // 终态优先级：机器头（本次运行真实 verdict）> meta.stop_reason。
   const stop = del?.stop ?? live?.stop_reason ?? "";
+  // An error text is a failure even when the child session is not in the store
+  // (live status frame for a session this client has not listed yet).
   const status = isDelegation
     ? stop === "error" || stop === "timeout"
       ? "failed"
       : "done"
-    : sub?.status ?? "done";
+    : block.error
+      ? "failed"
+      : sub?.status ?? "done";
   const meta = subagentStatusMeta(status);
   const goal = sub?.goal || block.goal || "Subtask";
   const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
   const [problemOpen, setProblemOpen] = useState(false);
+  // 正文默认收起（两行预览）；标题行整行是开关。失败/出错的卡也只多常驻一行
+  // 错误——「出事了」在收起态就看得见，全文仍然按需展开。
+  const [open, setOpen] = useState(false);
+  const failed = !!block.error || status === "failed" || status === "stopped";
   const override = useSubagentOpenOverride();
   const openChild = () => {
     // 只读回放语境：改道到回放视图内部的只读下钻，不切活跃会话。
@@ -251,25 +346,42 @@ export function SubagentResultCard({
     );
     setProblemOpen(false);
   };
+  // delegation 正文：机器头与 delegation= 溯源行剥掉（信息已进徽标行与
+  // 卡片跳转，ToolBlock 同款过滤）。
+  const bodyText = isDelegation && del
+    ? summaryText.split("\n").filter((l, idx) => idx > 0 && !/^delegation=/.test(l)).join("\n").trim()
+    : summaryText;
   return (
-    <div className="rounded-lg border border-line bg-card/60 px-3 py-2.5 text-xs">
-      <div className="flex items-center gap-1.5">
+    <div
+      className={`rounded-lg border bg-card/60 px-3 py-2.5 text-xs ${failed ? "border-red/30" : "border-line"}`}
+      data-testid="subagent-result-card"
+      data-result-open={open ? "" : undefined}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        title={open ? tc("subagent.collapseReport") : tc("subagent.expandReport")}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-w-0 items-center gap-1.5 text-left"
+      >
         <span className="shrink-0">{isDelegation ? "🧭" : "🤖"}</span>
         <span
           className="min-w-0 flex-1 truncate font-medium text-txt"
           title={isDelegation ? block.goal || live?.backend || "" : goal}
         >
           {isDelegation
-            ? tc("subagent.delegationResultTitle", {
-                backend: live?.backend ?? del?.backend ?? "?",
-              })
+            ? tc("subagent.delegationResultTitle", { backend: live?.backend ?? del?.backend ?? "?" })
             : tc("subagent.resultTitle", { goal })}
         </span>
         <SubagentKindBadges sub={sub} />
         <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>
           {meta.glyph} {statusLabel(status)}
         </span>
-      </div>
+        <ChevronRight
+          aria-hidden
+          className={`h-3 w-3 shrink-0 text-faint motion-safe:transition-transform ${open ? "rotate-90" : ""}`}
+        />
+      </button>
       {isDelegation && block.goal && (
         <div className="mt-0.5 truncate text-faint" title={block.goal}>
           {block.goal}
@@ -301,96 +413,95 @@ export function SubagentResultCard({
           {del?.tokens && <span>tokens={del.tokens}</span>}
         </div>
       )}
-      {/* delegation 正文：机器头与 delegation= 溯源行剥掉（信息已进徽标行与
-          卡片跳转，ToolBlock 同款过滤）。 */}
-      {summaryText && (
-        <div className="selectable mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
-          {isDelegation && del
-            ? summaryText
-                .split("\n")
-                .filter((l, idx) => idx > 0 && !/^delegation=/.test(l))
-                .join("\n")
-                .trim()
-            : summaryText}
-        </div>
-      )}
       {block.error && (
         <div className="selectable mt-1.5 whitespace-pre-wrap break-words text-red/90">{tc("subagent.errorPrefix")}{block.error}</div>
       )}
-      {/* 验收区（P2 共享契约 5）：acceptance 非空时展示原文；逐条判定由主 agent
-          在汇报里给出（runtime 注入消息已引导），卡片不重复解析。 */}
-      {sub?.acceptance && (
-        <div className="mt-2 rounded-md border border-violet/25 bg-violet/[0.05] px-2 py-1.5">
-          <div className="text-[10px] font-medium text-violet">{tc("subagent.acceptanceCriteria")}</div>
-          <div className="selectable mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
-            {sub.acceptance}
+      {bodyText &&
+        (open ? (
+          <div data-report-body className="selectable mt-1.5 leading-relaxed text-muted">
+            <Markdown text={bodyText} onFileLink={onFileLink} />
           </div>
-          <div className="mt-1 text-[10px] text-faint">
-            {tc("subagent.acceptanceHint")}
+        ) : (
+          <div className="selectable mt-1.5 line-clamp-2 break-words leading-relaxed text-muted">
+            {reportPreview(bodyText)}
           </div>
-        </div>
+        ))}
+      {open && (
+        <>
+          {/* 验收区（P2 共享契约 5）：acceptance 非空时展示原文；逐条判定由主 agent
+              在汇报里给出（runtime 注入消息已引导），卡片不重复解析。 */}
+          {sub?.acceptance && (
+            <div className="mt-2 rounded-md border border-violet/25 bg-violet/[0.05] px-2 py-1.5">
+              <div className="text-[10px] font-medium text-violet">{tc("subagent.acceptanceCriteria")}</div>
+              <div className="selectable mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+                {sub.acceptance}
+              </div>
+              <div className="mt-1 text-[10px] text-faint">{tc("subagent.acceptanceHint")}</div>
+            </div>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-line/60 pt-1.5">
+            <button
+              onClick={openChild}
+              className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+            >
+              {tc("subagent.viewFullConversation")}
+            </button>
+            {/* delegation：外部 CLI 跑完即终态，回放会话只读——确认/纠偏/升级
+                这套子代理结果评审流程对它没有意义，整个不渲染（2026-10-05
+                用户反馈），只留「查看完整对话」。 */}
+            {!isDelegation && confirmed && (
+              <span
+                className="rounded-md border border-green/40 bg-green/10 px-1.5 py-0.5 text-[10px] text-green"
+                title={tc("subagent.confirmedTitle")}
+              >
+                ✅ {tc("subagent.confirmed")}
+              </span>
+            )}
+            {!isDelegation && !confirmed && (
+              <>
+                <button
+                  onClick={confirm}
+                  title={tc("subagent.confirmTitle")}
+                  className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
+                >
+                  ✅ {tc("subagent.confirm")}
+                </button>
+                <button
+                  onClick={() => setProblemOpen((v) => !v)}
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
+                    problemOpen
+                      ? "border-yellow/50 bg-yellow/10 text-yellow"
+                      : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
+                  }`}
+                >
+                  {tc("subagent.problem")}
+                </button>
+              </>
+            )}
+            {!isDelegation && problemOpen && !confirmed && (
+              <>
+                <button
+                  onClick={goToChild}
+                  title={tc("subagent.correctInChildTitle")}
+                  className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
+                >
+                  {tc("subagent.correctInChild")}
+                </button>
+                <button
+                  onClick={escalate}
+                  title={tc("subagent.escalateTitle")}
+                  className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
+                >
+                  {tc("subagent.escalate")}
+                </button>
+              </>
+            )}
+            {sub?.acceptance && (
+              <span className="ml-auto text-[10px] text-faint">{tc("subagent.verdictsInReport")}</span>
+            )}
+          </div>
+        </>
       )}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-line/60 pt-1.5">
-        <button
-          onClick={openChild}
-          className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
-        >
-          {tc("subagent.viewFullConversation")}
-        </button>
-        {/* delegation：外部 CLI 跑完即终态，回放会话只读——确认/纠偏/升级
-            这套子代理结果评审流程对它没有意义，整个不渲染（2026-10-05
-            用户反馈），只留「查看完整对话」。 */}
-        {!isDelegation && confirmed && (
-          <span
-            className="rounded-md border border-green/40 bg-green/10 px-1.5 py-0.5 text-[10px] text-green"
-            title={tc("subagent.confirmedTitle")}
-          >
-            ✅ {tc("subagent.confirmed")}
-          </span>
-        )}
-        {!isDelegation && !confirmed && (
-          <>
-            <button
-              onClick={confirm}
-              title={tc("subagent.confirmTitle")}
-              className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
-            >
-              ✅ {tc("subagent.confirm")}
-            </button>
-            <button
-              onClick={() => setProblemOpen((v) => !v)}
-              className={`rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
-                problemOpen
-                  ? "border-yellow/50 bg-yellow/10 text-yellow"
-                  : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
-              }`}
-            >
-              {tc("subagent.problem")}
-            </button>
-          </>
-        )}
-        {!isDelegation && problemOpen && !confirmed && (
-          <>
-            <button
-              onClick={goToChild}
-              title={tc("subagent.correctInChildTitle")}
-              className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
-            >
-              {tc("subagent.correctInChild")}
-            </button>
-            <button
-              onClick={escalate}
-              title={tc("subagent.escalateTitle")}
-              className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
-            >
-              {tc("subagent.escalate")}
-            </button>
-          </>
-        )}
-        {sub?.acceptance && (
-          <span className="ml-auto text-[10px] text-faint">{tc("subagent.verdictsInReport")}</span>
-        )}
-      </div>
     </div>
   );
 }

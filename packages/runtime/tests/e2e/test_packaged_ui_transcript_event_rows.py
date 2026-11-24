@@ -1,4 +1,9 @@
-"""Background task and plan updates stay visible as independent transcript rows."""
+"""Background task and plan updates stay visible as independent transcript rows.
+
+Since 2026-11-25 (report fold, design A) a plan note is no longer a full card:
+it folds into a 「执行过程」 group as one header line, with its text behind the
+toggle. Background task bands are unchanged.
+"""
 
 import uuid
 from datetime import datetime, timezone
@@ -79,8 +84,13 @@ def test_task_and_plan_after_reload(app, legacy):
 
     expect(page.get_by_text(title, exact=True)).to_be_visible(timeout=15_000)
     expect(page.get_by_text("Task finished · exit 0", exact=False)).to_have_count(1)
-    expect(page.get_by_text("Plan status update", exact=True)).to_have_count(1)
+    fold = page.locator("[data-process-fold] > button")
+    expect(fold).to_have_count(1)
+    expect(fold).to_contain_text("1 plan updates")
+    expect(page.get_by_text("Plan receipt sentinel", exact=True)).not_to_be_visible()
+    fold.click()
     expect(page.get_by_text("Plan receipt sentinel", exact=True)).to_be_visible()
+    expect(page.get_by_text("Plan status update", exact=True)).to_have_count(0)
     expect(page.get_by_text(log_text, exact=False)).not_to_be_visible()
     if legacy:
         page.locator("details", has_text=log_text).locator("summary").click()
@@ -135,6 +145,11 @@ def test_independent_event_rows_from_stream(app):
                text='<ginno_plan_update plan="pl_wake">Live wake plan receipt</ginno_plan_update>')
 
     expect(page.get_by_text("Live background receipt", exact=True)).to_be_visible()
+    fold = page.locator("[data-process-fold] > button")
+    expect(fold).to_have_count(1)
+    expect(fold).to_contain_text("2 plan updates")
+    expect(page.get_by_text("Live system plan receipt", exact=True)).not_to_be_visible()
+    fold.click()
     expect(page.get_by_text("Live system plan receipt", exact=True)).to_be_visible()
     expect(page.get_by_text("Live wake plan receipt", exact=True)).to_be_visible()
-    expect(page.get_by_text("Plan status update", exact=True)).to_have_count(2)
+    expect(page.get_by_text("Plan status update", exact=True)).to_have_count(0)

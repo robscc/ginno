@@ -24,6 +24,13 @@ TASKS = [
 ]
 
 
+def expand_folds(transcript):
+    """Open every 「执行过程」 group: report text sits behind the toggle
+    (report fold, design A — 2026-11-25)."""
+    for button in transcript.locator("[data-process-fold] > button[aria-expanded=false]").all():
+        button.click()
+
+
 def test_mixed_callbacks_live_and_reloaded(app):
     page, port, sid = app
     capture_socket(page)
@@ -32,6 +39,13 @@ def test_mixed_callbacks_live_and_reloaded(app):
     transcript = page.locator("[data-chat-scroll]")
     callback_titles = ["Coalesced plan", "Subagent result · Coalesced result", "Worker return: BatchWorker"]
     send_frame(page, sid, "turn.start", turn_id="batch-turn", agent_id="dev", text=COMBINED)
+    # The plan note and the subagent result fold into one group; the worker
+    # return is not a report and stays a visible card.
+    expect(transcript.get_by_text("Worker return: BatchWorker", exact=True)).to_be_visible()
+    fold = transcript.locator("[data-process-fold] > button", has_text="subagent reports")
+    expect(fold).to_contain_text("1 subagent reports")
+    expect(transcript.get_by_text("Coalesced plan", exact=True)).not_to_be_visible()
+    expand_folds(transcript)
     for title in callback_titles:
         expect(transcript.get_by_text(title, exact=True)).to_be_visible()
     send_frame(page, sid, "message.end", turn_id="batch-turn", origin="subagent")
@@ -48,6 +62,10 @@ def test_mixed_callbacks_live_and_reloaded(app):
     ])
     open_session(page, port, sid)
     expect(transcript.get_by_text("Acknowledged", exact=True)).to_be_visible()
+    # Same fold after reload: the envelopes lead the "Returned" bubble, where
+    # they are detached and rendered exactly like the live row above.
+    expect(transcript.locator("[data-process-fold] > button", has_text="subagent reports")).to_be_visible()
+    expand_folds(transcript)
     for title in [*callback_titles, *(task["title"] for task in TASKS)]:
         entry = transcript.get_by_text(title, exact=True)
         expect(entry).to_have_count(1)
