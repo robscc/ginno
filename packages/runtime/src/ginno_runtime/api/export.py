@@ -11,10 +11,11 @@ user cannot back it up or move it. Two shapes, deliberately simple:
 
 from __future__ import annotations
 
-import asyncio
 import time
 import zipfile
+from contextlib import suppress
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
@@ -126,7 +127,7 @@ def _render_markdown(slug: str, session_id: str, meta: dict) -> str:
 
 
 @router.get("/api/export/session/{session_id}")
-async def export_session(
+def export_session(
     session_id: str, format: str = Query("md"), project_slug: str | None = None
 ) -> PlainTextResponse:
     found = _find_meta(session_id)
@@ -141,8 +142,7 @@ async def export_session(
         raise HTTPException(
             status_code=400, detail={"ok": False, "error": f"unsupported format: {format}"}
         )
-    # checkpoint JSONL 读取 + 全量消息渲染是纯阻塞 IO/CPU——下沉工作线程。
-    md = await asyncio.to_thread(_render_markdown, slug, session_id, meta)
+    md = _render_markdown(slug, session_id, meta)
     name = (str(meta.get("title") or session_id)[:60] or session_id).replace("/", "_")
     return PlainTextResponse(
         md,
@@ -154,7 +154,7 @@ async def export_session(
 
 
 @router.post("/api/export/project")
-async def export_project(body: dict | None = None) -> FileResponse:
+def export_project(body: dict | None = None) -> FileResponse:
     """Zip the project: sessions (+world side-cars), artifacts, files registry.
 
     Excludes caches and the session-file giant blobs only if they live outside
@@ -166,14 +166,18 @@ async def export_project(body: dict | None = None) -> FileResponse:
         raise HTTPException(
             status_code=404, detail={"ok": False, "error": "unknown project"}
         )
-    def _build_zip() -> tuple[Path, str]:
-        # 整项目目录 rglob + DEFLATED 压缩是最重的导出路径，全部留在
-        # 工作线程；FileResponse 只在线程外构造（含生成的 zip 路径）。
-        out_dir = paths.home() / "index" / "exports"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        out = out_dir / f"{slug}-{stamp}.zip"
-        tmp = out.with_suffix(".zip.tmp")
+    out_dir = paths.home() / "index" / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"{slug}-{stamp}.zip"
+    # The download name is stable. Each response needs its own backing file,
+    # since another request can export the same project before this one streams.
+    with NamedTemporaryFile(
+        dir=out_dir, prefix=f"{src.name}-{stamp}-", suffix=".zip.tmp", delete=False,
+    ) as f:
+        tmp = Path(f.name)
+    out = tmp.with_suffix("")
+    try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for p in src.rglob("*"):
                 if not p.is_file():
@@ -192,9 +196,10 @@ async def export_project(body: dict | None = None) -> FileResponse:
             }
             zf.writestr(f"{slug}/EXPORT_MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         tmp.replace(out)
-        return out, f"{slug}-{stamp}.zip"
-
-    out, filename = await asyncio.to_thread(_build_zip)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
     return FileResponse(
         out,
         media_type="application/zip",

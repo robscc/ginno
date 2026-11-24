@@ -57,22 +57,18 @@ def _auto_throttle() -> dict:
 @router.get("/api/memory")
 async def get_memory(agent_id: str | None = None) -> dict:
     """MEMORY.md content + pool + draft queue + the memory in effect."""
-    from ..memory import draft_summary, has_draft, list_drafts, memory_status, pool_count
+    from ..memory import draft_summary, list_drafts, memory_status, pool_count
 
+    # Counting records walks and decodes the entire pool, even for this summary.
+    count = await asyncio.to_thread(pool_count)
     p = paths.memory_index_path()
-
-    def _collect() -> tuple[str, list[dict]]:
-        # MEMORY.md 全文读取 + 草稿队列目录扫描同为阻塞 IO，一并下沉。
-        content = p.read_text(encoding="utf-8") if p.exists() else ""
-        pending = [draft_summary(m) for m in list_drafts(status="pending")]
-        return content, pending
-
-    content, pending = await asyncio.to_thread(_collect)
+    content = p.read_text(encoding="utf-8") if p.exists() else ""
+    pending = [draft_summary(m) for m in list_drafts(status="pending")]
     return {
         "ok": True,
         "content": content,
-        "pool_count": pool_count(),
-        "draft_pending": has_draft(),
+        "pool_count": count,
+        "draft_pending": bool(pending),
         "drafts_pending": pending,
         "kb_usable": _kb_usable(),
         "status": memory_status(agent_id),
@@ -288,7 +284,7 @@ async def post_memory_draft_discard() -> dict:
 
 
 @router.get("/api/memory/pool")
-async def get_memory_pool(
+def get_memory_pool(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -342,7 +338,8 @@ async def delete_memory_pool(data: dict | None = None) -> dict:
 async def get_memory_runs(limit: int = Query(default=50, ge=1, le=200)) -> dict:
     from ..memory import run_history
 
-    return {"ok": True, "runs": run_history(limit=limit), "throttle": _auto_throttle()}
+    runs = await asyncio.to_thread(run_history, limit=limit)
+    return {"ok": True, "runs": runs, "throttle": _auto_throttle()}
 
 
 @router.post("/api/memory/runs/{run_id}/retry")
