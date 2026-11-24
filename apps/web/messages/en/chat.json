@@ -288,6 +288,7 @@
       "process": {
       "interrupted": "Interrupted",
         "offline": "Connection lost",
+        "waiting": "Waiting for confirmation",
         "parallel": "Running {count} tools",
         "running": "Running · {action}",
         "thinking": "Thinking",

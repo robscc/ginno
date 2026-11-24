@@ -156,6 +156,7 @@ export function AskUserCard({
     const skipAll = () => send("", null, true);
     return (
       <div
+        data-operation-state={interactive ? "waiting" : undefined}
         className={`mt-2 rounded-md border-2 p-3 ${
           interactive ? "border-yellow/40 bg-yellow/[0.05]" : "border-line bg-card2/30"
         }`}
@@ -223,6 +224,7 @@ export function AskUserCard({
 
   return (
     <div
+      data-operation-state={interactive ? "waiting" : undefined}
       className={`mt-2 rounded-md border-2 p-3 ${
         interactive ? "border-yellow/40 bg-yellow/[0.05]" : "border-line bg-card2/30"
       }`}

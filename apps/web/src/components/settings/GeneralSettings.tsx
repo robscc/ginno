@@ -12,6 +12,7 @@ import { useLocaleCtx, setLocale } from "@/i18n/provider";
 import type { LanguageSetting } from "@/i18n/config";
 import { readMermaidPref, writeMermaidPref } from "@/lib/mermaidPrefs";
 import { initialTheme } from "@/lib/themeInit";
+import { applyOperationMotion, readOperationMotion } from "@/lib/operationMotion";
 import {
   FONT_DEFAULT,
   FONT_FAMILY_ORDER,
@@ -347,6 +348,7 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
 export function GeneralSettings() {
   const g = useGinno();
   const [theme, setTheme] = useState<string>("dark");
+  const [operationMotion, setOperationMotion] = useState(true);
   const [msg, setMsg] = useState("");
   const [bypass, setBypass] = useState(true);
   // Mermaid 图形渲染（纯前端偏好，localStorage；见 lib/mermaidPrefs.ts）。
@@ -380,6 +382,7 @@ export function GeneralSettings() {
     const t = initialTheme();
     setTheme(t);
     applyTheme(t, false);
+    setOperationMotion(readOperationMotion());
     setMermaid(readMermaidPref());
     setFont(readFontPrefs());
     api
@@ -528,6 +531,19 @@ export function GeneralSettings() {
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={operationMotion}
+              onChange={(e) => {
+                setOperationMotion(e.target.checked);
+                applyOperationMotion(e.target.checked);
+              }}
+            />
+            {tSettings("general.operationMotion")}
+          </label>
         </div>
         <div>
           <label className="field-label">{tSettings("general.fontLabel")}</label>

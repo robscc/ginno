@@ -1,6 +1,6 @@
 "use client";
 
-// PermissionPromptCard — 权限请求横幅（自 ChatStream.tsx 机械拆出，渲染逐字一致）。
+// PermissionPromptCard — 权限请求横幅。
 
 import { useTranslations } from "next-intl";
 import type { PermissionPrompt } from "../streamCore";
@@ -15,7 +15,7 @@ export function PermissionPromptCard({
   const tc = useTranslations("chat");
   return (
     <div className="mx-auto w-full max-w-3xl px-6">
-      <div className="mb-2 rounded-xl border border-yellow/40 bg-yellow/10 p-3">
+      <div data-operation-state="waiting" className="mb-2 rounded-xl border border-yellow/40 bg-yellow/10 p-3">
         <div className="mb-1 text-sm font-medium text-yellow">{tc("permission.title")}</div>
         <div className="mb-2 text-xs text-muted">
           {tc("permission.toolLabel")} <code className="font-mono text-txt">{permission.tool}</code>

@@ -374,6 +374,7 @@ export function InnerBlocks({
   streaming,
   onFileLink,
   offline = false,
+  parked = false,
   isLatestTurn,
   onAnswerQuestion,
   questionLive,
@@ -384,6 +385,7 @@ export function InnerBlocks({
   streaming?: boolean;
   onFileLink?: (target: MarkdownFileTarget) => void;
   offline?: boolean;
+  parked?: boolean;
   /** 本 turn 是否为列表最新（决定历史编辑 diff 的默认收起，2026-11-21） */
   isLatestTurn?: boolean;
   onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
@@ -424,7 +426,7 @@ export function InnerBlocks({
       starts.set(indexes[0], (
         <ProcessFold key={`process-${key}`} blocks={indexes.map(index => blocks[index])}
           indexes={indexes} streaming={!!streaming} tail={indexes.at(-1) === contentEnd}
-          offline={offline} onInspect={onInspectProcess}>
+          offline={offline} parked={parked} onInspect={onInspectProcess}>
           {children}
         </ProcessFold>
       ));
