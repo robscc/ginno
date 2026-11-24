@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { burstParticles, stepParticle } from "./fireworks";
+import { describe, expect, it, vi } from "vitest";
+import { __particleCount, burstParticles, fireCelebrationFrom, stepParticle } from "./fireworks";
 
 describe("fireworks 引擎纯函数", () => {
   it("一发主礼花 62 颗、副礼花 34 颗，全部球面放射（角度覆盖 2π）", () => {
@@ -41,4 +41,54 @@ describe("fireworks 引擎纯函数", () => {
     expect(p0.x).toBe(1);
     expect(p1.x).not.toBe(1);
   });
+});
+
+it("火箭定时器晚于首个动画帧时仍绘制粒子，并在结束后停止", () => {
+  const timers: (() => void)[] = [];
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  let now = 0;
+  const nextFrame = () => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    for (const callback of callbacks) callback(now);
+  };
+  const fill = vi.fn();
+  const context = {
+    setTransform: vi.fn(), clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(),
+    lineTo: vi.fn(), stroke: vi.fn(), arc: vi.fn(), fill,
+  };
+  vi.stubGlobal("document", {
+    createElement: () => ({ style: {}, getContext: () => context }),
+    body: { appendChild: vi.fn() },
+  });
+  vi.stubGlobal("window", {
+    innerWidth: 800, innerHeight: 600, addEventListener: vi.fn(),
+    setTimeout: (callback: () => void) => timers.push(callback),
+  });
+  vi.stubGlobal("performance", { now: () => now });
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  try {
+    const anchor = { getBoundingClientRect: () => ({ left: 300, top: 300, width: 30 }) } as HTMLElement;
+    fireCelebrationFrom(anchor);
+    nextFrame();
+    expect(fill).not.toHaveBeenCalled();
+
+    timers[0]();
+    now = 420;
+    nextFrame();
+    expect(__particleCount()).toBe(63);
+    nextFrame();
+    expect(fill).toHaveBeenCalledTimes(63);
+
+    for (let i = 0; i < 150; i++) nextFrame();
+    expect(__particleCount()).toBe(0);
+    expect(frames.size).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
