@@ -46,7 +46,7 @@ legacy 行号       内容                          本文位置
 
 - ① ``_RUNNING_TURNS``/``_RUNNING_TURNS_AT`` 写入 — _setup_identity（legacy 207-212）
 - ② ``_TURN_STOP.pop`` — 栈条目 E3 = finalize._release_stop_entry（legacy 1767）
-- ③ ``_PENDING_RESUME``/``_PENDING_KIND`` 写入 — permission.handle_interrupt（legacy ×3）
+- ③ ``_PENDING_RESUME``/``_PENDING_KIND`` 写入 — permission.handle_interrupt / publish_parked_question
 - ④ ``_RUNNING_TURNS`` 等 pop/``_PENDING_*`` 清 — 栈条目 E2 =
   finalize._release_turn_registration（legacy 1772-1800；批次 5-3 起由
   AsyncExitStack LIFO 弹出，登记点在写入点①的紧邻行——异常路径同清）
@@ -69,6 +69,7 @@ from .finalize import (
     _release_stop_entry,
     _release_turn_registration,
 )
+from .permission import publish_parked_question
 from .streamio import (
     chunked_stream,
     handle_custom,
@@ -462,6 +463,8 @@ async def stream_graph_staged(
                 elif mode == "updates":
                     await handle_updates(ctx, payload)
 
+            for question in ctx.parked_questions:
+                await publish_parked_question(ctx, question)
             await finalize_mod.post_stream_flush(ctx)
             if not ctx.saw_interrupt:
                 await finalize_mod.finalize_completed(ctx)

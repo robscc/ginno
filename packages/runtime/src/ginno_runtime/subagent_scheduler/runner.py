@@ -463,6 +463,10 @@ async def _wake_parent_turn(
                     },
                 )
                 flipped = True
+            # The force-stop watchdog can retire the provisional registration
+            # and consume its stop event while the broadcast is suspended.
+            if _NS._RUNNING_TURNS.get(parent_id) != _wake_tid:
+                return "refused:stopped"
             stop_evt = _NS._TURN_STOP.setdefault(parent_id, _NS.asyncio.Event())
             if stop_evt.is_set():
                 # major-B: set in the flip window above (cascade stop found the
@@ -471,6 +475,7 @@ async def _wake_parent_turn(
                 # the stop that landed settles it "stopped" here.
                 _NS._log.info("subagent_wake_refused_stopped_parent parent=%s", parent_id)
                 _NS._TURN_STOP.pop(parent_id, None)
+                _NS._RUNNING_TURNS.pop(parent_id)
                 if flipped:
                     await _NS.on_turn_stopped(parent_id)
                 return "refused:stopped"

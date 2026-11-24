@@ -15,6 +15,7 @@ import asyncio
 import time
 import logging
 from collections import OrderedDict
+from contextvars import copy_context
 from typing import Any
 
 from ginno_runtime import jsonx as json
@@ -804,11 +805,6 @@ def clear_inherited_llm_context() -> None:
         pass
 
 
-async def _run_bg_isolated(coro: Any) -> Any:
-    clear_inherited_llm_context()
-    return await coro
-
-
 def spawn_bg(coro: Any) -> Any:
     """Schedule a coroutine, keeping a strong reference until completion.
 
@@ -823,19 +819,28 @@ def spawn_bg(coro: Any) -> Any:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
+    main_loop = _MAIN_LOOP
+    if loop is None and (main_loop is None or main_loop.is_closed()):
+        coro.close()
+        return None
+
+    # Let the task own the original coroutine, including cancellation before
+    # its first step. A wrapper would leave an unstarted inner coroutine open.
+    context = copy_context()
+    context.run(clear_inherited_llm_context)
     if loop is not None:
-        t = loop.create_task(_run_bg_isolated(coro))
-        _BG_TASKS.add(t)
-        t.add_done_callback(_BG_TASKS.discard)
-        return t
-    if _MAIN_LOOP is not None and not _MAIN_LOOP.is_closed():
-        fut = asyncio.run_coroutine_threadsafe(_run_bg_isolated(coro), _MAIN_LOOP)
-        _BG_TASKS.add(fut)
-        fut.add_done_callback(_BG_TASKS.discard)
-        return fut
-    # No loop anywhere (shutdown edge): drop the coroutine rather than crash.
-    coro.close()
-    return None
+        task = loop.create_task(coro, context=context)
+    else:
+        try:
+            task = context.run(asyncio.run_coroutine_threadsafe, coro, main_loop)
+        except RuntimeError:
+            if not main_loop.is_closed():
+                raise
+            coro.close()
+            return None
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
 
 
 # One frame may sit in a stuck/suspended client's buffer; never let it stall

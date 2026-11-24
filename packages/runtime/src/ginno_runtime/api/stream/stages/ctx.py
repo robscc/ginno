@@ -101,6 +101,7 @@ class StreamTurnCtx:
         self.input_state = input_state
         self.command = command
         self.saw_interrupt = False
+        self.parked_questions: list[dict] = []
         self.ws_closed = False
         self.seg_text = []
         self.stop_waiter = None

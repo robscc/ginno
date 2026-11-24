@@ -22,6 +22,7 @@ real.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from typing import Any
 
@@ -1411,11 +1412,7 @@ async def test_ws_stop_in_wake_flip_window_still_stops(
 async def test_cascade_stop_in_wake_flip_window_no_ghost_turn(
     isolated_home, fake_stream, yielding_push
 ):
-    """Same flip window, cascade shape: stop_subagent_tree covers PZ while its
-    result wake holds the lock mid-flip. Pre-fix the cascade finds NO stop
-    event, direct-finalizes the subagent "stopped" OUTSIDE the lock, and the
-    wake — whose under-lock checks already passed — still opens a full ghost
-    turn on the stopped session."""
+    """Stop during the running broadcast and inspect the terminal broadcast."""
     _state, hooks = yielding_push
     _put_meta(_sub_meta("ROOT"))
     _put_meta(_sub_meta("PZ", parent="ROOT", depth=0, status="waiting"))
@@ -1423,27 +1420,68 @@ async def test_cascade_stop_in_wake_flip_window_no_ghost_turn(
     server_shared._SESSIONS["ROOT"] = _sess("ROOT")
     server_shared._SESSIONS["PZ"] = _sess("PZ", type_="subagent")
 
-    fired = False
+    wake_task = None
+    stopped = asyncio.Event()
+    running_at_stop = []
 
     async def cascade(sid, event, data):
-        nonlocal fired
-        if sid == "PZ" and event == "subagent.status" and not fired:
-            fired = True
+        nonlocal wake_task
+        if sid != "PZ" or event != "subagent.status":
+            return
+        if data["status"] == "running":
+            wake_task = asyncio.current_task()
             await sched.stop_subagent_tree("PZ", include_self=True)
+        elif data["status"] == "stopped":
+            running_at_stop.append(server_shared._RUNNING_TURNS.get("PZ"))
+            stopped.set()
 
     hooks.append(cascade)
 
     await sched._inject_result(
         "PZ", sched.format_subagent_result("CZ", "g", "结论"), "CZ"
     )
-    await _drain(fake_stream)
+    await asyncio.wait_for(stopped.wait(), timeout=5)
+    assert wake_task is not None
+    assert await wake_task == "refused:stopped"
+    assert running_at_stop == [None]
 
     meta, _ = sched._find_meta("PZ")
-    assert fired
     assert meta["subagent"]["status"] == "stopped"
     assert _stream_count(fake_stream, "PZ") == 0  # no ghost turn on the dead session
     assert _stream_count(fake_stream, "ROOT") == 0
     assert "PZ" not in server_shared._RUNNING_TURNS
+    assert "PZ" not in server_shared._TURN_STOP
+
+
+async def test_stop_watchdog_invalidates_provisional_wake(
+    isolated_home, fake_stream, yielding_push, monkeypatch
+):
+    from ginno_runtime.api.stream.ws import control
+
+    _state, hooks = yielding_push
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("PW", parent="ROOT", depth=0, status="waiting"))
+    session = _sess("PW", type_="subagent")
+    server_shared._SESSIONS["PW"] = session
+    monkeypatch.setattr(control, "STOP_FORCE_DELAY_S", 0)
+    monkeypatch.setattr(control, "ABANDONED_TURNS", set())
+
+    async def force_stop_during_flip(sid, event, data):
+        if sid == "PW" and event == "subagent.status" and data["status"] == "running":
+            turn_id = server_shared._RUNNING_TURNS[sid]
+            server_shared._TURN_STOP.setdefault(sid, asyncio.Event()).set()
+            await control._stop_force_watchdog(session, sid, turn_id, None)
+            assert turn_id in control.ABANDONED_TURNS
+
+    hooks.append(force_stop_during_flip)
+    result = await sched._wake_parent_turn("PW", "child result", None)
+
+    assert _stream_count(fake_stream, "PW") == 0
+    assert result == "refused:stopped"
+    meta, _ = sched._find_meta("PW")
+    assert meta["subagent"]["status"] == "stopped"
+    assert "PW" not in server_shared._RUNNING_TURNS
+    assert "PW" not in server_shared._TURN_STOP
 
 
 # --------------------------------------------------------------------------- #
@@ -1642,6 +1680,37 @@ async def test_spawn_bg_clears_inherited_llm_context(isolated_home):
         var_child_runnable_config.reset(token)
 
     assert seen["cfg"] is None, "background task inherited the parent's run config"
+
+
+async def test_cancel_wake_before_first_step_closes_coroutine(isolated_home):
+    wake = sched._wake_parent_turn("never-started", "result", None)
+    task = spawn_bg(wake)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    state = inspect.getcoroutinestate(wake)
+    if state != inspect.CORO_CLOSED:
+        wake.close()
+    assert state == inspect.CORO_CLOSED
+    assert task not in server_shared._BG_TASKS
+
+
+async def test_thread_spawn_bg_clears_inherited_llm_context(isolated_home, monkeypatch):
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    monkeypatch.setattr(server_shared, "_MAIN_LOOP", asyncio.get_running_loop())
+
+    async def background():
+        return var_child_runnable_config.get()
+
+    token = var_child_runnable_config.set({"callbacks": ["parent-run"]})
+    try:
+        future = await asyncio.to_thread(spawn_bg, background())
+        assert await asyncio.wrap_future(future) is None
+    finally:
+        var_child_runnable_config.reset(token)
+
+    assert future not in server_shared._BG_TASKS
 
 
 async def test_child_turn_does_not_inherit_parent_llm_context(

@@ -603,9 +603,8 @@ async def test_resume_question_rejected_no_tombstone(isolated_home, monkeypatch)
 # --------------------------------------------------------------------------- #
 
 
-async def test_handle_interrupt_registers_and_emits(isolated_home, monkeypatch):
-    """engine 层钩子：handle_interrupt 的 user_question 分支真调登记 +
-    事件帧带 qid（三层凭证链第二层的入口）。"""
+async def test_handle_interrupt_defers_registration_and_emit(isolated_home, monkeypatch):
+    """The engine records the interrupt in-stream and publishes it after drain."""
     from ginno_runtime.api.stream.stages import permission as perm
     from ginno_runtime.api.stream.stages.ctx import StreamTurnCtx
 
@@ -620,11 +619,14 @@ async def test_handle_interrupt_registers_and_emits(isolated_home, monkeypatch):
     ctx.emit = lambda kind, payload: {"kind": kind, "payload": payload}
     ctx.safe_send = _send
     await perm.handle_interrupt(ctx, type("I", (), {"value": value})())
-    # 登记表：note_parked 已在 _park_value 里跑过一次，这里再走真分支会
-    # 覆盖同 qid 条目（幂等登记）——断言不抛 + 事件帧带 qid + 守卫就位。
-    from ginno_runtime import server_shared as ss
+    assert ctx.saw_interrupt
+    assert not sent and "sess-worker" not in server_shared._PENDING_KIND
+    assert ctx.parked_questions == [value]
 
-    assert ss._PENDING_KIND.get("sess-worker") == "user_question"
+    await perm.publish_parked_question(ctx, ctx.parked_questions[0])
+    assert server_shared._PENDING_KIND.get("sess-worker") == "user_question"
+    assert relay.find_pending(qid)["turn_id"] == "turn-h"
+    assert len(sent) == 1
     frame = sent[0]
     assert frame["kind"] == "user.question"
     assert frame["payload"]["qid"] == qid
@@ -659,9 +661,11 @@ async def test_handle_interrupt_no_subscribers_noop(isolated_home, monkeypatch):
         type("I", (), {"value": {"kind": "user_question", "qid": "q_l",
                                  "question": "q", "options": ["a", "b"]}})(),
     )
+    assert not sent
+    await perm.publish_parked_question(ctx, ctx.parked_questions[0])
     assert relay._PENDING_RELAY == {}
     assert events == [] and injects == []
-    assert sent and sent[0]["payload"]["qid"] == "q_l"  # 事件照发（前端契约不变）
+    assert len(sent) == 1 and sent[0]["payload"]["qid"] == "q_l"  # 事件照发（前端契约不变）
 
 
 # --------------------------------------------------------------------------- #

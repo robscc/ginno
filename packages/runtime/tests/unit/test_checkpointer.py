@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.types import Interrupt
 
 from ginno_runtime import jsonx as json
 from ginno_runtime.checkpointer import FileCheckpointer, load_entries
@@ -273,6 +274,20 @@ def test_put_writes_stored_without_exposing(isolated_home):
     tup = cp.get_tuple(_cfg())
     assert not getattr(tup, "pending_writes", None)
 
+
+
+def test_interrupt_written_before_own_checkpoint_survives_late_parent_write(isolated_home):
+    cp = FileCheckpointer(project_slug="p", surface_pending_writes=True)
+    parent = cp.put(_cfg(), empty_checkpoint(), {"source": "loop", "step": 1}, {})
+    suspended = empty_checkpoint()
+    interrupt = Interrupt(value={"kind": "user_question", "qid": "q-first"})
+    cp.put_writes(_cfg(checkpoint_id=suspended["id"]), [("__interrupt__", [interrupt])], "ask")
+    cp.put(parent, suspended, {"source": "loop", "step": 2}, {})
+    cp.put_writes(parent, [("branch:to:tools", None)], "permission")
+
+    assert cp.get_pending_interrupt(_cfg()) == [interrupt]
+    assert cp.get_tuple(_cfg()).pending_writes == [("ask", "__interrupt__", [interrupt])]
+    assert cp.get_tuple(parent).pending_writes == [("permission", "branch:to:tools", None)]
 
 # --------------------------------------------------------------------------- #
 # v2 — append-only JSONL log (file IO is O_APPEND, never a full rewrite)
