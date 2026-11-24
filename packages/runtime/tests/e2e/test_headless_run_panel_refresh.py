@@ -12,6 +12,7 @@ sessions"). The fix announces headless runs at START as well.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 import pytest
 
@@ -52,10 +53,21 @@ def test_headless_run_announced_at_start(client, create_session, ws_conv, monkey
     async def _hang(
         dsl, *, run_id, model, tools, context_override=None, project_slug="default", usage_attr=None, **_
     ):
-        await asyncio.sleep(30)  # keep the run "running" for the whole test
+        await asyncio.Event().wait()  # hold the run until test cleanup
         yield {"run_id": run_id, "kind": "done"}
 
     monkeypatch.setattr(wf_engine, "run_workflow", _hang)
+
+    # Enforce thread ownership so a cross-thread Task.cancel() fails in CI too.
+    loop = client.portal.call(asyncio.get_running_loop)
+    client.portal.call(loop.set_debug, True)
+
+    async def cancel_run(run_id):
+        task = server._WF_RUN_TASKS.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     run_id = None
     try:
@@ -78,9 +90,7 @@ def test_headless_run_announced_at_start(client, create_session, ws_conv, monkey
             assert run["status"] == "running"
     finally:
         if run_id is not None:
-            task = server._WF_RUN_TASKS.get(run_id)
-            if task is not None and not task.done():
-                task.cancel()
+            client.portal.call(cancel_run, run_id)
 
 
 def test_headless_run_pushes_workflows_changed_on_completion(client, create_session, ws_conv):
