@@ -179,15 +179,15 @@ def parent_session(monkeypatch, isolated_home) -> str:
 
 @pytest.fixture
 def radio(monkeypatch):
-    state: dict = {"sent": []}
+    state: dict = {"sent": [], "turns": [], "started": asyncio.Event()}
 
     async def fake_push(session_id, event, data, turn_id=None):
         state["sent"].append((session_id, event, data))
 
     async def fake_turn(session_id, text, extra_kwargs, stop_evt=None):
         state["turns"].append((session_id, text))
+        state["started"].set()
 
-    state["turns"] = []
     monkeypatch.setattr(sched, "_push_session_event", fake_push)
     monkeypatch.setattr(plan_mod, "_push_session_event", fake_push)
     monkeypatch.setattr(sched, "_run_managed_turn", fake_turn)
@@ -291,7 +291,7 @@ async def test_agent_type_model_override(isolated_home, parent_session, radio):
     assert meta["model"] == "super-model"
 
 
-async def test_spawn_tool_fork_child_refuses_refork(isolated_home, monkeypatch):
+async def test_spawn_tool_fork_child_refuses_refork(isolated_home, monkeypatch, radio):
     """P3 contract 2: a fork child calling spawn_subagent(fork=true) gets the
     [error] from the TOOL layer (the scheduler enforces the same rule)."""
     monkeypatch.setattr(
@@ -306,9 +306,15 @@ async def test_spawn_tool_fork_child_refuses_refork(isolated_home, monkeypatch):
     tools = {t.name: t for t in build_subagent_tools("FK", SLUG, subagent_depth=0)}
     out = await tools["spawn_subagent"].ainvoke({"goal": "再分一支", "fork": True})
     assert out.startswith("[error]") and "fork" in out
-    # a standard spawn from the same fork child is untouched
+    assert server_shared.subagent_children("FK") == []
+    # The standard spawn schedules a turn. The radio fixture records it at
+    # the runner boundary so the unit test cannot start a real wake at teardown.
     ok = await tools["spawn_subagent"].ainvoke({"goal": "标准委派"})
     assert ok.startswith("subagent started")
+    await asyncio.wait_for(radio["started"].wait(), timeout=2)
+    children = server_shared.subagent_children("FK")
+    assert len(children) == 1
+    assert [sid for sid, _ in radio["turns"]] == children
 
 
 # --------------------------------------------------------------------------- #
