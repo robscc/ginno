@@ -51,16 +51,18 @@ import logging
 import os
 import tempfile
 import threading
-from collections import OrderedDict
 import time
 import uuid
+from collections import OrderedDict
+from copy import deepcopy
+from sys import getsizeof
 
 try:  # POSIX only (runtime targets macOS/Linux desktop builds)
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
@@ -258,13 +260,16 @@ def _fold_events(lines: list[str]) -> list[dict]:
     return entries
 
 
-def _read_log(path: Path) -> list[dict]:
+def _read_log(path: Path, *, cache_signature: tuple[int, ...] | None = None) -> list[dict]:
     """Fold the whole event log into the entry list (see module docstring).
 
     2026-11-08 切分感知：主文件首部 seg 事件引用的归档段（<sid>.seg.N.
     jsonl，按 seq 升序）先于主段 fold——与切分前的全量语义完全一致
     （checkpoint_segment.py 的事务顺序保证归档段只被 header 引用后生效）。
-    未切分/孤儿归档（header 未引用）天然忽略。"""
+    未切分/孤儿归档（header 未引用）天然忽略。
+    A ``cache_signature`` allows limited listings to retain a bounded suffix
+    when the fold used only the main file and its signature stayed stable.
+    """
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     # seg header 检测：首 2 行内找 {"op":"seg",...}（首行可能是 v2 header）
@@ -282,7 +287,10 @@ def _read_log(path: Path) -> list[dict]:
         if ev.get("op") not in ("header",):
             break
     if seg is None:
-        return _fold_events(lines)
+        entries = _fold_events(lines)
+        if cache_signature is not None:
+            _remember_list_suffix(path, cache_signature, entries)
+        return entries
     idx, ev = seg
     archives = [
         path.parent / str(name)
@@ -307,6 +315,71 @@ def _seg_seq(name: str) -> int:
         return int(name.rsplit(".seg.", 1)[-1].split(".")[0])
     except Exception:  # noqa: BLE001
         return 10**9
+
+
+# A bounded suffix of the verified fold, reused only for the same file version.
+# Cache copies of the encoded entries. Each listing uses its own record, serde
+# and pending-writes policy. Segmented logs and legacy documents use their
+# existing readers.
+_LIST_SUFFIX_BYTES = 4 * 1024 * 1024
+_LIST_CACHE_SIZE = 4
+
+
+class _ListSnapshot(NamedTuple):
+    signature: tuple[int, ...]
+    entries: list[dict]
+    complete: bool
+
+
+_LIST_CACHE: OrderedDict[Path, _ListSnapshot] = OrderedDict()
+_LIST_CACHE_LOCK = threading.Lock()
+
+
+def _log_signature(path: Path) -> tuple[int, ...] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _bounded_suffix(entries: list[dict]) -> list[dict]:
+    """Choose a suffix within budget before retaining copies of its entries."""
+    remaining = _LIST_SUFFIX_BYTES
+    for i in range(len(entries) - 1, -1, -1):
+        values = [entries[i]]
+        while values:
+            value = values.pop()
+            remaining -= getsizeof(value)
+            if remaining < 0:
+                return entries[i + 1:]
+            if isinstance(value, dict):
+                values.extend(value)
+                values.extend(value.values())
+            elif isinstance(value, list):
+                values.extend(value)
+    return entries
+
+
+def _remember_list_suffix(path: Path, signature: tuple[int, ...], entries: list[dict]) -> None:
+    # A malformed id anywhere in the fold can make _entries_by_id fail, even
+    # for a delta whose entire base chain would otherwise be in the suffix.
+    if _log_signature(path) != signature or not all(
+        isinstance(entry["checkpoint_id"], str) for entry in entries
+    ):
+        return
+    suffix = _bounded_suffix(entries)
+    if not suffix:
+        return
+    try:
+        snapshot = _ListSnapshot(signature, deepcopy(suffix), len(suffix) == len(entries))
+    except RecursionError:
+        return
+    with _LIST_CACHE_LOCK:
+        _LIST_CACHE[path] = snapshot
+        _LIST_CACHE.move_to_end(path)
+        if len(_LIST_CACHE) > _LIST_CACHE_SIZE:
+            _LIST_CACHE.popitem(last=False)
 
 
 # ---- 尾窗读（2026-11-08 切换会话卡顿治理） ---------------------------------
@@ -515,8 +588,8 @@ class FileCheckpointer(BaseCheckpointSaver):
         """热路径读（2026-11-08 切换会话卡顿治理）：尾部窗口 fold——热路径
         （get_tuple 无 id / get_pending_interrupt / get_app_pending / put 的
         record 读）只需要最新 checkpoint 及其 delta 链锚；O(日志) → O(窗口)。
-        结构异常（corrupt 等）回退全量读保持既有报错语义。list / 带指定
-        checkpoint_id 的 get_tuple / truncate_to 仍走全量 _read。"""
+        结构异常（corrupt 等）回退全量读保持既有报错语义。带指定
+        checkpoint_id 的 get_tuple 和 truncate_to 走全量 _read。"""
         path = existing_checkpoint_path(self.project_slug, session_id)
         if path is None:
             return {"session_id": session_id, "checkpoints": []}
@@ -1022,21 +1095,67 @@ class FileCheckpointer(BaseCheckpointSaver):
         prefer a partial listing over none. ``filter`` (source/step metadata)
         is not supported."""
         session_id = config["configurable"]["thread_id"]
-        record = self._read(session_id)
         before_id = None
         if isinstance(before, dict):
             before_id = (before.get("configurable") or before).get("checkpoint_id")
-        out: list[Any] = []
+        if limit is not None and limit > 0:
+            path = existing_checkpoint_path(self.project_slug, session_id)
+            if path is not None and path.suffix == ".jsonl":
+                return iter(self._list_limited_log(path.absolute(), session_id, before_id, limit))
+        out, _ = self._list_tuples(self._read(session_id), session_id, before_id, limit)
+        return iter(out)
+
+    def _list_limited_log(
+        self, path: Path, session_id: str, before_id: Any, limit: int
+    ) -> list[CheckpointTuple]:
+        signature = _log_signature(path)
+        with _LIST_CACHE_LOCK:
+            snapshot = _LIST_CACHE.get(path)
+            if snapshot is not None and snapshot.signature == signature:
+                _LIST_CACHE.move_to_end(path)
+            else:
+                snapshot = None
+        if snapshot is not None and (
+            snapshot.complete or before_id is not None or len(snapshot.entries) >= limit
+        ):
+            try:
+                cached_entries = deepcopy(snapshot.entries)
+            except RecursionError:
+                cached_entries = None
+            if cached_entries is not None:
+                record = {"session_id": session_id, "checkpoints": cached_entries}
+                out, complete = self._list_tuples(
+                    record, session_id, before_id, limit, partial=not snapshot.complete
+                )
+                if complete:
+                    return out
+
+        record = {
+            "session_id": session_id,
+            "checkpoints": _read_log(path, cache_signature=signature),
+        }
+        out, _ = self._list_tuples(record, session_id, before_id, limit)
+        return out
+
+    def _list_tuples(
+        self, record: dict, session_id: str, before_id: Any, limit: int | None, *, partial: bool = False
+    ) -> tuple[list[CheckpointTuple], bool]:
+        """Return the tuples and whether this record answered the query."""
+        out: list[CheckpointTuple] = []
         for entry in reversed(record.get("checkpoints", [])):
             if before_id is not None and entry.get("checkpoint_id") == before_id:
-                break
+                return out, True
             try:
                 out.append(self._tuple_from(record, session_id, entry))
             except Exception:
+                if partial:
+                    # The base may be in the discarded prefix. A fresh fold
+                    # decides whether to yield or skip this candidate.
+                    return [], False
                 continue
             if limit is not None and len(out) >= limit:
-                break
-        return iter(out)
+                return out, True
+        return out, not partial
 
     async def alist(
         self, config: dict, *, filter: dict | None = None, before: Any = None, limit: int | None = None
