@@ -486,6 +486,8 @@
       "dagAria": "任务依赖图：箭头从上游任务指向下游任务",
       "progress": "{done}/{total}",
       "failedCount": "（{count} 失败）",
+      "stoppedCount": "（{count} 已停止）",
+      "itemBlocked": "等待依赖",
       "statusPendingConfirm": "等待确认",
       "statusActive": "执行中",
       "statusCompleted": "已完成",

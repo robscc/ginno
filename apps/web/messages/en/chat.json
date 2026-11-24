@@ -486,6 +486,8 @@
       "dagAria": "Task dependency graph: arrows point from upstream tasks to downstream tasks",
       "progress": "{done}/{total}",
       "failedCount": " ({count} failed)",
+      "stoppedCount": " ({count} stopped)",
+      "itemBlocked": "Blocked",
       "statusPendingConfirm": "Awaiting confirmation",
       "statusActive": "Running",
       "statusCompleted": "Completed",
