@@ -151,6 +151,8 @@ function rocket(fromX: number, fromY: number, delayMs: number, big: boolean): vo
       });
       if (t < 1) requestAnimationFrame(tick);
       else burstAt(nx, ny, big);
+      // 火箭定时器可能晚于首帧，等有粒子后才启动绘制。
+      if (!raf) raf = requestAnimationFrame(loop);
     };
     requestAnimationFrame(tick);
   }, delayMs);
@@ -167,7 +169,6 @@ export function fireCelebrationFrom(el: HTMLElement | null): void {
   rocket(cx + 118, r.top + 10, 330, false);
   rocket(cx - 210, r.top + 26, 430, false);
   rocket(cx + 205, r.top + 22, 540, false);
-  if (!raf) raf = requestAnimationFrame(loop);
 }
 
 /** 测试钩子：当前粒子数（不触发渲染）。 */
