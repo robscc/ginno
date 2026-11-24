@@ -133,6 +133,9 @@ async def import_skills_dir(data: dict) -> dict:
 
 # ---- mcp ----
 
+# Serialize the REST config snapshot with its existing in-place write.
+_MCP_CONFIG_LOCK = asyncio.Lock()
+
 
 @router.get("/api/mcp")
 async def list_mcp(tools: bool = False) -> dict:
@@ -161,8 +164,7 @@ async def list_mcp(tools: bool = False) -> dict:
     }
 
 
-@router.get("/api/mcp/config")
-def get_mcp_config_endpoint() -> dict:
+def _read_mcp_config() -> dict:
     p = paths.mcp_config_path()
     if not p.exists():
         return {"mcpServers": {}}
@@ -176,9 +178,16 @@ def get_mcp_config_endpoint() -> dict:
         return {"mcpServers": {}, "parseError": f"{type(e).__name__}: {e}"}
 
 
+@router.get("/api/mcp/config")
+async def get_mcp_config_endpoint() -> dict:
+    async with _MCP_CONFIG_LOCK:
+        return await asyncio.to_thread(_read_mcp_config)
+
+
 @router.put("/api/mcp")
 async def put_mcp_endpoint(data: dict) -> dict:
-    paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    async with _MCP_CONFIG_LOCK:
+        paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     # 落盘后热更新运行中 registry 的内存 configs（2026-10-09 开关无响应修复）。
     # 此前只写文件：status() 停留在 load() 时刻的旧 enabled，5s 轮询把前端
     # 乐观翻转的开关翻回去，reconnect?server= 也读旧配置而无法逐出已禁用的

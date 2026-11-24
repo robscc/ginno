@@ -8,6 +8,7 @@ import shutil
 import zipfile
 from functools import wraps
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -247,6 +248,46 @@ def test_mcp_config_decodes_in_worker(client, monkeypatch):
     assert response.status_code == 200
     assert response.json() == cfg
     assert states == [False]
+
+
+async def test_mcp_config_reader_finishes_before_rest_writer(monkeypatch):
+    old = {"mcpServers": {"old": {"command": "old"}}}
+    new = {"mcpServers": {"new": {"command": "new"}}}
+    source = paths.mcp_config_path()
+    source.write_text(json.dumps(old), encoding="utf-8")
+    loop = asyncio.get_running_loop()
+    reader_waiting = asyncio.Event()
+    writer_sent_body = asyncio.Event()
+    unblock_reader = Event()
+    read_text = Path.read_text
+
+    def pause_reader(path, *args, **kwargs):
+        if path == source:
+            loop.call_soon_threadsafe(reader_waiting.set)
+            assert unblock_reader.wait(5)
+        return read_text(path, *args, **kwargs)
+
+    async def put_body():
+        yield json.dumps(new).encode()
+        writer_sent_body.set()
+
+    monkeypatch.setattr(Path, "read_text", pause_reader)
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        read = asyncio.create_task(client.get("/api/mcp/config"))
+        try:
+            await asyncio.wait_for(reader_waiting.wait(), 5)
+            write = asyncio.create_task(client.put(
+                "/api/mcp", content=put_body(), headers={"content-type": "application/json"},
+            ))
+            await asyncio.wait_for(writer_sent_body.wait(), 5)
+        finally:
+            unblock_reader.set()
+            result = await read
+        assert result.status_code == 200
+        assert result.json() == old
+        assert (await write).json() == {"ok": True}
+    assert json.loads(source.read_text()) == new
 
 
 def test_skill_import_copies_tree_in_worker(client, monkeypatch, tmp_path):
