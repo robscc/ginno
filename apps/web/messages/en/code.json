@@ -29,6 +29,8 @@
       "forceSaveFailed": "Failed to force-save",
       "readFailed": "Failed to read",
       "outsideRoot": "This file is outside the current workspace root",
+      "addFolder": "Add to workspace",
+      "addFolderTitle": "Add {dir} to this session's workspace",
       "copied": "Copied: {path}",
       "copyFailed": "Failed to copy",
       "revealFailed": "Could not reveal in the file manager",

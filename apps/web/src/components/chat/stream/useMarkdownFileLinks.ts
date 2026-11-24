@@ -10,7 +10,7 @@ import type { SessionMeta } from "@/lib/types";
 import { useChatT } from "../blocks/i18n";
 
 export function useMarkdownFileLinks(session: SessionMeta | null) {
-  const { activeSessionId, openInCode } = useGinno();
+  const { activeSessionId, codeRootId, openInCode } = useGinno();
   const { tc } = useChatT();
   const code = useTranslations("code.notice");
   const sessionId = session?.id;
@@ -37,12 +37,17 @@ export function useMarkdownFileLinks(session: SessionMeta | null) {
       const roots = await listCodeRoots("default", sessionId);
       if (active.current !== sessionId) return;
       const target = splitRootPathIn(roots, path);
-      if (target?.rel) openInCode({ rootId: target.rootId, path: target.rel, line });
-      else pushNotice("info", code("outsideRoot"), { inbox: false });
+      if (target?.rel) {
+        openInCode({ rootId: target.rootId, path: target.rel, line });
+      } else {
+        // Outside every root: hand the absolute path to the panel, which shows
+        // the §3.2 guidance (notice + "add its folder") instead of a dead end.
+        openInCode({ rootId: codeRootId ?? roots[0]?.id ?? "session", path, line });
+      }
     } catch {
       if (active.current === sessionId) pushNotice("error", code("readFailed"), { inbox: false });
     }
-  }, [sessionId, remotePeer, peerName, openInCode, code, tc]);
+  }, [sessionId, remotePeer, peerName, codeRootId, openInCode, code, tc]);
 
   return sessionId ? open : undefined;
 }

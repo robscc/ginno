@@ -27,12 +27,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Info, Server } from "lucide-react";
+import { AlertTriangle, Info, Loader2, Server } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { isRemoteSession, remotePeerDisplayName } from "@/components/chat/remoteGuard";
-import { searchCode } from "@/lib/runtime";
+import { listCodeRoots, searchCode } from "@/lib/runtime";
 import type { CodeRoot } from "@/lib/codeTypes";
+import { folderToMountFor, splitRootPathIn } from "@/lib/codePaths";
 import { cn } from "@/lib/utils";
 import { RootBar } from "./RootBar";
 import { FileTree } from "./FileTree";
@@ -50,6 +51,16 @@ import { useCodeTree } from "./panel/useCodeTree";
 import { CodePanelTopBar } from "./panel/CodePanelTopBar";
 import { CodeEditorColumn } from "./panel/CodeEditorColumn";
 import { WIDE_PX, TREE_PX, PROJECT_SLUG, escapeRegExp } from "./panel/panelShared";
+
+/** Design §3.2 guidance for a chat jump whose path is outside every root. */
+interface OutsideRootGuidance {
+  path: string;
+  line: number | null;
+  /** Directory the one-click action offers to mount; null = too broad to mount. */
+  dir: string | null;
+  busy: boolean;
+  error: string | null;
+}
 
 export function CodePanel() {
   const g = useGinno();
@@ -77,6 +88,7 @@ export function CodePanel() {
     // 单独解构：作为 useCallback 依赖时 member 表达式会触发 exhaustive-deps
     // 的「missing dependency: 'g'」（整个 store 对象不宜入依赖）。
     applySessionPatch,
+    openInCode,
   } = g;
 
   // ---- roots domain (panel/useCodeRoots) ------------------------------------
@@ -92,7 +104,25 @@ export function CodePanel() {
     onAddFolder,
     onMakeRootWritable,
   } = useCodeRoots({ sessionId, sessions: g.sessions, applySessionPatch, t: tr });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNoticeState] = useState<string | null>(null);
+  // §3.2 根外引导：聊天跳转带来绝对路径 = 不在任何根内。提示条给出
+  // 「加为工作区」——挂载其所在目录后按常规 rooted 入口打开。
+  const [outsideRoot, setOutsideRoot] = useState<OutsideRootGuidance | null>(null);
+  // Any newer notice replaces the guidance; the guidance never hides a notice.
+  const setNotice = useCallback((message: string | null) => {
+    setNoticeState(message);
+    if (message) setOutsideRoot(null);
+  }, []);
+  const onOutsideRoot = useCallback((req: { path: string; line: number | null } | null) => {
+    setNoticeState(null);
+    setOutsideRoot(
+      req ? { ...req, dir: folderToMountFor(req.path), busy: false, error: null } : null,
+    );
+  }, []);
+  // A guidance belongs to the session whose chat published it.
+  useEffect(() => {
+    setOutsideRoot(null);
+  }, [sessionId]);
   // Panel-level overlays owned by the keyboard layer below (⌘P / ⇧⌘F).
   const [quickOpen, setQuickOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -142,7 +172,30 @@ export function CodePanel() {
     codeOpenRequest,
     clearCodeOpenRequest,
     setCodeRootId,
+    onOutsideRoot,
   });
+  // §3.2「加为工作区」：挂载其所在目录（与 RootBar 手动注册同一语义），
+  // 成功后按常规 rooted 入口重新打开，行号随行。
+  const mountOutsideRootFolder = useCallback(async () => {
+    if (!outsideRoot?.dir || outsideRoot.busy || !sessionId) return;
+    const { path, line, dir } = outsideRoot;
+    setOutsideRoot((cur) => (cur ? { ...cur, busy: true, error: null } : cur));
+    const message = await onAddFolder(dir);
+    if (message) {
+      setOutsideRoot((cur) => (cur ? { ...cur, busy: false, error: message } : cur));
+      return;
+    }
+    try {
+      const nextRoots = await listCodeRoots(PROJECT_SLUG, sessionId);
+      const target = splitRootPathIn(nextRoots, path);
+      if (!target?.rel) throw new Error("path still outside every root after mount");
+      setOutsideRoot(null);
+      openInCode({ rootId: target.rootId, path: target.rel, line: line ?? undefined });
+    } catch {
+      setOutsideRoot((cur) => (cur ? { ...cur, busy: false } : cur));
+      setNotice(tr("notice.readFailed"));
+    }
+  }, [outsideRoot, sessionId, onAddFolder, openInCode, setNotice, tr]);
   // BROWSING = nothing open. The panel's job then is to show the tree: an empty
   // editor beside a collapsed tree is a dead pane, and since the default panel
   // (380px) is below WIDE_PX the auto-sizing below would otherwise open "file"
@@ -472,7 +525,31 @@ export function CodePanel() {
         onToggleMode={toggleMode}
       />
 
-      {notice ? (
+      {outsideRoot ? (
+        <div
+          data-testid="code-outside-root"
+          className="flex shrink-0 items-center gap-1.5 border-b border-line bg-card px-2.5 py-1 text-[11px] text-amber"
+        >
+          <AlertTriangle size={12} className="shrink-0" />
+          <span className="min-w-0 flex-1 truncate" title={outsideRoot.path}>
+            {outsideRoot.error ?? tr("notice.outsideRoot")}
+          </span>
+          {/* A remote session's files live on the peer: mounting a local look-alike
+              directory would only end in "absent". */}
+          {outsideRoot.dir && !remoteSession && (
+            <button
+              type="button"
+              disabled={outsideRoot.busy}
+              title={tr("notice.addFolderTitle", { dir: outsideRoot.dir })}
+              onClick={() => void mountOutsideRootFolder()}
+              className="flex shrink-0 items-center gap-1 rounded border border-line2 px-1.5 py-0.5 text-txt transition-colors hover:bg-card2 disabled:opacity-50"
+            >
+              {outsideRoot.busy && <Loader2 className="h-3 w-3 animate-spin" />}
+              {tr("notice.addFolder")}
+            </button>
+          )}
+        </div>
+      ) : notice ? (
         <div className="flex shrink-0 items-center gap-1.5 border-b border-line bg-card px-2.5 py-1 text-[11px] text-amber">
           <AlertTriangle size={12} className="shrink-0" />
           <span className="truncate">{notice}</span>
