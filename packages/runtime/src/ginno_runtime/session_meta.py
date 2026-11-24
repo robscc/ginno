@@ -23,6 +23,41 @@ from .server_shared import _SESSIONS
 # 线程)+ 原子落盘(tmp+rename),读端永远只见完整文件。
 _IDX_LOCK = threading.RLock()
 
+# 读缓存(P2):_session_meta_list 是侧栏/usage/流式等热路径的重复读点,
+# 每次都 read_text+orjson.loads。按「文件 stat 签名」缓存解析结果——键是
+# 索引文件绝对路径(天然区分 home/project),值是 (签名, 解析结果)。
+# 签名取 (st_dev, st_ino, st_mtime_ns, st_size):
+#   * _write_index 走 tmp+os.replace → inode 必变,外部原子替换同样失效;
+#   * mtime_ns+size 兜住同 inode 的就地改写;
+#   * 旧 inode 复用(极端:删后重建恰好同 inode)由 mtime_ns 区分。
+# 出参一律走 _copy_meta_items 深一层拷贝:调用方(patch/update_all/backfill
+# 及 api 层)会原地改条目或嵌套 labels 列表,绝不能污染缓存。写入路径在
+# _write_index 内主动刷新缓存(持有 _IDX_LOCK,与读端同锁无竞态);解析
+# 失败/文件缺失不缓存,每次照旧走磁盘,损坏自愈语义不变。
+_IDX_CACHE: dict[str, tuple[tuple[int, int, int, int], list[dict]]] = {}
+
+
+def _idx_signature(p) -> tuple[int, int, int, int] | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _copy_meta_items(items: list[dict]) -> list[dict]:
+    """条目字典浅拷贝 + 一层列表值拷贝(labels 等),防调用方改写污染缓存。"""
+    return [
+        {k: (list(v) if isinstance(v, list) else v) for k, v in m.items()}
+        if isinstance(m, dict)
+        else m
+        for m in items
+    ]
+
+
+def _cache_evict(p) -> None:
+    _IDX_CACHE.pop(str(p), None)
+
 
 def _write_index(slug: str, items: list[dict]) -> None:
     paths.project_sessions_dir(slug).mkdir(parents=True, exist_ok=True)
@@ -30,6 +65,9 @@ def _write_index(slug: str, items: list[dict]) -> None:
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(items, indent=2, ensure_ascii=False))
     os.replace(tmp, p)
+    # 写后只清不填:若在 os.replace 与 stat 之间有外部写者替换了文件,
+    # 预填会把旧内容挂到新签名上。清除后下一次读付一次 parse 即可。
+    _cache_evict(p)
 
 
 def _session_meta_rewrite_all(slug: str, metas: list[dict]) -> None:
@@ -59,12 +97,29 @@ def backfill_session_types() -> int:
 
 def _session_meta_list(slug: str) -> list[dict]:
     p = paths.session_index_path(slug)
-    if not p.exists():
+    key = str(p)
+    sig = _idx_signature(p)
+    if sig is None:
+        # 文件不存在(或 stat 失败):清掉可能的陈旧条目,返回空表。
+        with _IDX_LOCK:
+            _IDX_CACHE.pop(key, None)
         return []
+    with _IDX_LOCK:
+        hit = _IDX_CACHE.get(key)
+    if hit is not None and hit[0] == sig:
+        return _copy_meta_items(hit[1])
     try:
-        return json.loads(p.read_text() or "[]")
+        items = json.loads(p.read_text() or "[]")
     except json.JSONDecodeError:
+        # 损坏不缓存:每次照旧走磁盘,heal/重写落盘后签名变化自然恢复。
+        with _IDX_LOCK:
+            _IDX_CACHE.pop(key, None)
         return []
+    # 用「读前」签名入缓存——读后文件若已被替换,签名不匹配下次自然重读,
+    # 不会把旧内容挂到新签名上。
+    with _IDX_LOCK:
+        _IDX_CACHE[key] = (sig, _copy_meta_items(items))
+    return _copy_meta_items(items)
 
 
 def _session_meta_update_all(slug: str, update: Callable[[dict], dict]) -> None:
