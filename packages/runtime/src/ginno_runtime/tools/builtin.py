@@ -40,7 +40,7 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from ginno_runtime import jsonx as json
 
@@ -879,9 +879,23 @@ def build_builtin_tools(
     # Putting ws_root into extra_roots would punch a hole through the home
     # deny whenever workspace == home (workflow cwd fallback).
     mount_roots: list[Path] = [p for p, _ in mounts]
-    # Workspace + mounts: used only to validate an explicit glob/grep `root=`.
-    search_roots: list[Path] = [ws_root] + mount_roots
 
+    read_file, write_file, edit_file = _build_file_tools(
+        base_dir, mount_roots, ws_root, mounts, session_id, _observe,
+    )
+    glob_files, grep_files = _build_search_tools(base_dir, mount_roots, ws_root)
+    bash = _build_shell_tool(base_dir, mount_roots, ws_root, _observe)
+    return [read_file, write_file, glob_files, grep_files, edit_file, bash]
+
+
+def _build_file_tools(
+    base_dir: Path,
+    mount_roots: list[Path],
+    ws_root: Path,
+    mounts: list[tuple[Path, str]],
+    session_id: str | None,
+    _observe: Callable[[Path], str],
+) -> tuple[BaseTool, BaseTool, BaseTool]:
     def _ro_write_msg(p: str) -> str:
         return t(
             f"[error] path {p!r} is inside a read-only mounted directory and "
@@ -980,6 +994,48 @@ def build_builtin_tools(
         # ``_code_marker`` before the discovery notes, like bash's image marker:
         # it describes THIS call's effect, the notes are a side-channel.
         return f"wrote {len(content)} bytes to {p}" + _code_marker(p, "write") + _observe(p)
+
+    @tool
+    def edit_file(path: str, old: str, new: str) -> str:
+        """Replace a unique occurrence of `old` with `new` in a file."""
+        p = _ws(base_dir, path)
+        if _path_denied(p, base_dir, mount_roots, ws_root):
+            return _deny_msg(path)
+        if mount_access(p, mounts) == "ro":
+            return _ro_write_msg(path)
+        with _path_rw_lock(p).write_guard():
+            try:
+                text = p.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return f"[error] file not found: {path}"
+            except OSError as e:
+                return f"[error] cannot read {path}: {type(e).__name__}: {e}"
+            # find instead of count×2: one scan locates the match and checks
+            # for a second one (huge files paid two full passes per edit).
+            idx = text.find(old)
+            if idx < 0:
+                return "[error] not found"
+            if text.find(old, idx + len(old)) != -1:
+                return "[error] multiple matches"
+            try:
+                _baseline_snapshot(p, session_id)
+                _atomic_write_text(p, text[:idx] + new + text[idx + len(old):])
+            except OSError as e:
+                return f"[error] cannot write {path}: {type(e).__name__}: {e}"
+        # Same ``<!--ginno-code:-->`` trailer as write_file, with op="edit" so
+        # the panel can tell an in-place edit from a full overwrite.
+        return "ok" + _code_marker(p, "edit") + _observe(p)
+
+    return read_file, write_file, edit_file
+
+
+def _build_search_tools(
+    base_dir: Path,
+    mount_roots: list[Path],
+    ws_root: Path,
+) -> tuple[BaseTool, BaseTool]:
+    # Explicit roots may resolve within the workspace or any mounted directory.
+    search_roots = [ws_root, *mount_roots]
 
     def _resolve_search_root(root: str) -> Path | str:
         """Validate an explicit glob/grep root: it must sit inside the session
@@ -1203,37 +1259,15 @@ def build_builtin_tools(
         except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
             return f"[error] grep failed: {type(e).__name__}: {e}"
 
-    @tool
-    def edit_file(path: str, old: str, new: str) -> str:
-        """Replace a unique occurrence of `old` with `new` in a file."""
-        p = _ws(base_dir, path)
-        if _path_denied(p, base_dir, mount_roots, ws_root):
-            return _deny_msg(path)
-        if mount_access(p, mounts) == "ro":
-            return _ro_write_msg(path)
-        with _path_rw_lock(p).write_guard():
-            try:
-                text = p.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                return f"[error] file not found: {path}"
-            except OSError as e:
-                return f"[error] cannot read {path}: {type(e).__name__}: {e}"
-            # find instead of count×2: one scan locates the match and checks
-            # for a second one (huge files paid two full passes per edit).
-            idx = text.find(old)
-            if idx < 0:
-                return "[error] not found"
-            if text.find(old, idx + len(old)) != -1:
-                return "[error] multiple matches"
-            try:
-                _baseline_snapshot(p, session_id)
-                _atomic_write_text(p, text[:idx] + new + text[idx + len(old):])
-            except OSError as e:
-                return f"[error] cannot write {path}: {type(e).__name__}: {e}"
-        # Same ``<!--ginno-code:-->`` trailer as write_file, with op="edit" so
-        # the panel can tell an in-place edit from a full overwrite.
-        return "ok" + _code_marker(p, "edit") + _observe(p)
+    return glob_files, grep_files
 
+
+def _build_shell_tool(
+    base_dir: Path,
+    mount_roots: list[Path],
+    ws_root: Path,
+    _observe: Callable[[Path], str],
+) -> BaseTool:
     @tool
     def bash(command: str, timeout: int = 30) -> str:
         """Run a shell command with the session working directory (the primary
@@ -1372,4 +1406,4 @@ def build_builtin_tools(
                 out += "\n" + encode_images_marker(new_imgs)
         return out + "".join(notes)
 
-    return [read_file, write_file, glob_files, grep_files, edit_file, bash]
+    return bash

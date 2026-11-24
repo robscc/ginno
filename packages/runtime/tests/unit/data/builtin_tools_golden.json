@@ -1,0 +1,170 @@
+[
+  {
+    "name": "read_file",
+    "description": "Read a UTF-8 text file. Relative paths resolve against the session\n        working directory. ``offset`` (1-based line number) and ``limit`` (max\n        line count) paginate long files; without them a file longer than 2000\n        lines / 200k chars returns only its head plus a ``pass offset=… to\n        continue`` note, so one huge read cannot flood the context. Returns\n        contents or an ``[error]`` string.\n\n        流式读取（2026-10-17）：按行窗口扫描，不再整文件 read_text 进内存\n        （200MB 日志从「白吞 200MB 再截断」变 O(窗口) 内存）；行计数器零保留\n        走完全程，「lines a–b of N」提示与旧行为逐字节一致。读期间持路径\n        读锁（与 write/edit 的写锁互斥，读者之间共享）。",
+    "schema": {
+      "description": "Read a UTF-8 text file. Relative paths resolve against the session\nworking directory. ``offset`` (1-based line number) and ``limit`` (max\nline count) paginate long files; without them a file longer than 2000\nlines / 200k chars returns only its head plus a ``pass offset=… to\ncontinue`` note, so one huge read cannot flood the context. Returns\ncontents or an ``[error]`` string.\n\n流式读取（2026-10-17）：按行窗口扫描，不再整文件 read_text 进内存\n（200MB 日志从「白吞 200MB 再截断」变 O(窗口) 内存）；行计数器零保留\n走完全程，「lines a–b of N」提示与旧行为逐字节一致。读期间持路径\n读锁（与 write/edit 的写锁互斥，读者之间共享）。",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "offset": {
+          "default": 1,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 0,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "read_file",
+      "type": "object"
+    }
+  },
+  {
+    "name": "write_file",
+    "description": "Write text content to a file (overwrite). Relative paths resolve\n        against the session working directory.\n\n        Never raises into the graph: an unwritable path (e.g. the knowledge raw dir\n        resolving outside the workspace, a read-only mount, or a read-only\n        parent) returns an ``[error]`` tool result so the agent can react,\n        instead of crashing the whole turn.",
+    "schema": {
+      "description": "Write text content to a file (overwrite). Relative paths resolve\nagainst the session working directory.\n\nNever raises into the graph: an unwritable path (e.g. the knowledge raw dir\nresolving outside the workspace, a read-only mount, or a read-only\nparent) returns an ``[error]`` tool result so the agent can react,\ninstead of crashing the whole turn.",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "write_file",
+      "type": "object"
+    }
+  },
+  {
+    "name": "glob_files",
+    "description": "Glob files under the session working directory (recursive), or\n        under an explicit ``root`` (must be the workspace or a mounted\n        context dir — use ``root`` to search a mounted folder). Returns a\n        newline-joined list of paths relative to the searched root, capped at\n        500 matches. Dependency/build dirs (``.git``, ``node_modules``,\n        ``target``, ``dist``, ``__pycache__``, …) are skipped unless\n        ``include_ignored`` is true. Never raises — a bad base dir or pattern\n        yields an ``[error]`` string. Hard-denied dirs (runtime data /\n        credentials) are pruned and never scanned (master-plan §2.3).\n        Prefer this over `bash ls/find` when locating files: scoped root,\n        match caps, dependency dirs already pruned.",
+    "schema": {
+      "description": "Glob files under the session working directory (recursive), or\nunder an explicit ``root`` (must be the workspace or a mounted\ncontext dir — use ``root`` to search a mounted folder). Returns a\nnewline-joined list of paths relative to the searched root, capped at\n500 matches. Dependency/build dirs (``.git``, ``node_modules``,\n``target``, ``dist``, ``__pycache__``, …) are skipped unless\n``include_ignored`` is true. Never raises — a bad base dir or pattern\nyields an ``[error]`` string. Hard-denied dirs (runtime data /\ncredentials) are pruned and never scanned (master-plan §2.3).\nPrefer this over `bash ls/find` when locating files: scoped root,\nmatch caps, dependency dirs already pruned.",
+      "properties": {
+        "pattern": {
+          "title": "Pattern",
+          "type": "string"
+        },
+        "root": {
+          "default": "",
+          "title": "Root",
+          "type": "string"
+        },
+        "include_ignored": {
+          "default": false,
+          "title": "Include Ignored",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "title": "glob_files",
+      "type": "object"
+    }
+  },
+  {
+    "name": "grep_files",
+    "description": "Grep (regex) files under the session working directory (recursive),\n        or under an explicit ``root`` (must be the workspace or a mounted\n        context dir — use ``root`` to search a mounted folder). Returns\n        ``file:line:match`` lines, capped at ``max_hits``. Dependency/build\n        dirs (``.git``, ``node_modules``, ``target``, …) are skipped unless\n        ``include_ignored`` is true; binary files, files over 5 MB and\n        symlinked files are never read. When ripgrep (``rg``) is installed\n        the search is delegated to it. Never raises — a bad pattern or base\n        dir yields an ``[error]`` string.\n        Prefer this over `bash grep` when scanning the workspace: scoped\n        root, hit caps, no shell-quoting pitfalls, output already compact.\n        ``context=N`` (0–10) includes N surrounding lines per hit (like\n        ``rg -C`` / ``grep -C``), marked ``file:line-:text`` — read code\n        around a hit directly here instead of a follow-up bash call.",
+    "schema": {
+      "description": "Grep (regex) files under the session working directory (recursive),\nor under an explicit ``root`` (must be the workspace or a mounted\ncontext dir — use ``root`` to search a mounted folder). Returns\n``file:line:match`` lines, capped at ``max_hits``. Dependency/build\ndirs (``.git``, ``node_modules``, ``target``, …) are skipped unless\n``include_ignored`` is true; binary files, files over 5 MB and\nsymlinked files are never read. When ripgrep (``rg``) is installed\nthe search is delegated to it. Never raises — a bad pattern or base\ndir yields an ``[error]`` string.\nPrefer this over `bash grep` when scanning the workspace: scoped\nroot, hit caps, no shell-quoting pitfalls, output already compact.\n``context=N`` (0–10) includes N surrounding lines per hit (like\n``rg -C`` / ``grep -C``), marked ``file:line-:text`` — read code\naround a hit directly here instead of a follow-up bash call.",
+      "properties": {
+        "pattern": {
+          "title": "Pattern",
+          "type": "string"
+        },
+        "max_hits": {
+          "default": 50,
+          "title": "Max Hits",
+          "type": "integer"
+        },
+        "root": {
+          "default": "",
+          "title": "Root",
+          "type": "string"
+        },
+        "include_ignored": {
+          "default": false,
+          "title": "Include Ignored",
+          "type": "boolean"
+        },
+        "context": {
+          "default": 0,
+          "title": "Context",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "title": "grep_files",
+      "type": "object"
+    }
+  },
+  {
+    "name": "edit_file",
+    "description": "Replace a unique occurrence of `old` with `new` in a file.",
+    "schema": {
+      "description": "Replace a unique occurrence of `old` with `new` in a file.",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "old": {
+          "title": "Old",
+          "type": "string"
+        },
+        "new": {
+          "title": "New",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "old",
+        "new"
+      ],
+      "title": "edit_file",
+      "type": "object"
+    }
+  },
+  {
+    "name": "bash",
+    "description": "Run a shell command with the session working directory (the primary\n        context folder when one is set) as cwd. Returns stdout+stderr, capped\n        head+tail（超预算中间段省略计数；stdout 的被省略中间段会存入工作目录\n        ``.ginno-bash-out/``，省略行附 read_file offset/limit 取回提示；超时\n        保留已产出内容）. Never raises.\n\n        Prefer built-in directory args (`git -C <path> …`, `rg <pattern>\n        <path>`, `pytest <path>`) over `cd <path> && …` — simpler commands\n        keep output handling consistent.\n\n        Shell gotchas worth knowing: a pipeline's exit code is the LAST\n        command's — an rg failure behind ``| head`` shows up only in the\n        stderr section (known rg input errors get a trailing [hint]);\n        rg's default engine (Rust regex) has no backreferences or\n        look-around, add ``--pcre2`` when a pattern needs them; run ad-hoc\n        node scripts from inside the repo (ESM resolves imports from the\n        script's own directory, so /tmp scripts cannot see the repo's\n        node_modules).",
+    "schema": {
+      "description": "Run a shell command with the session working directory (the primary\ncontext folder when one is set) as cwd. Returns stdout+stderr, capped\nhead+tail（超预算中间段省略计数；stdout 的被省略中间段会存入工作目录\n``.ginno-bash-out/``，省略行附 read_file offset/limit 取回提示；超时\n保留已产出内容）. Never raises.\n\nPrefer built-in directory args (`git -C <path> …`, `rg <pattern>\n<path>`, `pytest <path>`) over `cd <path> && …` — simpler commands\nkeep output handling consistent.\n\nShell gotchas worth knowing: a pipeline's exit code is the LAST\ncommand's — an rg failure behind ``| head`` shows up only in the\nstderr section (known rg input errors get a trailing [hint]);\nrg's default engine (Rust regex) has no backreferences or\nlook-around, add ``--pcre2`` when a pattern needs them; run ad-hoc\nnode scripts from inside the repo (ESM resolves imports from the\nscript's own directory, so /tmp scripts cannot see the repo's\nnode_modules).",
+      "properties": {
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "timeout": {
+          "default": 30,
+          "title": "Timeout",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "bash",
+      "type": "object"
+    }
+  }
+]
