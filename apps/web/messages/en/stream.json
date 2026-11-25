@@ -4,6 +4,7 @@
     "error_invalid_json": "Invalid JSON",
     "error_unknown_type": "Unknown message type: {type}",
     "busy_wait": "A turn is already running; please wait for it to finish",
+    "busy_compacting": "Compacting… you can send after it finishes",
     "busy_wait_command": "A turn is already running; wait for it to finish before running /{command}",
     "command_only_after_turn": "/{command} can only run after the current turn finishes",
     "command_failed": "/{command} failed: {error}",

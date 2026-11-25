@@ -38,21 +38,18 @@ export function ReasoningSummary({ block, live, offline }: {
   if (!parts.length) return null;
   const disconnected = active && offline;
   const receiving = active && !offline;
-  const status = disconnected ? "offline" : receiving ? "receiving" : "saved";
   return (
     <section className={`my-2 min-w-0 overflow-hidden rounded-r-lg border-l-2 ${disconnected ? "border-amber-500/70 bg-amber-500/[0.07]" : "border-violet/70 bg-violet/[0.07]"}`}>
       <button type="button" data-reveal-record aria-expanded={open} aria-controls={id}
         onClick={() => { follow.current = true; setChoice(!open); }}
         className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-card2/40 focus-visible:outline-violet">
         <Sparkles aria-hidden className={`h-3.5 w-3.5 shrink-0 text-violet ${receiving ? "motion-safe:animate-pulse" : ""}`} />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2">
-            <strong className="text-xs font-medium text-violet">{tc("reasoningSummary.title")}</strong>
-            <span className="text-[11px] text-muted">{tc(`reasoningSummary.${status}`)}</span>
-          </span>
-          {!open && <span className="block truncate text-xs text-muted">{parts[parts.length - 1].title}</span>}
-        </span>
-        <span className="shrink-0 text-[11px] tabular-nums text-muted">{tc("reasoningSummary.count", { count: parts.length })}</span>
+        <strong className={`shrink-0 whitespace-nowrap text-xs font-medium text-violet ${open ? "flex-1" : ""}`}>{tc("reasoningSummary.title")}</strong>
+        {!open && <span className="min-w-0 flex-1 truncate text-xs text-muted">{parts.at(-1)?.title}</span>}
+        {active && <span className="shrink-0 whitespace-nowrap text-[11px] text-muted">
+          {tc(disconnected ? "reasoningSummary.offline" : "reasoningSummary.receiving")}
+        </span>}
+        <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-muted">{tc("reasoningSummary.count", { count: parts.length })}</span>
         <ChevronDown aria-hidden className={`h-3 w-3 shrink-0 text-faint ${open ? "" : "-rotate-90"}`} />
       </button>
       <div id={id} hidden={!open} className="border-t border-line">

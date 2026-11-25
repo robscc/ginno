@@ -52,6 +52,15 @@ async def _compact_async_handler(
     slug = session.get("project_slug") or project_slug or "default"
     config = {"configurable": {"thread_id": sid, "project_slug": slug}}
 
+    from ..server_shared import _turn_lock
+
+    async with _turn_lock(sid):
+        return await _compact_session_history(session, config)
+
+
+async def _compact_session_history(session, config) -> str:
+    sid = session["session_id"]
+    graph = session["graph"]
     from ..compaction import maybe_compact_history
     from ..microcompact import maybe_microcompact_history
     from ..tokens import estimate_messages_tokens
@@ -84,12 +93,8 @@ async def _compact_async_handler(
             )
         try:
             from ..api.stream import _heal_interrupted_turn
-            from ..server_shared import _turn_lock
 
-            # 与 _stop_parked_turn 相同的串行化：防止 heal 期间另一个 tab 的
-            # 新 invoke 与它交错写 checkpoint。heal 自身 best-effort。
-            async with _turn_lock(sid):
-                await _heal_interrupted_turn(graph, config)
+            await _heal_interrupted_turn(graph, config)
         except Exception:
             # 绝不能在这里 `from ..server_shared import _log`：函数体内任何对
             # `_log` 的赋值/import 都会让它变成整个函数的局部名，而该行只在

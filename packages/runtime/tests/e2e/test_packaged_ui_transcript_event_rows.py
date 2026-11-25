@@ -5,6 +5,7 @@ it folds into a 「执行过程」 group as one header line, with its text behin
 toggle. Background task bands are unchanged.
 """
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -144,6 +145,31 @@ def send_frame(page, sid, event, **payload):
             new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN);
         ws.dispatchEvent(new MessageEvent('message', {data: JSON.stringify(frame)}));
     }''', [sid, {"event": event, **payload}])
+
+
+def test_compaction_blocks_sending_but_keeps_draft(app):
+    page, port, sid = app
+    sent = []
+    page.on("websocket", lambda socket: socket.on("framesent", lambda frame: sent.append(json.loads(frame))))
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+
+    composer = page.locator("textarea").first
+    send = page.get_by_role("button", name="Send", exact=True)
+    send_frame(page, sid, "context.compacting", stage="summarizing")
+    composer.fill("Keep this next query as a draft")
+    for stage in ("summarizing", "writing"):
+        send_frame(page, sid, "context.compacting", stage=stage)
+        expect(send).to_be_disabled()
+        composer.press("Enter")
+        expect(composer).to_have_value("Keep this next query as a draft")
+        assert not any(frame.get("type") in ("invoke", "steer") for frame in sent)
+    send_frame(page, sid, "context.compacting", stage="done")
+    expect(send).to_be_enabled()
+    expect(composer).to_have_value("Keep this next query as a draft")
+    composer.press("Enter")
+    expect(page.get_by_text("Keep this next query as a draft", exact=True)).to_be_visible()
 
 
 def test_independent_event_rows_from_stream(app):

@@ -83,12 +83,14 @@ const _ckptRetryWaiting = new Set<string>();
 export function retryFromCheckpoint(ctx: EngineCtx, msgId: string) {
   const sid = ctx.curSessionIdRef.current;
   if (!sid || ctx.busyBySessionRef.current[sid]) return;
+  if (ctx.compactStageRef.current[sid]) return;
   const list = ctx.storeRef.current[sid] ?? [];
   const card = list.find((m) => m.id === msgId);
   if (!card?.error) return;
   if (_ckptRetryWaiting.has(msgId)) return;
   const turnId = card.turnId || crypto.randomUUID();
   const send = (): boolean => {
+    if (ctx.compactStageRef.current[sid]) return false;
     const sock = ctx.socketsRef.current[sid];
     if (!sock || sock.readyState !== WebSocket.OPEN) return false;
     try {

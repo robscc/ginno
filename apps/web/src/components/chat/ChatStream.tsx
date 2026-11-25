@@ -235,7 +235,7 @@ export function ChatStream({
 
   const {
     activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
-    socketsRef, permsRef, proposeRef, busyBySessionRef, streamAgentRef,
+    socketsRef, permsRef, proposeRef, busyBySessionRef, compactStageRef, streamAgentRef,
     seenTurnStartRef, ioSeqRef, sendSeqRef, draftCacheRef, mentionsRef,
     runsBySessionRef, pendingDocsRef, pendingPathsRef,
     syncDisplay, connectSession, waitForSocketOpen,
@@ -346,7 +346,7 @@ export function ChatStream({
     answerQuestion, homeCreatingRef, homeModel, pendingMounts, resetPendingMounts,
     curSessionIdRef, connectSession, pendingDocsRef, pendingPathsRef,
     uploadOneDoc, attachOne, waitForSocketOpen,
-    compacting,
+    compactStageRef,
   });
 
   // Session goal (goal-design.md) — drives the stop=pause button and the
@@ -445,6 +445,17 @@ export function ChatStream({
    * existing failed bubble in place (retry); otherwise a new one is appended.
    */
   function attemptSend(sid: string, payload: SendPayload, userMsgId?: string) {
+    if (compactStageRef.current[sid]) {
+      if (userMsgId) {
+        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+          m.id === userMsgId && m.status === "sending"
+            ? { ...m, status: "failed" as const, failReason: "compacting" } : m,
+        );
+        syncDisplay(sid);
+      }
+      showComposerHint(tc("composer.compactingPlaceholder"));
+      return;
+    }
     // On retry reuse the original turnId — the server sets HumanMessage.id = turn_id,
     // so resending the same id lets LangGraph's add_messages deduplicate the user
     // message in the checkpoint (update-in-place rather than append).

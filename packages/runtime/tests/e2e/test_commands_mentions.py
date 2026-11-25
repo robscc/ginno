@@ -153,7 +153,7 @@ def test_compact_empty_session_reports_nothing(create_session, ws_conv):
         # 异步化（2026-11-11）：先收「已启动」notice + message.end（秒收口），
         # 后台 job 的结果 notice 随后广播到达。
         events = conv.recv_until("message.end", "error")
-        assert event_names(events) == ["notice", "message.end"]
+        assert event_names(events) == ["context.compacting", "session.state_changed", "notice", "message.end"]
         assert "压缩已启动" in events_of(events, "notice")[0]["message"] or \
                "Compaction started" in events_of(events, "notice")[0]["message"]
         result = conv.recv_until("notice", "error")
@@ -171,27 +171,33 @@ def test_compact_forces_summary_regardless_of_threshold(
     (isolated_home / "settings.json").write_text(
         json.dumps({"context": {"compact_keep_turns": 1}})
     )
+    from ginno_runtime import microcompact
+
     model = CapturingModel(reply="ok")
     sid = create_session(model, agent_id="dev")
     release = Event()
-    generate = model._agenerate
+    microcompact_history = microcompact.maybe_microcompact_history
 
-    async def paused_summary(*args, **kwargs):
+    async def paused_preparation(*args, **kwargs):
         assert await asyncio.to_thread(release.wait, 12)
-        return await generate(*args, **kwargs)
+        return await microcompact_history(*args, **kwargs)
 
     with ws_conv(sid) as conv:
         for question in ("第一个问题", "第二个问题"):
             conv.invoke(question)
             conv.recv_until("message.end", "error")
-        monkeypatch.setattr(model, "_agenerate", paused_summary)
+        monkeypatch.setattr(microcompact, "maybe_microcompact_history", paused_preparation)
         try:
             conv.invoke("/compact")
             events = conv.recv_until("message.end", "error")
-            assert "message.end" in event_names(events)
-            if not events_of(events, "context.compacting"):
-                events.extend(conv.recv_until("context.compacting", "error"))
+            assert event_names(events) == ["context.compacting", "session.state_changed", "notice", "message.end"]
             with ws_conv(sid) as reconnected:
+                for text in ("/compact", "Do not start this query"):
+                    reconnected.invoke(text)
+                    rejected = reconnected.recv_until("message.end", "error")
+                    assert event_names(rejected) == ["notice", "message.end"]
+                    assert rejected[0]["i18n_key"] == "stream.busy_compacting"
+
                 reconnected.send({"type": "turn_state"})
                 probe = reconnected.recv_until("turn.state")[-1]
                 assert probe["compacting"] is True
@@ -199,6 +205,13 @@ def test_compact_forces_summary_regardless_of_threshold(
         finally:
             release.set()
         events.extend(conv.recv_until("notice", "error"))
+        assert len(model._captured) == 3
+        conv.send({"type": "turn_state"})
+        assert conv.recv_until("turn.state")[-1]["compacting"] is False
+        conv.invoke("Send after compaction")
+        after = conv.recv_until("message.end", "error")
+        assert events_of(after, "message.end")
+        assert not events_of(after, "context.compacting")
     frames = events_of(events, "context.compacting")
     assert [e["stage"] for e in frames] == ["summarizing", "writing", "done"]
     assert all("pct" not in e and "predicted_s" not in e for e in frames)

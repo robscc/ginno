@@ -107,7 +107,12 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
                         expect(panels.nth(index)).to_have_attribute("aria-expanded", "false")
                     expect(panels.nth(0)).to_contain_text("Prepare sample")
                     expect(panels.nth(1)).to_contain_text("Update value")
-                    expect(panels.nth(2)).to_contain_text("2 parts")
+                    latest = panels.nth(2)
+                    expect(latest).to_have_text(f"Reasoning summary{SUMMARY}2 parts")
+                    title = latest.get_by_text("Reasoning summary", exact=True).bounding_box()
+                    preview = latest.get_by_text(SUMMARY, exact=True).bounding_box()
+                    assert title and preview and title["y"] == preview["y"]
+                    assert title["x"] < preview["x"]
                     panels.nth(2).click()
                     expect(page.get_by_text("Review options", exact=True)).to_be_visible()
                     expect(page.get_by_role("listitem").filter(has_text=SUMMARY)).to_be_visible()

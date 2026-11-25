@@ -66,7 +66,7 @@ export function useComposerSend({
   uploadOneDoc,
   attachOne,
   waitForSocketOpen,
-  compacting = false,
+  compactStageRef,
 }: {
   g: ReturnType<typeof useGinno>;
   session: SessionMeta | null;
@@ -103,11 +103,8 @@ export function useComposerSend({
   uploadOneDoc: ReturnType<typeof useComposerFiles>["uploadOneDoc"];
   attachOne: ReturnType<typeof useComposerFiles>["attachOne"];
   waitForSocketOpen: ReturnType<typeof useChatStreamEngine>["waitForSocketOpen"];
-  /** E3 压缩进行中（P2，2026-11-16）：压缩发生在 turn entry、turn.start
-   *  之前——此刻 busyBySessionRef 尚未置位，正常发送会被后端 busy 拒绝。
-   *  但 _RUNNING_TURNS 已注册，steer 帧能正确挂上这个 turn 并在压缩后的
-   *  首个 superstep 被吸收。所以压缩期间发送按 steer 入队（视同 busy）。 */
-  compacting: boolean;
+  /** Read the session phase directly so a keypress cannot race a React render. */
+  compactStageRef: ReturnType<typeof useChatStreamEngine>["compactStageRef"];
 }) {
   const tc = useTranslations("chat");
   // Composer ↑/↓ input history, per session (shell-style recall; the seed
@@ -195,6 +192,10 @@ export function useComposerSend({
       return;
     }
     const sid = session.id;
+    if (compactStageRef.current[sid]) {
+      showComposerHint(tc("composer.compactingPlaceholder"));
+      return;
+    }
     // peer:<slug> 前缀的 target 只可能来自首页执行方选择器（会话内不渲染
     // peer chips）；万一残留到这里，按「未暂选」处理——绝不把前缀串当
     // agent id 发出去（remote-session-design.md R3）。
@@ -218,9 +219,8 @@ export function useComposerSend({
       showComposerHint(tc("composer.hintFileUploading"));
       return;
     }
-    if (busyBySessionRef.current[sid] || compacting) {
-      // A turn is running (or E3 compaction is holding the turn entry — same
-      // effect, see the compacting prop comment) → this is steering, not a
+    if (busyBySessionRef.current[sid]) {
+      // A turn is running → this is steering, not a
       // new turn: queue it for the next superstep of the turn that is
       // already going (design §3.1). Text AND attachments ride the steer
       // (steer-attachments v2) — with nothing to send, do nothing.

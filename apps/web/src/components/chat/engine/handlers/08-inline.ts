@@ -32,6 +32,14 @@ export function onNotice(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   // Built-in command reply (e.g. /help): no graph turn ran, so the server
   // pushes the rendered text directly into the live bubble as one delta.
   // 事件契约：带 i18n_key 时落地即翻译，否则原样直显 message。
+  if (ev.i18n_key === "stream.busy_compacting" && ev.turn_id) {
+    // A second window can send before receiving the compaction state.
+    // Preserve its payload as retryable when the runtime rejects the turn.
+    ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((m) =>
+      m.turnId === ev.turn_id && m.status === "sending"
+        ? { ...m, status: "failed" as const, failReason: "compacting" } : m,
+    );
+  }
   markDelivered(ctx, sid);
   let _txt = ctx.i18nRef.current.evText(ev, (ev.message as string) || "");
   // 瞬态模型错误提示（auto_retry / model_error_backoff）——包成 code

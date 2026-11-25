@@ -242,11 +242,21 @@ def _effective_compact_threshold(settings: dict, session: dict | None = None) ->
 
 
 @asynccontextmanager
-async def compaction_activity(session_id: str, turn_id: str | None = None):
-    """Publish phase changes and expose the current phase to reconnects."""
+async def compaction_activity(
+    session_id: str, turn_id: str | None = None, *,
+    reservation: dict[str, str] | None = None, reuse: bool = False,
+):
+    """Expose compaction phases to connected and reconnecting clients.
+
+    Manual commands reserve the state before their task is spawned. Their
+    summarizer reuses that state without releasing it before the command ends.
+    """
     from .server_shared import _COMPACTING, _push_session_event
 
-    state = {"stage": "summarizing"}
+    existing = _COMPACTING.get(session_id) if reuse else None
+    state = existing if existing is not None else (
+        reservation if reservation is not None else {"stage": "summarizing"}
+    )
     _COMPACTING[session_id] = state
 
     async def publish(stage: str) -> None:
@@ -261,10 +271,11 @@ async def compaction_activity(session_id: str, turn_id: str | None = None):
             await publish("writing")
 
     try:
-        await publish("summarizing")
+        if existing is None:
+            await publish("summarizing")
         yield writing
     finally:
-        if _COMPACTING.get(session_id) is state:
+        if existing is None and _COMPACTING.get(session_id) is state:
             _COMPACTING.pop(session_id)
             await publish("done")
 
@@ -378,7 +389,7 @@ async def maybe_compact_history(
         log.info("compaction aborted before summary session=%s", session_id)
         return None
     turn_id = (config.get("configurable") or {}).get("turn_id")
-    async with compaction_activity(session_id, turn_id) as writing:
+    async with compaction_activity(session_id, turn_id, reuse=force) as writing:
         # The model can change while waiting for the hook or publishing the status.
         model = session.get("model")
         if model is None:
