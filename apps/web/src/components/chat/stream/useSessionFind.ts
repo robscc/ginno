@@ -1,27 +1,26 @@
 "use client";
 
-/**
- * useSessionFind — Cmd+F 会话内搜索的 hook（find-bar-design §3.1）。
- *
- * open/query/hits/activeIdx 状态机 + ginno:find-open 事件监听 + 会话切换
- * reset + 150ms 防抖 + 跳转 dispatch（复用 ⌘K 的 ginno:scroll-to-message
- * 扩窗管线，零新机制）。
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useGinno } from "@/lib/store";
 import {
   buildFindIndex,
-  resetFindCache,
+  searchableBlockText,
   searchFindIndex,
+  type FindHit,
 } from "@/lib/sessionFind";
+import { useChatT, useEventI18nText } from "../blocks/i18n";
+import { planUpdatePresentation, searchableReportText } from "../blocks/subagentCards";
+import { contextDisplayText, stripSources } from "../blocks/sources";
+import { isReportRow, planUpdateNeedsAttention } from "../blocks/reportFold";
+import type { ChatMsg } from "../streamCore";
+import type { useTranscriptProjection } from "./TranscriptList";
 import * as painter from "./findHighlight";
 
 export interface SessionFindState {
   open: boolean;
   query: string;
-  hits: ReturnType<typeof searchFindIndex>;
+  hits: FindHit[];
   activeIdx: number;
-  setOpen: (v: boolean) => void;
   setQuery: (q: string) => void;
   next: () => void;
   prev: () => void;
@@ -30,138 +29,115 @@ export interface SessionFindState {
 }
 
 export function useSessionFind(
-  messages: Array<{ id: string; blocks?: Array<Record<string, unknown>> }>,
-  liveId: string | null | undefined,
+  messages: ChatMsg[],
+  projection: ReturnType<typeof useTranscriptProjection>,
   sessionId: string | undefined,
   scrollRef: React.RefObject<HTMLElement | null>,
+  originalMessages: ChatMsg[],
 ): SessionFindState {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, updateQuery] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [selected, setSelected] = useState<{ query: string; hit: FindHit }>();
+  const [jumpRequest, setJumpRequest] = useState(0);
   const [focusRequest, setFocusRequest] = useState(0);
-  const hitsRef = useRef<ReturnType<typeof searchFindIndex>>([]);
-  const cancelJump = useRef<(() => void) | undefined>();
-  useEffect(() => () => cancelJump.current?.(), [sessionId]);
+  const { sessions } = useGinno();
+  const { tc, tr } = useChatT();
+  const eventText = useEventI18nText();
 
-  // 防抖 150ms（§3.1）。
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(query), 150);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setDebounced(query.trim()), 150);
+    return () => clearTimeout(timer);
   }, [query]);
 
-  // 索引：buildFindIndex 内部按 msgId+blocks 引用缓存，流式期只重提取 live。
-  const index = useMemo(
-    () => (open ? buildFindIndex(messages, liveId) : []),
-    [open, messages, liveId],
-  );
-  const hits = useMemo(
-    () => (open ? searchFindIndex(index, debounced) : []),
-    [open, index, debounced],
-  );
-  hitsRef.current = hits;
-
-  // query 变化 → 回到首个命中；painter 重刷。
-  useEffect(() => {
-    setActiveIdx(0);
-    if (open && scrollRef.current) {
-      painter.paint(scrollRef.current, hits, 0, debounced);
-    }
-  }, [debounced, hits, open, scrollRef]);
-
-  // 高亮重刷：hits/activeIdx 变（流式增长/遍历）。
-  useEffect(() => {
-    if (open && scrollRef.current) {
-      painter.paint(scrollRef.current, hits, activeIdx, debounced);
-    }
-  }, [open, hits, activeIdx, debounced, scrollRef]);
-
-  // 时间分片挂载落定（TranscriptList 的 ginno:transcript-slices-settled）：
-  // 晚挂载的行错过了上面的 paint，按当前 hits/activeIdx 补刷一次。状态经
-  // ref 读——监听器只挂一次，不随 query/idx 重建。
-  const paintStateRef = useRef({ open: false, activeIdx: 0, debounced: "" });
-  paintStateRef.current = { open, activeIdx, debounced };
-  useEffect(() => {
-    const onSettled = () => {
-      const s = paintStateRef.current;
-      if (s.open && scrollRef.current) {
-        painter.paint(scrollRef.current, hitsRef.current, s.activeIdx, s.debounced);
+  const index = useMemo(() => {
+    if (!open) return [];
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+    return buildFindIndex(messages, projection, (block, row) => {
+      switch (block.kind) {
+        case "context":
+          return contextDisplayText(block, eventText);
+        case "plan_update": {
+          const compact = (row.role === "assistant" || isReportRow(row)) && !planUpdateNeedsAttention(block);
+          const { title, progress, items, notes, settled, id } = planUpdatePresentation(block, compact, { tc, tr });
+          return [title, progress, id, ...items.flatMap((item) => [item.id, item.label, item.snippet]), settled, notes]
+            .filter(Boolean).join("\n");
+        }
+        case "subagent_result":
+          return searchableReportText(block, sessionsById.get(block.sessionId), tc);
+        case "text":
+          return row.role === "assistant" ? stripSources(block.text) : block.text;
+        default:
+          return searchableBlockText(block);
       }
-    };
-    window.addEventListener("ginno:transcript-slices-settled", onSettled);
-    return () => window.removeEventListener("ginno:transcript-slices-settled", onSettled);
+    }, originalMessages);
+  }, [open, messages, projection, sessions, eventText, tc, tr, originalMessages]);
+  const hits = useMemo(() => searchFindIndex(index, debounced), [index, debounced]);
+  const activeIdx = selected?.query === debounced ? Math.max(0, hits.findIndex(
+    (hit) => hit.sourceKey === selected.hit.sourceKey && hit.occurrence === selected.hit.occurrence,
+  )) : 0;
+  const active = hits[activeIdx];
+  const paintState = useRef({ hits, activeIdx, debounced });
+  paintState.current = { hits, activeIdx, debounced };
+  const paint = useCallback(() => {
+    const { hits, activeIdx, debounced } = paintState.current;
+    if (scrollRef.current) painter.paint(scrollRef.current, hits, activeIdx, debounced);
   }, [scrollRef]);
 
-  // 关闭/卸载/会话切换：清高亮 + reset（对齐 headKeep 重置模式）。
   useEffect(() => {
-    if (!open) painter.clear();
-  }, [open]);
+    if (open) paint();
+  }, [open, hits, activeIdx, paint]);
   useEffect(() => {
-    painter.clear();
-    resetFindCache();
-    setQuery("");
+    if (!open) return;
+    window.addEventListener("ginno:transcript-slices-settled", paint);
+    return () => {
+      window.removeEventListener("ginno:transcript-slices-settled", paint);
+      painter.clear();
+    };
+  }, [open, sessionId, paint]);
+
+  const { sourceKey, rowKey, blockIdx, occurrence } = active ?? {};
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!open || !scroll || sourceKey === undefined || rowKey === undefined || blockIdx === undefined || occurrence === undefined) return;
+    return painter.focusActiveHit(scroll, { rowKey, blockIdx, occurrence }, debounced, paint);
+  }, [open, sourceKey, rowKey, blockIdx, occurrence, debounced, jumpRequest, scrollRef, paint]);
+
+  useEffect(() => {
+    updateQuery("");
     setDebounced("");
-    setActiveIdx(0);
+    setSelected(undefined);
     setOpen(false);
   }, [sessionId]);
-  useEffect(() => () => painter.clear(), []);
 
-  // ⌘F 入口事件（AppShell 转发，§6.1）：打开或聚焦全选。
   useEffect(() => {
     const onOpen = () => {
-      if (!sessionId) return; // pin/无会话不响应
-      setOpen((v) => {
-        if (!v) {
-          setQuery("");
-          setActiveIdx(0);
-        }
-        setFocusRequest((n) => n + 1);
-        return true;
-      });
+      if (!sessionId) return;
+      setOpen(true);
+      setFocusRequest((n) => n + 1);
     };
     window.addEventListener("ginno:find-open", onOpen);
     return () => window.removeEventListener("ginno:find-open", onOpen);
   }, [sessionId]);
 
-  const jump = useCallback(
-    (idx: number) => {
-      const list = hitsRef.current;
-      if (list.length === 0) return;
-      const bounded = ((idx % list.length) + list.length) % list.length;
-      setActiveIdx(bounded);
-      const hit = list[bounded];
-      // §4.2：复用 ⌘K 锚点管线（revealUpTo 扩窗 + 居中 + violet ring）。
-      window.dispatchEvent(
-        new CustomEvent("ginno:scroll-to-message", { detail: hit.msgId }),
-      );
-      if (scrollRef.current) {
-        // 目标行可能刚扩窗/刚分片挂载：落定后补刷一次 paint——否则首次
-        // paint 时行还不存在，active 高亮会漏（时间分片挂载后同理）。
-        cancelJump.current?.();
-        cancelJump.current = painter.focusActiveHit(scrollRef.current, hit, debounced, () => {
-          if (scrollRef.current) {
-            painter.paint(scrollRef.current, hitsRef.current, bounded, debounced);
-          }
-        });
-      }
-    },
-    [debounced, scrollRef],
-  );
-
-  useEffect(() => {
-    if (open && debounced.trim()) jump(0);
-  }, [open, debounced, jump]);
-
-  const next = useCallback(() => jump(activeIdx + 1), [jump, activeIdx]);
-  const prev = useCallback(() => jump(activeIdx - 1), [jump, activeIdx]);
-  const close = useCallback(() => {
-    cancelJump.current?.();
-    setOpen(false);
-    painter.clear();
-  }, []);
-
-  return {
-    open, query, hits, activeIdx,
-    setOpen, setQuery, next, prev, close, focusRequest,
+  const jump = (idx: number) => {
+    if (hits.length === 0) return;
+    const bounded = ((idx % hits.length) + hits.length) % hits.length;
+    setSelected({ query: debounced, hit: hits[bounded] });
+    setJumpRequest((n) => n + 1);
   };
+  const close = () => {
+    setOpen(false);
+    updateQuery("");
+    setDebounced("");
+    setSelected(undefined);
+  };
+
+  const setQuery = (value: string) => {
+    updateQuery(value);
+    if (value.trim() !== query.trim()) setSelected(undefined);
+  };
+
+  return { open, query, hits, activeIdx, setQuery,
+    next: () => jump(activeIdx + 1), prev: () => jump(activeIdx - 1), close, focusRequest };
 }

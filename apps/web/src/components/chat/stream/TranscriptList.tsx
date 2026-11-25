@@ -34,6 +34,7 @@ import {
 } from "../streamCards";
 import { type ChatMsg, failedTurnBannerVisible } from "../streamCore";
 import type { CompactionStage } from "../engine/handlers/11-context";
+import { FIND_REVEAL_ROW, transcriptRowKeys } from "@/lib/sessionFind";
 import { CopyBubbleButton } from "./CopyBubbleButton";
 import { useMarkdownFileLinks } from "./useMarkdownFileLinks";
 import type { SessionMeta } from "@/lib/types";
@@ -55,15 +56,46 @@ function isIndependentEvent(block: Block): block is Extract<Block, { kind: "task
 }
 
 function IndependentEvents({ blocks }: { blocks: Block[] }) {
-  return blocks.filter(isIndependentEvent).map((block, index) => (
+  return blocks.map((block, index) => !isIndependentEvent(block) ? null : (
     block.kind === "task_event"
       ? <TaskEventBand key={`task-${block.taskId}-${index}`} block={block} />
-      : <PlanUpdateCard key={`plan-${block.planId}-${index}`} block={block} />
+      : <PlanUpdateCard key={`plan-${block.planId}-${index}`} block={block} blockIndex={index} />
   ));
+}
+
+/** One projection for both find and transcript rendering, with original row addresses
+ * preserved for windowing. Find row keys also cover replay rows without a message id. */
+export function useTranscriptProjection(messages: ChatMsg[], sessionId?: string) {
+  const g = useGinno();
+  // 回报折叠（方案 A，2026-11-25）：紧跟助手消息的子代理结果/清单更新并入该
+  // 消息尾部，与它的工具步骤合成同一个「执行过程」折叠组；失败、停止、等待
+  // 回答的留在组外。纯逻辑在 reportFold（vitest 覆盖），行数与顺序不变，所以
+  // 窗口化、分片挂载和消息锚点照旧按原列表寻址。
+  const planItemsById = useMemo(() => {
+    const byId = new Map<string, number>();
+    for (const plan of g.plansBySession[sessionId ?? ""] ?? []) {
+      byId.set(plan.plan_id, plan.items.length);
+    }
+    return byId;
+  }, [g.plansBySession, sessionId]);
+  const folded = useMemo(() => {
+    const childStatus = new Map(g.sessions.map((s) => [s.id, s.subagent?.status]));
+    return foldReportRows(messages, {
+      attention: (block) =>
+        reportAttention(
+          block,
+          block.kind === "subagent_result" ? childStatus.get(block.sessionId) : undefined,
+        ),
+      planTotal: (planId) => planItemsById.get(planId) ?? null,
+    });
+  }, [messages, g.sessions, planItemsById]);
+  const rowKeys = useMemo(() => transcriptRowKeys(messages), [messages]);
+  return useMemo(() => ({ folded, rowKeys }), [folded, rowKeys]);
 }
 
 export function TranscriptList({
   messages,
+  projection,
   session,
   liveId,
   running,
@@ -83,6 +115,7 @@ export function TranscriptList({
   stickRef,
 }: {
   messages: ChatMsg[];
+  projection: ReturnType<typeof useTranscriptProjection>;
   session: SessionMeta | null;
   liveId: string | null;
   running: boolean;
@@ -116,28 +149,7 @@ export function TranscriptList({
   const tc = useTranslations("chat");
   const router = useRouter();
   const onFileLink = useMarkdownFileLinks(session);
-  // 回报折叠（方案 A，2026-11-25）：紧跟助手消息的子代理结果/清单更新并入该
-  // 消息尾部，与它的工具步骤合成同一个「执行过程」折叠组；失败、停止、等待
-  // 回答的留在组外。纯逻辑在 reportFold（vitest 覆盖），行数与顺序不变，所以
-  // 窗口化、分片挂载和消息锚点照旧按原列表寻址。
-  const planItemsById = useMemo(() => {
-    const byId = new Map<string, number>();
-    for (const plan of g.plansBySession[session?.id ?? ""] ?? []) {
-      byId.set(plan.plan_id, plan.items.length);
-    }
-    return byId;
-  }, [g.plansBySession, session?.id]);
-  const folded = useMemo(() => {
-    const childStatus = new Map(g.sessions.map((s) => [s.id, s.subagent?.status]));
-    return foldReportRows(messages, {
-      attention: (block) =>
-        reportAttention(
-          block,
-          block.kind === "subagent_result" ? childStatus.get(block.sessionId) : undefined,
-        ),
-      planTotal: (planId) => planItemsById.get(planId) ?? null,
-    });
-  }, [messages, g.sessions, planItemsById]);
+  const { folded, rowKeys } = projection;
   const rows = folded.rows;
   const onInspectProcess = useCallback(() => {
     if (stickRef) stickRef.current = false;
@@ -228,8 +240,8 @@ export function TranscriptList({
   const skip = clampSkip(headSkip, visible.length);
   const rendered = skip > 0 ? visible.slice(skip) : visible;
 
-  const revealUpTo = (id: string) => {
-    const i = messages.findIndex((m) => m.id === id);
+  const revealUpTo = (id: string) => revealAt(messages.findIndex((m) => m.id === id));
+  const revealAt = (i: number) => {
     if (i < 0) return;
     if (i < visibleOffset) {
       setHeadKeep(messages.length - i + 8); // +8：目标行上方的少量上下文
@@ -306,6 +318,9 @@ export function TranscriptList({
     }
   }, [skip]);
 
+  const revealRef = useRef(revealUpTo);
+  revealRef.current = revealUpTo;
+
   // ── V2 P0-1 message anchoring ────────────────────────────────────────────
   // data-msg-id mapping: user rows carry their own HumanMessage id; assistant
   // rows carry the merged bubble's id, which the backend (_messages_to_ui)
@@ -340,7 +355,7 @@ export function TranscriptList({
     const tick = () => {
       try {
         const el = scrollToMessageAnchor(anchor.id);
-        if (!el) revealUpTo(anchor.id); // 窗口外消息：先扩窗，下一帧重试
+        if (!el) revealRef.current(anchor.id); // 窗口外消息：先扩窗，下一帧重试
         if (el && !flashed) {
           flashed = true;
           flashMessageAnchor(el);
@@ -361,11 +376,8 @@ export function TranscriptList({
   // Same-session message hit: the modal broadcasts this instead of a storage
   // hand-off (the session-switch effect does not re-run, so no messages change
   // would ever consume it). Retries a few frames in case the row just mounted.
-  // revealUpTo 经 ref 读最新闭包：本 effect 只挂一次（deps []），直接引用
-  // 会捕获首帧的 revealUpTo（那时 messages 还是空，findIndex 恒 -1）——
-  // 窗口外命中永远扩不了窗（2026-11-17 时间分片挂载时实锤修复）。
-  const revealRef = useRef(revealUpTo);
-  revealRef.current = revealUpTo;
+  const revealFindRef = useRef((key: string) => revealAt(rowKeys.indexOf(key)));
+  revealFindRef.current = (key) => revealAt(rowKeys.indexOf(key));
   useEffect(() => {
     let raf = 0;
     const onScrollToMessage = (e: Event) => {
@@ -387,12 +399,20 @@ export function TranscriptList({
       };
       raf = requestAnimationFrame(tick);
     };
+    const onFindReveal = (e: Event) => {
+      const { rowKey, scrollEl } = (e as CustomEvent<{ rowKey: string; scrollEl: HTMLElement }>).detail;
+      if (scrollEl !== scrollRef?.current) return;
+      if (stickRef) stickRef.current = false;
+      revealFindRef.current(rowKey);
+    };
+    window.addEventListener(FIND_REVEAL_ROW, onFindReveal);
     window.addEventListener("ginno:scroll-to-message", onScrollToMessage);
     return () => {
       cancelAnimationFrame(raf);
+      window.removeEventListener(FIND_REVEAL_ROW, onFindReveal);
       window.removeEventListener("ginno:scroll-to-message", onScrollToMessage);
     };
-  }, []);
+  }, [scrollRef, stickRef]);
 
   return (
     <>
@@ -408,19 +428,22 @@ export function TranscriptList({
           </button>
         </div>
       )}
-      {rendered.map((m, idx) =>
-        folded.absorbed.has(visibleOffset + skip + idx) ? null
+      {rendered.map((m, idx) => {
+        const rowIndex = visibleOffset + skip + idx;
+        const rowKey = rowKeys[rowIndex];
+        const findAnchor = { "data-find-row": rowKey };
+        return folded.absorbed.has(rowIndex) ? null
         : isReportRow(m) ? (
           // 带回报的系统行：走与助手气泡同一个折叠渲染器——没挂靠到助手消息的
           // 回报串在这里自成一行「执行过程」，需要用户处理的卡留在组外；与员工
           // 回传等合并在一条的回报，实时与回放因此折得一样。
-          <div key={m.id} className="mx-auto w-full max-w-[85%]">
+          <div key={rowKey} {...findAnchor} className="mx-auto w-full max-w-[85%]">
             <InnerBlocks blocks={m.blocks} foldProcess onFileLink={onFileLink} onInspectProcess={onInspectProcess} />
           </div>
         ) : m.role === "system" ? (
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <ContextBlocks
-              blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
+              blocks={m.blocks}
               onDismiss={
                 dismissContext
                   ? (block) => dismissContext(m.id, block)
@@ -438,6 +461,7 @@ export function TranscriptList({
                   <SubagentPlanCard key={b.planId} block={b} onDecide={decideSubagentPlan} />
                 ))}
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 blocks={m.blocks.filter(
                   (b): b is Extract<Block, { kind: "subagent_result" }> =>
                     b.kind === "subagent_result",
@@ -445,6 +469,7 @@ export function TranscriptList({
               />
               {/* worker 协议信封卡（live 吸收路径 handle.ts 折出的 system 行） */}
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 blocks={m.blocks.filter(
                   (
                     b,
@@ -458,7 +483,7 @@ export function TranscriptList({
             </div>
           </div>
         ) : m.role === "user" && m.blocks.every(isIndependentEvent) && m.blocks.length > 0 ? (
-          <div key={m.id} className="mx-auto flex w-full max-w-[85%] flex-col gap-2">
+          <div key={rowKey} {...findAnchor} className="mx-auto flex w-full max-w-[85%] flex-col gap-2">
             <IndependentEvents blocks={m.blocks} />
           </div>
         ) : m.role === "user" &&
@@ -474,10 +499,11 @@ export function TranscriptList({
           // user 角色回来：折成卡片系统行渲染，而不是落到 UserBlocks
           // （它不认识这些块，会渲染成空气泡）。worker 协议信封
           // （<ginno_worker_result>/<ginno_worker_assign>）同通道同处理。
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <div className="flex w-full max-w-[85%] flex-col gap-2">
               <IndependentEvents blocks={m.blocks} />
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 session={session?.type === "subagent" ? session : undefined}
                 blocks={m.blocks.filter(
                   (
@@ -502,18 +528,17 @@ export function TranscriptList({
           // by the turn's first model request, or the transcript ended on
           // it): a full-width band, not a right-aligned bubble — it is not a
           // turn of its own (design §4.2).
-          <div key={m.id} className="flex flex-col gap-1">
+          <div key={rowKey} {...findAnchor} className="flex flex-col gap-1">
             {m.blocks
-              .filter((b): b is Extract<Block, { kind: "steer" }> => b.kind === "steer")
-              .map((b) => (
-                <SteerBand key={b.steerId ?? m.id} block={b} />
+              .map((b, index) => b.kind === "steer" && (
+                <div key={b.steerId ?? index} data-block-idx={index}><SteerBand block={b} /></div>
               ))}
           </div>
         ) : m.role === "user" &&
           m.blocks.some((b) => b.kind === "text" && b.text.trimStart().startsWith("[lastwords]")) ? (
           // 遗言信封（2026-11-19）：机器注入的 [lastwords] 文本——全宽系统卡，
           // 不落右对齐用户气泡（见 blocks.LastwordsCard 注释）。
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <div className="flex w-full justify-center">
               <LastwordsCard
                 text={
@@ -527,7 +552,7 @@ export function TranscriptList({
             <TurnIdChip turnId={m.turnId} />
           </div>
         ) : m.role === "user" ? (
-          <div key={m.id} data-msg-id={m.id} className="flex flex-col items-end gap-1">
+          <div key={rowKey} {...findAnchor} data-msg-id={m.id} className="flex flex-col items-end gap-1">
             <TurnIdChip turnId={m.turnId} />
             {/* w-full (not max-w-full): the row width must be definite so the
                 bubble's max-w-[78%] resolves against the column, not against
@@ -663,7 +688,7 @@ export function TranscriptList({
           // 判定用全量索引（visibleOffset + skip + idx，与 handoffBefore 同款
           // 换算），窗口化/时间分片保尾，不影响「其后无消息」语义。
           failedTurnBannerVisible(messages, visibleOffset + skip + idx) ? (
-            <div key={m.id} data-msg-id={m.id} className="min-w-0 rounded-xl">
+            <div key={rowKey} {...findAnchor} data-msg-id={m.id} className="min-w-0 rounded-xl">
               <ErrorCard
                 message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
                 turnId={m.turnId}
@@ -675,11 +700,11 @@ export function TranscriptList({
             </div>
           ) : null
         ) : (
-          <Fragment key={m.id}>
+          <Fragment key={rowKey}>
             {handoffBefore[visibleOffset + skip + idx] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
-            <div data-msg-id={m.id} className="min-w-0 rounded-xl">
+            <div {...findAnchor} data-msg-id={m.id} className="min-w-0 rounded-xl">
             {m.teamReply ? (
               // AgentTeam 成员回帖（§5.2 要点 2）：渲染成回帖卡而非普通气泡。
               <TeamReplyCard meta={m.teamReply} agentId={m.agentId} blocks={m.blocks} />
@@ -728,8 +753,8 @@ export function TranscriptList({
             )}
             </div>
           </Fragment>
-        ),
-      )}
+        );
+      })}
     </>
   );
 }

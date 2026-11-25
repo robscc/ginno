@@ -21,7 +21,10 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture
-def app(tmp_path):
+def app(tmp_path, monkeypatch, request):
+    language = getattr(request, "param", "en")
+    settings = harness._settings()
+    monkeypatch.setattr(harness, "_settings", lambda: {**settings, "language": language})
     harness._require_runtime()
     port = harness._free_port()
     proc, log = harness._spawn(tmp_path, port)
@@ -31,7 +34,9 @@ def app(tmp_path):
             "project_slug": "default", "workspace": str(tmp_path), "title": "Transcript event rows",
         })
         with sync_playwright() as pw:
-            browser, page = harness._new_page(pw)
+            browser = pw.chromium.launch()
+            page = browser.new_page()
+            page.add_init_script(f"window.localStorage.setItem('ginno.language', '{language}')")
             try:
                 yield page, port, session["id"]
             finally:
@@ -248,3 +253,169 @@ def test_dismissed_context_notice_stays_closed_after_history_reconciliation(app,
     send_frame(page, sid, "context.compacted", compacted_messages=5)
     expect(page.get_by_text("Conversation compacted: 5 older messages", exact=False)).to_be_visible()
     expect(cleanup).to_have_count(0)
+
+
+def find_in_session(page, query):
+    page.evaluate('window.dispatchEvent(new Event("ginno:find-open"))')
+    field = page.locator('input[placeholder*="Find in session"], input[placeholder*="会话内搜索"]')
+    expect(field).to_be_focused()
+    field.fill(query)
+    return field
+
+
+def expect_active_find(page, text, *, row=None, offset=None, within=None):
+    failure = page.evaluate('''async ({text, row, offset, within}) => {
+        // Read the page's own CSS highlight registry in its JavaScript realm.
+        const until = performance.now() + 5000;
+        let observed;
+        do {
+            observed = [...(CSS.highlights.get('find-hit-active') ?? [])].map(range => {
+                const node = range.startContainer.parentElement;
+                const bounds = range.getBoundingClientRect();
+                return {
+                    text: range.toString(), offset: range.startOffset,
+                    row: node?.closest('[data-msg-id]')?.dataset.msgId,
+                    inside: !within || !!node?.closest(within),
+                    visible: bounds.height > 0 && bounds.top >= 0 && bounds.bottom <= window.innerHeight,
+                };
+            });
+            const match = observed[0];
+            if (observed.length === 1 && match.text === text && match.visible && match.inside &&
+                (!row || match.row === row) && (offset < 0 || match.offset === offset)) return null;
+            await new Promise(requestAnimationFrame);
+        } while (performance.now() < until);
+        return observed;
+    }''', {"text": text, "row": row or "", "offset": -1 if offset is None else offset, "within": within or ""})
+    assert failure is None, f"Expected one active range {text!r} in row {row!r}, got {failure}"
+
+
+@pytest.mark.parametrize("app,notice_text,dismiss_label,no_hits", [
+    ("en", "Cleared 82 older tool outputs", "Dismiss", "No hits"),
+    ("zh-CN", "已清理 82 条较早的工具输出", "关闭", "无命中"),
+], indirect=["app"])
+def test_find_visible_context_notice(app, notice_text, dismiss_label, no_hits):
+    page, port, sid = app
+    save_messages(sid, [HumanMessage(id="initial", content="Find context notice fixture")])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    expect(page.get_by_text("Find context notice fixture", exact=True)).to_be_visible()
+    send_frame(page, sid, "context.microcompacted", turn_id="find-cleanup", cleared_tool_outputs=82)
+    notice = page.get_by_text(notice_text, exact=False)
+    expect(notice).to_be_visible()
+    find_in_session(page, notice_text)
+    expect(page.get_by_text("1/1", exact=True)).to_be_visible(timeout=5_000)
+    expect_active_find(page, notice_text)
+    notice.hover()
+    notice.get_by_role("button", name=dismiss_label, exact=True).click()
+    expect(notice).to_have_count(0)
+    expect(page.get_by_text(no_hits, exact=True)).to_be_visible()
+    assert page.evaluate("CSS.highlights.get('find-hit-active').size") == 0
+
+
+def test_find_relocated_plan_and_report(app):
+    page, port, sid = app
+    plan = '<ginno_plan_update plan="pl_find">Folded plan search needle</ginno_plan_update>'
+    report = ('<ginno_subagent_result session="synthetic-child" goal="Synthetic child">'
+              'A result with folded **report** search needle.</ginno_subagent_result>')
+    save_messages(sid, [
+        HumanMessage(id="before", content="Start synthetic turn"),
+        AIMessage(id="report-host", content="Previous response"),
+        HumanMessage(content=plan, additional_kwargs={"ginno_subagent_result": "plan-pl_find"}),
+        HumanMessage(content=report, additional_kwargs={"ginno_subagent_result": "synthetic-child"}),
+        AIMessage(id="next-reply", content="Following response"),
+    ])
+    open_session(page, port, sid)
+    body = page.get_by_text("Previous response", exact=True)
+    expect(body).to_be_visible()
+    host = page.locator('[data-msg-id="report-host"]')
+    group = host.locator('[data-process-fold] > button')
+    expect(group).to_have_attribute("aria-expanded", "false")
+    field = find_in_session(page, "Folded plan search needle")
+    expect(page.get_by_text("1/1", exact=True)).to_be_visible(timeout=5_000)
+    expect_active_find(page, "Folded plan search needle", row="report-host", within='[data-testid="plan-update-row"]')
+    expect(group).to_have_attribute("aria-expanded", "true")
+    group.click()
+    field.fill("Plan update")
+    expect_active_find(page, "Plan update", row="report-host", within='[data-testid="plan-update-row"]')
+    expect(group).to_have_attribute("aria-expanded", "true")
+    group.click()
+    field.fill("folded report search needle")
+    expect_active_find(page, "folded report search needle", row="report-host", within="[data-report-body]")
+    expect(group).to_have_attribute("aria-expanded", "true")
+    expect(host.locator('[data-testid="subagent-result-card"] > button').first).to_have_attribute("aria-expanded", "true")
+    expect(field).to_be_focused()
+
+
+def test_find_preserves_selected_occurrence_after_unrelated_frames(app):
+    page, port, sid = app
+    save_messages(sid, [
+        HumanMessage(id="one", content="ordinary needle"),
+        AIMessage(id="two", content="ordinary needle"),
+        HumanMessage(id="repeat", content="repeat needle then repeat needle"),
+    ])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    expect(page.get_by_text("repeat needle then repeat needle", exact=True)).to_be_visible()
+    field = find_in_session(page, "ordinary needle")
+    expect(page.get_by_text("1/2", exact=True)).to_be_visible()
+    expect_active_find(page, "ordinary needle", row="one")
+    field.press("Enter")
+    expect_active_find(page, "ordinary needle", row="two")
+    send_frame(page, sid, "turn.start", turn_id="find-unrelated", agent_id="dev")
+    send_frame(page, sid, "token.delta", content="Unrelated token output")
+    expect(page.get_by_text("Unrelated token output", exact=True)).to_be_visible()
+    expect(page.get_by_text("2/2", exact=True)).to_be_visible(timeout=5_000)
+    expect_active_find(page, "ordinary needle", row="two")
+    field.fill("repeat needle")
+    expect(page.get_by_text("1/2", exact=True)).to_be_visible()
+    expect_active_find(page, "repeat needle", row="repeat", offset=0)
+    field.press("Enter")
+    expect(page.get_by_text("2/2", exact=True)).to_be_visible()
+    expect_active_find(page, "repeat needle", row="repeat", offset=len("repeat needle then "))
+    field.press("Shift+Enter")
+    expect_active_find(page, "repeat needle", row="repeat", offset=0)
+    field.press("Escape")
+    expect(field).to_have_count(0)
+
+
+def test_find_selected_plan_survives_history_reconciliation(app):
+    page, port, sid = app
+    initial = HumanMessage(id="start", content="Find against live and replay")
+    plans = [
+        f'<ginno_plan_update plan="pl_find_{number}">Shared plan needle · entry {number}</ginno_plan_update>'
+        for number in (1, 2)
+    ]
+    save_messages(sid, [initial, AIMessage(id="live-host", content="Initial report host")])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    expect(page.get_by_text("Initial report host", exact=True)).to_be_visible()
+    for number, plan in enumerate(plans, start=1):
+        send_frame(page, sid, "steer.absorbed", steer_id=f"find-plan-{number}", text=plan)
+    expect(page.locator('[data-msg-id="live-host"] [data-process-fold] > button')).to_contain_text("2 plan updates")
+    field = find_in_session(page, "Shared plan needle")
+    expect(page.get_by_text("1/2", exact=True)).to_be_visible()
+    field.press("Enter")
+    expect(page.get_by_text("2/2", exact=True)).to_be_visible()
+    # The marker is on the plan's text span. Inside the matching span, only
+    # occurrence two has the second entry's title.
+    second_plan = '[title="Shared plan needle · entry 2"]'
+    expect_active_find(page, "Shared plan needle", row="live-host", within=second_plan)
+
+    send_frame(page, sid, "turn.start", turn_id="find-reconcile", agent_id="dev")
+    save_messages(sid, [
+        initial,
+        AIMessage(id="checkpoint-host", content="Reconciled report host"),
+        *[HumanMessage(content=plan, additional_kwargs={"ginno_subagent_result": f"plan-pl_find_{number}"})
+          for number, plan in enumerate(plans, start=1)],
+        AIMessage(id="next-reconcile", content="After the replayed plan updates"),
+    ])
+    with page.expect_response(lambda response: response.url.endswith(f"/api/sessions/{sid}/history")) as restored:
+        send_frame(page, sid, "turn.state", running=False)
+    assert restored.value.ok
+    expect(page.get_by_text("Reconciled report host", exact=True)).to_be_visible()
+    expect(page.get_by_text("2/2", exact=True)).to_be_visible()
+    expect_active_find(page, "Shared plan needle", row="checkpoint-host", within=second_plan)
+    expect(field).to_be_focused()

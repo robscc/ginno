@@ -1,128 +1,147 @@
 "use client";
 
-/**
- * findHighlight — CSS Custom Highlight API painter（find-bar-design §5.2-§5.4）。
- *
- * 单路径：能力缺失（macOS 13 / 老 Safari）时 paint 静默 no-op，功能退化
- * 为「计数 + 遍历 + 消息级滚动 + violet ring」（§5.3，不做第二套 <mark>）。
- * 定位用 DOM 二次匹配（blockIdx → data-block-idx 容器 → TreeWalker），
- * 与索引 start 偏移完全独立（§5.4）。
- */
-
-import type { FindHit } from "@/lib/sessionFind";
+import { FIND_REVEAL_ROW, findOccurrences, type FindHit, type FindTarget } from "@/lib/sessionFind";
 import { REVEAL_PROCESS_BLOCK } from "../blocks/ProcessFold";
 
 export const HIGHLIGHT_SUPPORTED =
-  typeof CSS !== "undefined" &&
-  "highlights" in CSS &&
-  typeof (globalThis as { Highlight?: unknown }).Highlight !== "undefined";
+  typeof CSS !== "undefined" && "highlights" in CSS && typeof globalThis.Highlight !== "undefined";
 
-function cssEscape(s: string): string {
-  return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+type OccurrenceTarget = FindTarget & Pick<FindHit, "occurrence">;
+
+function findRow(scrollEl: HTMLElement, rowKey: string): Element | null {
+  return scrollEl.querySelector(`[data-find-row="${CSS.escape(rowKey)}"]`);
 }
 
-/** 在 block 容器子树内做不区分大小写的二次匹配，返回 Range 列表。 */
+function findBlocks(row: Element, blockIdx: number): Element[] {
+  return Array.from(row.querySelectorAll(`[data-block-idx="${blockIdx}"]`));
+}
+
+/** Match visible DOM text, allowing a match to span inline Markdown. Each
+ * block-level paragraph is a separate run so adjacent labels don't fuse. */
 function locateRanges(scope: Element, query: string): Range[] {
   const out: Range[] = [];
-  const needle = query.toLowerCase();
   const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
-  const ranges: Array<{ node: Text; start: number }> = [];
-  let node: Node | null;
-  while ((node = walker.nextNode()) !== null) {
-    const text = (node as Text).data.toLowerCase();
-    let from = 0;
-    for (;;) {
-      const at = text.indexOf(needle, from);
-      if (at < 0) break;
-      ranges.push({ node: node as Text, start: at });
-      from = at + Math.max(1, needle.length);
+  const separate = "p,div,li,pre,td,th,blockquote,h1,h2,h3,h4,h5,h6,button";
+  let parent: Element | null = null;
+  let text = "";
+  let nodes: Array<{ node: Text; at: number }> = [];
+  const appendRanges = () => {
+    let start = 0;
+    let end = 0;
+    for (const match of findOccurrences(text, query)) {
+      const from = match.index!;
+      const to = from + match[0].length;
+      while (start + 1 < nodes.length && nodes[start + 1].at <= from) start++;
+      end = Math.max(end, start);
+      while (end + 1 < nodes.length && nodes[end + 1].at < to) end++;
+      const range = document.createRange();
+      range.setStart(nodes[start].node, from - nodes[start].at);
+      range.setEnd(nodes[end].node, to - nodes[end].at);
+      if (range.getBoundingClientRect().height > 0) out.push(range);
     }
+  };
+  let node: Text | null;
+  while ((node = walker.nextNode() as Text | null)) {
+    if (!node.length || node.parentElement?.closest("[hidden], [aria-hidden=true]")) continue;
+    const group = node.parentElement?.closest(separate) ?? scope;
+    if (group !== parent) {
+      appendRanges();
+      text = "";
+      nodes = [];
+      parent = group;
+    }
+    nodes.push({ node, at: text.length });
+    text += node.data;
   }
-  for (const r of ranges) {
-    const range = document.createRange();
-    range.setStart(r.node, r.start);
-    range.setEnd(r.node, r.start + query.length);
-    out.push(range);
-  }
+  appendRanges();
   return out;
 }
 
-export function paint(
-  scrollEl: HTMLElement,
-  hits: FindHit[],
-  activeIdx: number,
-  query: string,
-): void {
-  if (!HIGHLIGHT_SUPPORTED) return; // §5.3 降级：painter no-op
-  const HighlightCtor = (globalThis as { Highlight: new (...r: Range[]) => unknown }).Highlight;
+export function paint(scrollEl: HTMLElement, hits: FindHit[], activeIdx: number, query: string): void {
+  if (!HIGHLIGHT_SUPPORTED) return;
   const hitRanges: Range[] = [];
   const activeRanges: Range[] = [];
-  const needle = query.trim();
-  if (needle) {
-    hits.forEach((h, i) => {
-      const row = scrollEl.querySelector(`[data-msg-id="${cssEscape(h.msgId)}"]`);
-      if (!row) return; // 窗口外：数据层计数仍含它（§4.1）
-      // block 级容器（data-block-idx，§5.4）；无该属性的行整行匹配（P0 容错）。
-      const blockEl = row.querySelector(`[data-block-idx="${h.blockIdx}"]`) ?? row;
-      const ranges = locateRanges(blockEl, needle);
-      (i === activeIdx ? activeRanges : hitRanges).push(...ranges);
-    });
-  }
-  const hs = CSS.highlights as unknown as Map<string, unknown>;
-  hs.set("find-hit", new HighlightCtor(...hitRanges));
-  hs.set("find-hit-active", new HighlightCtor(...activeRanges));
+  const rows = new Map<string, Element | null>();
+  const rangesByRow = new Map<Element, Map<number, Range[]>>();
+  hits.forEach((hit, index) => {
+    if (!rows.has(hit.rowKey)) rows.set(hit.rowKey, findRow(scrollEl, hit.rowKey));
+    const row = rows.get(hit.rowKey);
+    if (!row) return;
+    if (!rangesByRow.has(row)) rangesByRow.set(row, new Map());
+    const ranges = rangesByRow.get(row)!;
+    if (!ranges.has(hit.blockIdx)) {
+      ranges.set(hit.blockIdx, findBlocks(row, hit.blockIdx).flatMap((block) => locateRanges(block, query)));
+    }
+    const range = ranges.get(hit.blockIdx)?.[hit.occurrence];
+    if (range) (index === activeIdx ? activeRanges : hitRanges).push(range);
+  });
+  CSS.highlights.set("find-hit", new Highlight(...hitRanges));
+  CSS.highlights.set("find-hit-active", new Highlight(...activeRanges));
 }
 
 export function clear(): void {
   if (!HIGHLIGHT_SUPPORTED) return;
-  const hs = CSS.highlights as unknown as Map<string, unknown>;
-  hs.delete("find-hit");
-  hs.delete("find-hit-active");
+  CSS.highlights.delete("find-hit");
+  CSS.highlights.delete("find-hit-active");
 }
 
-/**
- * 跳转定位（§4.2 第 3 步）：dispatch 消息级事件后，等目标行渲染完成再
- * paint + 把当前项滚到视口 1/3。≤60 帧重试（照抄 ⌘K 锚点监听模式）。
- */
+/** Reusable mounting and reveal path for find targets, including absorbed rows.
+ * The caller can retry this after loading an older page or moving the window. */
 export function focusActiveHit(
   scrollEl: HTMLElement,
-  hit: FindHit,
+  hit: OccurrenceTarget,
   query: string,
-  onSettled?: () => void,
+  onSettled: () => void,
 ): () => void {
-  const needle = query.trim();
   let tries = 0;
-  let revealedGroup = false;
-  let revealedRecord = false;
   let frame = 0;
+  let revealed: Element | undefined;
   const retry = () => {
     if (++tries < 60) frame = requestAnimationFrame(tick);
-    else onSettled?.();
+    else onSettled();
   };
   const tick = () => {
-    const row = scrollEl.querySelector(`[data-msg-id="${cssEscape(hit.msgId)}"]`);
-    if (!row) { retry(); return; }
+    const row = findRow(scrollEl, hit.rowKey);
+    if (!row) return retry();
     const group = row.querySelector(`[data-process-blocks~="${hit.blockIdx}"]`);
-    const groupButton = group?.querySelector(":scope > button[aria-expanded=false]");
-    if (groupButton && !revealedGroup) {
-      revealedGroup = true;
-      group?.dispatchEvent(new Event(REVEAL_PROCESS_BLOCK));
-      retry();
+    if (group?.querySelector(":scope > button[aria-expanded=false]")) {
+      if (revealed !== group) {
+        revealed = group;
+        group.dispatchEvent(new Event(REVEAL_PROCESS_BLOCK));
+      }
+      return retry();
+    }
+    const blocks = findBlocks(row, hit.blockIdx);
+    const block = blocks[0];
+    if (!block) {
+      row.scrollIntoView({ block: "center" });
+      onSettled();
       return;
     }
-    const blockEl = row.querySelector(`[data-block-idx="${hit.blockIdx}"]`) ?? row;
-    const record = blockEl.querySelector<HTMLButtonElement>("[data-reveal-record][aria-expanded=false]");
-    if (record && !revealedRecord) {
-      revealedRecord = true;
+    const record = block.querySelector<HTMLButtonElement>("[data-reveal-record][aria-expanded=false]");
+    if (record && revealed !== record) {
+      revealed = record;
       record.click();
-      retry();
-      return;
+      return retry();
     }
-    const target = needle ? locateRanges(blockEl, needle).find((range) => range.getBoundingClientRect().height) : null;
-    (target?.startContainer.parentElement ?? blockEl).scrollIntoView({ block: "center" });
-    onSettled?.();
+    const target = blocks.flatMap((part) => locateRanges(part, query))[hit.occurrence];
+    const anchor = target?.startContainer.parentElement ?? block;
+    anchor.scrollIntoView({ block: "center" });
+    // A long text node can hold several matches on different lines. Center
+    // the chosen range in each scrolling ancestor, including the fold body.
+    if (target) {
+      for (let parent: Element | null = anchor; parent; parent = parent.parentElement) {
+        if (parent === scrollEl || /^(auto|scroll)$/.test(getComputedStyle(parent).overflowY)) {
+          const range = target.getBoundingClientRect();
+          const viewport = parent.getBoundingClientRect();
+          parent.scrollTop += (range.top + range.bottom - viewport.top - viewport.bottom) / 2;
+        }
+        if (parent === scrollEl) break;
+      }
+    }
+    onSettled();
   };
-  // Let transcript virtualization handle the message anchor before refining it.
+  window.dispatchEvent(new CustomEvent(FIND_REVEAL_ROW, { detail: { rowKey: hit.rowKey, scrollEl } }));
   frame = requestAnimationFrame(tick);
   return () => cancelAnimationFrame(frame);
 }

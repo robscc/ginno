@@ -61,7 +61,7 @@ async function openChipInCode(
 /** Clickable file chips (user bubble + replayed history). Default click opens
  *  the preview; text/code/data chips also carry a secondary "open in code
  *  panel" entry. */
-export function FileChips({ files }: { files: FileBlock[] }) {
+export function FileChips({ files, blockIndexes }: { files: FileBlock[]; blockIndexes?: number[] }) {
   const g = useGinno();
   const { tc } = useChatT();
   if (!files.length) return null;
@@ -73,6 +73,7 @@ export function FileChips({ files }: { files: FileBlock[] }) {
         return (
           <div
             key={f.fileId ?? `${f.name}-${i}`}
+            data-block-idx={blockIndexes?.[i]}
             className={`flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2 py-1 text-xs text-txt ${
               clickable ? "hover:border-violet/50" : ""
             }`}
@@ -115,7 +116,7 @@ type SkillBlock = Extract<Block, { kind: "skill" }>;
 
 /** Slash-skill invocation chips (user bubble, replayed history). The SKILL.md
     body is model scaffolding; the user sees "/name" + their request only. */
-export function SkillChips({ skills }: { skills: SkillBlock[] }) {
+export function SkillChips({ skills, blockIndexes }: { skills: SkillBlock[]; blockIndexes?: number[] }) {
   const { tc } = useChatT();
   if (!skills.length) return null;
   return (
@@ -123,6 +124,7 @@ export function SkillChips({ skills }: { skills: SkillBlock[] }) {
       {skills.map((s, i) => (
         <span
           key={`${s.name}-${i}`}
+          data-block-idx={blockIndexes?.[i]}
           title={tc("skillChips.invoked", { name: s.name })}
           className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2 py-1 text-xs text-violet"
         >
