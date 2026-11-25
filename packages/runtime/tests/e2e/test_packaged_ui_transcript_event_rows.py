@@ -419,3 +419,112 @@ def test_find_selected_plan_survives_history_reconciliation(app):
     expect(page.get_by_text("2/2", exact=True)).to_be_visible()
     expect_active_find(page, "Shared plan needle", row="checkpoint-host", within=second_plan)
     expect(field).to_be_focused()
+
+
+def test_bounded_window_keeps_find_navigation_and_live_reading(app):
+    page, port, sid = app
+    messages = []
+    for i in range(640):
+        match = " Shared window needle" if i in (0, 320, 639) else ""
+        messages.append(HumanMessage(id=f"window-user-{i}", content=f"Window request {i:04d}{match}"))
+        if i == 320:
+            messages.extend([
+                AIMessage(id="window-tool", content="", tool_calls=[
+                    {"name": "bash", "args": {"command": "printf fixture"}, "id": "window-giant"},
+                ]),
+                ToolMessage(id="window-tool-result", name="bash", tool_call_id="window-giant",
+                            content="Giant tool output sentinel\n" + "fixture output line\n" * 1500),
+            ])
+        messages.append(AIMessage(id=f"window-answer-{i}", content=f"Window answer {i:04d}"))
+    save_messages(sid, messages)
+    other = harness._api(port, "POST", "/api/sessions", {
+        "project_slug": "default", "workspace": "/tmp", "title": "Second window fixture",
+    })["id"]
+    save_messages(other, [HumanMessage(id="other-fixture", content="Second window fixture message")])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    scroll = page.locator("[data-chat-scroll]")
+    rows = scroll.locator("[data-find-row]")
+    latest = page.get_by_text("Window answer 0639", exact=True)
+    expect(latest).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    scroll.evaluate('''el => {
+        window.maxTranscriptRows = 0;
+        new MutationObserver(() => {
+            window.maxTranscriptRows = Math.max(window.maxTranscriptRows, el.querySelectorAll('[data-find-row]').length);
+        }).observe(el, {childList: true, subtree: true});
+    }''')
+
+    field = find_in_session(page, "Shared window needle")
+    expect(page.get_by_text("1/3", exact=True)).to_be_visible()
+    expect_active_find(page, "Shared window needle", row="window-user-0")
+    assert rows.count() <= 80
+    expect(latest).to_have_count(0)
+    field.press("Enter")
+    expect(page.get_by_text("2/3", exact=True)).to_be_visible()
+    expect_active_find(page, "Shared window needle", row="window-user-320")
+    giant = scroll.locator('[data-msg-id="window-tool"]')
+    fold = giant.get_by_role("button", name="tool · Running command · printf fixture", exact=False)
+    expect(fold).to_have_attribute("aria-expanded", "false")
+    fold.click()
+    expect(fold).to_have_attribute("aria-expanded", "true")
+    expect(giant.get_by_text("Giant tool output sentinel", exact=False)).to_be_visible()
+    fold.click()
+    expect(fold).to_have_attribute("aria-expanded", "false")
+    field.press("Enter")
+    expect(page.get_by_text("3/3", exact=True)).to_be_visible()
+    expect_active_find(page, "Shared window needle", row="window-user-639")
+    expect(field).to_be_focused()
+    field.press("Escape")
+
+    # Use the app's same-session message-id event, then move over two
+    # overlapping ranges and return by keyboard without remounting all history.
+    page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "window-user-0"}))')
+    first = scroll.locator('[data-msg-id="window-user-0"]')
+    expect(first).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    for expected_first in (30, 60):
+        page.get_by_test_id("load-later").press("Enter")
+        expect(rows.first).to_have_attribute("data-msg-id", f"window-user-{expected_first}")
+        expect(rows).to_have_count(80)
+    page.get_by_test_id("load-earlier").press("Enter")
+    expect(rows.first).to_have_attribute("data-msg-id", "window-user-30")
+    reader = scroll.locator('[data-msg-id="window-user-60"]')
+    expect(rows).to_have_count(80)
+    expect(reader).to_be_focused()
+    expect(reader).to_be_in_viewport()
+    before = reader.bounding_box()["y"]
+
+    send_frame(page, sid, "turn.start", turn_id="window-live", agent_id="dev")
+    send_frame(page, sid, "token.delta", content="Full live response with window terminal sentinel")
+    send_frame(page, sid, "message.end", turn_id="window-live", text="Full live response with window terminal sentinel")
+    expect(reader).to_be_in_viewport()
+    assert abs(reader.bounding_box()["y"] - before) <= 3
+    expect(first).to_have_count(0)
+    expect(latest).to_have_count(0)
+    page.get_by_role("button", name="Jump to latest message", exact=True).press("Enter")
+    live = page.get_by_text("Full live response with window terminal sentinel", exact=True)
+    expect(live).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    expect(reader).to_have_count(0)
+    expect(scroll).to_be_focused()
+    assert page.evaluate("window.maxTranscriptRows") == 80
+
+    page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "window-user-0"}))')
+    expect(first).to_be_in_viewport()
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(live).to_be_in_viewport()
+    expect(first).to_have_count(0)
+
+    # Session search stores an ID when switching conversations. The target
+    # must survive the switch's initial tail pin and asynchronous transcript.
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    expect(page.get_by_text("Second window fixture message", exact=True)).to_be_in_viewport()
+    page.evaluate('''sid => {
+        sessionStorage.setItem("ginno-scroll-to-message", "window-user-0");
+        window.__ginnoOpenSession(sid);
+    }''', sid)
+    expect(first).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    expect(latest).to_have_count(0)
