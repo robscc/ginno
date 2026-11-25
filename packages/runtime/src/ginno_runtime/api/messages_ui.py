@@ -1258,20 +1258,14 @@ def _messages_to_ui(
     # 后台会话/断线时发生的清理，重载后完全无感知。这里从消息特征重建
     # 一行系统行（与 live 行同一个 i18n key），插到 transcript 开头。
     try:
-        from ..microcompact import _CLEARED_PREFIX
+        from ..microcompact import cleared_outputs_notice
 
-        _cleared = sum(
-            1
-            for m in messages
-            if isinstance(m, ToolMessage)
-            and isinstance(getattr(m, "content", ""), str)
-            and m.content.startswith(_CLEARED_PREFIX)
-        )
+        _cleared, notice_id = cleared_outputs_notice(messages)
         if _cleared:
             ui.insert(
                 0,
                 {
-                    "id": None,
+                    "id": notice_id,
                     "role": "system",
                     "blocks": [
                         {

@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 
 import pytest
 import test_packaged_ui_tasks_overview as harness
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from playwright.sync_api import expect, sync_playwright
 
 from ginno_runtime.checkpointer import FileCheckpointer
 from ginno_runtime.compaction import _copy_with_new_id
+from ginno_runtime.microcompact import CLEARED_TOOL_OUTPUT
 
 pytestmark = pytest.mark.e2e
 
@@ -167,3 +168,83 @@ def test_independent_event_rows_from_stream(app):
     expect(page.get_by_text("Live system plan receipt", exact=True)).to_be_visible()
     expect(page.get_by_text("Live wake plan receipt", exact=True)).to_be_visible()
     expect(page.get_by_text("Plan status update", exact=True)).to_have_count(0)
+
+
+def dismiss_notice(notice):
+    notice.hover()
+    notice.get_by_role("button", name="Dismiss", exact=True).click(timeout=5_000)
+    expect(notice).to_have_count(0)
+
+
+def test_dismissed_context_notice_stays_closed_during_live_updates(app):
+    page, port, sid = app
+    save_messages(sid, [HumanMessage(id="initial", content="Context dismissal test")])
+    capture_socket(page)
+    open_session(page, port, sid)
+    expect(page.get_by_text("Context dismissal test", exact=True)).to_be_visible()
+    wait_for_session_socket(page, sid, require_turn_state=True)
+
+    send_frame(page, sid, "context.microcompacted", turn_id="cleanup-1", cleared_tool_outputs=82)
+    cleanup = page.get_by_text("Cleared 82 older tool outputs", exact=False)
+    dismiss_notice(cleanup)
+
+    send_frame(page, sid, "context.compacted", turn_id="cleanup-1", compacted_messages=320)
+    summary = page.get_by_text("Conversation compacted: 320 older messages", exact=False)
+    expect(summary).to_be_visible()
+    expect(cleanup).to_have_count(0)
+
+    # The same wording can belong to a new event in this session.
+    send_frame(page, sid, "context.microcompacted", turn_id="cleanup-2", cleared_tool_outputs=82)
+    expect(cleanup).to_be_visible()
+    expect(cleanup).to_have_count(1)
+    expect(summary).to_be_visible()
+
+    # Closing a chip must preserve its siblings, including their original indexes.
+    send_frame(page, sid, "context.updated", changes=[
+        {"section": "files", "summary": "First context change"},
+        {"section": "files", "summary": "Second context change"},
+    ])
+    first = page.get_by_text("First context change", exact=False)
+    second = page.get_by_text("Second context change", exact=False)
+    dismiss_notice(first)
+    expect(second).to_be_visible()
+    dismiss_notice(second)
+    expect(first).to_have_count(0)
+
+
+@pytest.mark.parametrize("from_live", [False, True], ids=["history", "live-to-history"])
+def test_dismissed_context_notice_stays_closed_after_history_reconciliation(app, from_live):
+    page, port, sid = app
+    saved = [
+        HumanMessage(id="initial", content="Reconcile the transcript"),
+        AIMessage(id="tool-request", content="", tool_calls=[{"name": "bash", "args": {}, "id": "call-1"}]),
+        ToolMessage(id="tool-result", name="bash", tool_call_id="call-1", content=CLEARED_TOOL_OUTPUT),
+        AIMessage(id="reply", content="Saved reply before reconciliation"),
+    ]
+    save_messages(sid, saved[:1] if from_live else saved)
+    capture_socket(page)
+    open_session(page, port, sid)
+    initial_text = "Reconcile the transcript" if from_live else "Saved reply before reconciliation"
+    expect(page.get_by_text(initial_text, exact=True)).to_be_visible()
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    if from_live:
+        save_messages(sid, saved)
+        history = harness._api(port, "GET", f"/api/sessions/{sid}/history")
+        notice_id = history["messages"][0]["id"]
+        send_frame(page, sid, "context.microcompacted", cleared_tool_outputs=1, notice_id=notice_id)
+    cleanup = page.get_by_text("Cleared 1 older tool outputs", exact=False)
+    dismiss_notice(cleanup)
+
+    # A probe after a missed final frame replaces the whole view from /history.
+    send_frame(page, sid, "turn.start", turn_id="probe-turn", agent_id="dev")
+    save_messages(sid, [*saved, HumanMessage(id="new-history", content="Restored by history reconciliation")])
+    with page.expect_response(lambda response: response.url.endswith(f"/api/sessions/{sid}/history")) as restored:
+        send_frame(page, sid, "turn.state", running=False)
+    assert restored.value.ok
+    expect(page.get_by_text("Restored by history reconciliation", exact=True)).to_be_visible()
+    expect(cleanup).to_have_count(0)
+    notice = restored.value.json()["messages"][0]
+    send_frame(page, sid, "context.microcompacted", cleared_tool_outputs=1, notice_id=notice["id"])
+    send_frame(page, sid, "context.compacted", compacted_messages=5)
+    expect(page.get_by_text("Conversation compacted: 5 older messages", exact=False)).to_be_visible()
+    expect(cleanup).to_have_count(0)

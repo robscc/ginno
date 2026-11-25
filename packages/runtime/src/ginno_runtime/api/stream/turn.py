@@ -611,6 +611,7 @@ async def _run_stream(
             {
                 "cleared_tool_outputs": microcompact_stats["cleared_tool_outputs"],
                 "chars_freed": microcompact_stats["chars_freed"],
+                "notice_id": microcompact_stats.get("notice_id"),
             },
             turn_id,
         )
