@@ -119,7 +119,7 @@ export function ContextBlocks({
   onDismiss,
 }: {
   blocks: Extract<Block, { kind: "context" }>[];
-  onDismiss?: (index: number) => void;
+  onDismiss?: (block: Extract<Block, { kind: "context" }>) => void;
 }) {
   const evText = useEventI18nText();
   const { tc } = useChatT();
@@ -135,7 +135,7 @@ export function ContextBlocks({
           {evText(b, b.text)}
           {onDismiss && (
             <button
-              onClick={() => onDismiss(i)}
+              onClick={() => onDismiss(b)}
               aria-label={tc("sources.dismissAria")}
               className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-line bg-base text-[9px] leading-none text-faint hover:text-txt group-hover:flex"
             >

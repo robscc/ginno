@@ -122,6 +122,11 @@ def test_history_replay_surfaces_microcompact_marker():
     assert blk["i18n_key"] == "chat.context.microcompacted"
     assert blk["params"]["n"] == 1
     assert "Cleared 1" in blk["text"]
+    # Checkpoint rewrites reassign message IDs, but preserve tool-call IDs.
+    rewritten = [*msgs[:2], msgs[2].model_copy(update={"id": "rewritten"}), msgs[3]]
+    assert _messages_to_ui(rewritten, "dev")[0]["id"] == first["id"]
+    other_clear = [*msgs[:2], msgs[2].model_copy(update={"tool_call_id": "c2"}), msgs[3]]
+    assert _messages_to_ui(other_clear, "dev")[0]["id"] != first["id"]
 
     # 没有被清理的输出 → 不插行
     clean = _messages_to_ui(

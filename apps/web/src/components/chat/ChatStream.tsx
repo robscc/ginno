@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Check, ArrowDown } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
@@ -89,7 +89,7 @@ export function ChatStream({
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tc = useTranslations("chat");
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [sourceMessages, setMessages] = useState<ChatMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
   // @session/@result 候选（LinkedSessionsChip 同款投影，mention 菜单数据源）：
   // 会话切换拉一次 + 30s 静默刷新（菜单打字路径只读 state，绝不发请求）。
@@ -97,31 +97,39 @@ export function ChatStream({
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
-  // 系统提示条（microcompact 清理等）逐条关闭（2026-11-05）：从该 system
-  // 消息里移除对应 context 块；块删空则整条消息移除。会话内存态操作——
-  // 重载后投影会重建（turns 投影的 system 行），再点一次即可，可接受。
+  // Engine snapshots can replace the transcript on any frame or history fetch.
+  // Keep dismissals per session and address the block in the unfiltered row.
+  const [dismissedBySession, setDismissedBySession] = useState(
+    () => new Map<string, ReadonlyMap<string, ReadonlySet<number>>>(),
+  );
+  const sessionId = session?.id;
+  const dismissed = sessionId ? dismissedBySession.get(sessionId) : undefined;
+  const messages = useMemo(() => {
+    if (!dismissed?.size) return sourceMessages;
+    const visible: ChatMsg[] = [];
+    for (const message of sourceMessages) {
+      const indexes = message.role === "system" ? dismissed.get(message.id) : undefined;
+      if (!indexes) {
+        visible.push(message);
+        continue;
+      }
+      const blocks = message.blocks.filter((block, index) => block.kind !== "context" || !indexes.has(index));
+      if (blocks.length) visible.push({ ...message, blocks });
+    }
+    return visible;
+  }, [sourceMessages, dismissed]);
   const dismissContextChip = useCallback(
-    (msgId: string, blockIndex: number) => {
-      setMessages((cur) => {
-        const idx = cur.findIndex((m) => m.id === msgId);
-        if (idx < 0) return cur;
-        const m = cur[idx];
-        if (m.role !== "system") return cur;
-        const ctxBlocks = m.blocks.filter((b) => b.kind === "context");
-        const target = ctxBlocks[blockIndex];
-        if (!target) return cur;
-        const kept = m.blocks.filter((b) => b !== target);
-        if (!kept.length) {
-          const next = [...cur];
-          next.splice(idx, 1);
-          return next;
-        }
-        const next = [...cur];
-        next[idx] = { ...m, blocks: kept };
-        return next;
+    (msgId: string, block: Extract<Block, { kind: "context" }>) => {
+      const row = sourceMessages.find((m) => m.role === "system" && m.id === msgId);
+      const index = row?.blocks.indexOf(block) ?? -1;
+      if (!sessionId || index < 0) return;
+      setDismissedBySession((previous) => {
+        const sessionDismissals = new Map(previous.get(sessionId));
+        sessionDismissals.set(msgId, new Set(sessionDismissals.get(msgId)).add(index));
+        return new Map(previous).set(sessionId, sessionDismissals);
       });
     },
-    [setMessages],
+    [sessionId, sourceMessages],
   );
 
   // @session/@result 候选拉取（见上 state 注释）。

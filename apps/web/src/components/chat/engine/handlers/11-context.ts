@@ -37,12 +37,15 @@ export function onContextUpdated(ctx: EngineCtx, sid: string, ev: ServerEvent) {
 }
 
 export function onContextMicrocompacted(ctx: EngineCtx, sid: string, ev: ServerEvent) {
-  // Stale tool outputs cleared to placeholders (E2.5) — always visible.
   const n = Number(ev.cleared_tool_outputs ?? 0);
+  const rows = ctx.storeRef.current[sid] ?? [];
+  const noticeId = typeof ev.notice_id === "string" ? ev.notice_id : undefined;
+  // History can already contain this notice when its live event arrives.
+  if (noticeId && rows.some((row) => row.id === noticeId)) return;
   ctx.storeRef.current[sid] = [
-    ...(ctx.storeRef.current[sid] ?? []),
+    ...rows,
     {
-      id: mid(),
+      id: noticeId || mid(),
       role: "system" as const,
       blocks: [
         {

@@ -105,8 +105,8 @@ export function TranscriptList({
   retryFailed: (msgId: string) => void;
   retryError: (msgId: string) => void;
   retryFromCheckpoint: (msgId: string) => void;
-  /** 系统提示条（context chips）逐条关闭（2026-11-05）：从 store 移除该块。 */
-  dismissContext?: (msgId: string, blockIndex: number) => void;
+  /** Hide one system notice in the current transcript. */
+  dismissContext?: (msgId: string, block: Extract<Block, { kind: "context" }>) => void;
   /** 滚动容器与贴底标志（ChatStream 持有）：分片挂载的滚动补偿用——
    *  stick 时每片重新贴底；用户上翻时按 prepend 高度差平移 scrollTop。 */
   scrollRef?: RefObject<HTMLDivElement | null>;
@@ -423,7 +423,7 @@ export function TranscriptList({
               blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
               onDismiss={
                 dismissContext
-                  ? (bi) => dismissContext(m.id, bi)
+                  ? (block) => dismissContext(m.id, block)
                   : undefined
               }
             />
