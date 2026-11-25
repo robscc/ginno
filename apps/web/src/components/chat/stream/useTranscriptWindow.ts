@@ -61,7 +61,7 @@ export function useTranscriptWindow({
   // context first, then fill both sides with the same block and row budgets.
   const [slice, setSlice] = useState({ sid: sessionId, view, from: 0, to: WINDOW_ROWS });
   const previousLength = useRef(0);
-  const committed = useRef<{ sid: string | undefined; firstKey: string; atEnd: boolean; length: number }>();
+  const committed = useRef<{ sid: string | undefined; firstKey: string; view: ReadingWindow | null; atEnd: boolean; length: number }>();
   const previous = committed.current;
   // The tail normally follows new rows. If the reader has scrolled back and
   // an append would discard recent history, keep the same rows in place.
@@ -74,8 +74,9 @@ export function useTranscriptWindow({
       setSlice({ ...slice, view: held });
       preservedSlice = true;
     }
-  } else if (view && later && stickRef.current && previous?.sid === sessionId && previous?.atEnd) {
-    // Reaching the real bottom resumes following on the next append.
+  } else if (view && later && stickRef.current && previous?.view === view && previous.atEnd) {
+    // Resume following only from the displayed window. A final scroll event
+    // from the tail can arrive before a newly requested history window commits.
     setReading(null);
   }
   const freshTail = !view && sliceResetNeeded(
@@ -97,7 +98,7 @@ export function useTranscriptWindow({
   const pendingMessage = useRef<{ id: string; sid: string | undefined; until: number; block?: number | null } | null>(null);
 
   useLayoutEffect(() => {
-    committed.current = { sid: sessionId, firstKey: keyAt(start), atEnd: later === 0, length: indices.length };
+    committed.current = { sid: sessionId, firstKey: keyAt(start), view, atEnd: later === 0, length: indices.length };
     onWindowEndChange(later > 0);
     const scroll = scrollRef.current;
     if (!scroll) return;

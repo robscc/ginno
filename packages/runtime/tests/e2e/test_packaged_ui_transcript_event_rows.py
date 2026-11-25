@@ -456,9 +456,24 @@ def test_bounded_window_keeps_find_navigation_and_live_reading(app):
         }).observe(el, {childList: true, subtree: true});
     }''')
 
+    # The tail window can emit a final scroll event after the find reveal has
+    # requested an older window and before React commits it. Deliver that
+    # ordering explicitly while the tail is still mounted.
+    scroll.evaluate('''el => {
+        window.staleTailScrolls = 0;
+        const onReveal = event => {
+            if (!event.detail.rowKey.includes('"window-user-0"')) return;
+            window.removeEventListener('ginno:find-reveal-row', onReveal);
+            el.scrollTop = el.scrollHeight;
+            el.dispatchEvent(new Event('scroll'));
+            window.staleTailScrolls++;
+        };
+        window.addEventListener('ginno:find-reveal-row', onReveal);
+    }''')
     field = find_in_session(page, "Shared window needle")
     expect(page.get_by_text("1/3", exact=True)).to_be_visible()
     expect_active_find(page, "Shared window needle", row="window-user-0")
+    assert page.evaluate("window.staleTailScrolls") == 1
     assert rows.count() <= 80
     expect(latest).to_have_count(0)
     field.press("Enter")
@@ -626,3 +641,49 @@ def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
     row.get_by_role("button", name="Retry loading tool output").click()
     expect(row.locator(".diff").get_by_text("new line", exact=True)).to_be_visible()
     assert len(tool_requests) == 2 and len(set(tool_requests)) == 1
+
+
+def test_find_tracks_live_continuation_in_replayed_bubble(app):
+    page, port, sid = app
+    save_messages(sid, [
+        HumanMessage(id="resume-turn", content="Resume the reply"),
+        AIMessage(id="resume-answer", content="Persisted half of the reply."),
+    ])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    row = page.locator('[data-msg-id="resume-answer"]')
+    expect(row).to_contain_text("Persisted half of the reply.")
+    with page.expect_response(lambda res: res.url.endswith(f"/{sid}/history?index=true")) as index:
+        field = find_in_session(page, "Persisted half")
+    assert index.value.ok
+    expect_active_find(page, "Persisted half", row="resume-answer")
+
+    send_frame(page, sid, "token.delta", turn_id="resume-turn", content=" Resumed text sentinel.")
+    expect(row).to_contain_text("Resumed text sentinel.")
+    field.fill("Resumed text sentinel")
+    expect(page.get_by_text("1/1", exact=True)).to_be_visible()
+    expect_active_find(page, "Resumed text sentinel", row="resume-answer")
+
+
+def test_find_matches_visible_markdown_and_skips_hidden_link(app):
+    page, port, sid = app
+    save_messages(sid, [
+        HumanMessage(id="md-turn", content="Present the result"),
+        AIMessage(id="md-answer", content=(
+            "Displayed **emphasis** phrase.\n\n"
+            "[Visible label](https://example.com/hidden-link-sentinel)"
+        )),
+    ])
+    open_session(page, port, sid)
+    row = page.locator('[data-msg-id="md-answer"]')
+    expect(row).to_contain_text("Displayed emphasis phrase.")
+    with page.expect_response(lambda res: res.url.endswith(f"/{sid}/history?index=true")) as index:
+        field = find_in_session(page, "Displayed emphasis phrase")
+    assert index.value.ok
+    expect(page.get_by_text("1/1", exact=True)).to_be_visible()
+    expect_active_find(page, "Displayed emphasis phrase", row="md-answer")
+    field.fill("Visible label")
+    expect_active_find(page, "Visible label", row="md-answer")
+    field.fill("hidden-link-sentinel")
+    expect(page.get_by_text("No hits", exact=True)).to_be_visible()

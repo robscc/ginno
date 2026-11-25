@@ -44,7 +44,7 @@ import { ReasoningSummary } from "./blocks/ReasoningSummary";
 import { ProcessFold } from "./blocks/ProcessFold";
 import { attentionAfter } from "./blocks/processGroups";
 import { useReportAttention } from "./blocks/reportAttention";
-import { splitInlineWidgets } from "./blocks/inlineWidgets";
+import { cleanAgentText, splitInlineWidgets } from "./blocks/inlineWidgets";
 import { processGroups } from "./blocks/processGroups";
 import { LlmCallLine } from "./blocks/llmCallLine";
 import { TaskEventBand } from "./TaskCard";
@@ -108,14 +108,6 @@ export { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 export { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 export { imageUrl, ImageGallery } from "./blocks/media";
 import { Lightbox } from "./blocks/media";
-
-// Strip "[attached <kind>: <name>]" patterns that the LLM sometimes repeats in its text
-// (violating the "don't repeat tool results" instruction). These are shown as ref chips instead.
-const ATTACHED_REF_RE = /\[attached\s+\w+:\s*[^\]]+\]/g;
-
-function cleanAgentText(text: string): string {
-  return text.replace(ATTACHED_REF_RE, "").replace(/\n{3,}/g, "\n\n").trim();
-}
 
 /** 附件型 ref（file/doc）：点击时把 ref_id 登记进文件注册表（老会话的历史
  *  ref 从未注册过；live 转向在 ref.emit 时已注册，这里幂等命中）再走和

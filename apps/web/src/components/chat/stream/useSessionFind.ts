@@ -4,19 +4,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGinno } from "@/lib/store";
 import {
   buildFindIndex,
+  mergeFindHistory,
   searchableBlockText,
   searchFindIndex,
   type FindHit,
 } from "@/lib/sessionFind";
 import { useChatT, useEventI18nText } from "../blocks/i18n";
 import { planUpdatePresentation, searchableReportText } from "../blocks/subagentCards";
-import { contextDisplayText, stripSources } from "../blocks/sources";
+import { contextDisplayText, maskPartialSources, stripSources } from "../blocks/sources";
 import { isReportRow, planUpdateNeedsAttention } from "../blocks/reportFold";
+import { cleanAgentText, splitInlineWidgets } from "../blocks/inlineWidgets";
+import { markdownSearchText } from "@/lib/markdownSearchText";
 import type { ChatMsg } from "../streamCore";
 import { useTranscriptProjection } from "./TranscriptList";
 import { getSessionHistoryIndex, type HistoryResult, type HistoryTarget } from "@/lib/api/sessions";
 import type { Block } from "../blocks/types";
 import * as painter from "./findHighlight";
+
+type TextBlock = Extract<Block, { kind: "text" }>;
+const assistantTextCache = new WeakMap<TextBlock, { live: boolean; text: string }>();
+
+function assistantSearchText(block: TextBlock, live: boolean): string {
+  const cached = assistantTextCache.get(block);
+  if (cached?.live === live) return cached.text;
+  const body = stripSources(block.text);
+  const parts = splitInlineWidgets(cleanAgentText(live ? maskPartialSources(body) : body), live);
+  const prose = parts.flatMap((part) => "text" in part ? [part.text] : []).join(" ");
+  const text = parts.flatMap((part) => {
+    if ("text" in part) return [markdownSearchText(part.text)];
+    const summary = part.widget.summary;
+    return summary && !prose.includes(summary) ? [markdownSearchText(summary)] : [];
+  }).join("\n");
+  assistantTextCache.set(block, { live, text });
+  return text;
+}
 
 export interface SessionFindState {
   open: boolean;
@@ -33,12 +54,13 @@ export interface SessionFindState {
 }
 
 export function useSessionFind({
-  messages, projection, sessionId, scrollRef, sourceMessages,
+  messages, projection, sessionId, scrollRef, sourceMessages, liveId,
   visibleMessages, mapHistory, loadHistory, historyRevision,
 }: {
   messages: ChatMsg[];
   projection: ReturnType<typeof useTranscriptProjection>;
   sessionId: string | undefined;
+  liveId: string | null;
   scrollRef: React.RefObject<HTMLElement | null>;
   sourceMessages: ChatMsg[];
   visibleMessages: (rows: ChatMsg[]) => ChatMsg[];
@@ -82,11 +104,8 @@ export function useSessionFind({
   const searchSource = useMemo(() => {
     if (!open) return [];
     if (!snapshot || snapshot.sid !== sessionId) return sourceMessages;
-    const saved = new Set(snapshot.rows.map((row) => row.id));
-    // Keep a full snapshot for old results and include new live rows from the
-    // current store. Opening a new search reads a new checkpoint.
-    return [...snapshot.rows, ...sourceMessages.filter((row) => !saved.has(row.id))];
-  }, [open, snapshot, sessionId, sourceMessages]);
+    return mergeFindHistory(snapshot.rows, sourceMessages, liveId);
+  }, [open, snapshot, sessionId, sourceMessages, liveId]);
   const searchMessages = useMemo(() => visibleMessages(searchSource), [visibleMessages, searchSource]);
   const searchProjection = useTranscriptProjection(searchMessages, sessionId);
   const sessionsById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
@@ -103,11 +122,11 @@ export function useSessionFind({
       case "subagent_result":
         return searchableReportText(block, sessionsById.get(block.sessionId), tc);
       case "text":
-        return row.role === "assistant" ? stripSources(block.text) : block.text;
+        return row.role === "assistant" ? assistantSearchText(block, row.id === liveId) : block.text;
       default:
         return searchableBlockText(block);
     }
-  }, [sessionsById, eventText, tc, tr]);
+  }, [sessionsById, eventText, tc, tr, liveId]);
   const index = useMemo(() => buildFindIndex(searchMessages, searchProjection, displayText, searchSource),
     [searchMessages, searchProjection, displayText, searchSource]);
   const addresses = useMemo(() => new Map((open
