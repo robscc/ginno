@@ -40,7 +40,10 @@ export function FindBar({ state }: { state: SessionFindState }) {
         className="w-52 rounded border-none bg-transparent px-1 text-[13px] focus-visible:outline focus-visible:outline-1 focus-visible:outline-violet placeholder:text-faint"
       />
       <span role="status" className={`min-w-[52px] text-center text-[11px] ${n === 0 && state.query.trim() ? "text-red" : "text-faint"}`}>
-        {state.query.trim() ? (n === 0 ? t("find.none") : `${state.activeIdx + 1}/${n}`) : ""}
+        {state.indexStatus === "error" ? (
+          <button type="button" onClick={state.retry} className="text-red">{t("history.retrySearch")}</button>
+        ) : state.indexStatus === "loading" ? t("history.loading") :
+          state.query.trim() ? (n === 0 ? t("find.none") : `${state.activeIdx + 1}/${n}`) : ""}
       </span>
       <button
         onClick={state.prev}

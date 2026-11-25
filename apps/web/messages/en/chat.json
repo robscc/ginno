@@ -763,6 +763,15 @@
       }
     },
     "jumpLatest": "Jump to latest message",
+    "history": {
+      "earlier": "Load earlier messages",
+      "loading": "Loading…",
+      "retryEarlier": "Retry loading earlier messages",
+      "loadingOutput": "Loading tool output…",
+      "retryOutput": "Retry loading tool output",
+      "copyOutput": "Copy tool output",
+      "retrySearch": "Retry loading search"
+    },
     "loadEarlier": "Load earlier ({hidden} hidden messages)",
     "loadLater": "Load later ({hidden} hidden messages)",
     "find": {

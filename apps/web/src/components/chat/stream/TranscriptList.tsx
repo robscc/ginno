@@ -5,7 +5,8 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useCallback, useMemo } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
+import type { HistoryTarget } from "@/lib/api/sessions";
 import type { MutableRefObject, RefObject } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -104,6 +105,8 @@ export function TranscriptList({
   stickRef,
   latestWindowRef,
   onWindowEndChange,
+  hasOlderHistory,
+  loadHistory,
 }: {
   messages: ChatMsg[];
   projection: ReturnType<typeof useTranscriptProjection>;
@@ -135,6 +138,8 @@ export function TranscriptList({
   stickRef: MutableRefObject<boolean>;
   latestWindowRef: MutableRefObject<(() => void) | null>;
   onWindowEndChange: (hasLater: boolean) => void;
+  hasOlderHistory: boolean;
+  loadHistory: (sid: string, target?: string) => Promise<HistoryTarget | null>;
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
@@ -185,19 +190,35 @@ export function TranscriptList({
     });
   }
 
-  const { rendered, earlier, later, move } = useTranscriptWindow({
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState(false);
+  const { rendered, earlier, later, move, moveAfterLoad } = useTranscriptWindow({
     sessionId: session?.id, messages, folded, rowKeys, scrollRef, stickRef,
-    latestWindowRef, onWindowEndChange,
+    latestWindowRef, onWindowEndChange, loadHistory,
   });
   const historyButton = "rounded-full border border-line bg-card px-3 py-1 text-[11px] text-muted transition-colors hover:bg-elev focus-visible:outline focus-visible:outline-violet";
 
   return (
     <>
-      {earlier > 0 && (
+      {(earlier > 0 || hasOlderHistory) && (
         <div className="my-3 flex justify-center">
           <button type="button" className={historyButton} data-testid="load-earlier"
-            onClick={(event) => move(-1, event.currentTarget === document.activeElement)}>
-            ↑ {tc("loadEarlier", { hidden: earlier })}
+            disabled={loadingOlder}
+            onClick={async (event) => {
+              const focus = event.currentTarget === document.activeElement;
+              if (earlier >= 60 || !hasOlderHistory || !session) {
+                move(-1, focus);
+                return;
+              }
+              setLoadingOlder(true);
+              setOlderError(false);
+              const reposition = moveAfterLoad(focus);
+              try { await loadHistory(session.id); }
+              catch { reposition(); setOlderError(true); }
+              finally { setLoadingOlder(false); }
+            }}>
+            ↑ {loadingOlder ? tc("history.loading") : olderError ? tc("history.retryEarlier") :
+              hasOlderHistory ? tc("history.earlier") : tc("loadEarlier", { hidden: earlier })}
           </button>
         </div>
       )}

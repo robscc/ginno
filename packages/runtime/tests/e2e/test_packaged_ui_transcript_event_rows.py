@@ -243,7 +243,7 @@ def test_dismissed_context_notice_stays_closed_after_history_reconciliation(app,
     # A probe after a missed final frame replaces the whole view from /history.
     send_frame(page, sid, "turn.start", turn_id="probe-turn", agent_id="dev")
     save_messages(sid, [*saved, HumanMessage(id="new-history", content="Restored by history reconciliation")])
-    with page.expect_response(lambda response: response.url.endswith(f"/api/sessions/{sid}/history")) as restored:
+    with page.expect_response(lambda response: f"/api/sessions/{sid}/history?turns=" in response.url) as restored:
         send_frame(page, sid, "turn.state", running=False)
     assert restored.value.ok
     expect(page.get_by_text("Restored by history reconciliation", exact=True)).to_be_visible()
@@ -412,7 +412,7 @@ def test_find_selected_plan_survives_history_reconciliation(app):
           for number, plan in enumerate(plans, start=1)],
         AIMessage(id="next-reconcile", content="After the replayed plan updates"),
     ])
-    with page.expect_response(lambda response: response.url.endswith(f"/api/sessions/{sid}/history")) as restored:
+    with page.expect_response(lambda response: f"/api/sessions/{sid}/history?turns=" in response.url) as restored:
         send_frame(page, sid, "turn.state", running=False)
     assert restored.value.ok
     expect(page.get_by_text("Reconciled report host", exact=True)).to_be_visible()
@@ -528,3 +528,95 @@ def test_bounded_window_keeps_find_navigation_and_live_reading(app):
     expect(first).to_be_in_viewport()
     expect(rows).to_have_count(80)
     expect(latest).to_have_count(0)
+
+
+def test_paged_history_defers_tool_details_and_search_index(app):
+    page, port, sid = app
+    history_path = f"/api/sessions/{sid}/history"
+    body = "[exit 0]\n" + "First tool search sentinel\n" + "large past output\n" * 350
+    messages = []
+    for i in range(640):
+        messages.extend([
+            HumanMessage(id=f"history-user-{i}", content=f"History question {i}"),
+            AIMessage(id=f"history-assistant-{i}", content=f"History answer {i}", tool_calls=[
+                {"name": "bash", "args": {"command": f"printf fixture-{i}"}, "id": f"call-{i}"},
+            ]),
+            ToolMessage(id=f"history-output-{i}", tool_call_id=f"call-{i}",
+                        content=body if i == 0 else "[exit 0]\n" + "ordinary output fragment\n" * 250),
+        ])
+    save_messages(sid, messages)
+    requests = []
+    page.on("request", lambda request: requests.append(request.url.split(f"127.0.0.1:{port}")[-1])
+            if history_path in request.url else None)
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    expect(page.get_by_text("History answer 639", exact=True)).to_be_in_viewport()
+    assert requests == [f"{history_path}?turns=40"]
+    expect(page.locator('[data-msg-id="history-user-0"]')).to_have_count(0)
+    expect(page.locator('[data-msg-id="history-user-580"]')).to_have_count(0)
+    page.get_by_test_id("load-earlier").click()
+    expect(page.locator('[data-msg-id="history-user-580"]')).to_be_attached()
+    assert len(requests) == 2 and "before=" in requests[1]
+    assert all("index=" not in request and "/tools/" not in request for request in requests)
+
+    # Capture a global search result identified by the checkpoint ToolMessage
+    # ID. It should land on the merged assistant row and open that one tool.
+    page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "history-output-0"}))')
+    first = page.locator('[data-msg-id="history-assistant-0"]')
+    output = first.get_by_text("First tool search sentinel", exact=False)
+    expect(output).to_be_visible(timeout=10_000)
+    assert sum("/tools/" in request for request in requests) == 1
+    assert all("index=" not in request for request in requests)
+    first.get_by_role("button", name="Copy tool output", exact=True).click()
+    assert page.evaluate("navigator.clipboard.readText()") == body
+
+    field = find_in_session(page, "History question 0")
+    expect(page.get_by_text("1/1", exact=True)).to_be_visible()
+    expect_active_find(page, "History question 0", row="history-user-0")
+    assert requests.count(f"{history_path}?index=true") == 1
+    field.fill("First tool search sentinel")
+    expect_active_find(page, "First tool search sentinel", row="history-assistant-0")
+    assert sum("/tools/" in request for request in requests) == 1
+    assert page.locator("[data-chat-scroll] [data-find-row]").count() <= 80
+
+
+def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
+    from PIL import Image
+
+    from ginno_runtime.files.images import encode_images_marker
+
+    page, port, sid = app
+    img = tmp_path / "history-plot.png"
+    Image.new("RGB", (16, 16), "blue").save(img)
+    save_messages(sid, [
+        HumanMessage(id="diagram-question", content="Draw diagram and update example"),
+        AIMessage(id="diagram-answer", content="", tool_calls=[
+            {"name": "bash", "args": {"command": "draw synthetic example"}, "id": "plot-call"},
+            {"name": "edit_file", "args": {"path": "example.txt", "old": "old line\n", "new": "new line\n"},
+             "id": "edit-call"},
+        ]),
+        ToolMessage(content="[exit 0]\n" + encode_images_marker([str(img)]), tool_call_id="plot-call"),
+        ToolMessage(content="Synthetic edit receipt", tool_call_id="edit-call"),
+        AIMessage(content="```mermaid\ngraph TD\n  A[Start] --> B[Finish]\n```"),
+    ])
+    tool_requests = []
+    page.on("request", lambda req: tool_requests.append(req.url) if "/history/tools/" in req.url else None)
+    page.route("**/history/tools/*", lambda route: route.fulfill(status=503, body="retry"), times=1)
+    open_session(page, port, sid)
+    row = page.locator('[data-msg-id="diagram-answer"]')
+    expect(row.locator('[role="img"] svg .node')).to_have_count(2, timeout=15_000)
+    page.wait_for_function('''() => {
+        const img = document.querySelector('[data-msg-id="diagram-answer"] img');
+        return img?.naturalWidth === 16;
+    }''')
+    assert tool_requests == []
+    row.locator('[data-process-fold] > button').click()
+    edit = row.locator('button[title^="edit_file"]')
+    expect(edit).to_contain_text("+1")
+    expect(edit).to_contain_text("−1")
+    edit.click()
+    row.get_by_role("button", name="Retry loading tool output").click()
+    expect(row.locator(".diff").get_by_text("new line", exact=True)).to_be_visible()
+    assert len(tool_requests) == 2 and len(set(tool_requests)) == 1

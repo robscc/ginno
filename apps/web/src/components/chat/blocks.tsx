@@ -513,7 +513,7 @@ export function InnerBlocks({
           <McpAppCard key={`mcpapp-${key++}`} server={mcpUi.server} tool={mcpUi.tool} data={b.content} />,
         );
       }
-      appendRecord(<ToolBlock name={b.name} failed={b.failed} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} isLatestTurn={isLatestTurn} />);
+      appendRecord(<ToolBlock name={b.name} failed={b.failed} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} detail={b.detail} isLatestTurn={isLatestTurn} />);
     } else if (b.kind === "question") {
       appendRecord(<AskUserCard block={b} live={questionLive} onAnswer={onAnswerQuestion} />);
     } else if (b.kind === "reasoning_summary") {
