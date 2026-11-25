@@ -7,6 +7,26 @@ versions.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-25
+
+### 聊天和任务
+
+- 自动折叠聊天中的工具步骤、子代理回报及清单更新。失败、已停止和等待回答的回报仍直接显示。操作卡左缘按状态着色，并可关闭流光。
+- 清单节点直接显示任务状态。修复转达问答与父会话唤醒竞态、同一次调度重复发送原生通知，以及首次勾选待办时礼花未绘制。
+- 恢复聊天中的本机预览链接。文件在工作区外时，提供加入工作区的入口。
+
+### 模型和上下文
+
+- 按模型标签识别 Codex 档位及兼容协议。修复模型热切换及配置并发问题，按请求展示流式思考摘要。
+- 压缩进度跟随实际阶段。轮中压缩后的历史回放只显示简短提示，避免大段摘要撑开聊天区。
+
+### 性能和可靠性
+
+- 按动画帧归并聊天增量，按需载入 Markdown 语法高亮。优化会话索引和 checkpoint 尾部读取，重型文件和表格预览移出事件循环。
+- 精简 macOS arm64 包内的原生库符号、draw.io 和 Monaco 资源，并排除 pandas 测试数据。
+- 串行化 MCP 配置更新，原子提交待办同步账本，修复项目 ZIP 的目标目录解析。
+- 热更新单测使用 Homebrew 测试桩。单测失败时显示用例和完整日志的位置。
+
 ## [0.5.1] - 2026-11-22
 
 39 commits since 0.5.0。主题：**任务运行面板/停止链路、产品与键盘交互五项、
@@ -544,7 +564,9 @@ First public release 🎉 (~2.5 months, 220+ commits, daily dogfooding).
 - **Channels**: DingTalk connector (Stream mode), WeCom.
 - Platforms: macOS (Apple Silicon).
 
-[Unreleased]: https://github.com/robscc/ginno/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/robscc/ginno/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/robscc/ginno/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/robscc/ginno/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/robscc/ginno/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/robscc/ginno/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/robscc/ginno/compare/v0.3.3...v0.4.0
