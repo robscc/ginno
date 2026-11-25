@@ -793,10 +793,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {searchOpen && (
         <SessionSearchModal
           onClose={() => setSearchOpen(false)}
-          onOpen={(sid) => {
-            g.setActiveSession(sid);
-            if (pathname !== "/") router.push("/");
-            window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
+          onOpen={(sid, messageId) => {
+            openFromSearch(sid, messageId);
+            if (!messageId) window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
           }}
         />
       )}

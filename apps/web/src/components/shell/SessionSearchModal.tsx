@@ -12,7 +12,6 @@ import { parseLabelQuery, sessionMatchesLabel } from "@/lib/sessionTags";
 import {
   MessageHitRow,
   SessionHitRow,
-  rememberMessageTarget,
 } from "@/components/shell/searchShared";
 
 /** ⌘K search (V2 P0-1): non-empty queries hit the unified /api/search
@@ -37,7 +36,7 @@ export function SessionSearchModal({
   onOpen,
 }: {
   onClose: () => void;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionId: string, messageId?: string) => void;
 }) {
   const g = useGinno();
   const tr = useTranslations("shell");
@@ -162,15 +161,8 @@ export function SessionSearchModal({
     onOpen(sid);
     onClose();
   };
-  // 消息命中：先记住锚点再打开会话。若目标就是当前会话，直接广播滚动事件
-  // （会话切换 effect 不会重跑，TranscriptList 收到事件后自己定位）。
   const pickMessage = (hit: SearchMessageHit) => {
-    if (hit.session_id === g.activeSessionId) {
-      window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", { detail: hit.message_id }));
-    } else {
-      rememberMessageTarget(hit.message_id);
-    }
-    onOpen(hit.session_id);
+    onOpen(hit.session_id, hit.message_id);
     onClose();
   };
   const pickItem = (item: Hit | undefined) => {
