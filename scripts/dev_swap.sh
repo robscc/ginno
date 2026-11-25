@@ -144,10 +144,15 @@ fi
 if [ "${SKIP_TESTS:-0}" != "1" ]; then
   report unit running "pytest -m unit"
   log "pytest -m unit …（SKIP_TESTS=1 跳过）"
-  UNIT_OUT="$(cd "$RUNTIME" && uv run --group test --extra docs pytest -q -m unit --no-header -x 2>&1 | tail -2)" \
-    || die_stage "pytest -m unit 失败：
-$UNIT_OUT"
-  report unit ok "$UNIT_OUT"
+  UNIT_LOG="$(mktemp /tmp/ginno-devswap-unit.XXXXXX)"
+  if ! (cd "$RUNTIME" && uv run --group test --extra docs pytest -v -m unit --no-header -x) >"$UNIT_LOG" 2>&1; then
+    UNIT_LAST="$(awk '/^tests\/.*::/ { last = $0 } END { print last }' "$UNIT_LOG")"
+    die_stage "pytest -m unit 失败（日志：$UNIT_LOG）：
+$UNIT_LAST
+$(tail -2 "$UNIT_LOG")"
+  fi
+  report unit ok "$(tail -2 "$UNIT_LOG")"
+  rm -f "$UNIT_LOG"
 fi
 
 # ---- 3. 构建（内容 hash 增量；跑着 app 也安全）--------------------------

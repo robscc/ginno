@@ -28,6 +28,7 @@ from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..world_state import (
     ALL_CONTEXT_PREFIXES,
     GOAL_CONTEXT_PREFIX,
+    MID_COMPACT_PREFIX,
     REINJECT_MSG_PREFIX,
     SUMMARY_MSG_PREFIX,
     TURN_CONTEXT_PREFIX,
@@ -1074,7 +1075,7 @@ def _messages_to_ui(
                     display = goal_context_row(content_raw)
                     row_key: str | None = None
                     row_params: dict = {}
-                elif content_raw.startswith(SUMMARY_MSG_PREFIX):
+                elif content_raw.startswith((SUMMARY_MSG_PREFIX, MID_COMPACT_PREFIX)):
                     display, row_key, row_params = summary_row_parts(content_raw)
                 elif content_raw.startswith(REINJECT_MSG_PREFIX):
                     display, row_key, row_params = reinject_row_parts(content_raw)

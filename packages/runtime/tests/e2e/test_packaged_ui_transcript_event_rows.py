@@ -59,6 +59,20 @@ def save_messages(sid, messages):
     )
 
 
+def test_mid_turn_compaction_renders_as_short_notice(app):
+    page, port, sid = app
+    summary_body = "summary-body-sentinel" * 9_000
+    save_messages(sid, [
+        HumanMessage(id="compact", content=f"[compact] 前段对话已压缩摘要（turn 中自动压缩）：\n{summary_body}"),
+        HumanMessage(id="next-user", content="Continue after compaction"),
+    ])
+    open_session(page, port, sid)
+
+    expect(page.get_by_text("Earlier conversation compacted into a summary")).to_be_visible(timeout=15_000)
+    expect(page.get_by_text("summary-body-sentinel", exact=False)).to_have_count(0)
+    expect(page.get_by_text("Continue after compaction", exact=True)).to_be_visible()
+
+
 @pytest.mark.parametrize("legacy", [False, True], ids=["compacted-with-metadata", "legacy"])
 def test_task_and_plan_after_reload(app, legacy):
     page, port, sid = app

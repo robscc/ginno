@@ -1231,8 +1231,10 @@ def render_reinjection(ctx: SessionCtx) -> str:
 
 
 def summary_row_parts(content: str) -> tuple[str, str, dict]:
-    """(text, i18n_key, params) for the E3 summary history row — the full
-    summary is model scaffolding, only a preview belongs in the transcript.
+    """(text, i18n_key, params) for a compaction notice in history.
+
+    E3 summaries get a short preview. Mid-turn summaries can contain serialized
+    model content blocks, so their notice has no preview.
 
     Event contract (i18n-design.md §3): the persisted checkpoint carries ONE
     finished English string, so ``text`` stays the English fallback and the

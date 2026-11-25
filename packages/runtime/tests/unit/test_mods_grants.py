@@ -10,6 +10,7 @@ content lives in the referenced script file, not the command line).
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,20 @@ from ginno_runtime.hooks.grants import (
 from ginno_runtime.mods import bridge_utils
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def fake_brew(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    brew = bin_dir / "brew"
+    brew.write_text(
+        '#!/bin/sh\ntest "$1" = install && test "$2" = mpv && touch "$0.invoked"\n',
+        encoding="utf-8",
+    )
+    brew.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return bin_dir / "brew.invoked"
 
 
 # ---- classifier: install family --------------------------------------------------
@@ -177,12 +192,13 @@ async def test_ask_default_denies_dangerous_and_toasts(tmp_path, monkeypatch):
     assert DANGER_INSTALL in toasts[0]["text"]
 
 
-async def test_allow_runs_dangerous(tmp_path, monkeypatch):
+async def test_allow_runs_dangerous(tmp_path, monkeypatch, fake_brew):
     monkeypatch.setenv("GINNO_HOOKS_TEST_DRYRUN", "1")
     sentinel = tmp_path / "ran"
     _grant(SETTINGS_HOOK_MOD, "allow")
     d = _settings_dispatcher(tmp_path, _touch_and_install_cmd(sentinel))
     await d.dispatch(HookEvent(name="SessionStart", context={}))
+    assert fake_brew.is_file()
     assert sentinel.exists()  # allow 放行
 
 
