@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { HistoryTarget } from "@/lib/api/sessions";
 import type { MutableRefObject, RefObject } from "react";
 import { consumeMessageTarget, flashMessageAnchor } from "@/components/shell/searchShared";
+import { focusActiveHit } from "./findHighlight";
 import { FIND_REVEAL_ROW } from "@/lib/sessionFind";
 import {
   SLICE_INITIAL_BLOCKS, SLICE_STEP_BLOCKS, clampSkip, sliceResetNeeded, sliceStart,
@@ -26,7 +28,7 @@ function rowElement(scroll: HTMLElement, key: string) {
 }
 
 export function useTranscriptWindow({
-  sessionId, messages, folded, rowKeys, scrollRef, stickRef, latestWindowRef, onWindowEndChange,
+  sessionId, messages, folded, rowKeys, scrollRef, stickRef, latestWindowRef, onWindowEndChange, loadHistory,
 }: {
   sessionId: string | undefined;
   messages: ChatMsg[];
@@ -36,6 +38,7 @@ export function useTranscriptWindow({
   stickRef: MutableRefObject<boolean>;
   latestWindowRef: MutableRefObject<(() => void) | null>;
   onWindowEndChange: (hasLater: boolean) => void;
+  loadHistory: (sid: string, target: string) => Promise<HistoryTarget | null>;
 }) {
   // Absorbed reports use their host row, and obsolete failure banners are hidden.
   const indices = useMemo(() => folded.rows.flatMap((row, i) =>
@@ -91,7 +94,7 @@ export function useTranscriptWindow({
   const rendered = indices.slice(start + from, start + to);
   const prependAnchor = useRef<{ key: string; top: number } | null>(null);
   const position = useRef<{ key: string; edge: ScrollLogicalPosition; focus: boolean } | null>(null);
-  const pendingMessage = useRef<{ id: string; sid: string | undefined; until: number } | null>(null);
+  const pendingMessage = useRef<{ id: string; sid: string | undefined; until: number; block?: number | null } | null>(null);
 
   useLayoutEffect(() => {
     committed.current = { sid: sessionId, firstKey: keyAt(start), atEnd: later === 0, length: indices.length };
@@ -171,6 +174,23 @@ export function useTranscriptWindow({
     open(nextStart, target);
   };
 
+  const pendingPage = useRef<{ sid: typeof sessionId; key: string; length: number; focus: boolean }>();
+  const moveAfterLoad = (focus: boolean) => {
+    const intent = { sid: sessionId, key: keyAt(start), length: indices.length, focus };
+    stickRef.current = false;
+    pendingPage.current = intent;
+    return () => { if (pendingPage.current === intent) pendingPage.current = undefined; };
+  };
+  useLayoutEffect(() => {
+    const page = pendingPage.current;
+    if (!page || page.sid !== sessionId || indices.length === page.length) return;
+    pendingPage.current = undefined;
+    const overlap = indices.findIndex((index) => rowKeys[index] === page.key);
+    if (overlap < 0) return;
+    position.current = { key: page.key, edge: "end", focus: page.focus };
+    open(Math.max(0, Math.min(tailStart, overlap - WINDOW_STEP)), overlap);
+  });
+
   const handlePendingMessage = () => {
     const target = pendingMessage.current;
     if (!target) return;
@@ -195,7 +215,12 @@ export function useTranscriptWindow({
     stickRef.current = false;
     row.scrollIntoView({ block: "center" });
     flashMessageAnchor(row);
+    if (target.block != null) {
+      const blockIdx = folded.origins[host].findIndex((origin) => origin.row === source && origin.block === target.block);
+      if (blockIdx >= 0) cancelToolReveal.current = focusActiveHit(scroll, { rowKey: key, blockIdx, occurrence: 0 }, "", () => {});
+    }
   };
+  const cancelToolReveal = useRef<() => void>();
   const actions = useRef({ reveal, handlePendingMessage });
   actions.current = { reveal, handlePendingMessage };
 
@@ -218,7 +243,17 @@ export function useTranscriptWindow({
   useEffect(() => {
     setReading((current) => current?.sessionId === sessionId ? current : null);
     const jump = (id: string) => {
-      pendingMessage.current = { id, sid: sessionId, until: Date.now() + 3000 };
+      cancelToolReveal.current?.();
+      pendingMessage.current = { id, sid: sessionId, until: Infinity };
+      const request = pendingMessage.current;
+      if (sessionId) void loadHistory(sessionId, id).then((host) => {
+        if (pendingMessage.current !== request) return;
+        if (!host) { pendingMessage.current = null; return; }
+        request.id = host.id;
+        request.block = host.block;
+        request.until = Date.now() + 3000;
+        actions.current.handlePendingMessage();
+      }).catch(() => { if (pendingMessage.current === request) pendingMessage.current = null; });
       actions.current.handlePendingMessage();
     };
     const onMessage = (event: Event) => {
@@ -228,6 +263,7 @@ export function useTranscriptWindow({
     const onFind = (event: Event) => {
       const { rowKey, scrollEl } = (event as CustomEvent<{ rowKey: string; scrollEl: HTMLElement }>).detail;
       if (scrollEl !== scrollRef.current) return;
+      cancelToolReveal.current?.();
       pendingMessage.current = null;
       actions.current.reveal(rowKey);
     };
@@ -236,10 +272,11 @@ export function useTranscriptWindow({
     const stored = consumeMessageTarget();
     if (stored) jump(stored);
     return () => {
+      cancelToolReveal.current?.();
       window.removeEventListener("ginno:scroll-to-message", onMessage);
       window.removeEventListener(FIND_REVEAL_ROW, onFind);
     };
-  }, [sessionId, scrollRef]);
+  }, [sessionId, scrollRef, loadHistory]);
 
-  return { rendered, earlier: start, later, move };
+  return { rendered, earlier: start, later, move, moveAfterLoad };
 }

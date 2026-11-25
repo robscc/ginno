@@ -274,7 +274,7 @@ def test_sessions_openapi_contract_snapshot() -> None:
         "ginno_runtime.api.sessions.router",
         contract,
     )
-    assert meta["endpoints"] == 28, f"sessions 端点数漂移: {meta['endpoints']}"
+    assert meta["endpoints"] == 29, f"sessions 端点数漂移: {meta['endpoints']}"
     _assert_snapshot("sessions", contract, meta)
 
 

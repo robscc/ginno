@@ -104,10 +104,10 @@ export function ChatStream({
   );
   const sessionId = session?.id;
   const dismissed = sessionId ? dismissedBySession.get(sessionId) : undefined;
-  const messages = useMemo(() => {
-    if (!dismissed?.size) return sourceMessages;
+  const visibleMessages = useCallback((rows: ChatMsg[]) => {
+    if (!dismissed?.size) return rows;
     const visible: ChatMsg[] = [];
-    for (const message of sourceMessages) {
+    for (const message of rows) {
       const indexes = message.role === "system" ? dismissed.get(message.id) : undefined;
       if (!indexes) {
         visible.push(message);
@@ -117,7 +117,8 @@ export function ChatStream({
       if (blocks.length) visible.push({ ...message, blocks });
     }
     return visible;
-  }, [sourceMessages, dismissed]);
+  }, [dismissed]);
+  const messages = useMemo(() => visibleMessages(sourceMessages), [visibleMessages, sourceMessages]);
   const dismissContextChip = useCallback(
     (msgId: string, block: Extract<Block, { kind: "context" }>) => {
       const row = sourceMessages.find((m) => m.role === "system" && m.id === msgId);
@@ -191,7 +192,6 @@ export function ChatStream({
   // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
   // 高亮=Highlight API painter，跳转复用转录的行键定位。
   const projection = useTranscriptProjection(messages, session?.id);
-  const sessionFind = useSessionFind(messages, projection, session?.id, scrollRef, sourceMessages);
 
   const latestWindowRef = useRef<(() => void) | null>(null);
   const hasLaterRef = useRef(false);
@@ -260,6 +260,7 @@ export function ChatStream({
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
+    mapHistory, loadHistory, hasOlderHistory, historyRevision,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
@@ -269,6 +270,10 @@ export function ChatStream({
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
+  });
+  const sessionFind = useSessionFind({
+    messages, projection, sessionId, scrollRef, sourceMessages,
+    visibleMessages, mapHistory, loadHistory, historyRevision,
   });
   composerRefsHolder.current = { curSessionIdRef, draftCacheRef, pendingDocsRef, pendingPathsRef };
   const sumFlow = useSummarizeFlow({
@@ -1045,6 +1050,8 @@ export function ChatStream({
             stickRef={stickRef}
             latestWindowRef={latestWindowRef}
             onWindowEndChange={onWindowEndChange}
+            hasOlderHistory={hasOlderHistory}
+            loadHistory={loadHistory}
           />
 
           {runs.map((r) => (

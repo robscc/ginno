@@ -10,6 +10,8 @@ import type { TeamReplyMeta } from "@/lib/types";
 
 export interface ChatMsg {
 id: string;
+/** The row came from the paged checkpoint view. */
+history?: boolean;
 // "system" = WorldState context chip rows (centered, not a bubble)
 role: "user" | "assistant" | "system";
 blocks: Block[];

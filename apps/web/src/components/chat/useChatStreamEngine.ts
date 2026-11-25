@@ -16,13 +16,12 @@
 // engine/steer（steer 队列管线）、engine/actions（权限/重试等 socket 动作）。
 // 本文件保留 ref 表、syncDisplay、WS 连接生命周期与 session 切换编排。
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import type { CompactionStage } from "./engine/handlers/11-context";
 import {
   listLastwordsPending,
   openSessionSocket,
-  getSessionHistory,
 } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
@@ -65,6 +64,7 @@ import {
   mapHistory as mapHistoryImpl,
   reconcileTurnFromHistory as reconcileTurnFromHistoryImpl,
 } from "./engine/connect";
+import { appendLiveHistory, readHistory, type HistoryState } from "./engine/history";
 import {
   dropAbsorbedSteers as dropAbsorbedSteersImpl,
   dropSteer as dropSteerImpl,
@@ -220,6 +220,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
   // that into React state only when the session is currently displayed — so
   // switching back mid-reply shows the stream continuing live.
   const storeRef         = useRef<Record<string, ChatMsg[]>>({});
+  const historyRef = useRef(new Map<string, HistoryState>());
   const liveBySessionRef = useRef<Record<string, string | null>>({});
   const socketsRef       = useRef<Record<string, WebSocket>>({});
   const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
@@ -330,7 +331,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
     i18nRef,
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
-    storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
+    storeRef, historyRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
     busyBySessionRef, hintTimerRef, serverRunningRef, compactStageRef, streamAgentRef,
     orphanStreamRef, adoptedTurnRef, retryNoticeRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
@@ -391,22 +392,18 @@ export function useChatStreamEngine(deps: EngineDeps) {
     let alive = true;
     const tick = async () => {
       try {
-        const res = await getSessionHistory(session.id);
-        if (!alive) return;
-        const mapped = mapHistory(res ?? {});
-        // 必须同步写 per-session store:只写显示层的话,任何 syncDisplay
-        // (WS 状态变化/权限事件等)都会把视图弹回进入会话时的旧 store 快照
-        // ——运行中表现为"时不时闪白";结束后轮询停止,重进会话又被
-        // `if (!storeRef[sid])` 非空守卫挡住不再拉 history,视图冻结在旧
-        // 内容上,只有重启(清空 store)才恢复。
-        storeRef.current[session.id] = mapped;
-        setMessages(mapped);
-        pinToBottom();
+        if (historyRef.current.get(session.id)?.page === undefined) return;
+        await readHistory(ctx, session.id, "latest", (mapped) => {
+          if (!alive) return;
+          // The poll and socket both publish from the session store.
+          storeRef.current[session.id] = mapped;
+          syncDisplay(session.id);
+          pinToBottom();
+        });
       } catch {
         /* 轮询失败静默——下一轮再试 */
       }
     };
-    void tick();
     const iv = setInterval(tick, 3000);
     return () => {
       alive = false;
@@ -423,12 +420,11 @@ export function useChatStreamEngine(deps: EngineDeps) {
       return;
     const sid = session.id;
     let alive = true;
-    getSessionHistory(sid)
-      .then((res) => {
+    if (!historyRef.current.get(sid)?.page) return;
+    readHistory(ctx, sid, "latest", (mapped) => {
         if (!alive) return;
-        const mapped = mapHistory(res ?? {});
         storeRef.current[sid] = mapped;
-        setMessages(mapped);
+        syncDisplay(sid);
         pinToBottom();
       })
       .catch(() => {
@@ -451,6 +447,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         if (reconcileTimerRef.current[id]) clearTimeout(reconcileTimerRef.current[id]!);
         try { socketsRef.current[id]?.close(); } catch { /* ignore */ }
         delete socketsRef.current[id];    delete storeRef.current[id];
+        historyRef.current.delete(id);
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
@@ -737,9 +734,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // Load history if this session has no messages yet
     if (!storeRef.current[sid]) {
       storeRef.current[sid] = [];
-      getSessionHistory(sid).then((res) => {
-        if (!res?.messages?.length) return;
-        const mapped = mapHistory(res);
+      readHistory(ctx, sid, "latest", (mapped, ephemeral) => {
         // A reloaded session rebuilds from the checkpoint: entries whose
         // steer_id is already in history were absorbed (their acks died with
         // the old page), so drop them rather than re-sending (design §3.3).
@@ -771,16 +766,18 @@ export function useChatStreamEngine(deps: EngineDeps) {
           );
           if (dupe) {
             liveBySessionRef.current[sid] = dupe.id;
-            storeRef.current[sid] = mapped;
+            storeRef.current[sid] = appendLiveHistory(mapped, ephemeral.filter((row) => row.id !== lid));
           } else {
-            storeRef.current[sid] = [...mapped, liveMsg];
+            storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
           }
         } else {
-          storeRef.current[sid] = mapped;
+          storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
         }
         syncDisplay(sid);
         // store 就绪后补读总线：终态若在切走/重载期间到达，此处补落块。
         appendDevSwapResult();
+      }).catch(() => {
+        if (!storeRef.current[sid]?.length) delete storeRef.current[sid];
       });
     } else {
       // store 已存在（切走再切回）：直接补读总线当前值。
@@ -842,9 +839,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
   }, []);
 
   // ─── 子模块包装（engine/*）：名字与签名保持拆分前原样，实现见各子模块 ──────
-  function mapHistory(res: Parameters<typeof mapHistoryImpl>[1]): ChatMsg[] {
-    return mapHistoryImpl(ctx, res);
-  }
+  const mapHistory = useCallback((res: Parameters<typeof mapHistoryImpl>[1]): ChatMsg[] => {
+    return mapHistoryImpl(currentCtx.current, res);
+  }, []);
   function armSocketReady(sid: string) {
     armSocketReadyImpl(ctx, sid);
   }
@@ -943,6 +940,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
     sendModUiAnswerImpl(ctx, sid, id, value);
   }
 
+  const currentCtx = useRef(ctx);
+  currentCtx.current = ctx;
+  const loadHistory = useCallback((sid: string, target?: string) => {
+    const engine = currentCtx.current;
+    return readHistory(engine, sid, target ? "target" : "older", (rows, live) => {
+      engine.storeRef.current[sid] = appendLiveHistory(rows, live);
+      engine.syncDisplay(sid);
+    }, target);
+  }, []);
+  const historyPage = session?.id ? historyRef.current.get(session.id)?.page : undefined;
+  const hasOlderHistory = Boolean(historyPage?.before);
+  const historyRevision = historyPage?.revision;
+
   return {
     // refs
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
@@ -961,5 +971,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
+    loadHistory, hasOlderHistory, historyRevision,
   };
 }

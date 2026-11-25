@@ -13,7 +13,9 @@ import { planUpdatePresentation, searchableReportText } from "../blocks/subagent
 import { contextDisplayText, stripSources } from "../blocks/sources";
 import { isReportRow, planUpdateNeedsAttention } from "../blocks/reportFold";
 import type { ChatMsg } from "../streamCore";
-import type { useTranscriptProjection } from "./TranscriptList";
+import { useTranscriptProjection } from "./TranscriptList";
+import { getSessionHistoryIndex, type HistoryResult, type HistoryTarget } from "@/lib/api/sessions";
+import type { Block } from "../blocks/types";
 import * as painter from "./findHighlight";
 
 export interface SessionFindState {
@@ -26,15 +28,24 @@ export interface SessionFindState {
   prev: () => void;
   close: () => void;
   focusRequest: number;
+  indexStatus: "loading" | "error" | "ready";
+  retry: () => void;
 }
 
-export function useSessionFind(
-  messages: ChatMsg[],
-  projection: ReturnType<typeof useTranscriptProjection>,
-  sessionId: string | undefined,
-  scrollRef: React.RefObject<HTMLElement | null>,
-  originalMessages: ChatMsg[],
-): SessionFindState {
+export function useSessionFind({
+  messages, projection, sessionId, scrollRef, sourceMessages,
+  visibleMessages, mapHistory, loadHistory, historyRevision,
+}: {
+  messages: ChatMsg[];
+  projection: ReturnType<typeof useTranscriptProjection>;
+  sessionId: string | undefined;
+  scrollRef: React.RefObject<HTMLElement | null>;
+  sourceMessages: ChatMsg[];
+  visibleMessages: (rows: ChatMsg[]) => ChatMsg[];
+  historyRevision: string | undefined;
+  mapHistory: (response: HistoryResult) => ChatMsg[];
+  loadHistory: (sid: string, target: string) => Promise<HistoryTarget | null>;
+}): SessionFindState {
   const [open, setOpen] = useState(false);
   const [query, updateQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -50,35 +61,66 @@ export function useSessionFind(
     return () => clearTimeout(timer);
   }, [query]);
 
-  const index = useMemo(() => {
+  const [snapshot, setSnapshot] = useState<{ sid: string; rows: ChatMsg[] }>();
+  const [indexStatus, setIndexStatus] = useState<SessionFindState["indexStatus"]>("loading");
+  const [retryCount, setRetryCount] = useState(0);
+  useEffect(() => {
+    if (!open || !sessionId) return;
+    let alive = true;
+    setIndexStatus("loading");
+    getSessionHistoryIndex(sessionId).then(
+      (result) => {
+        if (!alive) return;
+        setSnapshot({ sid: sessionId, rows: mapHistory(result) });
+        setIndexStatus("ready");
+      },
+      () => { if (alive) setIndexStatus("error"); },
+    );
+    return () => { alive = false; };
+  }, [open, sessionId, retryCount, mapHistory, historyRevision]);
+
+  const searchSource = useMemo(() => {
     if (!open) return [];
-    const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-    return buildFindIndex(messages, projection, (block, row) => {
-      switch (block.kind) {
-        case "context":
-          return contextDisplayText(block, eventText);
-        case "plan_update": {
-          const compact = (row.role === "assistant" || isReportRow(row)) && !planUpdateNeedsAttention(block);
-          const { title, progress, items, notes, settled, id } = planUpdatePresentation(block, compact, { tc, tr });
-          return [title, progress, id, ...items.flatMap((item) => [item.id, item.label, item.snippet]), settled, notes]
-            .filter(Boolean).join("\n");
-        }
-        case "subagent_result":
-          return searchableReportText(block, sessionsById.get(block.sessionId), tc);
-        case "text":
-          return row.role === "assistant" ? stripSources(block.text) : block.text;
-        default:
-          return searchableBlockText(block);
+    if (!snapshot || snapshot.sid !== sessionId) return sourceMessages;
+    const saved = new Set(snapshot.rows.map((row) => row.id));
+    // Keep a full snapshot for old results and include new live rows from the
+    // current store. Opening a new search reads a new checkpoint.
+    return [...snapshot.rows, ...sourceMessages.filter((row) => !saved.has(row.id))];
+  }, [open, snapshot, sessionId, sourceMessages]);
+  const searchMessages = useMemo(() => visibleMessages(searchSource), [visibleMessages, searchSource]);
+  const searchProjection = useTranscriptProjection(searchMessages, sessionId);
+  const sessionsById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
+  const displayText = useCallback((block: Block, row: ChatMsg) => {
+    switch (block.kind) {
+      case "context":
+        return contextDisplayText(block, eventText);
+      case "plan_update": {
+        const compact = (row.role === "assistant" || isReportRow(row)) && !planUpdateNeedsAttention(block);
+        const { title, progress, items, notes, settled, id } = planUpdatePresentation(block, compact, { tc, tr });
+        return [title, progress, id, ...items.flatMap((item) => [item.id, item.label, item.snippet]), settled, notes]
+          .filter(Boolean).join("\n");
       }
-    }, originalMessages);
-  }, [open, messages, projection, sessions, eventText, tc, tr, originalMessages]);
+      case "subagent_result":
+        return searchableReportText(block, sessionsById.get(block.sessionId), tc);
+      case "text":
+        return row.role === "assistant" ? stripSources(block.text) : block.text;
+      default:
+        return searchableBlockText(block);
+    }
+  }, [sessionsById, eventText, tc, tr]);
+  const index = useMemo(() => buildFindIndex(searchMessages, searchProjection, displayText, searchSource),
+    [searchMessages, searchProjection, displayText, searchSource]);
+  const addresses = useMemo(() => new Map((open
+    ? buildFindIndex(messages, projection, displayText, sourceMessages) : [])
+    .map((entry) => [entry.sourceKey, entry])), [open, messages, projection, displayText, sourceMessages]);
+
   const hits = useMemo(() => searchFindIndex(index, debounced), [index, debounced]);
   const activeIdx = selected?.query === debounced ? Math.max(0, hits.findIndex(
     (hit) => hit.sourceKey === selected.hit.sourceKey && hit.occurrence === selected.hit.occurrence,
   )) : 0;
   const active = hits[activeIdx];
   const paintState = useRef({ hits, activeIdx, debounced });
-  paintState.current = { hits, activeIdx, debounced };
+  paintState.current = { hits: hits.map((hit) => ({ ...hit, ...addresses.get(hit.sourceKey) })), activeIdx, debounced };
   const paint = useCallback(() => {
     const { hits, activeIdx, debounced } = paintState.current;
     if (scrollRef.current) painter.paint(scrollRef.current, hits, activeIdx, debounced);
@@ -86,7 +128,7 @@ export function useSessionFind(
 
   useEffect(() => {
     if (open) paint();
-  }, [open, hits, activeIdx, paint]);
+  }, [open, hits, activeIdx, addresses, paint]);
   useEffect(() => {
     if (!open) return;
     window.addEventListener("ginno:transcript-slices-settled", paint);
@@ -96,18 +138,30 @@ export function useSessionFind(
     };
   }, [open, sessionId, paint]);
 
-  const { sourceKey, rowKey, blockIdx, occurrence } = active ?? {};
+  const address = active && addresses.get(active.sourceKey);
+  const rowKey = address?.rowKey;
+  const blockIdx = address?.blockIdx;
+  const occurrence = active?.occurrence;
+  const requestId = active && !address
+    ? searchMessages[searchProjection.rowKeys.indexOf(active.rowKey)]?.id : undefined;
+  useEffect(() => {
+    if (!open || !sessionId || !requestId) return;
+    let alive = true;
+    loadHistory(sessionId, requestId).catch(() => { if (alive) setIndexStatus("error"); });
+    return () => { alive = false; };
+  }, [open, sessionId, requestId, loadHistory, retryCount]);
   useEffect(() => {
     const scroll = scrollRef.current;
-    if (!open || !scroll || sourceKey === undefined || rowKey === undefined || blockIdx === undefined || occurrence === undefined) return;
+    if (!open || !scroll || rowKey === undefined || blockIdx === undefined || occurrence === undefined) return;
     return painter.focusActiveHit(scroll, { rowKey, blockIdx, occurrence }, debounced, paint);
-  }, [open, sourceKey, rowKey, blockIdx, occurrence, debounced, jumpRequest, scrollRef, paint]);
+  }, [open, rowKey, blockIdx, occurrence, debounced, jumpRequest, scrollRef, paint]);
 
   useEffect(() => {
     updateQuery("");
     setDebounced("");
     setSelected(undefined);
     setOpen(false);
+    setSnapshot(undefined);
   }, [sessionId]);
 
   useEffect(() => {
@@ -128,6 +182,7 @@ export function useSessionFind(
   };
   const close = () => {
     setOpen(false);
+    setSnapshot(undefined);
     updateQuery("");
     setDebounced("");
     setSelected(undefined);
@@ -139,5 +194,5 @@ export function useSessionFind(
   };
 
   return { open, query, hits, activeIdx, setQuery,
-    next: () => jump(activeIdx + 1), prev: () => jump(activeIdx - 1), close, focusRequest };
+    next: () => jump(activeIdx + 1), prev: () => jump(activeIdx - 1), close, focusRequest, indexStatus, retry: () => setRetryCount((n) => n + 1) };
 }

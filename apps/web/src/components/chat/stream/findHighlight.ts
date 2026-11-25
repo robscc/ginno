@@ -124,6 +124,10 @@ export function focusActiveHit(
       record.click();
       return retry();
     }
+    if (block.querySelector("[data-tool-detail-loading]")) {
+      frame = requestAnimationFrame(tick);
+      return;
+    }
     const target = blocks.flatMap((part) => locateRanges(part, query))[hit.occurrence];
     const anchor = target?.startContainer.parentElement ?? block;
     anchor.scrollIntoView({ block: "center" });

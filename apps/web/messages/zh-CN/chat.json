@@ -763,6 +763,15 @@
       }
     },
     "jumpLatest": "跳到最新一条信息",
+    "history": {
+      "earlier": "加载更早的消息",
+      "loading": "加载中…",
+      "retryEarlier": "重试加载更早的消息",
+      "loadingOutput": "正在加载工具输出…",
+      "retryOutput": "重试加载工具输出",
+      "copyOutput": "复制工具输出",
+      "retrySearch": "重试加载搜索内容"
+    },
     "loadEarlier": "加载更早的消息（还有 {hidden} 条）",
     "loadLater": "加载稍后的消息（还有 {hidden} 条）",
     "find": {
