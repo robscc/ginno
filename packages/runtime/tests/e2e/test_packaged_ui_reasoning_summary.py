@@ -151,7 +151,7 @@ def test_reasoning_summary_in_chat_and_history(tmp_path, monkeypatch):
         smoke._stop(proc, log)
 
 
-def test_process_fold_leaves_failed_tool_and_approval_visible(tmp_path, monkeypatch):
+def test_process_fold_contains_failed_tool_and_leaves_question_visible(tmp_path, monkeypatch):
     smoke._require_runtime()
     from playwright.sync_api import expect, sync_playwright
 
@@ -188,16 +188,24 @@ def test_process_fold_leaves_failed_tool_and_approval_visible(tmp_path, monkeypa
                         expect(page.get_by_role("button", name="Stop", exact=True)).to_have_count(0)
 
                 fold = page.locator("[data-process-fold] > button")
-                expect(fold).to_have_count(1)
-                expect(fold).to_contain_text("Completed 2 actions")
-                expect(fold).to_have_attribute("aria-expanded", "false")
-                failure = page.locator('[data-operation-state="failed"]')
+                completed = fold.filter(has_text="Completed 2 actions")
+                expect(completed).to_have_attribute("aria-expanded", "false")
+                failure = page.locator('[data-process-fold][data-operation-state="failed"]')
+                failed_title = failure.locator(":scope > button")
+                expect(failed_title).to_contain_text("1 failed")
+                expect(failed_title).to_have_attribute("aria-expanded", "false")
+                expect(page.get_by_title("preview failed", exact=True)).to_have_count(0)
+                failed_title.click()
                 expect(failure.get_by_title("preview failed", exact=True)).to_be_visible()
                 question = page.locator('[data-operation-state="waiting"]').filter(has_text="Continue with the saved files?")
                 expect(question.get_by_text("Continue with the saved files?", exact=True)).to_be_visible()
                 question.get_by_text("Continue", exact=True).click()
                 expect(page.get_by_text("Saved the files. The preview still needs attention.", exact=True)).to_be_visible()
                 expect(question).to_have_count(0)
+                page.reload(wait_until="load")
+                expect(failed_title).to_have_attribute("aria-expanded", "false")
+                failed_title.click()
+                expect(failure.get_by_title("preview failed", exact=True)).to_be_visible()
             finally:
                 browser.close()
     finally:

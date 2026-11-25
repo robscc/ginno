@@ -46,6 +46,8 @@ def test_operation_edges_follow_tool_results(app):
     fold = page.locator("[data-process-fold]")
     title = fold.locator(":scope > button")
     expect(title).to_contain_text("Running 3 tools")
+    spinner = title.locator(".lucide-loader-circle")
+    expect(spinner).to_have_css("animation-name", "spin")
     _expect_edge(fold, "running", "rgb(241, 124, 186)", animated=True)
     positions = fold.evaluate("""async el => {
         const flow = el.getAnimations({ subtree: true }).find(a => a.animationName === 'ginno-operation-edge-flow');
@@ -62,6 +64,7 @@ def test_operation_edges_follow_tool_results(app):
     assert positions == [["0%", "0%"], ["0%", "100%"]], positions
     page.emulate_media(reduced_motion="reduce")
     _expect_edge(fold, "running", "rgb(241, 124, 186)")
+    expect(spinner).to_have_css("animation-name", "none")
     page.emulate_media(reduced_motion="no-preference")
     _expect_edge(fold, "running", "rgb(241, 124, 186)", animated=True)
 
@@ -75,14 +78,27 @@ def test_operation_edges_follow_tool_results(app):
     expect(title).to_have_attribute("aria-expanded", "true")
     expect(fold.get_by_text("Result for rainbow-call-0", exact=True)).to_be_visible()
 
-    for call, content in (("failed-tool", "[error] rainbow failure"), ("stopped-tool", "(interrupted)")):
+    for call in ("failed-tool", "stopped-tool"):
         send_frame(page, sid, "tool.start", turn_id=turn, id=call, name="bash")
-        send_frame(page, sid, "tool.end", turn_id=turn, id=call, name="bash", content=content)
-    failure = page.locator('[data-operation-state="failed"]').filter(has_text="rainbow failure")
-    _expect_edge(failure, "failed", "rgb(255, 151, 124)")
+    send_frame(page, sid, "tool.end", turn_id=turn, id="failed-tool", name="bash", content="[error] rainbow failure")
+    expect(title).to_contain_text("Running")
+    expect(title).to_contain_text("1 failed")
+    expect(title).to_contain_text("3 done")
+    expect(spinner).to_have_css("animation-name", "spin")
+    failed_tool = fold.locator('[data-operation-state="failed"]').filter(has_text="rainbow failure")
+    _expect_edge(failed_tool, "failed", "rgb(255, 151, 124)")
+
+    send_frame(page, sid, "tool.end", turn_id=turn, id="stopped-tool", name="bash", content="(interrupted)")
+    _expect_edge(fold, "failed", "rgb(255, 151, 124)")
+    expect(title).to_contain_text("Completed 3 actions")
+    expect(title).to_contain_text("1 failed")
+    expect(spinner).to_have_count(0)
+    title.click()
+    expect(failed_tool).to_be_hidden()
+    expect(page.locator('[data-operation-state="failed"]:visible')).to_have_count(1)
     interrupted = page.locator('[data-operation-state="interrupted"]').filter(has_text="Interrupted")
     _expect_edge(interrupted, "interrupted", "rgb(123, 143, 174)")
-    expect(fold.locator('[data-operation-state="failed"], [data-operation-state="interrupted"]')).to_have_count(0)
+    expect(fold.locator('[data-operation-state="interrupted"]')).to_have_count(0)
 
 
 def test_operation_flow_can_be_paused_and_waiting_is_static(app):

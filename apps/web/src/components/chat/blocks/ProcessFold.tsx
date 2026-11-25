@@ -31,11 +31,12 @@ export function ProcessFold({
   const button = useRef<HTMLButtonElement>(null);
   const anchor = useRef<number | null>(null);
   const [choice, setChoice] = useState<boolean | null>(null);
-  const { completed, pending, count, thinking, compact, reports, planUpdates, plan } =
+  const { completed, pending, count, failed, thinking, compact, reports, planUpdates, plan } =
     processStatus(blocks, streaming, tail);
   const running = streaming && pending.length > 0;
   const active = running || thinking;
-  const state = !active ? "completed" : offline ? "interrupted" : parked ? "waiting" : "running";
+  const state = active ? (offline ? "interrupted" : parked ? "waiting" : "running")
+    : failed ? "failed" : "completed";
   const open = choice === true;
   // Keep the container and its key stable across deltas and short-group transitions.
   const folded = compact || active || choice !== null;
@@ -73,7 +74,9 @@ export function ProcessFold({
   const planTitle = plan ? (plan.total != null
     ? tc("process.planProgress", { done: plan.done, total: plan.total })
     : tc("process.planProgressOpen", { done: plan.done })) : "";
-  const title = [stepTitle, reportTitle, planTitle].filter(Boolean).join(" · ") || tc("process.reviewed");
+  const titleParts = [stepTitle, reportTitle, planTitle].filter(Boolean);
+  const failureTitle = failed ? tc("process.failedCount", { count: failed }) : "";
+  const title = titleParts.join(" · ") || failureTitle || tc("process.reviewed");
   const stats = (["read", "edit", "command", "other"] as const).flatMap((key) =>
     completed[key] ? [tc(`process.${key}`, { count: completed[key] })] : [],
   ).join(" · ");
@@ -95,9 +98,16 @@ export function ProcessFold({
           className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1 text-left text-xs text-muted hover:bg-card2/50 focus-visible:outline-violet">
           <ChevronRight aria-hidden className={`h-3 w-3 shrink-0 motion-safe:transition-transform ${open ? "rotate-90" : ""}`} />
           {state === "running" && (running
-            ? <Loader2 aria-hidden className="h-3 w-3 shrink-0 text-amber-500" />
+            ? <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin text-amber-500" />
             : <Sparkles aria-hidden className="h-3 w-3 shrink-0 text-violet" />)}
+          {!!failureTitle && titleParts.length === 0 && <AlertCircle aria-hidden className="h-3 w-3 shrink-0 text-red" />}
           <span className="min-w-0 flex-1 truncate font-medium text-txt/80">{title}</span>
+          {!!failureTitle && titleParts.length > 0 && (
+            <span className="flex shrink-0 items-center gap-1 text-txt">
+              <AlertCircle aria-hidden className="h-3 w-3 text-red" />
+              {failureTitle}
+            </span>
+          )}
           {attention && attention.failed > 0 && (
             <span className="flex shrink-0 items-center gap-1 text-txt" title={tc("process.failedTitle")}>
               <AlertCircle aria-hidden className="h-3 w-3 text-red" />

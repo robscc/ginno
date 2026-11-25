@@ -34,7 +34,7 @@ function isProcess(block: Block, interactive: ReadonlySet<string>, attention?: R
   }
   if (block.kind === "thinking" || block.kind === "reasoning_summary") return true;
   return block.kind === "tool" && !standaloneTools.has(block.name) && !interactive.has(block.name)
-    && !toolFailed(block.content, block.failed) && !toolInterrupted(block.content);
+    && !toolInterrupted(block.content);
 }
 
 export function processGroups(
@@ -68,6 +68,7 @@ export function processStatus(blocks: readonly Block[], streaming: boolean, tail
   const pending: Tool[] = [];
   let receiving = false;
   let tools = 0;
+  let failed = 0;
   let reports = 0;
   let planUpdates = 0;
   let plan: PlanProgress | null = null;
@@ -75,6 +76,7 @@ export function processStatus(blocks: readonly Block[], streaming: boolean, tail
     if (block.kind === "tool") {
       tools++;
       if (block.pending) pending.push(block);
+      else if (toolFailed(block.content, block.failed)) failed++;
       else completed[toolCategory(block.name)]++;
     } else if (block.kind === "reasoning_summary" && block.receiving) receiving = true;
     else if (block.kind === "subagent_result") reports++;
@@ -83,13 +85,13 @@ export function processStatus(blocks: readonly Block[], streaming: boolean, tail
       plan = block.progress ?? plan;
     }
   }
-  const count = tools - pending.length;
+  const count = tools - pending.length - failed;
   const thinking = streaming && (receiving || (tail && blocks.at(-1)?.kind === "thinking"));
   // A single report folds too: the pile-up this group exists for is one card
   // per finished item, so "only one so far" must not render as a full card.
   return {
-    completed, pending, count, thinking,
-    compact: blocks.length >= 3 || tools >= 2 || reports + planUpdates > 0,
+    completed, pending, count, failed, thinking,
+    compact: failed > 0 || blocks.length >= 3 || tools >= 2 || reports + planUpdates > 0,
     reports, planUpdates, plan,
   };
 }
