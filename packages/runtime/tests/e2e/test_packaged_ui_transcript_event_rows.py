@@ -561,9 +561,15 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     assert len(requests) == 2 and "before=" in requests[1]
     assert all("index=" not in request and "/tools/" not in request for request in requests)
 
-    # Capture a global search result identified by the checkpoint ToolMessage
-    # ID. It should land on the merged assistant row and open that one tool.
-    page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "history-output-0"}))')
+    # Index the saved synthetic checkpoint, then use the actual global search.
+    from ginno_runtime.search_index import build_index
+
+    assert build_index(force=True)["indexed"] == 1
+    page.keyboard.press("Control+k")
+    search = page.get_by_role("dialog", name="Search sessions")
+    search.get_by_role("textbox").fill("First tool search sentinel")
+    search.get_by_role("button", name="First tool search sentinel", exact=False).click()
+    expect(search).to_have_count(0)
     first = page.locator('[data-msg-id="history-assistant-0"]')
     output = first.get_by_text("First tool search sentinel", exact=False)
     expect(output).to_be_visible(timeout=10_000)
