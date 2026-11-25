@@ -19,10 +19,12 @@ describe("process groups", () => {
     expect(processGroups(blocks, new Set(["mcp_ui"]))).toEqual([[0, 1, 3, 4], [6], [10], [12]]);
   });
 
-  it("keeps failed and interrupted tools independently visible", () => {
+  it("keeps failed tools in the group and interrupted tools independently visible", () => {
     const blocks = [tool("read_file"), tool("bash", { content: "[exit 2]\nfailed" }),
       tool("read_file", { failed: true }), tool("bash", { content: "(interrupted)" }), tool("edit_file")];
-    expect(processGroups(blocks, new Set())).toEqual([[0], [4]]);
+    expect(processGroups(blocks, new Set())).toEqual([[0, 1, 2], [4]]);
+    expect(processStatus(blocks.slice(0, 3), false, false)).toMatchObject({ failed: 2, count: 1 });
+    expect(processStatus([blocks[1]], false, false)).toMatchObject({ failed: 1, count: 0, compact: true });
     expect(toolFailed("[error] missing file")).toBe(true);
     expect(toolFailed("[DEBUG]\nError keyword in ordinary text")).toBe(false);
   });
@@ -32,7 +34,7 @@ describe("process groups", () => {
     const blocks = [summary, tool("read_file"), tool("read_file"), tool("edit_file"), pending, pending];
     expect(processStatus(blocks, true, true)).toEqual({
       completed: { read: 2, edit: 1, command: 0, other: 0 }, pending: [pending, pending],
-      count: 3, thinking: false, compact: true, reports: 0, planUpdates: 0, plan: null,
+      count: 3, failed: 0, thinking: false, compact: true, reports: 0, planUpdates: 0, plan: null,
     });
     expect(processStatus([summary, tool("read_file")], false, true).compact).toBe(false);
   });
