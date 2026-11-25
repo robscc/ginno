@@ -24,6 +24,25 @@ export interface FindHit extends FindTarget {
 
 type FindMessage = Pick<ChatMsg, "blocks" | "role" | "turnId"> & { id?: string | null };
 
+export function mergeFindHistory(history: ChatMsg[], current: ChatMsg[], liveId: string | null): ChatMsg[] {
+  const saved = new Set(history.map((row) => row.id));
+  const live = liveId ? current.find((row) => row.id === liveId) : undefined;
+  const rows = live && saved.has(live.id) ? history.map((row) => {
+    if (row.id !== live.id) return row;
+    // A stream can resume in the same bubble that the checkpoint indexed.
+    // Take the displayed blocks and restore full bodies to lazy tool previews.
+    const tools = new Map(row.blocks.flatMap((block) =>
+      block.kind === "tool" && block.id ? [[block.id, block] as const] : []));
+    const blocks = live.blocks.map((block) => {
+      if (block.kind !== "tool" || !block.detail || !block.id) return block;
+      const full = tools.get(block.id);
+      return full?.name === block.name ? { ...block, content: full.content, diff: full.diff ?? block.diff } : block;
+    });
+    return { ...live, blocks };
+  }) : history;
+  return [...rows, ...current.filter((row) => !saved.has(row.id))];
+}
+
 function nextOrdinal(counts: Map<string, number>, key: string): number {
   const ordinal = counts.get(key) ?? 0;
   counts.set(key, ordinal + 1);

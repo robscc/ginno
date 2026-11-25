@@ -3,6 +3,12 @@ type Part = { text: string } | { widget: InlineWidget };
 const CLOSE = "</ginno-block>";
 const OPEN = "<ginno-block";
 const MAX_BYTES = 64 * 1024;
+const ATTACHED_REF_RE = /\[attached\s+\w+:\s*[^\]]+\]/g;
+
+/** Attachment receipts have their own chips in the transcript. */
+export function cleanAgentText(text: string): string {
+  return text.replace(ATTACHED_REF_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 // The gateway sometimes prints raw JSON in a quoted attribute. Scan the JSON
 // object itself so apostrophes in labels and escaped double quotes are safe.

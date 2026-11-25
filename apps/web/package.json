@@ -30,7 +30,9 @@
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^2.5.0"
+    "remark-parse": "^11.0.0",
+    "tailwind-merge": "^2.5.0",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@types/d3": "^7.4.3",

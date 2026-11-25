@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { foldReportRows } from "@/components/chat/blocks/reportFold";
 import type { ChatMsg } from "@/components/chat/streamCore";
+import { markdownSearchText } from "./markdownSearchText";
 import {
   buildFindIndex,
+  mergeFindHistory,
   searchableBlockText,
   searchFindIndex,
   transcriptRowKeys,
@@ -85,6 +87,29 @@ it("keeps folded reasoning, tool diff and question text addressable", () => {
   expect(searchFindIndex(indexed, "config").map(({ blockIdx }) => blockIdx)).toEqual([0, 1, 2]);
   expect(searchFindIndex(indexed, "enable_preview").map(({ blockIdx }) => blockIdx)).toEqual([2]);
   expect(searchFindIndex(indexed, "Staging").map(({ blockIdx }) => blockIdx)).toEqual([3, 3]);
+});
+
+it("indexes a resumed bubble once with its live text and persisted tool bodies", () => {
+  const tool = { kind: "tool", id: "old-tool", name: "bash", content: "Persisted stdout", pending: false } as const;
+  const saved: ChatMsg = { id: "adopted", role: "assistant", blocks: [
+    tool, { kind: "text", text: "Persisted reply" },
+  ] };
+  const live: ChatMsg = { ...saved, blocks: [
+    { ...tool, content: "", detail: { sessionId: "s1", key: "v1", chars: 16, lines: 1 } },
+    { kind: "text", text: "Persisted reply with live addition" },
+  ] };
+  const current = mergeFindHistory([saved], [live], live.id);
+  expect(current).toHaveLength(1);
+  expect(searchFindIndex(index(current), "live addition")).toHaveLength(1);
+  expect(searchFindIndex(index(current), "Persisted stdout")).toHaveLength(1);
+  expect(searchFindIndex(index(current), "Persisted reply")).toHaveLength(1);
+});
+
+it("indexes visible Markdown labels, inline formatting and literal code", () => {
+  const text = markdownSearchText("A **bold** [visible](https://example.org/hidden) label.\n\n```text\n[keep](literal)\n```");
+  expect(text).toContain("A bold visible label.");
+  expect(text).toContain("[keep](literal)");
+  expect(text).not.toContain("example.org/hidden");
 });
 
 it("keeps an unchanged text block's source identity across unrelated appends", () => {

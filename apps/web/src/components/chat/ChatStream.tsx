@@ -272,7 +272,7 @@ export function ChatStream({
     finishSynthesisWait,
   });
   const sessionFind = useSessionFind({
-    messages, projection, sessionId, scrollRef, sourceMessages,
+    messages, projection, sessionId, scrollRef, sourceMessages, liveId,
     visibleMessages, mapHistory, loadHistory, historyRevision,
   });
   composerRefsHolder.current = { curSessionIdRef, draftCacheRef, pendingDocsRef, pendingPathsRef };
