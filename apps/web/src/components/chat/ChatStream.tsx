@@ -59,7 +59,7 @@ import { ChannelStatusBar } from "./stream/ChannelStatusBar";
 import { ModelChipMenu } from "./stream/ModelChipMenu";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
-import { TranscriptList } from "./stream/TranscriptList";
+import { TranscriptList, useTranscriptProjection } from "./stream/TranscriptList";
 import { Composer } from "./stream/Composer";
 import { AgentChips } from "./stream/AgentChips";
 import { parsePeerTarget } from "./stream/peerTarget";
@@ -190,7 +190,8 @@ export function ChatStream({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
   // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
-  const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
+  const projection = useTranscriptProjection(messages, session?.id);
+  const sessionFind = useSessionFind(messages, projection, session?.id, scrollRef, sourceMessages);
 
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -1014,6 +1015,7 @@ export function ChatStream({
 
           <TranscriptList
             messages={messages}
+            projection={projection}
             session={session}
             liveId={liveId}
             running={running}

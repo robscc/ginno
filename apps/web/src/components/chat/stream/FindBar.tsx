@@ -14,7 +14,7 @@ export function FindBar({ state }: { state: SessionFindState }) {
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
-  }, [state.focusRequest]);
+  }, [state.open, state.focusRequest]);
 
   if (!state.open) return null;
   const n = state.hits.length;
@@ -35,10 +35,11 @@ export function FindBar({ state }: { state: SessionFindState }) {
             state.close();
           }
         }}
+        aria-label={t("find.placeholder")}
         placeholder={t("find.placeholder")}
-        className="w-52 rounded border-none bg-transparent px-1 text-[13px] outline-none placeholder:text-faint"
+        className="w-52 rounded border-none bg-transparent px-1 text-[13px] focus-visible:outline focus-visible:outline-1 focus-visible:outline-violet placeholder:text-faint"
       />
-      <span className={`min-w-[52px] text-center text-[11px] ${n === 0 && state.query.trim() ? "text-red" : "text-faint"}`}>
+      <span role="status" className={`min-w-[52px] text-center text-[11px] ${n === 0 && state.query.trim() ? "text-red" : "text-faint"}`}>
         {state.query.trim() ? (n === 0 ? t("find.none") : `${state.activeIdx + 1}/${n}`) : ""}
       </span>
       <button

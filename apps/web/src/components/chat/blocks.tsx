@@ -515,22 +515,15 @@ export function InnerBlocks({
       }
       appendRecord(<ToolBlock name={b.name} failed={b.failed} content={b.content} pending={b.pending} argsPreview={b.argsPreview} argsStream={b.argsStream} diff={b.diff} isLatestTurn={isLatestTurn} />);
     } else if (b.kind === "question") {
-      out.push(
-        <AskUserCard
-          key={b.id || `q${key++}`}
-          block={b}
-          live={questionLive}
-          onAnswer={onAnswerQuestion}
-        />,
-      );
+      appendRecord(<AskUserCard block={b} live={questionLive} onAnswer={onAnswerQuestion} />);
     } else if (b.kind === "reasoning_summary") {
       appendRecord(<ReasoningSummary block={b} live={!!streaming} offline={offline} />);
     } else if (b.kind === "thinking") {
       appendRecord(<ThinkingBlock text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
-      out.push(<FileChips key={key++} files={[b]} />);
+      out.push(<FileChips key={key++} files={[b]} blockIndexes={[i]} />);
     } else if (b.kind === "steer") {
-      out.push(<SteerBand key={b.steerId || `st${key++}`} block={b} />);
+      appendRecord(<SteerBand block={b} />);
     } else if (b.kind === "task_event") {
       // 后台任务事件注入点（评审决策 4）：极薄标记行，完整状态在 bg_run
       // 的常驻 TaskCard；此处只为时间线留下「结果何时回来」的锚。
@@ -547,13 +540,13 @@ export function InnerBlocks({
     } else if (b.kind === "subagent_spawn") {
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
-      out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} onFileLink={onFileLink} />);
+      out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} onFileLink={onFileLink} blockIndex={i} />);
     } else if (b.kind === "plan_update") {
-      out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} row={grouped.has(i)} />);
+      out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} row={grouped.has(i)} blockIndex={i} />);
     } else if (b.kind === "subagent_brief") {
       out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
     } else if (b.kind === "worker_result") {
-      out.push(<WorkerResultCard key={`wr-${b.sessionId}-${key++}`} block={b} />);
+      appendRecord(<WorkerResultCard block={b} />);
     } else if (b.kind === "worker_assign") {
       out.push(<WorkerAssignCard key={`wa-${b.fromSessionId}-${key++}`} block={b} />);
     } else if (b.kind === "context") {
@@ -561,7 +554,7 @@ export function InnerBlocks({
       // 消息**上；这里不渲染就会让 hasInner 为真但卡片体为空——一条只有
       // context 的消息于是显示成一张空白卡片（2026-10-26 联同底部空白一起
       // 排查）。历史重放会把它折成 system 行，两条路径现在都看得见。
-      out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} />);
+      out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} blockOffset={i} />);
     } else if (b.kind === "devswap_result") {
       // 角落 chrome：不占流推进位（同 turn_meta），由 DevSwapResultLine 统一渲染。
       i++;
@@ -626,29 +619,26 @@ export function LastwordsCard({ text }: { text: string }) {
 }
 
 export function UserBlocks({ blocks }: { blocks: Block[] }) {
-  const files = blocks.filter((b): b is Extract<Block, { kind: "file" }> => b.kind === "file");
-  const skills = blocks.filter((b): b is Extract<Block, { kind: "skill" }> => b.kind === "skill");
+  const files = blocks.flatMap((block, index) => block.kind === "file" ? [{ block, index }] : []);
+  const skills = blocks.flatMap((block, index) => block.kind === "skill" ? [{ block, index }] : []);
   const imgs = blocks
     .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
     .map(imageUrl);
-  const texts = blocks
-    .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
-    .map((b) => b.text);
+  const texts = blocks.flatMap((block, index) => block.kind === "text" ? [{ text: block.text, index }] : []);
   // The user's own request rides the skill block on slash-skill turns.
-  const skillTexts = skills.map((s) => s.text ?? "").filter(Boolean);
-  const allTexts = [...texts, ...skillTexts];
+  const skillTexts = skills.flatMap(({ block, index }) => block.text ? [{ text: block.text, index }] : []);
   return (
     <>
-      <FileChips files={files} />
-      <SkillChips skills={skills} />
+      <FileChips files={files.map(({ block }) => block)} blockIndexes={files.map(({ index }) => index)} />
+      <SkillChips skills={skills.map(({ block }) => block)} blockIndexes={skills.map(({ index }) => index)} />
       {imgs.length > 0 && <ImageGallery urls={imgs} />}
-      {allTexts.map((t, i) => {
+      {[...texts, ...skillTexts].map(({ text: t, index }) => {
         // worker 代答信封（2026-11-21 中断透传）：整段折卡片，信封外的
         // 普通文本照旧 MentionText。解析失败（未知变体）时 items 为空，
         // 走原路径——永不吞文本。
         const { rest, items } = parseWorkerQuestions(t);
         return (
-          <div key={i}>
+          <div key={index} data-block-idx={index}>
             {items.length > 0 && <WorkerQuestionCard items={items} />}
             {rest.trim() && (
               // break-words: pasted terminal output carries long unbroken paths —
@@ -666,19 +656,20 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
 
 /** Ref chips rendered BELOW the card, matching the mock layout. */
 export function RefBlocks({ blocks }: { blocks: Block[] }) {
-  const refs = blocks.filter((b): b is Extract<Block, { kind: "ref" }> => b.kind === "ref");
+  const refs = blocks.flatMap((block, index) => block.kind === "ref" ? [{ block, index }] : []);
   if (!refs.length) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-2">
-      {refs.map((r, i) => (
-        <RefChip
-          key={i}
-          refKind={r.refKind}
-          name={r.name}
-          refId={r.refId}
-          remote={r.remote}
-          peer={r.peer}
-        />
+      {refs.map(({ block: r, index }) => (
+        <div key={index} className="contents" data-block-idx={index}>
+          <RefChip
+            refKind={r.refKind}
+            name={r.name}
+            refId={r.refId}
+            remote={r.remote}
+            peer={r.peer}
+          />
+        </div>
       ))}
     </div>
   );
@@ -784,6 +775,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
                   <>
                     <MentionText text={`${head}…`} />
                     <button
+                      type="button" data-reveal-record aria-expanded={false}
                       onClick={() => setFoldOpen(true)}
                       className="ml-1 rounded bg-card2/70 px-1.5 py-px text-[10px] text-muted hover:text-txt"
                     >

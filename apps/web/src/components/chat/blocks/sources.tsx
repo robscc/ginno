@@ -114,30 +114,40 @@ export function maskPartialSources(text: string): string {
 /** Centered, de-emphasized system row for context chips.
  *  `onDismiss`（可选）：逐条 × 关闭（2026-11-05 用户反馈「已清理 N 条」横幅
  *  一直杵着没法关）——不传则与旧行为完全一致（PinStream 等调用方）。 */
+export function contextDisplayText(
+  block: Extract<Block, { kind: "context" }>,
+  eventText: ReturnType<typeof useEventI18nText>,
+): string {
+  return eventText(block, block.text);
+}
+
 export function ContextBlocks({
   blocks,
   onDismiss,
+  blockOffset = 0,
 }: {
-  blocks: Extract<Block, { kind: "context" }>[];
+  blocks: Block[];
+  blockOffset?: number;
   onDismiss?: (block: Extract<Block, { kind: "context" }>) => void;
 }) {
   const evText = useEventI18nText();
   const { tc } = useChatT();
-  if (!blocks.length) return null;
+  if (!blocks.some((b) => b.kind === "context")) return null;
   return (
     <div className="flex flex-col items-center gap-1">
-      {blocks.map((b, i) => (
+      {blocks.map((b, i) => b.kind === "context" && (
         <div
           key={i}
+          data-block-idx={blockOffset + i}
           className="group relative selectable max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
         >
           {/* 事件契约：i18n_key 命中即翻译，否则原样直显 text（历史会话兼容） */}
-          {evText(b, b.text)}
+          {contextDisplayText(b, evText)}
           {onDismiss && (
             <button
               onClick={() => onDismiss(b)}
               aria-label={tc("sources.dismissAria")}
-              className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-line bg-base text-[9px] leading-none text-faint hover:text-txt group-hover:flex"
+              className="absolute -right-1.5 -top-1.5 flex h-4 w-4 pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 items-center justify-center rounded-full border border-line bg-base text-[9px] leading-none text-faint hover:text-txt group-hover:pointer-events-auto group-hover:opacity-100"
             >
               ×
             </button>
