@@ -189,10 +189,18 @@ export function ChatStream({
   const innerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
-  // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
+  // 高亮=Highlight API painter，跳转复用转录的行键定位。
   const projection = useTranscriptProjection(messages, session?.id);
   const sessionFind = useSessionFind(messages, projection, session?.id, scrollRef, sourceMessages);
 
+  const latestWindowRef = useRef<(() => void) | null>(null);
+  const hasLaterRef = useRef(false);
+  const [hasLater, setHasLater] = useState(false);
+  const onWindowEndChange = useCallback((later: boolean) => {
+    if (hasLaterRef.current === later) return;
+    hasLaterRef.current = later;
+    setHasLater(later);
+  }, []);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -385,6 +393,7 @@ export function ChatStream({
   function jumpToLatest() {
     stickRef.current = true;
     setShowJumpLatest(false);
+    latestWindowRef.current?.();
     pinToBottom();
   }
 
@@ -408,7 +417,7 @@ export function ChatStream({
   // composerInsert 消费都在 useChatEventBridge 内（效果/依赖逐字保留）。
   useChatEventBridge({
     focusLatestRef, stickRef, curSessionIdRef, draftCacheRef, mentionsRef,
-    busyBySessionRef, textareaRef, session, input, setInput, pinToBottom,
+    busyBySessionRef, textareaRef, session, input, setInput, pinToBottom, jumpToLatest,
     enqueueSteer, attemptSend,
     composerInsert: g.composerInsert, clearComposerInsert: g.clearComposerInsert,
     recomputeMenu,
@@ -418,7 +427,7 @@ export function ChatStream({
     let left = frames;
     const attempt = () => {
       const el = scrollRef.current;
-      if (!el || !stickRef.current) return;
+      if (!el || !stickRef.current || hasLaterRef.current) return;
       el.scrollTop = el.scrollHeight;
       if (--left > 0) requestAnimationFrame(attempt);
     };
@@ -998,10 +1007,11 @@ export function ChatStream({
       <div
         ref={scrollRef}
         data-chat-scroll
+        tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
           const away = el.scrollHeight - el.scrollTop - el.clientHeight;
-          stickRef.current = away < 80;
+          stickRef.current = !hasLaterRef.current && away < 80;
           setShowJumpLatest(away >= JUMP_AWAY_PX);
         }}
         className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
@@ -1033,6 +1043,8 @@ export function ChatStream({
             dismissContext={dismissContextChip}
             scrollRef={scrollRef}
             stickRef={stickRef}
+            latestWindowRef={latestWindowRef}
+            onWindowEndChange={onWindowEndChange}
           />
 
           {runs.map((r) => (
@@ -1050,9 +1062,12 @@ export function ChatStream({
 
         </div>
       </div>
-      {showJumpLatest && (
+      {(hasLater || showJumpLatest) && (
         <button
-          onClick={jumpToLatest}
+          onClick={(event) => {
+            if (event.currentTarget === document.activeElement) scrollRef.current?.focus({ preventScroll: true });
+            jumpToLatest();
+          }}
           className="anim-slide-in absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line2 bg-card px-3 py-1.5 text-xs text-muted shadow-lg hover:text-txt"
         >
           <ArrowDown className="h-3.5 w-3.5" />

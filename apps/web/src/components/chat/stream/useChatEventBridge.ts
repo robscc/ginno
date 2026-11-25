@@ -24,6 +24,7 @@ export function useChatEventBridge({
   input,
   setInput,
   pinToBottom,
+  jumpToLatest,
   enqueueSteer,
   attemptSend,
   composerInsert,
@@ -41,6 +42,7 @@ export function useChatEventBridge({
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
   pinToBottom: (frames?: number) => void;
+  jumpToLatest: () => void;
   enqueueSteer: ReturnType<typeof useChatStreamEngine>["enqueueSteer"];
   attemptSend: (sid: string, payload: SendPayload, userMsgId?: string) => void;
   composerInsert: ComposerInsertRequest | null;
@@ -68,9 +70,8 @@ export function useChatEventBridge({
     const onFocusLatest = (e: Event) => {
       const sid = (e as CustomEvent<string>).detail;
       if (!sid) return;
-      focusLatestRef.current = sid;
-      stickRef.current = true;
-      if (curSessionIdRef.current === sid) pinToBottom();
+      if (curSessionIdRef.current === sid) jumpToLatest();
+      else focusLatestRef.current = sid;
     };
     window.addEventListener("ginno:focus-latest", onFocusLatest);
     return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);

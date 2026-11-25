@@ -763,7 +763,8 @@
       }
     },
     "jumpLatest": "Jump to latest message",
-    "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)",
+    "loadEarlier": "Load earlier ({hidden} hidden messages)",
+    "loadLater": "Load later ({hidden} hidden messages)",
     "find": {
       "placeholder": "Find in session…",
       "none": "No hits",
