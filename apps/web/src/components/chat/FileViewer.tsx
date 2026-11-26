@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { ChevronLeft, ChevronRight, Download, FileDown, FileX2, Loader2, RefreshCw, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
@@ -93,7 +93,7 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
   // 且 name 为空 → 不渲染页签，行为与之前完全一致）。
   const [pages, setPages] = useState<{ name: string; shell: string }[]>([]);
   const [page, setPage] = useState(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     let alive = true;
     setDoc(null);
     setPages([]);
@@ -181,10 +181,28 @@ function DrawioFrame({ file, onError }: { file: PreviewFile; onError: () => void
  * (preview.invalidate for the open file, or a fresh open).
  */
 export function FileViewer() {
-  const g = useGinno();
-  // composer 域 catalog（本组件挂 AppShell 下，文案统一收在 composer.sheet）
+  const { previewFile, previewNonce, closePreview } = useGinno();
+  if (!previewFile) return null;
+  return (
+    <OpenFileViewer
+      key={previewFile.id}
+      file={previewFile}
+      previewNonce={previewNonce}
+      closePreview={closePreview}
+    />
+  );
+}
+
+function OpenFileViewer({ file, previewNonce, closePreview }: {
+  file: PreviewFile;
+  previewNonce: number;
+  closePreview: () => void;
+}) {
   const t = useTranslations("composer");
-  const file = g.previewFile;
+  const { id, kind } = file;
+  const requestId = useRef(0);
+  const invalidate = useCallback(() => { requestId.current++; }, []);
+  const [refresh, setRefresh] = useState(0);
   const [pv, setPv] = useState<FilePreview | null>(null);
   const [sheet, setSheet] = useState<string | undefined>(undefined);
   const [offset, setOffset] = useState(0);
@@ -197,8 +215,15 @@ export function FileViewer() {
   const noteTimer = useRef<number | null>(null);
 
   // 预览打开时按 Esc 关闭（统一 hook；与页签 ←/→ 翻页不冲突）。
-  const closePreview = g.closePreview;
-  useEscClose(closePreview, { enabled: !!file });
+  const close = useCallback(() => {
+    invalidate();
+    closePreview();
+  }, [closePreview, invalidate]);
+  useEscClose(close);
+
+  useEffect(() => () => {
+    if (noteTimer.current) window.clearTimeout(noteTimer.current);
+  }, []);
 
   function flashNote(msg: string) {
     setNote(msg);
@@ -210,7 +235,7 @@ export function FileViewer() {
   // Desktop (WKWebView can't trigger downloads): sidecar copies into
   // ~/Downloads; browser: native blob download.
   async function save(fmt: "raw" | "csv") {
-    if (!file || busy) return;
+    if (busy) return;
     const opts = { fmt, sheet: fmt === "csv" ? (sheet ?? pv?.sheet) : undefined };
     setBusy(fmt);
     try {
@@ -231,71 +256,67 @@ export function FileViewer() {
     }
   }
 
-  const load = useCallback(async () => {
-    if (!file) return;
-    // Images are served raw by the sidecar (no extraction step) — the body
-    // renders them directly from the download URL, so skip the preview fetch.
-    if (file.kind === "image" || file.kind === "html" || file.kind === "drawio") {
-      setErr(null);
-      setPv(
-        file.kind === "html" || file.kind === "drawio"
-          ? ({ ok: true, kind: file.kind } as FilePreview)
-          : null,
-      );
-      setMissing(false);
+  const isImage = kind === "image";
+  const isHtml = kind === "html" || /\.html?$/i.test(file.name);
+  const isDrawio = kind === "drawio" || /\.(drawio|dio)$/i.test(file.name);
+  const rawKind = isImage ? "image" : isHtml ? "html" : isDrawio ? "drawio" : null;
+  const rawVersion = `${previewNonce}:${refresh}:${file.mtime ?? 0}`;
+
+  // Revoke ownership in the same commit that changes the selection or removes
+  // the viewer. Until the next page arrives, keep only the table navigation.
+  useLayoutEffect(() => {
+    const request = ++requestId.current;
+    setErr(null);
+    setMissing(false);
+    if (rawKind) {
+      setPv(rawKind === "image" ? null : { ok: true, kind: rawKind });
+      setLoading(false);
       return;
     }
+
     setLoading(true);
-    setErr(null);
-    // Reset the previous file's payload — switching targets must not leave
-    // the old document rendered below the new file's error/placeholder
-    // (seen with .md → .html, 2026-11-04).
-    setPv(null);
-    try {
-      const r = await api.getFilePreview(file.id, { sheet, offset, limit: PAGE });
-      if (!r.ok) {
-        if (isMissingPreviewError(r.error)) {
+    async function load() {
+      try {
+        const result = await api.getFilePreview(id, { sheet, offset, limit: PAGE });
+        if (request !== requestId.current) return;
+        if (result.ok) {
+          setPv(result);
+        } else if (isMissingPreviewError(result.error)) {
           setPv(null);
           setMissing(true);
-          notifyFileMissing(file.id);
+          notifyFileMissing(id);
         } else {
-          setErr(r.error || t("sheet.previewFailed"));
+          setPv(null);
+          setErr(result.error || t("sheet.previewFailed"));
         }
-      } else {
-        setPv(r);
-        setMissing(false);
+      } catch {
+        if (request === requestId.current) {
+          setPv(null);
+          setErr(t("sheet.runtimeUnreachable"));
+        }
+      } finally {
+        if (request === requestId.current) setLoading(false);
       }
-    } catch {
-      setErr(t("sheet.runtimeUnreachable"));
-    } finally {
-      setLoading(false);
     }
-    // g.previewNonce is an intentional refetch trigger (preview.invalidate for
-    // the open file, or a fresh auto-open) — not read in the body on purpose.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, sheet, offset, g.previewNonce]);
-
-  useEffect(() => {
     void load();
-  }, [load]);
+    return invalidate;
+  }, [id, rawKind, sheet, offset, previewNonce, refresh, t, invalidate]);
 
-  // reset paging when the target file or sheet changes
-  useEffect(() => {
+  function selectSheet(next: string) {
+    if (next === (sheet ?? pv?.sheet)) return;
+    invalidate();
+    setSheet(next);
     setOffset(0);
     setNote(null);
-    setMissing(false);
-  }, [file?.id, sheet]);
+  }
 
-  if (!file) return null;
+  function changePage(next: number) {
+    invalidate();
+    setOffset(next);
+  }
 
   const isTable = pv?.kind === "spreadsheet" || pv?.kind === "table";
-  const isImage = file?.kind === "image";
-  const isHtml = file?.kind === "html" || /\.html?$/i.test(file?.name ?? "");
-  // .drawio sources render via the embedded GraphViewer (see DrawioFrame);
-  // the name-pattern fallback covers registry rows classified before the
-  // drawio kind existed.
-  const isDrawio =
-    file?.kind === "drawio" || /\.(drawio|dio)$/i.test(file?.name ?? "");
+  const showPayload = !loading && !missing && !err;
   // 服务端数据徽标兜底词：pv.kind 分类法值 → 本地化徽标（composer.badges.fileKind）；
   // 未知值仍回退英文原值（服务端新增 kind 无需前端同步）。
   const FILE_KINDS = [
@@ -315,13 +336,14 @@ export function FileViewer() {
     (FILE_KINDS as readonly string[]).includes(kind)
       ? t(`badges.fileKind.${kind as (typeof FILE_KINDS)[number]}`)
       : kind;
-  const total = pv?.total_rows ?? 0;
+  const selectedSheet = sheet ?? pv?.sheet;
+  const total = pv?.sheets?.find((item) => item.name === selectedSheet)?.rows ?? pv?.total_rows ?? 0;
   const shown = pv?.rows?.length ?? 0;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      onClick={() => g.closePreview()}
+      onClick={close}
     >
       <div
         className="flex h-[85vh] w-[90vw] max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-2xl"
@@ -335,7 +357,7 @@ export function FileViewer() {
               {fileKindBadge(pv?.kind || "image")}
             </span>
           )}
-          {isTable && (
+          {isTable && showPayload && (
             <span className="text-xs text-faint">
               {total > 0
                 ? t("sheet.rowsRange", { from: offset + 1, to: offset + shown, total })
@@ -375,14 +397,17 @@ export function FileViewer() {
               </button>
             )}
             <button
-              onClick={() => void load()}
+              onClick={() => {
+                invalidate();
+                setRefresh((version) => version + 1);
+              }}
               title={t("sheet.refresh")}
               className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
             <button
-              onClick={() => g.closePreview()}
+              onClick={close}
               title={t("sheet.close")}
               className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
             >
@@ -397,9 +422,9 @@ export function FileViewer() {
             {pv!.sheets!.map((s) => (
               <button
                 key={s.name}
-                onClick={() => setSheet(s.name)}
+                onClick={() => selectSheet(s.name)}
                 className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs ${
-                  (sheet ?? pv!.sheet) === s.name
+                  selectedSheet === s.name
                     ? "bg-violet/20 text-txt"
                     : "text-muted hover:bg-card hover:text-txt"
                 }`}
@@ -420,11 +445,12 @@ export function FileViewer() {
             </div>
           )}
           {!missing && err && <div className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {!missing && !err && !pv && !isImage && !isHtml && !isDrawio && (
+          {loading && !rawKind && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
           )}
           {isDrawio && !missing && !err && (
             <DrawioFrame
+              key={rawVersion}
               file={file}
               onError={() => {
                 setMissing(true);
@@ -434,6 +460,7 @@ export function FileViewer() {
           )}
           {isHtml && !missing && (
             <iframe
+              key={rawVersion}
               src={api.fileInlineUrl(file.id)}
               title={file.name}
               sandbox="allow-scripts"
@@ -444,6 +471,7 @@ export function FileViewer() {
             <div className="flex min-h-full items-center justify-center px-5 py-4">
               {/* mtime busts the cache when a same-named image is regenerated */}
               <img
+                key={rawVersion}
                 src={`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`}
                 alt={file.name}
                 className="max-h-[75vh] max-w-full rounded-lg object-contain"
@@ -454,7 +482,7 @@ export function FileViewer() {
               />
             </div>
           )}
-          {pv && isTable && (
+          {pv && isTable && showPayload && (
             <table className="selectable w-full border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-card2">
                 <tr>
@@ -481,7 +509,7 @@ export function FileViewer() {
               </tbody>
             </table>
           )}
-          {pv && !isTable && pv.markdown !== undefined && (
+          {pv && !isTable && showPayload && pv.markdown !== undefined && (
             <div className="px-5 py-4">
               <Markdown text={pv.markdown || t("sheet.emptyDocument")} />
             </div>
@@ -493,7 +521,7 @@ export function FileViewer() {
           <div className="flex items-center justify-center gap-3 border-t border-line px-4 py-2 text-xs text-muted">
             <button
               disabled={offset === 0}
-              onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
+              onClick={() => changePage(offset - PAGE)}
               className="flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-card disabled:opacity-40"
             >
               <ChevronLeft className="h-3.5 w-3.5" /> {t("sheet.previous")}
@@ -503,7 +531,7 @@ export function FileViewer() {
             </span>
             <button
               disabled={offset + PAGE >= total}
-              onClick={() => setOffset((o) => o + PAGE)}
+              onClick={() => changePage(offset + PAGE)}
               className="flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-card disabled:opacity-40"
             >
               {t("sheet.next")} <ChevronRight className="h-3.5 w-3.5" />
