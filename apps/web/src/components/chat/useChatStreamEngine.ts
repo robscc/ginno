@@ -790,11 +790,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     }
 
     curSessionIdRef.current = sid;
-    // Entering a session always lands on the LATEST message. stickRef carries
-    // the PREVIOUS session's read position (scrolled up while reading back =
-    // false) — without this reset the [messages] auto-scroll skips the newly
-    // loaded history and the transcript opens at the TOP (用户反馈 2026-09-26).
-    stickRef.current = true;
     connectRef.current = () => connectSession(sid);
 
     connectSession(sid);
@@ -961,12 +956,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
   const currentCtx = useRef(ctx);
   currentCtx.current = ctx;
-  const loadHistory = useCallback((sid: string, target?: string) => {
+  const loadHistory = useCallback((sid: string, target?: string, signal?: AbortSignal) => {
     const engine = currentCtx.current;
     return readHistory(engine, sid, target ? "target" : "older", (rows, live) => {
       engine.storeRef.current[sid] = appendLiveHistory(rows, live);
       engine.syncDisplay(sid);
-    }, target);
+    }, target, signal);
   }, []);
   const historyPage = session?.id ? historyRef.current.get(session.id)?.page : undefined;
   const hasOlderHistory = Boolean(historyPage?.before);

@@ -39,7 +39,8 @@ import { transcriptRowKeys } from "@/lib/sessionFind";
 import { CopyBubbleButton } from "./CopyBubbleButton";
 import { useMarkdownFileLinks } from "./useMarkdownFileLinks";
 import type { SessionMeta } from "@/lib/types";
-import { useTranscriptWindow } from "./useTranscriptWindow";
+import { useTranscriptWindow, type ReadingAnchor, type TranscriptViewport } from "./useTranscriptWindow";
+import type { HistoryLoadStatus } from "../engine/history";
 
 function isIndependentEvent(block: Block): block is Extract<Block, { kind: "task_event" | "plan_update" }> {
   return block.kind === "task_event" || block.kind === "plan_update";
@@ -103,7 +104,10 @@ export function TranscriptList({
   dismissContext,
   scrollRef,
   stickRef,
-  latestWindowRef,
+  viewportRef,
+  readingCache,
+  historyStatus,
+  focusLatestRef,
   onWindowEndChange,
   hasOlderHistory,
   loadHistory,
@@ -136,10 +140,13 @@ export function TranscriptList({
   dismissContext?: (msgId: string, block: Extract<Block, { kind: "context" }>) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
   stickRef: MutableRefObject<boolean>;
-  latestWindowRef: MutableRefObject<(() => void) | null>;
+  viewportRef: MutableRefObject<TranscriptViewport | null>;
+  readingCache: Map<string, ReadingAnchor>;
+  historyStatus: HistoryLoadStatus;
+  focusLatestRef: MutableRefObject<string | null>;
   onWindowEndChange: (hasLater: boolean) => void;
   hasOlderHistory: boolean;
-  loadHistory: (sid: string, target?: string) => Promise<HistoryTarget | null>;
+  loadHistory: (sid: string, target?: string, signal?: AbortSignal) => Promise<HistoryTarget | null>;
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
@@ -194,7 +201,7 @@ export function TranscriptList({
   const [olderError, setOlderError] = useState(false);
   const { rendered, earlier, later, move, moveAfterLoad } = useTranscriptWindow({
     sessionId: session?.id, messages, folded, rowKeys, scrollRef, stickRef,
-    latestWindowRef, onWindowEndChange, loadHistory,
+    viewportRef, readingCache, historyStatus, focusLatestRef, onWindowEndChange, loadHistory,
   });
   const historyButton = "rounded-full border border-line bg-card px-3 py-1 text-[11px] text-muted transition-colors hover:bg-elev focus-visible:outline focus-visible:outline-violet";
 
@@ -225,7 +232,12 @@ export function TranscriptList({
       {rendered.map((rowIndex) => {
         const m = rows[rowIndex];
         const rowKey = rowKeys[rowIndex];
-        const findAnchor = { "data-find-row": rowKey, "data-msg-id": m.id || undefined, tabIndex: -1 };
+        const findAnchor = {
+          "data-find-row": rowKey,
+          "data-msg-id": m.id || undefined,
+          "data-reading-anchor": m.history && m.id ? "" : undefined,
+          tabIndex: -1,
+        };
         return isReportRow(m) ? (
           // 带回报的系统行：走与助手气泡同一个折叠渲染器——没挂靠到助手消息的
           // 回报串在这里自成一行「执行过程」，需要用户处理的卡留在组外；与员工

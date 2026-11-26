@@ -57,12 +57,13 @@ export function readHistory(
   action: HistoryAction,
   commit: (rows: ChatMsg[], live: ChatMsg[]) => void,
   target?: string,
+  signal?: AbortSignal,
 ): Promise<HistoryTarget | null> {
   let entry = ctx.historyRef.current.get(sid);
   if (!entry) ctx.historyRef.current.set(sid, entry = {});
   const state = entry;
   const work = (state.pending ?? Promise.resolve()).then(async () => {
-    if (ctx.historyRef.current.get(sid) !== state) return null;
+    if (signal?.aborted || ctx.historyRef.current.get(sid) !== state) return null;
     const prior = state.page;
     const current = ctx.storeRef.current[sid] ?? [];
     if (target && current.some((row) => row.id === target)) return { id: target, block: null };
@@ -73,8 +74,8 @@ export function readHistory(
       revision: prior?.revision,
       coverage: prior?.coverage,
       target,
-    });
-    if (ctx.historyRef.current.get(sid) !== state) return null;
+    }, signal);
+    if (signal?.aborted || ctx.historyRef.current.get(sid) !== state) return null;
     validateHistory(response, action, prior);
     const page = response.page;
     if (page.mode === "locate") return page.target;
