@@ -768,6 +768,11 @@
     },
     "jumpLatest": "跳到最新一条信息",
     "history": {
+      "loadingInitial": "正在加载会话历史…",
+      "initialHttpError": "无法加载会话历史（HTTP {status}）。",
+      "initialConnectionError": "无法连接 Ginno 运行时以加载会话历史。",
+      "initialInvalidResponse": "Ginno 运行时返回的会话历史响应无效。",
+      "retryInitial": "重试加载历史",
       "earlier": "加载更早的消息",
       "loading": "加载中…",
       "retryEarlier": "重试加载更早的消息",

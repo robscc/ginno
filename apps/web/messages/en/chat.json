@@ -768,6 +768,11 @@
     },
     "jumpLatest": "Jump to latest message",
     "history": {
+      "loadingInitial": "Loading conversation history…",
+      "initialHttpError": "Could not load conversation history (HTTP {status}).",
+      "initialConnectionError": "Could not connect to the Ginno runtime to load conversation history.",
+      "initialInvalidResponse": "The Ginno runtime returned an invalid conversation history response.",
+      "retryInitial": "Retry loading history",
       "earlier": "Load earlier messages",
       "loading": "Loading…",
       "retryEarlier": "Retry loading earlier messages",

@@ -46,6 +46,7 @@ import { ProposeCard, SubagentTopBar } from "./streamCards";
 import { PlanBoard } from "./PlanBoard";
 import { SubagentBoard } from "./SubagentBoard";
 import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
+import { HISTORY_LOADING, type HistoryLoadStatus } from "./engine/history";
 import { useComposerFiles } from "./useComposerFiles";
 import { useRunActions } from "./useRunActions";
 import { useModelPick } from "./useModelPick";
@@ -72,6 +73,8 @@ import { useChatEventBridge } from "./stream/useChatEventBridge";
 import { SessionSuggestions } from "./SessionSuggestions";
 import { DistillMenu, type DistillKind } from "./DistillMenu";
 
+const EMPTY_TRANSCRIPT: ChatMsg[] = [];
+
 export function ChatStream({
   session,
   onRunningChange,
@@ -89,7 +92,16 @@ export function ChatStream({
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tc = useTranslations("chat");
-  const [sourceMessages, setMessages] = useState<ChatMsg[]>([]);
+  const [transcript, setTranscriptSnapshot] = useState<{
+    sid: string | null; rows: ChatMsg[]; history: HistoryLoadStatus;
+  }>({ sid: null, rows: EMPTY_TRANSCRIPT, history: HISTORY_LOADING });
+  const setTranscript = useCallback((sid: string | null, rows: ChatMsg[], history: HistoryLoadStatus) => {
+    setTranscriptSnapshot((previous) =>
+      previous.sid === sid && previous.rows === rows && previous.history === history
+        ? previous
+        : { sid, rows, history },
+    );
+  }, []);
   const [liveId, setLiveId] = useState<string | null>(null);
   // @session/@result 候选（LinkedSessionsChip 同款投影，mention 菜单数据源）：
   // 会话切换拉一次 + 30s 静默刷新（菜单打字路径只读 state，绝不发请求）。
@@ -103,6 +115,9 @@ export function ChatStream({
     () => new Map<string, ReadonlyMap<string, ReadonlySet<number>>>(),
   );
   const sessionId = session?.id;
+  const currentTranscript = transcript.sid === sessionId ? transcript : null;
+  const sourceMessages = currentTranscript?.rows ?? EMPTY_TRANSCRIPT;
+  const historyStatus = currentTranscript?.history ?? HISTORY_LOADING;
   const dismissed = sessionId ? dismissedBySession.get(sessionId) : undefined;
   const visibleMessages = useCallback((rows: ChatMsg[]) => {
     if (!dismissed?.size) return rows;
@@ -260,11 +275,11 @@ export function ChatStream({
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
-    mapHistory, loadHistory, hasOlderHistory, historyRevision,
+    mapHistory, loadHistory, retryInitialHistory, hasOlderHistory, historyRevision,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
-    setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
+    setTranscript, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
@@ -1022,7 +1037,30 @@ export function ChatStream({
         className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
       >
         <div ref={innerRef} className={`${CHAT_COL} flex flex-col gap-5`}>
-          {messages.length === 0 && (
+          {historyStatus.kind === "loading" && (
+            <p role="status" className="py-4 text-center text-sm text-muted">
+              {tc("history.loadingInitial")}
+            </p>
+          )}
+          {historyStatus.kind === "failed" && (
+            <div className="flex flex-wrap items-center justify-center gap-2 rounded-md border border-line2 px-3 py-2 text-sm">
+              <p role="alert" className="text-muted">
+                {historyStatus.error.kind === "http"
+                  ? tc("history.initialHttpError", { status: historyStatus.error.status })
+                  : historyStatus.error.kind === "connection"
+                    ? tc("history.initialConnectionError")
+                    : tc("history.initialInvalidResponse")}
+              </p>
+              <button
+                type="button"
+                onClick={() => { if (sessionId) retryInitialHistory(sessionId); }}
+                className="rounded-md border border-line2 px-2 py-1 text-txt hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet"
+              >
+                {tc("history.retryInitial")}
+              </button>
+            </div>
+          )}
+          {historyStatus.kind === "ready" && sourceMessages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               {tc("empty.start")}
             </div>

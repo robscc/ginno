@@ -64,7 +64,10 @@ import {
   mapHistory as mapHistoryImpl,
   reconcileTurnFromHistory as reconcileTurnFromHistoryImpl,
 } from "./engine/connect";
-import { appendLiveHistory, readHistory, type HistoryState } from "./engine/history";
+import {
+  appendLiveHistory, historyFailure, HISTORY_LOADING, HISTORY_READY, readHistory,
+  type HistoryLoadStatus, type HistoryState,
+} from "./engine/history";
 import {
   dropAbsorbedSteers as dropAbsorbedSteersImpl,
   dropSteer as dropSteerImpl,
@@ -109,7 +112,7 @@ export interface EngineDeps {
   input: string;
   attachments: Attachment[];
   fileAttachments: FileAttachment[];
-  setMessages: (v: ChatMsg[] | ((p: ChatMsg[]) => ChatMsg[])) => void;
+  setTranscript: (sid: string | null, rows: ChatMsg[], history: HistoryLoadStatus) => void;
   setRuns: (v: WorkflowRun[] | ((p: WorkflowRun[]) => WorkflowRun[])) => void;
   setLiveId: (v: string | null | ((p: string | null) => string | null)) => void;
   setWsStatus: (v: WsStatus | ((p: WsStatus) => WsStatus)) => void;
@@ -169,7 +172,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const {
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
-    setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
+    setTranscript, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
@@ -288,7 +291,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const commitDisplay = (sid: string) => {
     const lid = liveBySessionRef.current[sid] ?? null;
     // Message reducers replace arrays and changed rows, so React can reuse the source.
-    setMessages(storeRef.current[sid] ?? EMPTY_MESSAGES);
+    const history = historyRef.current.get(sid);
+    setTranscript(sid, storeRef.current[sid] ?? EMPTY_MESSAGES,
+      history?.page ? HISTORY_READY : history?.initial ?? HISTORY_LOADING);
     const runs = runsBySessionRef.current[sid] ?? EMPTY_RUNS;
     const previous = displayedRunsRef.current;
     // Run handlers replace the list for structural edits, but update activity timestamps in place.
@@ -324,7 +329,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const ctx: EngineCtx = {
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
-    setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
+    setTranscript, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompactStage, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
@@ -634,6 +639,69 @@ export function useChatStreamEngine(deps: EngineDeps) {
     connectSession(sid);
   }
 
+  function loadInitialHistory(sid: string) {
+    const state = historyRef.current.get(sid) ?? {};
+    if (state.page || state.initial?.kind === "loading") return;
+    state.initial = HISTORY_LOADING;
+    historyRef.current.set(sid, state);
+    // Cleanup on session deletion also needs an entry before history arrives.
+    storeRef.current[sid] ??= [];
+    syncDisplay(sid);
+    void readHistory(ctx, sid, "latest", (mapped, ephemeral) => {
+      // A reloaded session rebuilds from the checkpoint: entries whose
+      // steer_id is already in history were absorbed (their acks died with
+      // the old page), so drop them rather than re-sending (design §3.3).
+      dropAbsorbedSteers(sid, mapped);
+      // A live event can land DURING the fetch (the parked-question re-emit
+      // on socket open, or in-flight tokens after a quick reload): keep the
+      // bubble ensureLive created instead of clobbering it — liveBySessionRef
+      // still points at it, and dropping it would silently discard every
+      // later event of the turn. The duplicate section is the known orphan
+      // cosmetic; message.end reconciles it away.
+      const lid = liveBySessionRef.current[sid];
+      const liveMsg = lid ? (storeRef.current[sid] ?? []).find((m) => m.id === lid) : null;
+      if (liveMsg) {
+        // The parked-question re-emit on socket open can create a live
+        // bubble for a turn history ALSO rebuilt (same question/tool-call
+        // id in both). Keeping both showed the ask_user card TWICE for as
+        // long as the turn stays parked — message.end never comes to
+        // reconcile. Adopt history's message as the live target instead
+        // (2026-09-25); genuinely in-flight turns (no matching question
+        // id) keep their live bubble as before.
+        const qId = (b: Block) => (b.kind === "question" ? b.id : undefined);
+        const liveQIds = new Set(
+          liveMsg.blocks.map(qId).filter((x): x is string => !!x)
+        );
+        const dupe = mapped.find(
+          (m) =>
+            m.id === liveMsg.id ||
+            m.blocks.some((b) => qId(b) !== undefined && liveQIds.has(qId(b)!))
+        );
+        if (dupe) {
+          liveBySessionRef.current[sid] = dupe.id;
+          storeRef.current[sid] = appendLiveHistory(mapped, ephemeral.filter((row) => row.id !== lid));
+        } else {
+          storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
+        }
+      } else {
+        storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
+      }
+      syncDisplay(sid);
+      // store 就绪后补读总线：终态若在切走/重载期间到达，此处补落块。
+      appendDevSwapResult();
+    }).catch((error: unknown) => {
+      if (historyRef.current.get(sid) !== state || state.page) return;
+      state.initial = { kind: "failed", error: historyFailure(error) };
+      syncDisplay(sid);
+    });
+  }
+
+  function retryInitialHistory(sid: string) {
+    if (curSessionIdRef.current === sid && historyRef.current.get(sid)?.initial?.kind === "failed") {
+      loadInitialHistory(sid);
+    }
+  }
+
   // When the active session changes: save draft, restore draft, connect socket,
   // load history, and sync display state from refs → React state.
   useEffect(() => {
@@ -702,7 +770,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       // event ever heals it while home is shown). Per-session refs
       // (storeRef/liveBySessionRef/permsRef/…) stay untouched; re-entering a
       // session re-syncs everything via syncDisplay(sid).
-      setMessages(EMPTY_MESSAGES);
+      setTranscript(null, EMPTY_MESSAGES, HISTORY_LOADING);
       displayedRunsRef.current = { source: EMPTY_RUNS, snapshot: EMPTY_RUNS };
       setRuns(EMPTY_RUNS);
       setLiveId(null);
@@ -731,58 +799,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
     connectSession(sid);
 
-    // Load history if this session has no messages yet
-    if (!storeRef.current[sid]) {
-      storeRef.current[sid] = [];
-      readHistory(ctx, sid, "latest", (mapped, ephemeral) => {
-        // A reloaded session rebuilds from the checkpoint: entries whose
-        // steer_id is already in history were absorbed (their acks died with
-        // the old page), so drop them rather than re-sending (design §3.3).
-        dropAbsorbedSteers(sid, mapped);
-        // A live event can land DURING the fetch (the parked-question re-emit
-        // on socket open, or in-flight tokens after a quick reload): keep the
-        // bubble ensureLive created instead of clobbering it — liveBySessionRef
-        // still points at it, and dropping it would silently discard every
-        // later event of the turn. The duplicate section is the known orphan
-        // cosmetic; message.end reconciles it away.
-        const lid = liveBySessionRef.current[sid];
-        const liveMsg = lid ? (storeRef.current[sid] ?? []).find((m) => m.id === lid) : null;
-        if (liveMsg) {
-          // The parked-question re-emit on socket open can create a live
-          // bubble for a turn history ALSO rebuilt (same question/tool-call
-          // id in both). Keeping both showed the ask_user card TWICE for as
-          // long as the turn stays parked — message.end never comes to
-          // reconcile. Adopt history's message as the live target instead
-          // (2026-09-25); genuinely in-flight turns (no matching question
-          // id) keep their live bubble as before.
-          const qId = (b: Block) => (b.kind === "question" ? b.id : undefined);
-          const liveQIds = new Set(
-            liveMsg.blocks.map(qId).filter((x): x is string => !!x)
-          );
-          const dupe = mapped.find(
-            (m) =>
-              m.id === liveMsg.id ||
-              m.blocks.some((b) => qId(b) !== undefined && liveQIds.has(qId(b)!))
-          );
-          if (dupe) {
-            liveBySessionRef.current[sid] = dupe.id;
-            storeRef.current[sid] = appendLiveHistory(mapped, ephemeral.filter((row) => row.id !== lid));
-          } else {
-            storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
-          }
-        } else {
-          storeRef.current[sid] = appendLiveHistory(mapped, ephemeral);
-        }
-        syncDisplay(sid);
-        // store 就绪后补读总线：终态若在切走/重载期间到达，此处补落块。
-        appendDevSwapResult();
-      }).catch(() => {
-        if (!storeRef.current[sid]?.length) delete storeRef.current[sid];
-      });
-    } else {
-      // store 已存在（切走再切回）：直接补读总线当前值。
-      appendDevSwapResult();
-    }
+    const history = historyRef.current.get(sid);
+    if (!history?.page && !history?.initial) loadInitialHistory(sid);
+    appendDevSwapResult();
 
     // Load the session's goal snapshot for the TopBar chip (goal-design.md).
     // Live updates then arrive via goal.updated / goal.cleared WS events.
@@ -971,6 +990,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
-    loadHistory, hasOlderHistory, historyRevision,
+    loadHistory, retryInitialHistory, hasOlderHistory, historyRevision,
   };
 }

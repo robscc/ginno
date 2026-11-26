@@ -5,6 +5,7 @@ it folds into a 「执行过程」 group as one header line, with its text behin
 toggle. Background task bands are unchanged.
 """
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -216,6 +217,180 @@ def send_frame(page, sid, event, **payload):
             new URL(ws.url).pathname.endsWith('/' + sid) && ws.readyState === WebSocket.OPEN);
         ws.dispatchEvent(new MessageEvent('message', {data: JSON.stringify(frame)}));
     }''', [sid, {"event": event, **payload}])
+
+
+@pytest.mark.parametrize(("app", "method", "loading_label", "error_label", "retry_label", "empty_label"), [
+    ("en", "keyboard", "Loading conversation history…", "Could not load conversation history (HTTP 503).",
+     "Retry loading history", "Start the conversation"),
+    ("zh-CN", "click", "正在加载会话历史…", "无法加载会话历史（HTTP 503）。", "重试加载历史", "开始对话"),
+], indirect=["app"], ids=["keyboard-en", "click-zh-CN"])
+def test_cold_history_503_can_retry_in_place(app, method, loading_label, error_label, retry_label, empty_label):
+    page, port, sid = app
+    messages = [
+        HumanMessage(id="cold-user-1", content="First saved question"),
+        AIMessage(id="cold-assistant-1", content="First saved response"),
+        HumanMessage(id="cold-user-2", content="Second saved question"),
+        AIMessage(id="cold-assistant-2", content="Second saved response"),
+    ]
+    expected = {message.id: message.content for message in messages}
+    save_messages(sid, messages)
+    path = f"/api/sessions/{sid}/history?turns=40"
+    oracle = harness._api(port, "GET", path)
+    assert [row["id"] for row in oracle["messages"]] == list(expected)
+    requests = []
+    held = []
+    history_path = f"/api/sessions/{sid}/history"
+    page.on("request", lambda req: requests.append(req.url) if history_path in req.url else None)
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    capture_socket(page)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    transcript = page.locator("[data-chat-scroll]")
+    empty = transcript.get_by_text(empty_label, exact=False)
+    loading = transcript.get_by_role("status").filter(has_text=loading_label)
+    loading_before_response = loading.is_visible()
+    empty_before_response = empty.is_visible()
+    assert len(held) == 1 and len(requests) == 1
+    with page.expect_response(lambda res: res.url.endswith(path)) as failed:
+        held[0].fulfill(status=503, json={"detail": "Temporary fixture outage"})
+    assert failed.value.status == 503
+
+    reason = transcript.get_by_role("alert").filter(has_text=error_label)
+    retry = transcript.get_by_role("button", name=retry_label, exact=True)
+    # The baseline displays its empty-session prompt before and after the 503.
+    # Print the DOM observations before waiting for the new recovery controls.
+    if empty_before_response:
+        expect(empty).to_be_visible()
+        print(json.dumps({"phase": "before-retry", "status": failed.value.status,
+                          "saved_rows": len(oracle["messages"]), "empty_visible": empty.is_visible(),
+                          "visible_history_rows": transcript.locator("[data-msg-id]").count(),
+                          "alerts": reason.count(), "retry_buttons": retry.count()}))
+    expect(reason).to_be_visible()
+    assert loading_before_response and not empty_before_response
+    expect(loading).to_have_count(0)
+    expect(empty).to_have_count(0)
+
+    # The socket can still update this session while history is unavailable.
+    live_title = "Live receipt during history outage"
+    send_frame(page, sid, "steer.absorbed", steer_id="history-live-receipt",
+               task={"task": "t_history", "kind": "finished", "title": live_title, "exit": 0})
+    live = transcript.get_by_text(live_title, exact=True)
+    expect(live).to_be_visible()
+    expect(reason).to_be_visible()
+
+    transcript.focus()
+    page.keyboard.press("Tab")
+    expect(retry).to_be_focused()
+    with page.expect_response(lambda res: res.url.endswith(path)) as recovered:
+        if method == "keyboard":
+            page.keyboard.press("Enter")
+        else:
+            retry.click()
+    assert recovered.value.ok
+    assert recovered.value.json() == oracle
+    for row_id, text in expected.items():
+        expect(transcript.locator(f'[data-msg-id="{row_id}"]').get_by_text(text, exact=True)).to_be_visible()
+    expect(live).to_be_visible()
+    expect(empty).to_have_count(0)
+    expect(reason).to_have_count(0)
+    expect(retry).to_have_count(0)
+    assert len(requests) == 2
+    print(json.dumps({"phase": "recovered", "input": method, "statuses": [503, recovered.value.status],
+                      "history_requests": len(requests), "saved_rows": list(expected), "live_retained": True}))
+
+
+@pytest.mark.parametrize(("failure", "error_label"), [
+    ("connection", "Could not connect to the Ginno runtime to load conversation history."),
+    ("invalid", "The Ginno runtime returned an invalid conversation history response."),
+    ("rejected", "The Ginno runtime returned an invalid conversation history response."),
+], ids=["connection", "invalid-envelope", "rejected-envelope"])
+def test_cold_history_failure_stays_with_its_session(app, tmp_path, failure, error_label):
+    page, port, sid = app
+    other = harness._api(port, "POST", "/api/sessions", {
+        "project_slug": "default", "workspace": str(tmp_path), "title": "Empty history control",
+    })["id"]
+    save_messages(sid, [HumanMessage(id="isolated-user", content="Only in the failed session")])
+    path = f"/api/sessions/{sid}/history?turns=40"
+    empty_path = f"/api/sessions/{other}/history?turns=40"
+    requests = []
+    held = []
+    page.on("request", lambda req: requests.append(req.url.split(f"127.0.0.1:{port}", 1)[1])
+            if req.url.endswith((path, empty_path)) else None)
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    transcript = page.locator("[data-chat-scroll]")
+    loading = transcript.get_by_text("Loading conversation history…", exact=True)
+    empty = transcript.get_by_text("Start the conversation", exact=False)
+    reason = transcript.get_by_role("alert").filter(has_text=error_label)
+    row = transcript.locator('[data-msg-id="isolated-user"]')
+    expect(loading).to_be_visible()
+    with page.expect_response(lambda res: res.url.endswith(empty_path)) as other_history:
+        page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    assert other_history.value.ok and other_history.value.json()["messages"] == []
+    expect(empty).to_be_visible()
+
+    # Re-enter with the original request still held. Only one request may be in flight.
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(loading).to_be_visible()
+    expect(empty).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    expect(empty).to_be_visible()
+    assert len(held) == 1
+    event = "requestfailed" if failure == "connection" else "requestfinished"
+    with page.expect_event(event, predicate=lambda req: req.url.endswith(path)):
+        if failure == "connection":
+            held[0].abort("failed")
+        elif failure == "invalid":
+            held[0].fulfill(json={"ok": True, "messages": []})
+        else:
+            held[0].fulfill(json={**harness._api(port, "GET", path), "ok": False, "messages": []})
+    expect(empty).to_be_visible()
+    expect(reason).to_have_count(0)
+    expect(row).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(reason).to_be_visible()
+    expect(empty).to_have_count(0)
+    transcript.get_by_role("button", name="Retry loading history", exact=True).click()
+    expect(row.get_by_text("Only in the failed session", exact=True)).to_be_visible()
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    expect(empty).to_be_visible()
+    expect(row).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(row.get_by_text("Only in the failed session", exact=True)).to_be_visible()
+    expect(reason).to_have_count(0)
+    assert requests == [path, empty_path, path]
+
+
+def test_cold_history_keeps_one_parked_question_during_socket_replay(app):
+    page, port, sid = app
+    title = "Choose an option for the history race"
+    options = ["First choice", "Second choice"]
+    save_messages(sid, [
+        HumanMessage(id="race-user", content="History question race"),
+        AIMessage(id="race-assistant", content="", tool_calls=[{
+            "name": "ask_user", "id": "race-question", "args": {"question": title, "options": options},
+        }]),
+    ])
+    path = f"/api/sessions/{sid}/history?turns=40"
+    held = []
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    capture_socket(page)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    send_frame(page, sid, "user.question", turn_id="race-user", id="race-question", question=title, options=options)
+    transcript = page.locator("[data-chat-scroll]")
+    question = transcript.get_by_text(title, exact=True)
+    expect(question).to_have_count(1)
+    expect(transcript.locator('[data-msg-id="race-assistant"]')).to_have_count(0)
+    held[0].continue_()
+    replay = transcript.locator('[data-msg-id="race-assistant"]').get_by_text(title, exact=True)
+    expect(replay).to_be_visible()
+    expect(question).to_have_count(1)
+    send_frame(page, sid, "user.question", turn_id="race-user", id="race-question", question=title, options=options)
+    expect(question).to_have_count(1)
 
 
 def test_independent_event_rows_from_stream(app):
@@ -637,9 +812,15 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     assert requests == [f"{history_path}?turns=40"]
     expect(page.locator('[data-msg-id="history-user-0"]')).to_have_count(0)
     expect(page.locator('[data-msg-id="history-user-580"]')).to_have_count(0)
+    page.route(f"**{history_path}?turns=40&before=*", lambda route: route.fulfill(status=503), times=1)
     page.get_by_test_id("load-earlier").click()
+    retry_earlier = page.get_by_test_id("load-earlier").filter(has_text="Retry loading earlier messages")
+    expect(retry_earlier).to_be_visible()
+    expect(page.get_by_text("History answer 639", exact=True)).to_be_attached()
+    expect(page.get_by_role("button", name="Retry loading history", exact=True)).to_have_count(0)
+    retry_earlier.click()
     expect(page.locator('[data-msg-id="history-user-580"]')).to_be_attached()
-    assert len(requests) == 2 and "before=" in requests[1]
+    assert len(requests) == 3 and requests[1] == requests[2] and "before=" in requests[1]
     assert all("index=" not in request and "/tools/" not in request for request in requests)
 
     # Index the saved synthetic checkpoint, then use the actual global search.
