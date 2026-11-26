@@ -532,6 +532,7 @@ export interface ArtifactMeta {
   exists?: boolean;
   schema?: string;
   schema_source?: "override" | "computed" | "";
+  relink_candidates?: string[];
 }
 
 // Inspector edits (PUT /api/artifacts/{id}). schema = injection override;
@@ -541,6 +542,7 @@ export interface ArtifactPatch {
   kind?: string;
   schema?: string;
   file_kind?: string;
+  relink?: { path: string; expected_ref: string; expected_file_id: string | null };
 }
 
 // ---- files (upload / preview) ----
