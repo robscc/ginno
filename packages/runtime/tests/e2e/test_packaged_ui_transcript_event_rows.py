@@ -114,7 +114,7 @@ def test_artifact_preview_explains_missing_file_record(app, tmp_path):
     page, port, sid = app
     path = tmp_path / "unregistered-report.md"
     name = "Artifact without a file record"
-    add_artifact("default", "file", name, str(path), sid)
+    artifact = add_artifact("default", "file", name, str(path), sid)
     open_session(page, port, sid)
     row = page.get_by_text(name, exact=True)
     row.click()
@@ -122,7 +122,7 @@ def test_artifact_preview_explains_missing_file_record(app, tmp_path):
     expect(reason).to_contain_text(name)
     expect(reason).to_contain_text(str(path))
 
-    pattern = "**/api/files?project_slug=default"
+    pattern = f"**/api/artifacts/{artifact['id']}/metadata?project_slug=default&include_schema=false"
     page.route(pattern, lambda route: route.abort("failed"), times=1)
     row.click()
     expect(page.get_by_role("alert").filter(has_text="Could not connect to the Ginno runtime")).to_contain_text(name)

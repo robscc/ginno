@@ -114,16 +114,12 @@ def _is_local_path(ref: str) -> bool:
 
 
 def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
-    """Drop entries that can only fail when clicked (startup hygiene, DATA-01/07).
+    """Prune orphaned entries and missing local docs without a relink action.
 
-    Two shapes: a local-path ref whose target no longer
-    exists, and entries whose owning session was deleted (its per-session
-    upload dirs went with it). URLs, data: payloads and bare ids (workflow
-    runs) are never checked. Panel entries only — no files are touched.
-    Returns how many were dropped.
+    Keep file and image references available for explicit relinking even
+    when their old path is gone or they were never in the file registry.
+    Returns how many panel entries were dropped. No files are touched.
     """
-    from ..files import get_registry
-
     items = _read(slug)
     if not items:
         return 0
@@ -134,13 +130,11 @@ def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
         if sid and str(sid) not in valid_session_ids:
             dropped += 1
             continue
-        if it.get("kind") in ("file", "image", "doc") and it.get("origin") != "remote":
+        if it.get("kind") == "doc" and it.get("origin") != "remote":
             ref = str(it.get("ref") or "")
             if ref and _is_local_path(ref) and not os.path.exists(os.path.expanduser(ref)):
-                # Keep registered file artifacts available for explicit relinking.
-                if it.get("kind") != "file" or not get_registry(slug).find_by_path(ref):
-                    dropped += 1
-                    continue
+                dropped += 1
+                continue
         kept.append(it)
     if dropped:
         _write(slug, kept)

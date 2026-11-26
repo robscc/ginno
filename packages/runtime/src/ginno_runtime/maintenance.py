@@ -150,9 +150,7 @@ def _valid_session_ids() -> set[str]:
 
 
 def _prune_artifacts(slug: str, valid_sessions: set[str]) -> None:
-    """DATA-01 — drop entries that can only fail when clicked: the file is
-    gone, or the session they belong to was deleted (their per-session upload
-    dirs went with it). Panel entries only; no files are touched."""
+    """Sweep orphaned panel records and keep files eligible for relinking."""
     dropped = art_store.prune_artifacts(slug, valid_sessions)
     if dropped:
         _log.info("maintenance_artifacts_pruned slug=%s dropped=%d", slug, dropped)

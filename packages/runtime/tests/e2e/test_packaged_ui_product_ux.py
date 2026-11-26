@@ -380,3 +380,66 @@ def test_moved_artifact_requires_explicit_relink(app, tmp_path):
     print(json.dumps({'same_name_candidates': 2, 'wrong_relinks': 0,
                       'explicit_writes': len(writes), 'file_id': file_id,
                       'artifact_id': artifact['id'], 'original_bytes': True}))
+
+
+def test_relinkable_artifacts_survive_runtime_restart(tmp_path):
+    from urllib.request import urlopen
+
+    from ginno_runtime import artifacts
+
+    smoke._require_runtime()
+    workspace = tmp_path / 'workspace'
+    moved = tmp_path / 'moved'
+    workspace.mkdir()
+    moved.mkdir()
+    records = []
+    port = smoke._free_port()
+    proc, log = smoke._spawn(tmp_path, port)
+    try:
+        smoke._wait_health(port)
+        sid = smoke._api(port, 'POST', '/api/sessions', {
+            'project_slug': 'default', 'title': 'Restart relink fixture', 'workspace': str(workspace),
+        })['id']
+        for kind, name, registered in [
+            ('file', 'registered.md', True), ('image', 'registered.png', True),
+            ('file', 'unregistered.md', False),
+        ]:
+            source = workspace / name
+            body = f'original bytes for {name}'.encode()
+            source.write_bytes(body)
+            artifact = artifacts.add_artifact('default', kind, name, str(source), sid)
+            file_id = None
+            if registered:
+                file_id = smoke._api(port, 'POST', '/api/files/ensure-registered', {
+                    'session_id': sid, 'path': str(source), 'name': name,
+                })['file']['id']
+            destination = source.rename(moved / name)
+            stored = smoke._api(port, 'GET', f"/api/artifacts/{artifact['id']}")
+            assert stored['ref'] == str(source)
+            records.append((artifact['id'], source, destination, file_id, body))
+    finally:
+        smoke._stop(proc, log)
+
+    port = smoke._free_port()
+    proc, log = smoke._spawn(tmp_path, port)
+    try:
+        smoke._wait_health(port)
+        stored = {a['id']: a for a in smoke._api(port, 'GET', f'/api/artifacts?session_id={sid}')}
+        assert set(stored) == {record[0] for record in records}
+        for artifact_id, source, destination, file_id, body in records:
+            assert stored[artifact_id]['ref'] == str(source)
+            endpoint = f'/api/artifacts/{artifact_id}'
+            meta = smoke._api(port, 'GET', endpoint + '/metadata')
+            assert meta['exists'] is False and (meta['file'] or {}).get('id') == file_id
+            result = smoke._api(port, 'PUT', endpoint, {'relink': {
+                'path': str(destination), 'expected_ref': str(source), 'expected_file_id': file_id,
+            }})
+            assert result['ok'] and result['artifact']['id'] == artifact_id
+            entry = smoke._api(port, 'GET', endpoint + '/metadata')['file']
+            assert file_id is None or entry['id'] == file_id
+            with urlopen(f"http://127.0.0.1:{port}/api/files/{entry['id']}/download", timeout=5) as response:
+                assert response.status == 200 and response.read() == body
+        print(json.dumps({'restart_retained': len(stored), 'relinked': len(records),
+                          'original_ids': sum(record[3] is not None for record in records), 'original_bytes': True}))
+    finally:
+        smoke._stop(proc, log)
