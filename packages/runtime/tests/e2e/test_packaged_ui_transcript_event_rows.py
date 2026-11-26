@@ -8,6 +8,7 @@ toggle. Background task bands are unchanged.
 import json
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import test_packaged_ui_tasks_overview as harness
@@ -784,6 +785,213 @@ def test_bounded_window_keeps_find_navigation_and_live_reading(app):
     expect(first).to_be_in_viewport()
     expect(rows).to_have_count(80)
     expect(latest).to_have_count(0)
+
+
+def save_sidebar_reading_sessions(port, sid, workspace):
+    messages = [message for i in range(640) for message in (
+        HumanMessage(id=f"reading-user-{i}", content=f"Reading request {i:04d}"),
+        AIMessage(id=f"reading-answer-{i}", content=f"Reading answer {i:04d}"),
+    )]
+    save_messages(sid, messages)
+    for title in ("Reading sidebar B", "Reading sidebar C"):
+        other = harness._api(port, "POST", "/api/sessions", {
+            "project_slug": "default", "workspace": str(workspace), "title": title,
+        })["id"]
+        save_messages(other, [HumanMessage(id=f"reader-{other}", content=f"{title} message")])
+
+
+def park_reading_position(page, scroll):
+    anchor_id = "reading-user-70"
+    page.evaluate('id => window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: id}))', anchor_id)
+    anchor = scroll.locator(f'[data-msg-id="{anchor_id}"]')
+    expect(anchor).to_be_in_viewport()
+    expect(scroll.locator("[data-find-row]")).to_have_count(80)
+    before = anchor.evaluate('''row => {
+        const scroll = row.closest('[data-chat-scroll]');
+        const offset = () => row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+        scroll.scrollTop += offset() + 13;
+        return offset();
+    }''')
+    assert abs(before + 13) <= 1
+    return anchor, before
+
+
+def wait_for_reading_offset(page, anchor, before):
+    page.wait_for_function('''([id, before]) => {
+        const scroll = document.querySelector('[data-chat-scroll]');
+        const row = scroll?.querySelector(`[data-msg-id="${id}"]`);
+        return row && Math.abs(row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - before) <= 2;
+    }''', arg=[anchor.get_attribute("data-msg-id"), before])
+    return anchor.evaluate('row => row.getBoundingClientRect().top - row.closest("[data-chat-scroll]").getBoundingClientRect().top')
+
+
+def test_sidebar_return_restores_bounded_reading_position(app, tmp_path):
+    page, port, sid = app
+    save_sidebar_reading_sessions(port, sid, tmp_path)
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    scroll = page.locator("[data-chat-scroll]")
+    rows = scroll.locator("[data-find-row]")
+    latest = scroll.locator('[data-msg-id="reading-answer-639"]')
+    expect(latest).to_be_in_viewport()
+    anchor, before = park_reading_position(page, scroll)
+    expect(latest).to_have_count(0)
+    path = f"/api/sessions/{sid}/history"
+    requests = []
+    page.on("request", lambda req: requests.append(req.url) if urlsplit(req.url).path == path else None)
+    scroll.evaluate('''el => {
+        window.readingPeakRows = 0;
+        new MutationObserver(() => {
+            window.readingPeakRows = Math.max(window.readingPeakRows, el.querySelectorAll('[data-find-row]').length);
+        }).observe(el, {childList: true, subtree: true});
+    }''')
+    page.get_by_text("Reading sidebar B", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+    page.get_by_text("Transcript event rows", exact=True).first.click()
+    expect(rows).to_have_count(80)
+    print(json.dumps({"phase": "sidebar-return", "id": "reading-user-70", "before_px": before,
+                      "mounted": anchor.count(), "latest_in_view": latest.count() > 0 and latest.evaluate(
+                          'row => row.getBoundingClientRect().top < row.closest("[data-chat-scroll]").getBoundingClientRect().bottom'),
+                      "rows": rows.count(), "history_requests": len(requests)}))
+    expect(anchor).to_be_in_viewport()
+    after = wait_for_reading_offset(page, anchor, before)
+    expect(latest).to_have_count(0)
+    assert not requests
+    assert page.evaluate("window.readingPeakRows") == 80
+    print(json.dumps({"phase": "restored", "after_px": after, "delta_px": abs(after - before),
+                      "peak_rows": page.evaluate("window.readingPeakRows"), "history_requests": len(requests)}))
+
+    # A notification explicitly asks to display the tail even with a saved reading position.
+    page.get_by_text("Reading sidebar B", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(latest).to_be_in_viewport()
+    expect(anchor).to_have_count(0)
+
+    # Tail visits and subsequent live output follow the newest message.
+    page.get_by_text("Reading sidebar C", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar C message", exact=True)).to_be_in_viewport()
+    page.get_by_text("Transcript event rows", exact=True).first.click()
+    expect(latest).to_be_in_viewport()
+    send_frame(page, sid, "turn.start", turn_id="reading-tail", agent_id="dev")
+    send_frame(page, sid, "token.delta", content="New response while following latest")
+    expect(scroll.get_by_text("New response while following latest", exact=True)).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    assert not requests
+
+
+@pytest.mark.parametrize("outcome", ["restore", "message", "find", "rapid", "wheel", "missing", "error"])
+def test_sidebar_reading_target_request_is_scoped_to_the_visit(app, tmp_path, outcome):
+    page, port, sid = app
+    save_sidebar_reading_sessions(port, sid, tmp_path)
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    scroll = page.locator("[data-chat-scroll]")
+    rows = scroll.locator("[data-find-row]")
+    latest = scroll.locator('[data-msg-id="reading-answer-639"]')
+    expect(latest).to_be_in_viewport()
+    anchor, before = park_reading_position(page, scroll)
+    other = page.get_by_text("Reading sidebar B", exact=True).first
+    own = page.get_by_text("Transcript event rows", exact=True).first
+    other.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+
+    path = f"/api/sessions/{sid}/history"
+    def target(url):
+        parts = urlsplit(url)
+        return parts.path == path and parse_qs(parts.query).get("target") == ["reading-user-70"]
+
+    held = []
+    requests = []
+    find_targets = []
+
+    def count_target_requests(request):
+        uri = urlsplit(request.url)
+        if uri.path != path:
+            return
+        wanted = parse_qs(uri.query).get("target")
+        if wanted == ["reading-user-70"]:
+            requests.append(request.url)
+        if wanted == ["reading-user-50"]:
+            find_targets.append(request.url)
+
+    page.on("request", count_target_requests)
+
+    def hold_target(route):
+        held.append(route)
+        page.evaluate("console.debug('Reading target intercepted')")
+
+    page.route(target, hold_target)
+
+    # Simulate a checkpoint refresh replacing the browser's coverage with a
+    # tail page while the original reading target remains in server history.
+    tail = harness._api(port, "GET", f"{path}?turns=40")
+    page.route(f"**{path}?*refresh=*", lambda route: route.fulfill(json=tail))
+    send_frame(page, sid, "turn.start", turn_id="reading-background-refresh", agent_id="dev")
+    with page.expect_response(lambda res: "refresh=" in res.url and urlsplit(res.url).path == path) as refreshed:
+        send_frame(page, sid, "turn.state", running=False)
+    assert refreshed.value.finished() is None
+
+    def intercepted(message):
+        return message.text == "Reading target intercepted"
+
+    with page.expect_console_message(predicate=intercepted):
+        own.click()
+    assert len(held) == len(requests) == 1
+    expect(anchor).to_have_count(0)
+
+    if outcome == "restore":
+        held[0].continue_()
+        expect(anchor).to_be_in_viewport()
+        after = wait_for_reading_offset(page, anchor, before)
+        expect(rows).to_have_count(80)
+        print(json.dumps({"phase": "target-page", "delta_px": abs(after - before),
+                          "rows": rows.count(), "target_requests": len(requests)}))
+    elif outcome in ("missing", "error"):
+        if outcome == "missing":
+            held[0].fulfill(json={**tail, "messages": [], "page": {**tail["page"], "mode": "locate", "target": None}})
+        else:
+            held[0].fulfill(status=503, json={"detail": "fixture history error"})
+        expect(latest).to_be_in_viewport()
+        expect(anchor).to_have_count(0)
+    else:
+        with page.expect_event("requestfailed", predicate=lambda req: target(req.url)) as cancelled:
+            if outcome == "message":
+                page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "reading-user-615"}))')
+            elif outcome == "find":
+                find_in_session(page, "Reading request 0050")
+            elif outcome == "wheel":
+                scroll.hover()
+                page.mouse.wheel(0, 200)
+            else:
+                other.click()
+        assert cancelled.value.failure == "net::ERR_ABORTED"
+        held[0].abort()
+        if outcome == "message":
+            expect(scroll.locator('[data-msg-id="reading-user-615"]')).to_be_in_viewport()
+            expect(anchor).to_have_count(0)
+        elif outcome == "find":
+            expect_active_find(page, "Reading request 0050", row="reading-user-50")
+            expect(anchor).not_to_be_in_viewport()
+            assert len(find_targets) == 1
+        elif outcome == "rapid":
+            page.get_by_text("Reading sidebar C", exact=True).first.click()
+            expect(scroll.get_by_text("Reading sidebar C message", exact=True)).to_be_in_viewport()
+            with page.expect_console_message(predicate=intercepted):
+                own.click()
+            assert len(held) == 2
+            held[1].continue_()
+            expect(anchor).to_be_in_viewport()
+            assert abs(wait_for_reading_offset(page, anchor, before) - before) <= 2
+            assert len(requests) == 2
+            return
+        else:
+            expect(anchor).to_have_count(0)
+            page.wait_for_function('document.querySelector("[data-chat-scroll]").scrollTop > 0')
+    assert len(requests) == 1
+    assert rows.count() <= 80
 
 
 def test_paged_history_defers_tool_details_and_search_index(app):

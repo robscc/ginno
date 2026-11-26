@@ -347,11 +347,13 @@ export function getSessionHistoryIndex(id: string, revision?: string, signal?: A
 export function getSessionHistoryPage(
   id: string,
   options: Partial<Record<"before" | "refresh" | "coverage" | "revision" | "target", string | null>>,
+  signal?: AbortSignal,
 ) {
   const query = new URLSearchParams({ turns: "40" });
   for (const [name, value] of Object.entries(options)) if (value) query.set(name, value);
   return jsonStrict<HistoryResult & { page: HistoryPage }>(
     `${BASE}/sessions/${encodeURIComponent(id)}/history?${query}`,
+    signal ? { signal } : undefined,
   );
 }
 
