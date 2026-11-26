@@ -30,7 +30,7 @@ import { isDesktop } from "@/lib/desktop";
 import { pushNotice } from "@/lib/notice";
 import { ConfirmModal, hasOpenConfirmModal } from "@/components/ConfirmModal";
 import { FILE_MISSING_EVENT } from "@/components/chat/FileViewer";
-import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
+import type { Artifact, ArtifactMeta } from "@/lib/types";
 import { filterByText } from "@/lib/sessionTextFilter";
 
 export const ICON: Record<string, typeof FileText> = {
@@ -82,11 +82,10 @@ function fmtBytes(n?: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function resolveArtifactFile(artifact: Artifact): Promise<FileEntry | null> {
+async function resolveArtifactFile(artifact: Artifact) {
   if (artifact.origin === "remote") return null;
-  const meta = await api.getArtifactMetadata(artifact.id, "default", { includeSchema: false });
-  if (!meta.ok) throw new Error(meta.error || "Artifact lookup failed");
-  return meta.file ?? null;
+  const meta = await api.getArtifactMetadata(artifact.id, "default", { includeSchema: false, strict: true });
+  return meta;
 }
 
 // ---- P3-2: 图片折叠 ----
@@ -269,6 +268,7 @@ export function ArtifactMetaCard({
   // i18n：t 元数据卡片框架文案（名称/路径/摘要内容是用户数据，不翻译），tc 通用按钮
   const t = useTranslations("right.artifacts");
   const tc = useTranslations("right.common");
+  const tf = useTranslations("composer.fileFailure");
   const [meta, setMeta] = useState<ArtifactMeta | null>(null);
   const [loadError, setLoadError] = useState("");
   // edit draft + status
@@ -712,6 +712,7 @@ export function ArtifactsPanel() {
   // i18n：产物列表框架文案（产物名/路径是用户数据，不翻译）
   const t = useTranslations("right.artifacts");
   const tc = useTranslations("right.common");
+  const tf = useTranslations("composer.fileFailure");
   const flashing = new Set(g.flashArtifactIds);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [doneId, setDoneId] = useState<string | null>(null);
@@ -883,7 +884,9 @@ export function ArtifactsPanel() {
   async function openArtifact(a: Artifact) {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
     try {
-      const entry = await resolveArtifactFile(a);
+      const meta = await resolveArtifactFile(a);
+      if (meta && !meta.ok) throw new Error(meta.error || "Artifact lookup failed");
+      const entry = meta?.file;
       if (entry) {
         // Remember the reverse mapping so FILE_MISSING_EVENT can dim this row.
         fileToArtifactRef.current.set(entry.id, a.id);
@@ -913,57 +916,44 @@ export function ArtifactsPanel() {
     }
   }
 
-  // Save a copy of the file into the OS Downloads folder (desktop) or trigger
-  // a browser download (dev). Independent of opening the preview.
-  async function downloadArtifact(e: React.MouseEvent, a: Artifact) {
+  async function runFileAction(
+    e: React.MouseEvent, a: Artifact, action: "openExternal" | "reveal" | "download",
+  ) {
     e.stopPropagation();
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
+    const report = (reason: string) => pushNotice("error", t("fileActionFailed", {
+      action: t(action), name: a.name, reason,
+    }), { dedupeKey: `artifact-${action}:${a.id}`, inbox: false });
+    if (a.origin === "remote") {
+      report(tf("remoteFile", { path: a.ref }));
+      return;
+    }
+    const desktop = isDesktop();
     setBusyId(a.id);
     try {
-      const entry = await resolveArtifactFile(a);
-      if (!entry) return;
-      if (isDesktop()) {
-        const r = await api.saveFileToDownloads(entry.id);
-        if (r.ok) {
-          setDoneId(a.id);
-          window.setTimeout(() => setDoneId((d) => (d === a.id ? null : d)), 2500);
-        }
-      } else {
-        await api.downloadFile(entry.id, entry.name);
+      const meta = await resolveArtifactFile(a);
+      if (meta && !meta.ok) {
+        report(t("artifactUnavailable"));
+        return;
       }
-    } catch {
-      /* sidecar hiccup — ignore */
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  // Reveal the artifact in Finder / Explorer — locate without opening
-  // (2026-11-10：与“用系统应用打开”并排的第二个行内动作)。
-  async function revealArtifact(e: React.MouseEvent, a: Artifact) {
-    e.stopPropagation();
-    if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
-    try {
-      const entry = await resolveArtifactFile(a);
-      if (!entry) return;
-      await api.revealFileInFileManager(entry.id);
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  // Open the file with the OS default application (Preview, Excel, etc.).
-  // Works in both desktop and dev modes — the sidecar runs on the same host.
-  async function openExternalArtifact(e: React.MouseEvent, a: Artifact) {
-    e.stopPropagation();
-    if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
-    setBusyId(a.id);
-    try {
-      const entry = await resolveArtifactFile(a);
-      if (!entry) return;
-      await api.openFileExternal(entry.id);
-    } catch {
-      /* sidecar hiccup — ignore */
+      const entry = meta?.file;
+      if (!entry) {
+        report(tf(meta?.exists === false ? "fileMoved" : "fileUnregistered"));
+        return;
+      }
+      const result = action === "openExternal" ? await api.openFileExternal(entry.id)
+        : action === "reveal" ? await api.revealFileInFileManager(entry.id)
+        : desktop ? await api.saveFileToDownloads(entry.id) : await api.downloadFile(entry.id, entry.name);
+      if (!result.ok) {
+        report(tf(result.reason, { status: result.status ?? 0, detail: result.error ?? "" }));
+      } else if (action === "download" && desktop) {
+        setDoneId(a.id);
+        window.setTimeout(() => setDoneId((d) => (d === a.id ? null : d)), 2500);
+      }
+    } catch (error) {
+      const status = (error as { ginnoStatus?: number })?.ginnoStatus;
+      report(status ? tf("httpFailed", { status, detail: "" })
+        : tf(error instanceof TypeError ? "connectionFailed" : "requestFailed"));
     } finally {
       setBusyId(null);
     }
@@ -1037,7 +1027,8 @@ export function ArtifactsPanel() {
           )}
           {clickable && (
             <button
-              onClick={(e) => void openExternalArtifact(e, a)}
+              onClick={(e) => void runFileAction(e, a, "openExternal")}
+              disabled={busyId !== null}
               title={t("openExternal")}
               className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
                 busyId === a.id ? "visible" : "invisible group-hover:visible"
@@ -1052,7 +1043,8 @@ export function ArtifactsPanel() {
           )}
           {clickable && (
             <button
-              onClick={(e) => void revealArtifact(e, a)}
+              onClick={(e) => void runFileAction(e, a, "reveal")}
+              disabled={busyId !== null}
               title={t("reveal")}
               aria-label={t("reveal")}
               className="rounded-md p-1 text-muted hover:bg-card2 hover:text-txt invisible group-hover:visible"
@@ -1062,7 +1054,8 @@ export function ArtifactsPanel() {
           )}
           {clickable && (
             <button
-              onClick={(e) => void downloadArtifact(e, a)}
+              onClick={(e) => void runFileAction(e, a, "download")}
+              disabled={busyId !== null}
               title={t("download")}
               className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
                 doneId === a.id

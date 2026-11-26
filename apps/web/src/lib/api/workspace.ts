@@ -5,7 +5,6 @@
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
  */
 import { BASE, H, json, jsonStrict } from "./core";
-import { uiText } from "../../i18n/uiText";
 // 非 hook 层取已解析 locale（模块级镜像，provider 渲染期同步赋值）：随每个
 // API 请求/WS 连接下发给 runtime（i18n-design.md §1/§5）。
 import { currentLocale } from "../../i18n/provider";
@@ -120,11 +119,11 @@ export async function deleteArtifact(id: string, project_slug = "default") {
 
 // Inspector payload: panel record + file facts + the exact injectable schema.
 export async function getArtifactMetadata(
-  id: string, project_slug = "default", options?: { candidates?: boolean; includeSchema?: boolean },
+  id: string, project_slug = "default", options?: { candidates?: boolean; includeSchema?: boolean; strict?: boolean },
 ) {
   const candidates = options?.candidates ? "&candidates=true" : "";
   const schema = options?.includeSchema === false ? "&include_schema=false" : "";
-  return json<import("../types").ArtifactMeta>(
+  return (options?.strict ? jsonStrict : json)<import("../types").ArtifactMeta>(
     `${BASE}/artifacts/${id}/metadata?project_slug=${project_slug}${candidates}${schema}`,
   );
 }
@@ -245,29 +244,107 @@ export function fileInlineUrl(fileId: string) {
   return `${BASE}/files/${fileId}/inline`;
 }
 
-// Browser-side save: fetch as blob → object URL → anchor click. Used in dev /
-// plain browsers; the Tauri webview can't trigger downloads this way, so the
-// desktop UI calls saveFileToDownloads instead.
+type FileActionReason = "fileUnregistered" | "fileMoved" | "launcherFailed" |
+  "fileManagerFailed" | "downloadsWriteFailed" | "httpFailed" | "requestFailed" |
+  "invalidResponse" | "connectionFailed" | "businessRejected";
+
+export type FileActionFailure = {
+  ok: false;
+  error?: string;
+  reason: FileActionReason;
+  status?: number;
+};
+
+type FileResponse = { ok?: boolean; error?: unknown; detail?: unknown; path?: string; name?: string };
+
+function fileResponse(value: unknown): FileResponse | undefined {
+  return value !== null && typeof value === "object" ? value as FileResponse : undefined;
+}
+
+function fileActionFailure(fileId: string, status: number, body?: FileResponse): FileActionFailure {
+  const detail = fileResponse(body?.detail);
+  const rejected = body?.ok === false || detail?.ok === false;
+  const error = [detail?.error, body?.error, body?.detail]
+    .find((value): value is string => typeof value === "string" && value.trim() !== "");
+  // 只识别文件端点的已知业务响应。普通 HTTP 404 或解析器里提到的路径均不代表文件丢失。
+  if (rejected && (status === 404 || status < 300)) {
+    if (error === `file not found: ${fileId}`) return { ok: false, reason: "fileUnregistered" };
+    if (error === "File has been moved or deleted") return { ok: false, reason: "fileMoved" };
+  }
+  if (rejected && status < 300) {
+    if (error?.startsWith("Failed to launch external app: ")) {
+      return { ok: false, reason: "launcherFailed", error: error.slice("Failed to launch external app: ".length) };
+    }
+    if (error?.startsWith("Failed to open file manager: ")) {
+      return { ok: false, reason: "fileManagerFailed", error: error.slice("Failed to open file manager: ".length) };
+    }
+    if (error?.startsWith("Failed to write to Downloads: ")) {
+      return { ok: false, reason: "downloadsWriteFailed", error: error.slice("Failed to write to Downloads: ".length) };
+    }
+  }
+  if (status >= 400) {
+    return { ok: false, reason: "httpFailed", status, error };
+  }
+  return error ? { ok: false, reason: "businessRejected", error } : { ok: false, reason: "invalidResponse" };
+}
+
+async function readFileResponse(res: Response) {
+  try {
+    return fileResponse(await res.json());
+  } catch {
+    return undefined;
+  }
+}
+
+const fileRequestHeaders = () => ({ "X-Ginno-Language": currentLocale() });
+
+type FileDownloadOptions = { fmt?: "raw" | "csv"; sheet?: string };
+
+async function fetchFileDownload(
+  fileId: string, opts?: FileDownloadOptions, signal?: AbortSignal,
+): Promise<{ ok: true; response: Response } | FileActionFailure> {
+  try {
+    const res = await fetch(fileDownloadUrl(fileId, opts), {
+      headers: fileRequestHeaders(), signal, cache: "no-store",
+    });
+    if (!res.ok) return fileActionFailure(fileId, res.status, await readFileResponse(res));
+    // Raw JSON files also use application/json, with an attachment header.
+    // Older runtimes may return a bare successful-HTTP business rejection.
+    if (!res.headers.get("content-disposition") && res.headers.get("content-type")?.includes("application/json")) {
+      const body = await readFileResponse(res.clone());
+      if (body?.ok === false || fileResponse(body?.detail)?.ok === false) {
+        return fileActionFailure(fileId, res.status, body);
+      }
+    }
+    return { ok: true, response: res };
+  } catch {
+    return { ok: false, reason: "connectionFailed" };
+  }
+}
+
+export async function readImageFile(
+  fileId: string, signal: AbortSignal,
+): Promise<{ ok: true; blob: Blob } | FileActionFailure> {
+  const result = await fetchFileDownload(fileId, undefined, signal);
+  if (!result.ok) return result;
+  try {
+    return { ok: true, blob: await result.response.blob() };
+  } catch {
+    return { ok: false, reason: "requestFailed" };
+  }
+}
+
+// Browser-side save: fetch as blob → object URL → anchor click. The desktop
+// webview uses saveFileToDownloads because WKWebView cannot trigger this download.
 export async function downloadFile(
   fileId: string,
   fallbackName: string,
-  opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
-): Promise<{ ok: boolean; error?: string }> {
+  opts: FileDownloadOptions = {},
+): Promise<{ ok: true } | FileActionFailure> {
+  const result = await fetchFileDownload(fileId, opts);
+  if (!result.ok) return result;
   try {
-    const res = await fetch(fileDownloadUrl(fileId, opts), {
-      headers: { "X-Ginno-Language": currentLocale() },
-    });
-    if (!res.ok) {
-      // 通用网络层错误文案走 ui 域（非 hook 场景，uiText 同步读当前 locale）
-      let msg = uiText("net.downloadFailed", { status: res.status });
-      try {
-        const j = (await res.json()) as { detail?: string };
-        if (j.detail) msg = j.detail;
-      } catch {
-        /* response wasn't JSON — keep the generic message */
-      }
-      return { ok: false, error: msg };
-    }
+    const res = result.response;
     const cd = res.headers.get("content-disposition") || "";
     const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
     const plain = /filename="([^"]+)"/i.exec(cd);
@@ -283,40 +360,35 @@ export async function downloadFile(
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
     return { ok: true };
   } catch {
-    return { ok: false, error: uiText("net.unreachable") };
+    return { ok: false, reason: "requestFailed" };
   }
 }
 
-// Desktop-side save: the sidecar copies the file (or its CSV export) into the
-// OS Downloads folder and reports the destination path.
-export async function saveFileToDownloads(
-  fileId: string,
-  opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
-) {
-  return json<{ ok: boolean; error?: string; path?: string; name?: string }>(
-    `${BASE}/files/${fileId}/save-to-downloads`,
-    { method: "POST", headers: H, body: JSON.stringify(opts) },
-  );
+async function postFileAction(fileId: string, action: string, opts?: FileDownloadOptions):
+  Promise<{ ok: true; path?: string; name?: string } | FileActionFailure> {
+  try {
+    const res = await fetch(`${BASE}/files/${fileId}/${action}`, {
+      method: "POST", headers: { ...H, ...fileRequestHeaders() },
+      ...(opts ? { body: JSON.stringify(opts) } : {}),
+    });
+    const body = await readFileResponse(res);
+    if (!res.ok || body?.ok !== true) return fileActionFailure(fileId, res.status, body);
+    return { ...body, ok: true };
+  } catch {
+    return { ok: false, reason: "connectionFailed" };
+  }
 }
 
-// Ask the sidecar to open the file with the OS default application
-// (Preview for PDFs, Excel/Numbers for spreadsheets, etc.).
-// Works in both desktop (Tauri) and dev (browser) modes — the sidecar always
-// runs on the same host, so it can invoke the OS launcher directly.
-export async function openFileExternal(fileId: string) {
-  return json<{ ok: boolean; error?: string }>(
-    `${BASE}/files/${fileId}/open-external`,
-    { method: "POST", headers: H },
-  );
+export function saveFileToDownloads(fileId: string, opts: FileDownloadOptions = {}) {
+  return postFileAction(fileId, "save-to-downloads", opts);
 }
 
-// Reveal the file in the OS file manager (Finder / Explorer) — locates the
-// artifact without opening it; sibling of openFileExternal (2026-11-10).
-export async function revealFileInFileManager(fileId: string) {
-  return json<{ ok: boolean; error?: string }>(
-    `${BASE}/files/${fileId}/reveal`,
-    { method: "POST", headers: H },
-  );
+export function openFileExternal(fileId: string) {
+  return postFileAction(fileId, "open-external");
+}
+
+export function revealFileInFileManager(fileId: string) {
+  return postFileAction(fileId, "reveal");
 }
 
 // ---- todo providers / sync (external TODO platforms) ----

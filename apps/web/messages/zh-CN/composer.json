@@ -67,12 +67,26 @@
       "skip": "跳过 · 让代理自行判断",
       "freeTextOverrideHint": "输入自定义答案将替换已选选项"
     },
+    "fileFailure": {
+      "fileUnregistered": "找不到该文件的登记记录。",
+      "fileMoved": "文件已移动或删除。",
+      "launcherFailed": "无法启动系统应用。{detail}",
+      "fileManagerFailed": "无法启动文件管理器。{detail}",
+      "downloadsWriteFailed": "无法写入下载文件夹。{detail}",
+      "httpFailed": "文件请求失败（HTTP {status}）。{detail}",
+      "requestFailed": "无法读取或保存文件，请重试。",
+      "invalidResponse": "Ginno 运行时返回了无效的文件响应，请重试。",
+      "connectionFailed": "无法连接 Ginno 运行时，请重试。",
+      "businessRejected": "文件操作被拒绝。{detail}",
+      "remoteFile": "该文件位于远端节点（{path}）。"
+    },
     "sheet": {
       "savedTo": "已保存到 {path}",
       "saveFailed": "保存失败",
       "downloadStarted": "已开始下载",
       "downloadFailed": "下载失败",
       "previewFailed": "预览失败",
+      "imageDecodeFailed": "无法解码此图片。图片可能已损坏，或使用了不支持的格式。",
       "fileDeleted": "文件已删除",
       "runtimeUnreachable": "无法连接 runtime",
       "rowsRange": "第 {from}–{to} 行 / 共 {total} 行",

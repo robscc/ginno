@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 function reply(body: unknown) {
-  fetchMock.mockResolvedValue({ json: async () => body });
+  fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => body });
 }
 
 /**
@@ -669,25 +669,46 @@ describe("downloadFile（浏览器侧保存，DOM 桩 + 假定时器）", () => 
     expect(anchor.download).toBe("fallback.bin");
   });
 
+  it("旧版 HTTP 200 业务拒绝不触发浏览器下载", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error: "File has been moved or deleted",
+    }), { headers: { "Content-Type": "application/json" } }));
+    await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({ ok: false, reason: "fileMoved" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(anchor.click).not.toHaveBeenCalled();
+  });
+
+  it("带 attachment 的 JSON 文件照常下载，即使正文包含 ok:false", async () => {
+    fetchMock.mockResolvedValue(new Response('{"ok":false}', {
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Disposition": 'attachment; filename="actual.json"',
+      },
+    }));
+    await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({ ok: true });
+    expect(anchor.download).toBe("actual.json");
+    expect(anchor.click).toHaveBeenCalledTimes(1);
+  });
+
   it("HTTP 错误 + JSON detail → 用服务端 detail 作错误文案", async () => {
     replyDownload({ ok: false, status: 404, json: async () => ({ detail: "文件不存在" }) });
     await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({
       ok: false,
-      error: "文件不存在",
+      reason: "httpFailed", status: 404, error: "文件不存在",
     });
     expect(anchor.click).not.toHaveBeenCalled();
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
-  it("HTTP 错误 + JSON 无 detail → 通用文案（uiText 默认 en，插值 status）", async () => {
+  it("HTTP 错误 + JSON 无 detail → 保留状态码", async () => {
     replyDownload({ ok: false, status: 500, json: async () => ({}) });
     await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({
       ok: false,
-      error: "Download failed (HTTP 500)",
+      reason: "httpFailed", status: 500,
     });
   });
 
-  it("HTTP 错误 + 响应非 JSON（json() 抛错）→ 吞掉解析错误，保留通用文案", async () => {
+  it("HTTP 错误 + 响应非 JSON → 保留状态码", async () => {
     replyDownload({
       ok: false,
       status: 502,
@@ -697,15 +718,15 @@ describe("downloadFile（浏览器侧保存，DOM 桩 + 假定时器）", () => 
     });
     await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({
       ok: false,
-      error: "Download failed (HTTP 502)",
+      reason: "httpFailed", status: 502,
     });
   });
 
-  it("fetch reject（网络不可达）→ ok:false + net.unreachable 文案，不抛错", async () => {
+  it("fetch reject（网络不可达）→ 连接错误，不抛错", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));
     await expect(downloadFile("file1", "fallback.bin")).resolves.toEqual({
       ok: false,
-      error: "Cannot reach the runtime",
+      reason: "connectionFailed",
     });
     expect(createElement).not.toHaveBeenCalled();
   });
@@ -732,6 +753,19 @@ describe("openFileExternal", () => {
     await expect(openFileExternal("file1")).resolves.toEqual({ ok: true });
     expectNoBody("POST", "/files/file1/open-external", true);
   });
+
+  it.each([
+    [200, { ok: false, error: "file not found: file1" }, { reason: "fileUnregistered" }],
+    [404, { detail: { ok: false, error: "file not found: file1" } }, { reason: "fileUnregistered" }],
+    [404, { detail: "Upstream file not found" }, { reason: "httpFailed", status: 404, error: "Upstream file not found" }],
+    [503, { ok: true }, { reason: "httpFailed", status: 503 }],
+    [200, {}, { reason: "invalidResponse" }],
+  ])("HTTP %i：严格区分接口失败和文件登记丢失", async (status, body, failure) => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+    await expect(openFileExternal("file1")).resolves.toEqual({ ok: false, ...failure });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 describe("revealFileInFileManager", () => {

@@ -199,7 +199,8 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
   closePreview: () => void;
 }) {
   const t = useTranslations("composer");
-  const { id, kind } = file;
+  const tf = useTranslations("composer.fileFailure");
+  const { id, kind, mtime } = file;
   const requestId = useRef(0);
   const invalidate = useCallback(() => { requestId.current++; }, []);
   const [refresh, setRefresh] = useState(0);
@@ -211,7 +212,8 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
   // P3-2: file vanished on disk → neutral placeholder instead of a red error.
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState<"raw" | "csv" | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
+  const [image, setImage] = useState<{ url: string; request: number } | null>(null);
   const noteTimer = useRef<number | null>(null);
 
   // 预览打开时按 Esc 关闭（统一 hook；与页签 ←/→ 翻页不冲突）。
@@ -225,8 +227,8 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
     if (noteTimer.current) window.clearTimeout(noteTimer.current);
   }, []);
 
-  function flashNote(msg: string) {
-    setNote(msg);
+  function flashNote(text: string, failed = false) {
+    setNote({ text, failed });
     if (noteTimer.current) window.clearTimeout(noteTimer.current);
     noteTimer.current = window.setTimeout(() => setNote(null), 5000);
   }
@@ -238,18 +240,22 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
     if (busy) return;
     const opts = { fmt, sheet: fmt === "csv" ? (sheet ?? pv?.sheet) : undefined };
     setBusy(fmt);
+    setNote(null);
     try {
       if (isDesktop()) {
-        const r = await api.saveFileToDownloads(file.id, opts);
-        // path 理论上必有（ok 时），缺 path 也按失败提示而非渲染 "undefined"
-        flashNote(
-          r.ok && r.path
-            ? t("sheet.savedTo", { path: r.path })
-            : (r.error ?? t("sheet.saveFailed")),
-        );
+        const result = await api.saveFileToDownloads(file.id, opts);
+        if (!result.ok) {
+          flashNote(tf(result.reason, { status: result.status ?? 0, detail: result.error ?? "" }), true);
+        } else {
+          flashNote(result.path ? t("sheet.savedTo", { path: result.path }) : t("sheet.saveFailed"), !result.path);
+        }
       } else {
-        const r = await api.downloadFile(file.id, file.name, opts);
-        flashNote(r.ok ? t("sheet.downloadStarted") : (r.error ?? t("sheet.downloadFailed")));
+        const result = await api.downloadFile(file.id, file.name, opts);
+        if (!result.ok) {
+          flashNote(tf(result.reason, { status: result.status ?? 0, detail: result.error ?? "" }), true);
+        } else {
+          flashNote(t("sheet.downloadStarted"));
+        }
       }
     } finally {
       setBusy(null);
@@ -268,8 +274,33 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
     const request = ++requestId.current;
     setErr(null);
     setMissing(false);
+    if (rawKind === "image") {
+      const controller = new AbortController();
+      let url: string | undefined;
+      setImage(null);
+      setLoading(true);
+      void api.readImageFile(id, controller.signal).then((result) => {
+        if (request !== requestId.current) return;
+        setLoading(false);
+        if (result.ok) {
+          url = URL.createObjectURL(result.blob);
+          setImage({ url, request });
+        } else if (result.reason === "fileMoved" || result.reason === "fileUnregistered") {
+          setMissing(true);
+          setErr(tf(result.reason));
+          notifyFileMissing(id);
+        } else {
+          setErr(tf(result.reason, { status: result.status ?? 0, detail: result.error ?? "" }));
+        }
+      });
+      return () => {
+        invalidate();
+        controller.abort();
+        if (url) URL.revokeObjectURL(url);
+      };
+    }
     if (rawKind) {
-      setPv(rawKind === "image" ? null : { ok: true, kind: rawKind });
+      setPv({ ok: true, kind: rawKind });
       setLoading(false);
       return;
     }
@@ -300,7 +331,7 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
     }
     void load();
     return invalidate;
-  }, [id, rawKind, sheet, offset, previewNonce, refresh, t, invalidate]);
+  }, [id, rawKind, sheet, offset, previewNonce, refresh, mtime, t, tf, invalidate]);
 
   function selectSheet(next: string) {
     if (next === (sheet ?? pv?.sheet)) return;
@@ -366,8 +397,9 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
           )}
           <div className="ml-auto flex items-center gap-1">
             {note && (
-              <span className="mr-1 max-w-[280px] truncate text-xs text-faint" title={note}>
-                {note}
+              <span role={note.failed ? "alert" : "status"} title={note.text}
+                className={`mr-1 max-w-[280px] truncate text-xs ${note.failed ? "text-red-400" : "text-faint"}`}>
+                {note.text}
               </span>
             )}
             <button
@@ -440,12 +472,12 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
           {missing && (
             <div className="flex min-h-full flex-col items-center justify-center gap-2 px-5 py-10 text-center">
               <FileX2 className="h-9 w-9 text-faint" />
-              <div className="text-sm text-muted">{t("sheet.fileDeleted")}</div>
+              <div className="text-sm text-muted">{err ?? t("sheet.fileDeleted")}</div>
               <div className="max-w-full truncate text-xs text-faint">{file.name}</div>
             </div>
           )}
-          {!missing && err && <div className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {loading && !rawKind && (
+          {!missing && err && <div role="alert" className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
+          {loading && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
           )}
           {isDrawio && !missing && !err && (
@@ -467,17 +499,15 @@ function OpenFileViewer({ file, previewNonce, closePreview }: {
               className="h-full min-h-[60vh] w-full border-0 bg-white"
             />
           )}
-          {isImage && !missing && (
+          {isImage && image && showPayload && (
             <div className="flex min-h-full items-center justify-center px-5 py-4">
-              {/* mtime busts the cache when a same-named image is regenerated */}
               <img
                 key={rawVersion}
-                src={`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`}
+                src={image.url}
                 alt={file.name}
                 className="max-h-[75vh] max-w-full rounded-lg object-contain"
                 onError={() => {
-                  setMissing(true);
-                  notifyFileMissing(file.id);
+                  if (image.request === requestId.current) setErr(t("sheet.imageDecodeFailed"));
                 }}
               />
             </div>
