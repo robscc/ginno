@@ -25,6 +25,7 @@ import {
 } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
+import { FIND_HISTORY_CHANGED } from "@/lib/sessionFindCache";
 import { trackReasoningSummaries } from "@/lib/reasoningSummaryStream";
 import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
 import { useEventI18nText, type Block } from "@/components/chat/blocks";
@@ -66,7 +67,7 @@ import {
 } from "./engine/connect";
 import {
   appendLiveHistory, historyFailure, HISTORY_LOADING, HISTORY_READY, readHistory,
-  type HistoryLoadStatus, type HistoryState,
+  type HistoryLoadStatus, type HistoryReadOptions, type HistoryState,
 } from "./engine/history";
 import {
   dropAbsorbedSteers as dropAbsorbedSteersImpl,
@@ -603,7 +604,20 @@ export function useChatStreamEngine(deps: EngineDeps) {
           } catch { /* socket may be closing */ }
           return;
         }
-        if (acceptSummaryFrame(ev)) handle(sid, ev);
+        if (!acceptSummaryFrame(ev)) return;
+        const changesHistory = ["message.end", "turn.stopped", "error", "history.cleared",
+          "context.microcompacted", "context.compacted"].includes(ev.event);
+        const revision = changesHistory ? historyRef.current.get(sid)?.page?.revision : undefined;
+        handle(sid, ev);
+        if (changesHistory) {
+          // An orphaned turn already reconciles through the paged history read.
+          // If it publishes a new revision, find observes it through that path.
+          void Promise.resolve(historyRef.current.get(sid)?.pending).then(() => {
+            if (historyRef.current.get(sid)?.page?.revision === revision) {
+              window.dispatchEvent(new CustomEvent(FIND_HISTORY_CHANGED, { detail: sid }));
+            }
+          });
+        }
       } catch { /* ignore */ }
     };
     sock.onerror = () => {
@@ -961,12 +975,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
   const currentCtx = useRef(ctx);
   currentCtx.current = ctx;
-  const loadHistory = useCallback((sid: string, target?: string) => {
+  const loadHistory = useCallback((sid: string, target?: string, options?: HistoryReadOptions) => {
     const engine = currentCtx.current;
     return readHistory(engine, sid, target ? "target" : "older", (rows, live) => {
       engine.storeRef.current[sid] = appendLiveHistory(rows, live);
       engine.syncDisplay(sid);
-    }, target);
+    }, target, options);
   }, []);
   const historyPage = session?.id ? historyRef.current.get(session.id)?.page : undefined;
   const hasOlderHistory = Boolean(historyPage?.before);

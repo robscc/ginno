@@ -29,6 +29,10 @@ export interface HistoryState {
   initial?: InitialHistoryStatus;
 }
 
+export interface HistoryReadOptions {
+  indexRevision?: string;
+}
+
 function isHistoryRow(row: HistoryResult["messages"][number]): boolean {
   return Boolean(row && typeof row.id === "string" && ["user", "assistant", "system"].includes(row.role) &&
     Array.isArray(row.blocks) && row.blocks.every((block) => block && typeof block.kind === "string"));
@@ -57,6 +61,7 @@ export function readHistory(
   action: HistoryAction,
   commit: (rows: ChatMsg[], live: ChatMsg[]) => void,
   target?: string,
+  { indexRevision }: HistoryReadOptions = {},
 ): Promise<HistoryTarget | null> {
   let entry = ctx.historyRef.current.get(sid);
   if (!entry) ctx.historyRef.current.set(sid, entry = {});
@@ -65,7 +70,8 @@ export function readHistory(
     if (ctx.historyRef.current.get(sid) !== state) return null;
     const prior = state.page;
     const current = ctx.storeRef.current[sid] ?? [];
-    if (target && current.some((row) => row.id === target)) return { id: target, block: null };
+    if (target && (!indexRevision || prior?.revision === indexRevision) &&
+        current.some((row) => row.id === target)) return { id: target, block: null };
     if (action === "older" && !prior?.before) return null;
     const response = await getSessionHistoryPage(sid, {
       before: action === "latest" ? null : prior?.before,

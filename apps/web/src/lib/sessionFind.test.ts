@@ -105,6 +105,12 @@ it("indexes a resumed bubble once with its live text and persisted tool bodies",
   expect(searchFindIndex(index(current), "Persisted reply")).toHaveLength(1);
 });
 
+it("uses the new checkpoint while keeping current live and transient rows", () => {
+  const row = (id: string, history = false): ChatMsg => ({ id, role: "assistant", blocks: [], history });
+  expect(mergeFindHistory([row("new")], [row("removed", true), row("live", true), row("transient")], "live")
+    .map(({ id }) => id)).toEqual(["new", "live", "transient"]);
+});
+
 it("indexes visible Markdown labels, inline formatting and literal code", () => {
   const text = markdownSearchText("A **bold** [visible](https://example.org/hidden) label.\n\n```text\n[keep](literal)\n```");
   expect(text).toContain("A bold visible label.");

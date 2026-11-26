@@ -802,6 +802,9 @@ def test_paged_history_defers_tool_details_and_search_index(app):
         ])
     save_messages(sid, messages)
     requests = []
+    indexes = []
+    page.on("response", lambda res: indexes.append(res) if res.url.startswith(
+        f"http://127.0.0.1:{port}{history_path}?index=true") else None)
     page.on("request", lambda request: requests.append(request.url.split(f"127.0.0.1:{port}")[-1])
             if history_path in request.url else None)
     page.context.grant_permissions(["clipboard-read", "clipboard-write"])
@@ -809,6 +812,12 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     open_session(page, port, sid)
     wait_for_session_socket(page, sid, require_turn_state=True)
     expect(page.get_by_text("History answer 639", exact=True)).to_be_in_viewport()
+    assert requests == [f"{history_path}?turns=40"]
+    for query in ("", "   ", ""):
+        field = find_in_session(page, query)
+        assert field.input_value() == query
+        field.press("Escape")
+        expect(field).not_to_be_visible()
     assert requests == [f"{history_path}?turns=40"]
     expect(page.locator('[data-msg-id="history-user-0"]')).to_have_count(0)
     expect(page.locator('[data-msg-id="history-user-580"]')).to_have_count(0)
@@ -848,6 +857,113 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     expect_active_find(page, "First tool search sentinel", row="history-assistant-0")
     assert sum("/tools/" in request for request in requests) == 1
     assert page.locator("[data-chat-scroll] [data-find-row]").count() <= 80
+
+    assert len(indexes) == 1 and "messages" in indexes[0].json()
+    revision = indexes[0].json()["revision"]
+    field.press("Escape")
+    with page.expect_response(lambda res: res.url.endswith(f"?index=true&revision={revision}")) as check:
+        field = find_in_session(page, "First tool search sentinel")
+    expect_active_find(page, "First tool search sentinel", row="history-assistant-0")
+    assert check.value.json() == {"ok": True, "unchanged": True, "revision": revision}
+    assert len(indexes) == 2
+    print(f"find index, 640 turns: full={len(indexes[0].body())} B validation={len(check.value.body())} B")
+
+
+def test_find_index_retry_remote_revision_and_fork_isolation(app, tmp_path):
+    page, port, _ = app
+    remote = harness._api(port, "POST", "/api/sessions", {
+        "project_slug": "default", "workspace": str(tmp_path), "title": "Remote source fixture",
+        "remote_peer": "fixture-peer",
+    })["id"]
+    path = f"/api/sessions/{remote}/history"
+    old = [item for i in range(42) for item in (
+        HumanMessage(id=f"remote-user-{i}", content=f"Remote request {i}"),
+        AIMessage(id=f"remote-answer-{i}", content=f"Remote response {i}"),
+    )]
+    save_messages(remote, old)
+    capture_socket(page)
+    open_session(page, port, remote)
+    wait_for_session_socket(page, remote, require_turn_state=True)
+    expect(page.get_by_text("Remote response 41", exact=True)).to_be_in_viewport()
+    page.route(f"**{path}?index=true", lambda route: route.fulfill(status=503), times=1)
+    responses = []
+    page.on("response", lambda res: responses.append(res) if "/history?index=true" in res.url else None)
+    field = find_in_session(page, "Remote response 0")
+    retry = page.get_by_role("button", name="Retry loading search")
+    expect(retry).to_be_visible()
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true") and res.ok) as first:
+        retry.click()
+    expect_active_find(page, "Remote response 0", row="remote-answer-0")
+    revision = first.value.json()["revision"]
+    assert [res.status for res in responses] == [503, 200]
+
+    # Remote completion writes its local mirror before sending message.end.
+    # A non-orphan message.end leaves the paged revision unchanged until a page is requested.
+    rewritten = [old[0], AIMessage(id="remote-answer-0", content="Rewritten remote sentinel"), *old[2:]]
+    save_messages(remote, rewritten)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true&revision={revision}")) as changed:
+        send_frame(page, remote, "message.end", frame_session=remote, turn_id="remote-user-41")
+    assert changed.value.json()["revision"] != revision
+    field.fill("Rewritten remote sentinel")
+    expect_active_find(page, "Rewritten remote sentinel", row="remote-answer-0")
+    assert len(responses) == 3  # The target page also confirms the revision.
+    field.press("Escape")
+    page.get_by_text("Remote source fixture", exact=True).first.click(button="right")
+    with page.expect_response(lambda res: res.url.endswith(f"/api/sessions/{remote}/fork")) as forked:
+        page.get_by_role("menuitem", name="Fork", exact=True).click()
+    fork = forked.value.json()["new_id"]
+    expect(page.get_by_text("Remote response 41", exact=True)).to_be_in_viewport()
+    with page.expect_response(lambda res: res.url.endswith(f"/{fork}/history?index=true")) as copied:
+        find_in_session(page, "Rewritten remote sentinel")
+    expect_active_find(page, "Rewritten remote sentinel")
+    assert not any(row["id"] == "remote-answer-0" for row in copied.value.json()["messages"])
+    assert [res.status for res in responses] == [503, 200, 200, 200]
+
+
+def test_find_refreshes_once_when_history_page_revision_changes(app):
+    page, port, sid = app
+    path = f"/api/sessions/{sid}/history"
+    messages = [item for i in range(81) for item in (
+        HumanMessage(id=f"rev-user-{i}", content=f"Revision request {i}"),
+        AIMessage(id=f"rev-answer-{i}", content=f"Revision answer {i}"),
+    )]
+    save_messages(sid, messages)
+    open_session(page, port, sid)
+    expect(page.get_by_text("Revision answer 80", exact=True)).to_be_in_viewport()
+    indexes = []
+    page.on("request", lambda req: indexes.append(req.url) if f"{path}?index=true" in req.url else None)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true")) as original:
+        field = find_in_session(page, "New checkpoint sentinel")
+    revision = original.value.json()["revision"]
+    expect(page.get_by_text("No hits", exact=True)).to_be_visible()
+    messages[1] = AIMessage(id="rev-answer-0", content="New checkpoint sentinel")
+    save_messages(sid, messages)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true&revision={revision}")) as updated:
+        page.get_by_test_id("load-earlier").click()
+    assert updated.value.json()["revision"] != revision
+    expect_active_find(page, "New checkpoint sentinel", row="rev-answer-0")
+    field.fill("Revision answer 0")
+    expect(page.get_by_text("No hits", exact=True)).to_be_visible()
+    assert len(indexes) == 2
+
+
+def test_find_waits_for_cold_history_revision(app):
+    page, port, sid = app
+    path = f"/api/sessions/{sid}/history"
+    save_messages(sid, [HumanMessage(id="cold-index", content="Cold find sentinel")])
+    held, indexes = [], []
+    page.route(f"**{path}?turns=40", lambda route: held.append(route), times=1)
+    page.on("request", lambda req: indexes.append(req.url) if f"{path}?index=true" in req.url else None)
+    page.clock.install()
+    open_session(page, port, sid)
+    expect(page.get_by_text("Loading conversation history…", exact=True)).to_be_visible()
+    find_in_session(page, "Cold find sentinel")
+    page.clock.run_for(200)  # Advance the query debounce while the history response is held.
+    assert len(held) == 1 and indexes == []
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true")):
+        held[0].continue_()
+    expect_active_find(page, "Cold find sentinel", row="cold-index")
+    assert len(indexes) == 1
 
 
 def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
