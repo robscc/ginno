@@ -61,6 +61,7 @@ import { ModelChipMenu } from "./stream/ModelChipMenu";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
 import { TranscriptList, useTranscriptProjection } from "./stream/TranscriptList";
+import type { ReadingAnchor, TranscriptViewport } from "./stream/useTranscriptWindow";
 import { Composer } from "./stream/Composer";
 import { AgentChips } from "./stream/AgentChips";
 import { parsePeerTarget } from "./stream/peerTarget";
@@ -208,7 +209,13 @@ export function ChatStream({
   // 高亮=Highlight API painter，跳转复用转录的行键定位。
   const projection = useTranscriptProjection(messages, session?.id);
 
-  const latestWindowRef = useRef<(() => void) | null>(null);
+  const viewportRef = useRef<TranscriptViewport | null>(null);
+  const [readingCache] = useState(() => new Map<string, ReadingAnchor>());
+  useEffect(() => {
+    if (!readingCache.size) return;
+    const sessions = new Set(g.sessions.map(({ id }) => id));
+    for (const id of readingCache.keys()) if (!sessions.has(id)) readingCache.delete(id);
+  }, [g.sessions, readingCache]);
   const hasLaterRef = useRef(false);
   const [hasLater, setHasLater] = useState(false);
   const onWindowEndChange = useCallback((later: boolean) => {
@@ -286,10 +293,15 @@ export function ChatStream({
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
   });
+  const loadFindHistory = useCallback((...args: Parameters<typeof loadHistory>) => {
+    // Find can need its own target page before it emits a row reveal.
+    viewportRef.current?.cancelRestore();
+    return loadHistory(...args);
+  }, [loadHistory]);
   const sessionFind = useSessionFind({
     historyLoading: historyStatus.kind === "loading",
     messages, projection, sessionId, scrollRef, sourceMessages, liveId,
-    visibleMessages, mapHistory, loadHistory, historyRevision,
+    visibleMessages, mapHistory, loadHistory: loadFindHistory, historyRevision,
   });
   composerRefsHolder.current = { curSessionIdRef, draftCacheRef, pendingDocsRef, pendingPathsRef };
   const sumFlow = useSummarizeFlow({
@@ -414,7 +426,7 @@ export function ChatStream({
   function jumpToLatest() {
     stickRef.current = true;
     setShowJumpLatest(false);
-    latestWindowRef.current?.();
+    viewportRef.current?.latest();
     pinToBottom();
   }
 
@@ -1032,8 +1044,19 @@ export function ChatStream({
         onScroll={(e) => {
           const el = e.currentTarget;
           const away = el.scrollHeight - el.scrollTop - el.clientHeight;
-          stickRef.current = !hasLaterRef.current && away < 80;
+          viewportRef.current?.scroll(!hasLaterRef.current && away < 80);
           setShowJumpLatest(away >= JUMP_AWAY_PX);
+        }}
+        onWheel={(event) => { if (event.deltaY) viewportRef.current?.cancelRestore(); }}
+        onTouchMove={() => viewportRef.current?.cancelRestore()}
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) viewportRef.current?.cancelRestore();
+        }}
+        onKeyDown={(event) => {
+          if (event.target === event.currentTarget &&
+            ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+            viewportRef.current?.cancelRestore();
+          }
         }}
         className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
       >
@@ -1068,6 +1091,7 @@ export function ChatStream({
           )}
 
           <TranscriptList
+            key={sessionId}
             messages={messages}
             projection={projection}
             session={session}
@@ -1087,7 +1111,10 @@ export function ChatStream({
             dismissContext={dismissContextChip}
             scrollRef={scrollRef}
             stickRef={stickRef}
-            latestWindowRef={latestWindowRef}
+            viewportRef={viewportRef}
+            readingCache={readingCache}
+            historyStatus={historyStatus}
+            focusLatestRef={focusLatestRef}
             onWindowEndChange={onWindowEndChange}
             hasOlderHistory={hasOlderHistory}
             loadHistory={loadHistory}
