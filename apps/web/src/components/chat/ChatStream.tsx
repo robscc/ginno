@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Check, ArrowDown } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
@@ -59,7 +59,7 @@ import { ChannelStatusBar } from "./stream/ChannelStatusBar";
 import { ModelChipMenu } from "./stream/ModelChipMenu";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
-import { TranscriptList } from "./stream/TranscriptList";
+import { TranscriptList, useTranscriptProjection } from "./stream/TranscriptList";
 import { Composer } from "./stream/Composer";
 import { AgentChips } from "./stream/AgentChips";
 import { parsePeerTarget } from "./stream/peerTarget";
@@ -89,7 +89,7 @@ export function ChatStream({
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tc = useTranslations("chat");
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [sourceMessages, setMessages] = useState<ChatMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
   // @session/@result 候选（LinkedSessionsChip 同款投影，mention 菜单数据源）：
   // 会话切换拉一次 + 30s 静默刷新（菜单打字路径只读 state，绝不发请求）。
@@ -97,31 +97,40 @@ export function ChatStream({
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
-  // 系统提示条（microcompact 清理等）逐条关闭（2026-11-05）：从该 system
-  // 消息里移除对应 context 块；块删空则整条消息移除。会话内存态操作——
-  // 重载后投影会重建（turns 投影的 system 行），再点一次即可，可接受。
+  // Engine snapshots can replace the transcript on any frame or history fetch.
+  // Keep dismissals per session and address the block in the unfiltered row.
+  const [dismissedBySession, setDismissedBySession] = useState(
+    () => new Map<string, ReadonlyMap<string, ReadonlySet<number>>>(),
+  );
+  const sessionId = session?.id;
+  const dismissed = sessionId ? dismissedBySession.get(sessionId) : undefined;
+  const visibleMessages = useCallback((rows: ChatMsg[]) => {
+    if (!dismissed?.size) return rows;
+    const visible: ChatMsg[] = [];
+    for (const message of rows) {
+      const indexes = message.role === "system" ? dismissed.get(message.id) : undefined;
+      if (!indexes) {
+        visible.push(message);
+        continue;
+      }
+      const blocks = message.blocks.filter((block, index) => block.kind !== "context" || !indexes.has(index));
+      if (blocks.length) visible.push({ ...message, blocks });
+    }
+    return visible;
+  }, [dismissed]);
+  const messages = useMemo(() => visibleMessages(sourceMessages), [visibleMessages, sourceMessages]);
   const dismissContextChip = useCallback(
-    (msgId: string, blockIndex: number) => {
-      setMessages((cur) => {
-        const idx = cur.findIndex((m) => m.id === msgId);
-        if (idx < 0) return cur;
-        const m = cur[idx];
-        if (m.role !== "system") return cur;
-        const ctxBlocks = m.blocks.filter((b) => b.kind === "context");
-        const target = ctxBlocks[blockIndex];
-        if (!target) return cur;
-        const kept = m.blocks.filter((b) => b !== target);
-        if (!kept.length) {
-          const next = [...cur];
-          next.splice(idx, 1);
-          return next;
-        }
-        const next = [...cur];
-        next[idx] = { ...m, blocks: kept };
-        return next;
+    (msgId: string, block: Extract<Block, { kind: "context" }>) => {
+      const row = sourceMessages.find((m) => m.role === "system" && m.id === msgId);
+      const index = row?.blocks.indexOf(block) ?? -1;
+      if (!sessionId || index < 0) return;
+      setDismissedBySession((previous) => {
+        const sessionDismissals = new Map(previous.get(sessionId));
+        sessionDismissals.set(msgId, new Set(sessionDismissals.get(msgId)).add(index));
+        return new Map(previous).set(sessionId, sessionDismissals);
       });
     },
-    [setMessages],
+    [sessionId, sourceMessages],
   );
 
   // @session/@result 候选拉取（见上 state 注释）。
@@ -181,9 +190,17 @@ export function ChatStream({
   const innerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Cmd+F 会话内搜索（session-find-bar-design）：索引=数据层全量，
-  // 高亮=Highlight API painter，跳转复用 ⌘K 锚点扩窗管线。
-  const sessionFind = useSessionFind(messages, liveId, session?.id, scrollRef);
+  // 高亮=Highlight API painter，跳转复用转录的行键定位。
+  const projection = useTranscriptProjection(messages, session?.id);
 
+  const latestWindowRef = useRef<(() => void) | null>(null);
+  const hasLaterRef = useRef(false);
+  const [hasLater, setHasLater] = useState(false);
+  const onWindowEndChange = useCallback((later: boolean) => {
+    if (hasLaterRef.current === later) return;
+    hasLaterRef.current = later;
+    setHasLater(later);
+  }, []);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
@@ -243,6 +260,7 @@ export function ChatStream({
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
+    mapHistory, loadHistory, hasOlderHistory, historyRevision,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
@@ -252,6 +270,10 @@ export function ChatStream({
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
+  });
+  const sessionFind = useSessionFind({
+    messages, projection, sessionId, scrollRef, sourceMessages, liveId,
+    visibleMessages, mapHistory, loadHistory, historyRevision,
   });
   composerRefsHolder.current = { curSessionIdRef, draftCacheRef, pendingDocsRef, pendingPathsRef };
   const sumFlow = useSummarizeFlow({
@@ -376,6 +398,7 @@ export function ChatStream({
   function jumpToLatest() {
     stickRef.current = true;
     setShowJumpLatest(false);
+    latestWindowRef.current?.();
     pinToBottom();
   }
 
@@ -399,7 +422,7 @@ export function ChatStream({
   // composerInsert 消费都在 useChatEventBridge 内（效果/依赖逐字保留）。
   useChatEventBridge({
     focusLatestRef, stickRef, curSessionIdRef, draftCacheRef, mentionsRef,
-    busyBySessionRef, textareaRef, session, input, setInput, pinToBottom,
+    busyBySessionRef, textareaRef, session, input, setInput, pinToBottom, jumpToLatest,
     enqueueSteer, attemptSend,
     composerInsert: g.composerInsert, clearComposerInsert: g.clearComposerInsert,
     recomputeMenu,
@@ -409,7 +432,7 @@ export function ChatStream({
     let left = frames;
     const attempt = () => {
       const el = scrollRef.current;
-      if (!el || !stickRef.current) return;
+      if (!el || !stickRef.current || hasLaterRef.current) return;
       el.scrollTop = el.scrollHeight;
       if (--left > 0) requestAnimationFrame(attempt);
     };
@@ -1000,10 +1023,11 @@ export function ChatStream({
       <div
         ref={scrollRef}
         data-chat-scroll
+        tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
           const away = el.scrollHeight - el.scrollTop - el.clientHeight;
-          stickRef.current = away < 80;
+          stickRef.current = !hasLaterRef.current && away < 80;
           setShowJumpLatest(away >= JUMP_AWAY_PX);
         }}
         className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
@@ -1017,6 +1041,7 @@ export function ChatStream({
 
           <TranscriptList
             messages={messages}
+            projection={projection}
             session={session}
             liveId={liveId}
             running={running}
@@ -1034,6 +1059,10 @@ export function ChatStream({
             dismissContext={dismissContextChip}
             scrollRef={scrollRef}
             stickRef={stickRef}
+            latestWindowRef={latestWindowRef}
+            onWindowEndChange={onWindowEndChange}
+            hasOlderHistory={hasOlderHistory}
+            loadHistory={loadHistory}
           />
 
           {runs.map((r) => (
@@ -1051,9 +1080,12 @@ export function ChatStream({
 
         </div>
       </div>
-      {showJumpLatest && (
+      {(hasLater || showJumpLatest) && (
         <button
-          onClick={jumpToLatest}
+          onClick={(event) => {
+            if (event.currentTarget === document.activeElement) scrollRef.current?.focus({ preventScroll: true });
+            jumpToLatest();
+          }}
           className="anim-slide-in absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line2 bg-card px-3 py-1.5 text-xs text-muted shadow-lg hover:text-txt"
         >
           <ArrowDown className="h-3.5 w-3.5" />

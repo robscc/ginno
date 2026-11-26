@@ -28,8 +28,6 @@ from ..session_meta import _find_meta
 
 router = APIRouter()
 
-_MAX_TOOL_TEXT = 4000
-
 
 def _text(content) -> str:
     if isinstance(content, str):
@@ -112,12 +110,11 @@ def _render_markdown(slug: str, session_id: str, meta: dict) -> str:
                 lines.append("")
         elif mt == "tool":
             name = names.get(getattr(m, "tool_call_id", ""), "tool")
-            body = text[:_MAX_TOOL_TEXT]
             lines += [
                 f"<details><summary>🔧 {name} 输出</summary>",
                 "",
                 "```",
-                body,
+                text,
                 "```",
                 "",
                 "</details>",

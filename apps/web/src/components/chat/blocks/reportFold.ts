@@ -86,6 +86,11 @@ function sameBlocks(a: readonly Block[], b: readonly Block[]): boolean {
   return a.length === b.length && a.every((block, index) => block === b[index]);
 }
 
+export interface BlockOrigin {
+  row: number;
+  block: number;
+}
+
 export interface FoldReportRowsResult<T extends ChatMsg> {
   /** Same length and order as the input: the rows of a run attached elsewhere
    *  end up with no blocks and their indexes are listed in `absorbed` (the
@@ -94,6 +99,8 @@ export interface FoldReportRowsResult<T extends ChatMsg> {
    *  trailing rows can carry a null id. */
   rows: T[];
   absorbed: Set<number>;
+  /** Original coordinates parallel to rows[row].blocks, including cloned plan notes. */
+  origins: BlockOrigin[][];
 }
 
 /** One render unit: a whole message, or one of the two halves of a message
@@ -102,6 +109,7 @@ interface Entry {
   role: ChatMsg["role"];
   blocks: Block[];
   canHost: boolean;
+  origins: BlockOrigin[];
   /** True for the detached leading half: its blocks precede the message. */
   leads: boolean;
 }
@@ -130,13 +138,14 @@ export function foldReportRows<T extends ChatMsg>(
   const entries: Entry[] = [];
   const owner: number[] = [];
   messages.forEach((message, index) => {
+    const origins = message.blocks.map((_, block) => ({ row: index, block }));
     const lead = message.role === "assistant" ? leadingReports(message.blocks) : 0;
     if (lead > 0 && lead < message.blocks.length) {
-      entries.push({ role: "system", blocks: message.blocks.slice(0, lead), canHost: false, leads: true });
+      entries.push({ role: "system", blocks: message.blocks.slice(0, lead), origins: origins.slice(0, lead), canHost: false, leads: true });
       owner.push(index);
-      entries.push({ role: "assistant", blocks: message.blocks.slice(lead), canHost: canHost(message), leads: false });
+      entries.push({ role: "assistant", blocks: message.blocks.slice(lead), origins: origins.slice(lead), canHost: canHost(message), leads: false });
     } else {
-      entries.push({ role: message.role, blocks: message.blocks, canHost: canHost(message), leads: false });
+      entries.push({ role: message.role, blocks: message.blocks, origins, canHost: canHost(message), leads: false });
     }
     owner.push(index);
   });
@@ -179,25 +188,34 @@ export function foldReportRows<T extends ChatMsg>(
     }
     let end = i;
     while (end + 1 < entries.length && isRun(entries[end + 1])) end++;
-    const run = entries.slice(i, end + 1).flatMap((e) => e.blocks as ReportBlock[]);
+    const runEntries = entries.slice(i, end + 1);
+    const run = runEntries.flatMap((e) => e.blocks as ReportBlock[]);
+    const runOrigins = runEntries.flatMap((e) => e.origins);
     absorbPlanNotes(run);
     const blocks = withProgress(run);
     // Attached: appended after the host's own content. Standalone: the run's
     // first entry is replaced by the whole run (it already holds its own blocks).
     const host = lastHost === i - 1 ? lastHost : -1;
-    entries[host === -1 ? i : host].blocks = host === -1
-      ? blocks
-      : [...entries[host].blocks, ...blocks];
-    for (let k = host === -1 ? i + 1 : i; k <= end; k++) entries[k].blocks = [];
+    const target = entries[host === -1 ? i : host];
+    target.blocks = host === -1 ? blocks : [...target.blocks, ...blocks];
+    target.origins = host === -1 ? runOrigins : [...target.origins, ...runOrigins];
+    for (let k = host === -1 ? i + 1 : i; k <= end; k++) {
+      entries[k].blocks = [];
+      entries[k].origins = [];
+    }
     i = end;
   }
 
   const outcome: Block[][] = messages.map(() => []);
+  const origins: BlockOrigin[][] = messages.map(() => []);
   entries.forEach((entry, k) => {
     const index = owner[k];
     outcome[index] = entry.leads
       ? [...entry.blocks, ...outcome[index]]
       : [...outcome[index], ...entry.blocks];
+    origins[index] = entry.leads
+      ? [...entry.origins, ...origins[index]]
+      : [...origins[index], ...entry.origins];
   });
   const rows = messages.map((message, index) =>
     sameBlocks(outcome[index], message.blocks) ? message : { ...message, blocks: outcome[index] },
@@ -206,15 +224,15 @@ export function foldReportRows<T extends ChatMsg>(
     messages.flatMap((m, index) =>
       m.blocks.length > 0 && outcome[index].length === 0 ? [index] : []),
   );
-  return { rows, absorbed };
+  return { rows, absorbed, origins };
 }
 
 /** One-line-ish plain text for a collapsed report: the two-line preview must
  *  read as prose, not as raw Markdown (`###`, backticks, link syntax). Code
  *  blocks collapse to an ellipsis — they are never what a preview is for. */
-export function reportPreview(markdown: string): string {
+export function reportPreview(markdown: string, includeCode = false): string {
   return (markdown ?? "")
-    .replace(/```[\s\S]*?```/g, " … ")
+    .replace(/```([\s\S]*?)```/g, (_, code: string) => includeCode ? code.replace(/^[^\n]*\n/, "") : " … ")
     .replace(/`([^`\n]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")

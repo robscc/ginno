@@ -1,10 +1,10 @@
 "use client";
 
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronRight, ClipboardList } from "lucide-react";
 import { Markdown } from "../Markdown";
-import { PlanItemStatusLabel } from "../planItemStatus";
+import { PLAN_ITEM_STATUS, PlanItemStatusLabel } from "../planItemStatus";
 import type { MarkdownFileTarget } from "@/lib/codePaths";
 import type { SessionMeta } from "@/lib/types";
 import { useGinno } from "@/lib/store";
@@ -13,7 +13,7 @@ import { t } from "@/i18n/provider";
 import { useChatT } from "./i18n";
 import { parseDelegation } from "./delegation";
 import { reportPreview } from "./reportFold";
-import { parsePlanUpdate, type PlanUpdateItem } from "./planUpdateParse";
+import { parsePlanUpdate } from "./planUpdateParse";
 import {
   SUBAGENT_BUCKET_ORDER,
   subagentStatusBucket,
@@ -165,45 +165,67 @@ export function SubagentSpawnCard({
  *  2026-11-25 起只显示条目状态变化：正文里的 detail 是子代理摘要的开头，结果卡
  *  已有全文，这里不再重复；给模型看的抬头在解析层丢掉。失败/停止条目保留
  *  detail——启动失败的条目没有结果卡，错误只在这一行。`row` 是折叠组内的单行。 */
-export function PlanUpdateCard({
-  block,
-  row = false,
-}: {
-  block: Extract<Block, { kind: "plan_update" }>;
-  row?: boolean;
-}) {
-  const { tc } = useChatT();
-  const parsed = useMemo(() => parsePlanUpdate(block.text), [block.text]);
-  const needsUser = (item: PlanUpdateItem) => item.status === "failed" || item.status === "stopped";
+export function planUpdatePresentation(
+  block: Extract<Block, { kind: "plan_update" }>,
+  row: boolean,
+  { tc, tr }: ReturnType<typeof useChatT>,
+) {
+  const parsed = parsePlanUpdate(block.text);
+  const title = tc(row ? "planBoard.updateRowTitle" : "planBoard.updateTitle");
   const progress = block.progress
     ? block.progress.total != null
       ? tc("planBoard.planProgress", { done: block.progress.done, total: block.progress.total })
       : tc("planBoard.planProgressOpen", { done: block.progress.done })
     : "";
-  const itemNodes = parsed.items.map((item) => (
+  const items = parsed.items.map((item) => {
+    const meta = PLAN_ITEM_STATUS[item.status as keyof typeof PLAN_ITEM_STATUS] ?? PLAN_ITEM_STATUS.pending;
+    return {
+      ...item,
+      label: tr(meta.label),
+      snippet: item.status === "failed" || item.status === "stopped" ? firstLine(item.detail) : "",
+    };
+  });
+  const settled = !row && parsed.completed
+    ? tc("planBoard.planSettled", { done: parsed.completed.done, failed: parsed.completed.failed }) : "";
+  const notes = row && items.length > 0 ? "" : parsed.notes.join(row ? " · " : "\n");
+  const id = row ? "" : block.planId;
+  return { title, progress, items, settled, notes, id };
+}
+
+export function PlanUpdateCard({
+  block,
+  row = false,
+  blockIndex,
+}: {
+  block: Extract<Block, { kind: "plan_update" }>;
+  row?: boolean;
+  blockIndex?: number;
+}) {
+  const { title, progress, items, notes, settled, id } = planUpdatePresentation(block, row, useChatT());
+  const itemNodes = items.map((item) => (
     <span key={item.id} className="inline-flex max-w-full items-center gap-1.5 align-middle">
       <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-mono text-[10px] font-medium text-violet">
         {item.id}
       </span>
       <PlanItemStatusLabel status={item.status} />
-      {needsUser(item) && item.detail && (
+      {item.snippet && (
         <span className="min-w-0 max-w-[28rem] truncate text-muted" title={item.detail}>
-          {firstLine(item.detail)}
+          {item.snippet}
         </span>
       )}
     </span>
   ));
   if (row) {
     return (
-      <div className="flex min-w-0 items-center gap-1.5 py-0.5 text-[11px]" data-testid="plan-update-row">
+      <div className="flex min-w-0 items-center gap-1.5 py-0.5 text-[11px]" data-testid="plan-update-row" data-block-idx={blockIndex}>
         <ClipboardList className="h-3 w-3 shrink-0 text-violet" aria-hidden />
-        <span className="shrink-0 text-muted">{tc("planBoard.updateRowTitle")}</span>
+        <span className="shrink-0 text-muted">{title}</span>
         {progress && <span className="shrink-0 text-faint">{progress}</span>}
-        {parsed.items.length > 0 ? (
+        {items.length > 0 ? (
           <span className="min-w-0 flex-1 truncate">{itemNodes}</span>
-        ) : parsed.notes.length > 0 ? (
+        ) : notes ? (
           <span className="min-w-0 flex-1 truncate text-muted" title={block.text}>
-            {parsed.notes.join(" · ")}
+            {notes}
           </span>
         ) : null}
       </div>
@@ -213,45 +235,39 @@ export function PlanUpdateCard({
     <div
       className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2 text-xs"
       data-testid="plan-update-card"
+      data-block-idx={blockIndex}
     >
       <div className="flex items-center gap-1.5">
         <ClipboardList className="h-3.5 w-3.5 shrink-0 text-violet" />
-        <span className="min-w-0 flex-1 font-medium text-txt">{tc("planBoard.updateTitle")}</span>
+        <span className="min-w-0 flex-1 font-medium text-txt">{title}</span>
         {progress && <span className="shrink-0 text-faint">{progress}</span>}
-        {block.planId && (
+        {id && (
           <span className="shrink-0 rounded bg-violet/15 px-1 py-px font-mono text-[10px] text-violet">
-            {block.planId}
+            {id}
           </span>
         )}
       </div>
-      {parsed.items.length > 0 && (
+      {items.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-1">
-          {parsed.items.map((item) => (
+          {items.map((item) => (
             <div key={item.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
               <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-mono text-[10px] font-medium text-violet">
                 {item.id}
               </span>
               <PlanItemStatusLabel status={item.status} />
-              {needsUser(item) && item.detail && (
+              {item.snippet && (
                 <span className="min-w-0 flex-1 basis-48 truncate text-muted" title={item.detail}>
-                  {firstLine(item.detail)}
+                  {item.snippet}
                 </span>
               )}
             </div>
           ))}
         </div>
       )}
-      {parsed.completed && (
-        <div className="mt-1.5 text-[11px] text-muted">
-          {tc("planBoard.planSettled", {
-            done: parsed.completed.done,
-            failed: parsed.completed.failed,
-          })}
-        </div>
-      )}
-      {parsed.notes.length > 0 && (
+      {settled && <div className="mt-1.5 text-[11px] text-muted">{settled}</div>}
+      {notes && (
         <div className="selectable mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
-          {parsed.notes.join("\n")}
+          {notes}
         </div>
       )}
     </div>
@@ -262,11 +278,41 @@ function firstLine(text: string): string {
   return text.split("\n", 1)[0].trim();
 }
 
+function reportPresentation(
+  block: Extract<Block, { kind: "subagent_result" }>,
+  live: SessionMeta | undefined,
+  tc: ReturnType<typeof useChatT>["tc"],
+) {
+  const summaryText = block.summary || live?.subagent?.result_summary || "";
+  const del = parseDelegation(summaryText);
+  const isDelegation = live?.type === "delegation" || !!del;
+  const goal = live?.subagent?.goal || block.goal || "Subtask";
+  const title = isDelegation
+    ? tc("subagent.delegationResultTitle", { backend: live?.backend ?? del?.backend ?? "?" })
+    : tc("subagent.resultTitle", { goal });
+  const bodyText = del
+    ? summaryText.split("\n").filter((line, index) => index > 0 && !/^delegation=/.test(line)).join("\n").trim()
+    : summaryText;
+  const errorText = block.error ? tc("subagent.errorPrefix") + block.error : "";
+  return { summaryText, del, isDelegation, goal, title, bodyText, errorText };
+}
+
+export function searchableReportText(
+  block: Extract<Block, { kind: "subagent_result" }>,
+  live: SessionMeta | undefined,
+  tc: ReturnType<typeof useChatT>["tc"],
+): string {
+  const { title, isDelegation, bodyText, errorText } = reportPresentation(block, live, tc);
+  return [title, isDelegation && block.goal, errorText, reportPreview(bodyText, true)].filter(Boolean).join("\n");
+}
+
 export function SubagentResultCard({
   block,
   onFileLink,
+  blockIndex,
 }: {
   block: Extract<Block, { kind: "subagent_result" }>;
+  blockIndex?: number;
   /** 汇报里的本地文件引用走聊天同一条打开路径（代码面板）。 */
   onFileLink?: (target: MarkdownFileTarget) => void;
 }) {
@@ -276,12 +322,7 @@ export function SubagentResultCard({
   const statusLabel = useStatusLabel();
   const live = g.sessions.find((s) => s.id === block.sessionId);
   const sub = live?.subagent;
-  // delegation 回执（external_agent 注入）复用本卡。判定双保险：summary 带
-  // [delegate …] 机器头（注入/status 两通道的 summary 都以它开头），或子会话
-  // meta type=delegation（老数据/极端时序兜底）。
-  const summaryText = block.summary || sub?.result_summary || "";
-  const del = parseDelegation(summaryText);
-  const isDelegation = live?.type === "delegation" || !!del;
+  const { del, isDelegation, goal, title, bodyText, errorText } = reportPresentation(block, live, tc);
   // 终态优先级：机器头（本次运行真实 verdict）> meta.stop_reason。
   const stop = del?.stop ?? live?.stop_reason ?? "";
   // An error text is a failure even when the child session is not in the store
@@ -294,7 +335,6 @@ export function SubagentResultCard({
       ? "failed"
       : sub?.status ?? "done";
   const meta = subagentStatusMeta(status);
-  const goal = sub?.goal || block.goal || "Subtask";
   const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
   const [problemOpen, setProblemOpen] = useState(false);
   // 正文默认收起（两行预览）；标题行整行是开关。失败/出错的卡也只多常驻一行
@@ -346,19 +386,16 @@ export function SubagentResultCard({
     );
     setProblemOpen(false);
   };
-  // delegation 正文：机器头与 delegation= 溯源行剥掉（信息已进徽标行与
-  // 卡片跳转，ToolBlock 同款过滤）。
-  const bodyText = isDelegation && del
-    ? summaryText.split("\n").filter((l, idx) => idx > 0 && !/^delegation=/.test(l)).join("\n").trim()
-    : summaryText;
   return (
     <div
       className={`rounded-lg border bg-card/60 px-3 py-2.5 text-xs ${failed ? "border-red/30" : "border-line"}`}
       data-testid="subagent-result-card"
+      data-block-idx={blockIndex}
       data-result-open={open ? "" : undefined}
     >
       <button
         type="button"
+        data-reveal-record
         aria-expanded={open}
         title={open ? tc("subagent.collapseReport") : tc("subagent.expandReport")}
         onClick={() => setOpen((v) => !v)}
@@ -369,9 +406,7 @@ export function SubagentResultCard({
           className="min-w-0 flex-1 truncate font-medium text-txt"
           title={isDelegation ? block.goal || live?.backend || "" : goal}
         >
-          {isDelegation
-            ? tc("subagent.delegationResultTitle", { backend: live?.backend ?? del?.backend ?? "?" })
-            : tc("subagent.resultTitle", { goal })}
+          {title}
         </span>
         <SubagentKindBadges sub={sub} />
         <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>
@@ -414,7 +449,7 @@ export function SubagentResultCard({
         </div>
       )}
       {block.error && (
-        <div className="selectable mt-1.5 whitespace-pre-wrap break-words text-red/90">{tc("subagent.errorPrefix")}{block.error}</div>
+        <div className="selectable mt-1.5 whitespace-pre-wrap break-words text-red/90">{errorText}</div>
       )}
       {bodyText &&
         (open ? (
@@ -510,8 +545,10 @@ export function SubagentResultCard({
 export function SubagentBlocks({
   blocks,
   session,
+  sourceBlocks,
 }: {
   blocks: SubagentCardBlock[];
+  sourceBlocks?: Block[];
   /** 子会话视图传入：简报卡据此读 spawn_subagent 的实际参数（以它为准） */
   session?: SessionMeta;
 }) {
@@ -522,9 +559,9 @@ export function SubagentBlocks({
         b.kind === "subagent_spawn" ? (
           <SubagentSpawnCard key={`${b.sessionId}-${i}`} block={b} />
         ) : b.kind === "subagent_result" ? (
-          <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
+          <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} blockIndex={sourceBlocks?.indexOf(b)} />
         ) : b.kind === "worker_result" ? (
-          <WorkerResultCard key={`wr-row-${b.sessionId}-${i}`} block={b} />
+          <div key={`wr-row-${b.sessionId}-${i}`} className="contents" data-block-idx={sourceBlocks?.indexOf(b)}><WorkerResultCard block={b} /></div>
         ) : b.kind === "worker_assign" ? (
           <WorkerAssignCard key={`wa-row-${b.fromSessionId}-${i}`} block={b} />
         ) : (

@@ -1,99 +1,120 @@
-import { describe, expect, it, beforeEach } from "vitest";
-
+import { describe, expect, it } from "vitest";
+import { foldReportRows } from "@/components/chat/blocks/reportFold";
+import type { ChatMsg } from "@/components/chat/streamCore";
+import { markdownSearchText } from "./markdownSearchText";
 import {
   buildFindIndex,
-  extractSearchableText,
-  resetFindCache,
+  mergeFindHistory,
+  searchableBlockText,
   searchFindIndex,
+  transcriptRowKeys,
 } from "./sessionFind";
 
-describe("sessionFind（find-bar-design §3）", () => {
-  beforeEach(() => resetFindCache());
+function index(messages: ChatMsg[]) {
+  return buildFindIndex(messages, {
+    folded: foldReportRows(messages, { attention: () => null }),
+    rowKeys: transcriptRowKeys(messages),
+  }, (block) => block.kind === "plan_update" || block.kind === "context"
+    ? block.text : searchableBlockText(block));
+}
 
-  it("提取表：各 kind 入/不入索引", () => {
-    const texts = extractSearchableText([
+describe("sessionFind", () => {
+  it("extracts ordinary text, tool output and skill names, skipping pending tools and chrome", () => {
+    expect(index([{ id: "message", role: "assistant", blocks: [
       { kind: "text", text: "正文" },
       { kind: "thinking", text: "推理" },
-      { kind: "tool", name: "bash", argsPreview: "ls", content: "out" },
-      { kind: "tool", name: "bash", content: "…", pending: true }, // pending 不搜
-      { kind: "steer", text: "插话" },
-      { kind: "skill", name: "todo", text: "清单" },
+      { kind: "tool", id: "one", name: "bash", argsPreview: "ls", content: "out", pending: false },
+      { kind: "tool", id: "two", name: "bash", content: "…", pending: true },
       { kind: "context", text: "系统行" },
       { kind: "file", name: "报告.xlsx" },
-      { kind: "image", url: "http://x" }, // 不入
-      { kind: "turn_meta" }, // 不入
-    ]);
-    expect(texts).toEqual([
-      "正文",
-      "推理",
-      "bash\nls\nout",
-      "插话",
-      "/todo 清单",
-      "系统行",
-      "报告.xlsx",
+      { kind: "image", url: "http://x" },
+    ] }]).map(({ text, blockIdx }) => [text, blockIdx])).toEqual([
+      ["正文", 0], ["推理", 1], ["bash\nls\nout", 2], ["系统行", 4], ["报告.xlsx", 5],
     ]);
   });
 
-  it("question 块含题干/选项/答案", () => {
-    const [t] = extractSearchableText([
-      { kind: "question", question: "选哪个", options: ["A", "B"], answer: "A" },
-    ]);
-    expect(t).toContain("选哪个");
-    expect(t).toContain("A");
+  it("keeps the source address when a replayed plan with a null id moves to a new host", () => {
+    const plan = { kind: "plan_update", planId: "sample", text: "needle" } as const;
+    const live: ChatMsg[] = [
+      { id: "live-host", role: "assistant", blocks: [{ kind: "text", text: "live" }] },
+      { id: "live-row", role: "system", blocks: [plan] },
+    ];
+    const replay: ChatMsg[] = [
+      { id: "history-host", role: "assistant", blocks: [{ kind: "text", text: "history" }] },
+      { id: null as unknown as string, role: "assistant", blocks: [plan, { kind: "text", text: "following" }] },
+    ];
+    const [before] = searchFindIndex(index(live), "needle");
+    const [after] = searchFindIndex(index(replay), "needle");
+    expect(after.sourceKey).toBe(before.sourceKey);
+    expect(after.rowKey).toBe(transcriptRowKeys(replay)[0]);
+    expect(after.rowKey).not.toBe(before.rowKey);
+    expect(after.blockIdx).toBe(1);
+    expect(transcriptRowKeys(replay)[1]).toContain("legacy");
   });
 
-  it("索引跨消息并保留原始块序号", () => {
-    const idx = buildFindIndex(
-      [
-        { id: "m1", blocks: [{ kind: "text", text: "甲" }, { kind: "image", url: "x" }, { kind: "text", text: "乙" }] },
-        { id: "m2", blocks: [{ kind: "tool", name: "bash", content: "boom" }] },
-      ],
-      null,
-    );
-    expect(idx.map((e) => `${e.msgId}:${e.blockIdx}`)).toEqual(["m1:0", "m1:2", "m2:0"]);
+  it("orders repeated literal occurrences and distinguishes identical source blocks", () => {
+    const block = { kind: "text", text: "Read [config], read [config]" } as const;
+    const indexed = index([{ id: "one", role: "assistant", blocks: [block, block] }]);
+    const hits = searchFindIndex(indexed, " READ [CONFIG] ");
+    expect(hits.map(({ blockIdx, occurrence }) => [blockIdx, occurrence])).toEqual([[0, 0], [0, 1], [1, 0], [1, 1]]);
+    expect(hits[0].sourceKey).not.toBe(hits[2].sourceKey);
+    expect(searchFindIndex(indexed, "  ")).toEqual([]);
   });
+});
 
-  it("finds folded summary text and diff by their source ordinal", () => {
-    const idx = buildFindIndex([{ id: "folded", blocks: [
-      { kind: "llm_call" },
-      { kind: "reasoning_summary", parts: [{ text: "Read config" }] },
-      { kind: "tool", name: "edit_file", pending: false, diff: { text: "+ enable_preview" } },
-    ] }], null);
-    expect(searchFindIndex(idx, "Read config")[0]?.blockIdx).toBe(1);
-    expect(searchFindIndex(idx, "enable_preview")[0]?.blockIdx).toBe(2);
-  });
+it("keeps the original notice ordinal after a sibling is dismissed", () => {
+  const first = { kind: "context", text: "One notice" } as const;
+  const second = { kind: "context", text: "Another notice" } as const;
+  const original: ChatMsg[] = [{ id: "notices", role: "system", blocks: [first, second] }];
+  const visible: ChatMsg[] = [{ ...original[0], blocks: [second] }];
+  const [before] = searchFindIndex(index(original), "Another");
+  const [after] = searchFindIndex(buildFindIndex(visible, {
+    folded: foldReportRows(visible, { attention: () => null }), rowKeys: transcriptRowKeys(visible),
+  }, () => second.text, original), "Another");
+  expect(after.sourceKey).toBe(before.sourceKey);
+  expect(after.blockIdx).toBe(0);
+});
 
-  it("搜索：大小写不敏感、多命中有序、空串零命中", () => {
-    const idx = buildFindIndex(
-      [
-        { id: "m1", blocks: [{ kind: "text", text: "Deploy failed. deploy again" }] },
-        { id: "m2", blocks: [{ kind: "text", text: "ok" }] },
-      ],
-      null,
-    );
-    const hits = searchFindIndex(idx, "DEPLOY");
-    expect(hits).toHaveLength(2);
-    expect(hits[0]).toMatchObject({ msgId: "m1", blockIdx: 0, start: 0, len: 6 });
-    expect(hits[1].start).toBeGreaterThan(0);
-    expect(searchFindIndex(idx, "")).toEqual([]);
-    expect(searchFindIndex(idx, "   ")).toEqual([]);
-  });
+it("keeps folded reasoning, tool diff and question text addressable", () => {
+  const indexed = index([{ id: "folded", role: "assistant", blocks: [
+    { kind: "thinking", text: "Read config" },
+    { kind: "reasoning_summary", parts: [{ id: "part-1", text: "Checked config" }] },
+    { kind: "tool", name: "edit_file", pending: false, content: "Updated", diff: {
+      op: "edit", path: "config.ini", text: "+ enable_preview", added: 1, removed: 0, truncated: false,
+    } },
+    { kind: "question", question: "Which environment?", options: ["Staging", "Production"], allowFreeText: false, status: "answered", answer: "Staging" },
+  ] }]);
+  expect(searchFindIndex(indexed, "config").map(({ blockIdx }) => blockIdx)).toEqual([0, 1, 2]);
+  expect(searchFindIndex(indexed, "enable_preview").map(({ blockIdx }) => blockIdx)).toEqual([2]);
+  expect(searchFindIndex(indexed, "Staging").map(({ blockIdx }) => blockIdx)).toEqual([3, 3]);
+});
 
-  it("流式标记：liveId 命中标记 streaming", () => {
-    const idx = buildFindIndex(
-      [{ id: "live", blocks: [{ kind: "text", text: "增长中" }] }],
-      "live",
-    );
-    expect(idx[0].streaming).toBe(true);
-  });
+it("indexes a resumed bubble once with its live text and persisted tool bodies", () => {
+  const tool = { kind: "tool", id: "old-tool", name: "bash", content: "Persisted stdout", pending: false } as const;
+  const saved: ChatMsg = { id: "adopted", role: "assistant", blocks: [
+    tool, { kind: "text", text: "Persisted reply" },
+  ] };
+  const live: ChatMsg = { ...saved, blocks: [
+    { ...tool, content: "", detail: { sessionId: "s1", key: "v1", chars: 16, lines: 1 } },
+    { kind: "text", text: "Persisted reply with live addition" },
+  ] };
+  const current = mergeFindHistory([saved], [live], live.id);
+  expect(current).toHaveLength(1);
+  expect(searchFindIndex(index(current), "live addition")).toHaveLength(1);
+  expect(searchFindIndex(index(current), "Persisted stdout")).toHaveLength(1);
+  expect(searchFindIndex(index(current), "Persisted reply")).toHaveLength(1);
+});
 
-  it("版本缓存：blocks 引用不变命中缓存，变则重提取", () => {
-    const blocks = [{ kind: "text", text: "v1" }];
-    buildFindIndex([{ id: "m", blocks }], null);
-    const again = buildFindIndex([{ id: "m", blocks }], null);
-    expect(again[0].text).toBe("v1");
-    const blocks2 = [{ kind: "text", text: "v2 长文本" }];
-    const fresh = buildFindIndex([{ id: "m", blocks: blocks2 }], null);
-    expect(fresh[0].text).toBe("v2 长文本");
-  });
+it("indexes visible Markdown labels, inline formatting and literal code", () => {
+  const text = markdownSearchText("A **bold** [visible](https://example.org/hidden) label.\n\n```text\n[keep](literal)\n```");
+  expect(text).toContain("A bold visible label.");
+  expect(text).toContain("[keep](literal)");
+  expect(text).not.toContain("example.org/hidden");
+});
+
+it("keeps an unchanged text block's source identity across unrelated appends", () => {
+  const text = { kind: "text", text: "stable data" } as const;
+  const original: ChatMsg = { id: "live", role: "assistant", blocks: [text] };
+  const updated: ChatMsg = { ...original, blocks: [{ kind: "turn_meta", elapsedS: 1 }, text] };
+  expect(index([updated])[0]).toMatchObject({ sourceKey: index([original])[0].sourceKey, blockIdx: 1 });
 });

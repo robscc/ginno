@@ -347,6 +347,10 @@
     "refChip": {
       "workflowPrefix": "工作流：",
       "clickOpen": "点击打开",
+      "fileMissing": "无法打开「{name}」。原路径找不到文件，文件可能已移动或删除。\n{path}",
+      "sessionUnavailable": "无法打开「{name}」。找不到关联会话。",
+      "connectionFailed": "无法打开「{name}」。无法连接 Ginno 运行时，请重试。",
+      "openFailed": "无法打开「{name}」。运行时未能准备文件预览，请重试。",
       "remoteBadge": "远端",
       "remoteNotice": "「{name}」在远端节点 {peer} 上（{path}），本机无法直接打开",
       "remoteTitle": "远端文件（位于 {peer}）\n{path}\n本机无法直接打开，点击查看远端路径提示"
@@ -764,7 +768,17 @@
       }
     },
     "jumpLatest": "跳到最新一条信息",
-    "loadEarlier": "加载更早的 {showingMore} 条（还有 {hidden} 条未显示）",
+    "history": {
+      "earlier": "加载更早的消息",
+      "loading": "加载中…",
+      "retryEarlier": "重试加载更早的消息",
+      "loadingOutput": "正在加载工具输出…",
+      "retryOutput": "重试加载工具输出",
+      "copyOutput": "复制工具输出",
+      "retrySearch": "重试加载搜索内容"
+    },
+    "loadEarlier": "加载更早的消息（还有 {hidden} 条）",
+    "loadLater": "加载稍后的消息（还有 {hidden} 条）",
     "find": {
       "placeholder": "会话内搜索…",
       "none": "无命中",

@@ -1,7 +1,7 @@
 // engine/connect — socket 就绪 promise、历史映射与重连对账（自
 // useChatStreamEngine.ts 机械拆出，函数体逐字一致；原闭包引用改为经 ctx 取用）。
 
-import { getSessionHistory } from "@/lib/runtime";
+import { appendLiveHistory, readHistory } from "./history";
 import {
   foldSubagentResultBlocks,
   foldTaskEventBlocks,
@@ -112,7 +112,7 @@ export function mapHistory(
   if (err?.message) {
     const lastUser = [...mapped].reverse().find((m) => m.role === "user");
     mapped.push({
-      id: mid(),
+      id: `history-error-${err.turn_id ?? lastUser?.id ?? "last"}`,
       role: "assistant",
       // 与 live 错误卡同语义:带 key 落地翻译(快照),未命中回退英文 message。
       blocks: [
@@ -143,8 +143,16 @@ export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string): Promise<v
   // 返回 promise（2026-10-30）：message.end 的 orphan 分支要等 reconcile
   // 把 absorbed 条目清完、再把队列头提升为下一 turn——顺序错了会把已被
   // 服务端吸收的 steer 原文重发一遍（§3.3 exactly-once 的另一半）。
-  return getSessionHistory(sid)
-    .then((res) => {
+  const sent = ctx.sendSeqRef.current[sid];
+  const liveId = ctx.liveBySessionRef.current[sid];
+  const newerTurn = () => ctx.sendSeqRef.current[sid] !== sent ||
+    Boolean(ctx.liveBySessionRef.current[sid] && ctx.liveBySessionRef.current[sid] !== liveId);
+  return readHistory(ctx, sid, "latest", (mapped, live) => {
+    if (newerTurn()) {
+      ctx.storeRef.current[sid] = appendLiveHistory(mapped, live);
+      ctx.syncDisplay(sid);
+      return;
+    }
     // Skill blocks (history-replayed slash turns) normalize back to the
     // "/name request" text the live bubble carries, or the two never match
     // and a phantom "undelivered" duplicate appears.
@@ -163,7 +171,6 @@ export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string): Promise<v
     const pending = (ctx.storeRef.current[sid] ?? []).filter(
       (m) => m.role === "user" && m.status === "sending",
     );
-    const mapped = mapHistory(ctx, res ?? {});
     // A steer_id present in history was absorbed even if the ack was lost to
     // the socket drop that caused this reconcile — drop those entries instead
     // of re-sending them (design §3.3, exactly-once).
@@ -191,7 +198,9 @@ export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string): Promise<v
     ctx.busyBySessionRef.current[sid] = false;
     ctx.syncDisplay(sid);
     })
+    .then(() => undefined)
     .catch(() => {
+      if (newerTurn()) return;
       // 历史拉取失败也要解除 busy——否则 reconcile 之后永远「运行中」。
       ctx.liveBySessionRef.current[sid] = null;
       ctx.streamAgentRef.current[sid] = null;

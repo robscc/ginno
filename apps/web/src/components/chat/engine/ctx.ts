@@ -13,6 +13,7 @@ import type {
   VersionPropose,
 } from "../streamCore";
 import type { EngineDeps } from "../useChatStreamEngine";
+import type { HistoryState } from "./history";
 import type { CompactionStage } from "./handlers/11-context";
 
 export type WsStatus = "connecting" | "live" | "reconnecting" | "offline";
@@ -41,6 +42,7 @@ export interface EngineCtx extends EngineDeps {
   prevSlotRef: { current: string | null };
   curSessionIdRef: { current: string | null };
   storeRef: { current: Record<string, ChatMsg[]> };
+  historyRef: { current: Map<string, HistoryState> };
   liveBySessionRef: { current: Record<string, string | null> };
   socketsRef: { current: Record<string, WebSocket> };
   statusRef: { current: Record<string, WsStatus> };

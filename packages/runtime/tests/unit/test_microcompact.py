@@ -133,6 +133,12 @@ async def test_old_tool_outputs_cleared_recent_kept(isolated_home):
 
     state = await graph.aget_state(config)  # reads back through the checkpointer
     msgs = state.values["messages"]
+    from ginno_runtime.api.messages_ui import _messages_to_ui
+
+    notice = _messages_to_ui(msgs, "dev")[0]
+    assert notice["role"] == "system" and notice["id"] == stats["notice_id"]
+    assert notice["id"].startswith("microcompact:")
+    assert notice["blocks"][0]["i18n_key"] == "chat.context.microcompacted"
     tools = [m for m in msgs if isinstance(m, ToolMessage)]
     assert len(tools) == 3
     # the stale one: marker + head excerpt (only the first 1200 of HUGE)

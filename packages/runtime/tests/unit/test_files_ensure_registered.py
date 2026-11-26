@@ -76,10 +76,14 @@ async def test_missing_file_and_unknown_session_fail_soft():
     r = await files_api.ensure_registered_endpoint(
         {"session_id": "s3", "path": "/no/such/file.md"}
     )
-    assert r["ok"] is False and "not found" in r["error"]
+    assert r == {
+        "ok": False, "code": "file_not_found", "error": "File not found: /no/such/file.md",
+    }
     assert get_registry("default").list_all() == []
 
     r = await files_api.ensure_registered_endpoint(
         {"session_id": "ghost", "path": "/tmp/x.md"}
     )
-    assert r["ok"] is False and "session not found" in r["error"]
+    assert r == {
+        "ok": False, "code": "session_not_found", "error": "session not found: ghost",
+    }

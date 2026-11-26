@@ -7,8 +7,11 @@ patch_session 覆盖标题、置顶、agent/workflow 换绑与 provider/model/�
 
 from __future__ import annotations
 
-from fastapi import HTTPException
+from typing import Annotated
+
+from fastapi import HTTPException, Query
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ... import providers as prov_mod
 from ... import server_shared as shared
@@ -28,6 +31,7 @@ from ...session_meta import (
 from ...session_unread import mark_session_seen as _mark_session_seen
 from ...session_unread import mark_session_unread as _session_unread_mark
 from ._base import router
+from .history import address_rows, paginate, tool_records
 
 
 # ── Session label/icon（session-label-icon-design.md §1/§2）──────────────────
@@ -366,27 +370,73 @@ async def session_suggestions(session_id: str) -> dict:
     return suggestions_for(session_id)
 
 
-@router.get("/api/sessions/{session_id}/history")
-async def get_session_history(session_id: str) -> dict:
-    """Return the persisted chat history for a session, in the UI block format."""
+async def _history_snapshot(session_id: str):
     slug = _session_slug(session_id)
     if not slug:
-        raise HTTPException(
-            status_code=404, detail={"ok": False, "error": "unknown session"}
-        )
-    cfg = {"configurable": {"thread_id": session_id}}
-    tup = await FileCheckpointer(slug).aget_tuple(cfg)
-    if not tup or not tup.checkpoint:
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "unknown session"})
+    tup = await FileCheckpointer(slug).aget_tuple({"configurable": {"thread_id": session_id}})
+    return slug, tup.checkpoint if tup else None
+
+
+@router.get("/api/sessions/{session_id}/history")
+async def get_session_history(
+    session_id: str,
+    turns: Annotated[int | None, Query(ge=1, le=80)] = None,
+    before: str | None = None,
+    refresh: str | None = None,
+    coverage: str | None = None,
+    revision: str | None = None,
+    target: str | None = None,
+    index: bool = False,
+) -> dict:
+    """Replay full history, or request a complete-turn page with tool summaries.
+
+    A before cursor navigates backward. A refresh cursor lets readers keep the
+    verified prefix while replacing the tail. The optional coverage row is used
+    to rebuild that range when the checkpoint rewrites a retained prefix.
+    The search index uses the full projection with stable legacy row IDs.
+    """
+    slug, checkpoint = await _history_snapshot(session_id)
+    if not checkpoint and turns is None:
         return {"ok": True, "messages": []}
-    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
-    attached = (tup.checkpoint.get("channel_values") or {}).get("attached_files") or []
+    channel = (checkpoint or {}).get("channel_values") or {}
     meta, _ = (_find_meta(session_id) or ({}, None))
     agent_id = meta.get("agent_id") if isinstance(meta, dict) else None
-    last_error = (meta.get("last_error") or None) if isinstance(meta, dict) else None
-    return {
-        "ok": True,
-        "messages": _messages_to_ui(
-            messages, agent_id, attached, project_slug=slug, session_id=session_id
-        ),
-        "last_error": last_error or None,
-    }
+    last_error = meta.get("last_error") if isinstance(meta, dict) and checkpoint else None
+
+    def project() -> dict:
+        args = (channel.get("messages") or [], agent_id, channel.get("attached_files") or [])
+        scope = {"project_slug": slug, "session_id": session_id}
+        if turns is None:
+            rows = _messages_to_ui(*args, **scope)
+            if index:
+                address_rows(rows)
+            return {"ok": True, "messages": rows, "last_error": last_error or None}
+        starts: set[int] = set()
+        aliases: dict[str, tuple[int, int | None]] = {}
+        rows = _messages_to_ui(*args, **scope, turn_starts=starts, message_aliases=aliases)
+        rows, page = paginate(
+            rows, starts, aliases, session_id=session_id, turns=turns,
+            before=before, refresh=refresh, coverage=coverage, revision=revision, target=target,
+        )
+        return {"ok": True, "messages": rows, "last_error": last_error or None, "page": page}
+
+    return await run_in_threadpool(project)
+
+
+@router.get("/api/sessions/{session_id}/history/tools/{key}")
+async def get_history_tool(session_id: str, key: str) -> dict:
+    """Fetch a tool body and diff from the requested session's current history."""
+    slug, checkpoint = await _history_snapshot(session_id)
+    channel = (checkpoint or {}).get("channel_values") or {}
+
+    def find_tool() -> dict:
+        rows = _messages_to_ui(channel.get("messages") or [], None,
+                               channel.get("attached_files") or [], project_slug=slug, session_id=session_id)
+        address_rows(rows)
+        for _, _, block, record_key in tool_records(rows):
+            if key == record_key:
+                return {"ok": True, "content": block["content"], "diff": block.get("diff")}
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "unknown tool output"})
+
+    return await run_in_threadpool(find_tool)

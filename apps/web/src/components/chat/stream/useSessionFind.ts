@@ -1,167 +1,217 @@
 "use client";
 
-/**
- * useSessionFind — Cmd+F 会话内搜索的 hook（find-bar-design §3.1）。
- *
- * open/query/hits/activeIdx 状态机 + ginno:find-open 事件监听 + 会话切换
- * reset + 150ms 防抖 + 跳转 dispatch（复用 ⌘K 的 ginno:scroll-to-message
- * 扩窗管线，零新机制）。
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useGinno } from "@/lib/store";
 import {
   buildFindIndex,
-  resetFindCache,
+  mergeFindHistory,
+  searchableBlockText,
   searchFindIndex,
+  type FindHit,
 } from "@/lib/sessionFind";
+import { useChatT, useEventI18nText } from "../blocks/i18n";
+import { planUpdatePresentation, searchableReportText } from "../blocks/subagentCards";
+import { contextDisplayText, maskPartialSources, stripSources } from "../blocks/sources";
+import { isReportRow, planUpdateNeedsAttention } from "../blocks/reportFold";
+import { cleanAgentText, splitInlineWidgets } from "../blocks/inlineWidgets";
+import { markdownSearchText } from "@/lib/markdownSearchText";
+import type { ChatMsg } from "../streamCore";
+import { useTranscriptProjection } from "./TranscriptList";
+import { getSessionHistoryIndex, type HistoryResult, type HistoryTarget } from "@/lib/api/sessions";
+import type { Block } from "../blocks/types";
 import * as painter from "./findHighlight";
+
+type TextBlock = Extract<Block, { kind: "text" }>;
+const assistantTextCache = new WeakMap<TextBlock, { live: boolean; text: string }>();
+
+function assistantSearchText(block: TextBlock, live: boolean): string {
+  const cached = assistantTextCache.get(block);
+  if (cached?.live === live) return cached.text;
+  const body = stripSources(block.text);
+  const parts = splitInlineWidgets(cleanAgentText(live ? maskPartialSources(body) : body), live);
+  const prose = parts.flatMap((part) => "text" in part ? [part.text] : []).join(" ");
+  const text = parts.flatMap((part) => {
+    if ("text" in part) return [markdownSearchText(part.text)];
+    const summary = part.widget.summary;
+    return summary && !prose.includes(summary) ? [markdownSearchText(summary)] : [];
+  }).join("\n");
+  assistantTextCache.set(block, { live, text });
+  return text;
+}
 
 export interface SessionFindState {
   open: boolean;
   query: string;
-  hits: ReturnType<typeof searchFindIndex>;
+  hits: FindHit[];
   activeIdx: number;
-  setOpen: (v: boolean) => void;
   setQuery: (q: string) => void;
   next: () => void;
   prev: () => void;
   close: () => void;
   focusRequest: number;
+  indexStatus: "loading" | "error" | "ready";
+  retry: () => void;
 }
 
-export function useSessionFind(
-  messages: Array<{ id: string; blocks?: Array<Record<string, unknown>> }>,
-  liveId: string | null | undefined,
-  sessionId: string | undefined,
-  scrollRef: React.RefObject<HTMLElement | null>,
-): SessionFindState {
+export function useSessionFind({
+  messages, projection, sessionId, scrollRef, sourceMessages, liveId,
+  visibleMessages, mapHistory, loadHistory, historyRevision,
+}: {
+  messages: ChatMsg[];
+  projection: ReturnType<typeof useTranscriptProjection>;
+  sessionId: string | undefined;
+  liveId: string | null;
+  scrollRef: React.RefObject<HTMLElement | null>;
+  sourceMessages: ChatMsg[];
+  visibleMessages: (rows: ChatMsg[]) => ChatMsg[];
+  historyRevision: string | undefined;
+  mapHistory: (response: HistoryResult) => ChatMsg[];
+  loadHistory: (sid: string, target: string) => Promise<HistoryTarget | null>;
+}): SessionFindState {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, updateQuery] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [selected, setSelected] = useState<{ query: string; hit: FindHit }>();
+  const [jumpRequest, setJumpRequest] = useState(0);
   const [focusRequest, setFocusRequest] = useState(0);
-  const hitsRef = useRef<ReturnType<typeof searchFindIndex>>([]);
-  const cancelJump = useRef<(() => void) | undefined>();
-  useEffect(() => () => cancelJump.current?.(), [sessionId]);
+  const { sessions } = useGinno();
+  const { tc, tr } = useChatT();
+  const eventText = useEventI18nText();
 
-  // 防抖 150ms（§3.1）。
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(query), 150);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setDebounced(query.trim()), 150);
+    return () => clearTimeout(timer);
   }, [query]);
 
-  // 索引：buildFindIndex 内部按 msgId+blocks 引用缓存，流式期只重提取 live。
-  const index = useMemo(
-    () => (open ? buildFindIndex(messages, liveId) : []),
-    [open, messages, liveId],
-  );
-  const hits = useMemo(
-    () => (open ? searchFindIndex(index, debounced) : []),
-    [open, index, debounced],
-  );
-  hitsRef.current = hits;
-
-  // query 变化 → 回到首个命中；painter 重刷。
+  const [snapshot, setSnapshot] = useState<{ sid: string; rows: ChatMsg[] }>();
+  const [indexStatus, setIndexStatus] = useState<SessionFindState["indexStatus"]>("loading");
+  const [retryCount, setRetryCount] = useState(0);
   useEffect(() => {
-    setActiveIdx(0);
-    if (open && scrollRef.current) {
-      painter.paint(scrollRef.current, hits, 0, debounced);
-    }
-  }, [debounced, hits, open, scrollRef]);
+    if (!open || !sessionId) return;
+    let alive = true;
+    setIndexStatus("loading");
+    getSessionHistoryIndex(sessionId).then(
+      (result) => {
+        if (!alive) return;
+        setSnapshot({ sid: sessionId, rows: mapHistory(result) });
+        setIndexStatus("ready");
+      },
+      () => { if (alive) setIndexStatus("error"); },
+    );
+    return () => { alive = false; };
+  }, [open, sessionId, retryCount, mapHistory, historyRevision]);
 
-  // 高亮重刷：hits/activeIdx 变（流式增长/遍历）。
-  useEffect(() => {
-    if (open && scrollRef.current) {
-      painter.paint(scrollRef.current, hits, activeIdx, debounced);
-    }
-  }, [open, hits, activeIdx, debounced, scrollRef]);
-
-  // 时间分片挂载落定（TranscriptList 的 ginno:transcript-slices-settled）：
-  // 晚挂载的行错过了上面的 paint，按当前 hits/activeIdx 补刷一次。状态经
-  // ref 读——监听器只挂一次，不随 query/idx 重建。
-  const paintStateRef = useRef({ open: false, activeIdx: 0, debounced: "" });
-  paintStateRef.current = { open, activeIdx, debounced };
-  useEffect(() => {
-    const onSettled = () => {
-      const s = paintStateRef.current;
-      if (s.open && scrollRef.current) {
-        painter.paint(scrollRef.current, hitsRef.current, s.activeIdx, s.debounced);
+  const searchSource = useMemo(() => {
+    if (!open) return [];
+    if (!snapshot || snapshot.sid !== sessionId) return sourceMessages;
+    return mergeFindHistory(snapshot.rows, sourceMessages, liveId);
+  }, [open, snapshot, sessionId, sourceMessages, liveId]);
+  const searchMessages = useMemo(() => visibleMessages(searchSource), [visibleMessages, searchSource]);
+  const searchProjection = useTranscriptProjection(searchMessages, sessionId);
+  const sessionsById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
+  const displayText = useCallback((block: Block, row: ChatMsg) => {
+    switch (block.kind) {
+      case "context":
+        return contextDisplayText(block, eventText);
+      case "plan_update": {
+        const compact = (row.role === "assistant" || isReportRow(row)) && !planUpdateNeedsAttention(block);
+        const { title, progress, items, notes, settled, id } = planUpdatePresentation(block, compact, { tc, tr });
+        return [title, progress, id, ...items.flatMap((item) => [item.id, item.label, item.snippet]), settled, notes]
+          .filter(Boolean).join("\n");
       }
-    };
-    window.addEventListener("ginno:transcript-slices-settled", onSettled);
-    return () => window.removeEventListener("ginno:transcript-slices-settled", onSettled);
+      case "subagent_result":
+        return searchableReportText(block, sessionsById.get(block.sessionId), tc);
+      case "text":
+        return row.role === "assistant" ? assistantSearchText(block, row.id === liveId) : block.text;
+      default:
+        return searchableBlockText(block);
+    }
+  }, [sessionsById, eventText, tc, tr, liveId]);
+  const index = useMemo(() => buildFindIndex(searchMessages, searchProjection, displayText, searchSource),
+    [searchMessages, searchProjection, displayText, searchSource]);
+  const addresses = useMemo(() => new Map((open
+    ? buildFindIndex(messages, projection, displayText, sourceMessages) : [])
+    .map((entry) => [entry.sourceKey, entry])), [open, messages, projection, displayText, sourceMessages]);
+
+  const hits = useMemo(() => searchFindIndex(index, debounced), [index, debounced]);
+  const activeIdx = selected?.query === debounced ? Math.max(0, hits.findIndex(
+    (hit) => hit.sourceKey === selected.hit.sourceKey && hit.occurrence === selected.hit.occurrence,
+  )) : 0;
+  const active = hits[activeIdx];
+  const paintState = useRef({ hits, activeIdx, debounced });
+  paintState.current = { hits: hits.map((hit) => ({ ...hit, ...addresses.get(hit.sourceKey) })), activeIdx, debounced };
+  const paint = useCallback(() => {
+    const { hits, activeIdx, debounced } = paintState.current;
+    if (scrollRef.current) painter.paint(scrollRef.current, hits, activeIdx, debounced);
   }, [scrollRef]);
 
-  // 关闭/卸载/会话切换：清高亮 + reset（对齐 headKeep 重置模式）。
   useEffect(() => {
-    if (!open) painter.clear();
-  }, [open]);
+    if (open) paint();
+  }, [open, hits, activeIdx, addresses, paint]);
   useEffect(() => {
-    painter.clear();
-    resetFindCache();
-    setQuery("");
-    setDebounced("");
-    setActiveIdx(0);
-    setOpen(false);
-  }, [sessionId]);
-  useEffect(() => () => painter.clear(), []);
+    if (!open) return;
+    window.addEventListener("ginno:transcript-slices-settled", paint);
+    return () => {
+      window.removeEventListener("ginno:transcript-slices-settled", paint);
+      painter.clear();
+    };
+  }, [open, sessionId, paint]);
 
-  // ⌘F 入口事件（AppShell 转发，§6.1）：打开或聚焦全选。
+  const address = active && addresses.get(active.sourceKey);
+  const rowKey = address?.rowKey;
+  const blockIdx = address?.blockIdx;
+  const occurrence = active?.occurrence;
+  const requestId = active && !address
+    ? searchMessages[searchProjection.rowKeys.indexOf(active.rowKey)]?.id : undefined;
+  useEffect(() => {
+    if (!open || !sessionId || !requestId) return;
+    let alive = true;
+    loadHistory(sessionId, requestId).catch(() => { if (alive) setIndexStatus("error"); });
+    return () => { alive = false; };
+  }, [open, sessionId, requestId, loadHistory, retryCount]);
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!open || !scroll || rowKey === undefined || blockIdx === undefined || occurrence === undefined) return;
+    return painter.focusActiveHit(scroll, { rowKey, blockIdx, occurrence }, debounced, paint);
+  }, [open, rowKey, blockIdx, occurrence, debounced, jumpRequest, scrollRef, paint]);
+
+  useEffect(() => {
+    updateQuery("");
+    setDebounced("");
+    setSelected(undefined);
+    setOpen(false);
+    setSnapshot(undefined);
+  }, [sessionId]);
+
   useEffect(() => {
     const onOpen = () => {
-      if (!sessionId) return; // pin/无会话不响应
-      setOpen((v) => {
-        if (!v) {
-          setQuery("");
-          setActiveIdx(0);
-        }
-        setFocusRequest((n) => n + 1);
-        return true;
-      });
+      if (!sessionId) return;
+      setOpen(true);
+      setFocusRequest((n) => n + 1);
     };
     window.addEventListener("ginno:find-open", onOpen);
     return () => window.removeEventListener("ginno:find-open", onOpen);
   }, [sessionId]);
 
-  const jump = useCallback(
-    (idx: number) => {
-      const list = hitsRef.current;
-      if (list.length === 0) return;
-      const bounded = ((idx % list.length) + list.length) % list.length;
-      setActiveIdx(bounded);
-      const hit = list[bounded];
-      // §4.2：复用 ⌘K 锚点管线（revealUpTo 扩窗 + 居中 + violet ring）。
-      window.dispatchEvent(
-        new CustomEvent("ginno:scroll-to-message", { detail: hit.msgId }),
-      );
-      if (scrollRef.current) {
-        // 目标行可能刚扩窗/刚分片挂载：落定后补刷一次 paint——否则首次
-        // paint 时行还不存在，active 高亮会漏（时间分片挂载后同理）。
-        cancelJump.current?.();
-        cancelJump.current = painter.focusActiveHit(scrollRef.current, hit, debounced, () => {
-          if (scrollRef.current) {
-            painter.paint(scrollRef.current, hitsRef.current, bounded, debounced);
-          }
-        });
-      }
-    },
-    [debounced, scrollRef],
-  );
-
-  useEffect(() => {
-    if (open && debounced.trim()) jump(0);
-  }, [open, debounced, jump]);
-
-  const next = useCallback(() => jump(activeIdx + 1), [jump, activeIdx]);
-  const prev = useCallback(() => jump(activeIdx - 1), [jump, activeIdx]);
-  const close = useCallback(() => {
-    cancelJump.current?.();
-    setOpen(false);
-    painter.clear();
-  }, []);
-
-  return {
-    open, query, hits, activeIdx,
-    setOpen, setQuery, next, prev, close, focusRequest,
+  const jump = (idx: number) => {
+    if (hits.length === 0) return;
+    const bounded = ((idx % hits.length) + hits.length) % hits.length;
+    setSelected({ query: debounced, hit: hits[bounded] });
+    setJumpRequest((n) => n + 1);
   };
+  const close = () => {
+    setOpen(false);
+    setSnapshot(undefined);
+    updateQuery("");
+    setDebounced("");
+    setSelected(undefined);
+  };
+
+  const setQuery = (value: string) => {
+    updateQuery(value);
+    if (value.trim() !== query.trim()) setSelected(undefined);
+  };
+
+  return { open, query, hits, activeIdx, setQuery,
+    next: () => jump(activeIdx + 1), prev: () => jump(activeIdx - 1), close, focusRequest, indexStatus, retry: () => setRetryCount((n) => n + 1) };
 }

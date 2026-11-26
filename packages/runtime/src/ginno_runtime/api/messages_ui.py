@@ -875,6 +875,9 @@ def _messages_to_ui(
     attached_files: list[dict] | None = None,
     project_slug: str | None = None,
     session_id: str | None = None,
+    *,
+    turn_starts: set[int] | None = None,
+    message_aliases: dict[str, tuple[int, int | None]] | None = None,
 ) -> list[dict]:
     """Convert stored LangChain messages into the chat UI's {role, blocks} shape.
 
@@ -891,6 +894,7 @@ def _messages_to_ui(
     results: dict[str, str] = {}
     raw_results: dict[str, str] = {}
     failed_tools: set[str] = set()
+    tool_message_ids: dict[str, str] = {}
     # turn-meta（turn 右下角耗时+token）：读 session 的 turns.jsonl，按
     # message_id 对齐 assistant bubble（engine 收尾追加；缺失=老会话/工具轮）。
     _turn_metas: dict[str, dict] = {}
@@ -911,6 +915,8 @@ def _messages_to_ui(
         if isinstance(m, ToolMessage):
             raw = getattr(m, "content", "")
             tool_id = m.tool_call_id
+            if message_aliases is not None and m.id:
+                tool_message_ids[tool_id] = m.id
             raw_results[tool_id] = raw if isinstance(raw, str) else ""
             results[tool_id] = _tool_content_str(raw)
             if m.status == "error":
@@ -937,6 +943,7 @@ def _messages_to_ui(
     # turn-meta 对齐键（见 AIMessage 分支注释）：当前 bubble 内最后一条
     # AIMessage 的 id——turns.jsonl 的 message_id 用同一键匹配。
     acc_last_ai_id: str | None = None
+    acc_source_ids: list[str] = []
     # AgentTeam 回帖标记（agent-team-design.md §5.2 要点 2）：成员产出写回主会话
     # 时带 ``ginno_team_reply`` kw，序列化到 bubble 上让前端渲染成**回帖卡**
     # （带头像、可折叠、点「展开全文」跳成员工作台），而不是普通 assistant 气泡。
@@ -990,7 +997,14 @@ def _messages_to_ui(
             bubble = {"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc}
             if acc_team_reply:
                 bubble["teamReply"] = acc_team_reply
+            if message_aliases is not None:
+                message_aliases.update(dict.fromkeys(acc_source_ids, (len(ui), None)))
+                for index, block in enumerate(acc):
+                    source_id = tool_message_ids.get(block.get("id")) if block.get("kind") == "tool" else None
+                    if source_id:
+                        message_aliases[source_id] = (len(ui), index)
             ui.append(bubble)
+        acc_source_ids.clear()
         acc = None
         acc_id = None
         acc_agent = None
@@ -998,6 +1012,11 @@ def _messages_to_ui(
         acc_imgs = set()
         acc_img_blocks = []
         acc_last_ai_id = None
+
+    def start_turn() -> None:
+        flush_assistant()
+        if turn_starts is not None:
+            turn_starts.add(len(ui))
 
     for message_index, m in enumerate(messages):
         if isinstance(m, HumanMessage):
@@ -1009,7 +1028,7 @@ def _messages_to_ui(
                 and isinstance(content_raw, str)
                 and re.match(r"^(?:[2-9]|[1-9]\d+) background task events arrived:\n\n", content_raw)
             ):
-                flush_assistant()
+                start_turn()
                 ui.append({
                     "id": m.id, "role": "user", "blocks": [{"kind": "text", "text": content_raw}],
                 })
@@ -1030,7 +1049,7 @@ def _messages_to_ui(
                     # （回传→父会话开新 turn），先 flush 上一泡再挂 pending——
                     # 否则新 turn 内容焊进旧气泡（2026-11-18 用户反馈：两个
                     # turn 合并成 111 块巨无霸；live 视图本就是新气泡起步）。
-                    flush_assistant()
+                    start_turn()
                     pending_bands.append(cards)
                     continue
             # 后台任务事件注入（background-tasks-design §5/评审决策 4）：合成
@@ -1045,7 +1064,7 @@ def _messages_to_ui(
                 # 新 turn 的内容焊进旧气泡（2026-11-18 实锤：[task finished]
                 # 后的 PR 合并 turn 焊进上一 turn，111 块巨无霸）。flush 后
                 # pending_bands 让回执挂到新气泡头部。
-                flush_assistant()
+                start_turn()
                 pending_bands.append(task_blocks)
                 continue
             if steer_kw:
@@ -1101,7 +1120,7 @@ def _messages_to_ui(
                     }
                 )
                 continue
-            flush_assistant()
+            start_turn()
             blocks = _human_ui_blocks(content_raw)
             if attached_files and not ui:
                 # first user bubble carries the turn's file chips
@@ -1149,6 +1168,8 @@ def _messages_to_ui(
             # 写 turns.jsonl 用的同一键）。flush 时据此附加耗时+token 小字块。
             if getattr(m, "id", None):
                 acc_last_ai_id = m.id
+                if message_aliases is not None:
+                    acc_source_ids.append(m.id)
             if acc_agent is None:
                 acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
             if acc_team_reply is None:
@@ -1258,20 +1279,20 @@ def _messages_to_ui(
     # 后台会话/断线时发生的清理，重载后完全无感知。这里从消息特征重建
     # 一行系统行（与 live 行同一个 i18n key），插到 transcript 开头。
     try:
-        from ..microcompact import _CLEARED_PREFIX
+        from ..microcompact import cleared_outputs_notice
 
-        _cleared = sum(
-            1
-            for m in messages
-            if isinstance(m, ToolMessage)
-            and isinstance(getattr(m, "content", ""), str)
-            and m.content.startswith(_CLEARED_PREFIX)
-        )
+        _cleared, notice_id = cleared_outputs_notice(messages)
         if _cleared:
+            if turn_starts is not None:
+                starts = {index + 1 for index in turn_starts}
+                turn_starts.clear()
+                turn_starts.update(starts)
+            if message_aliases is not None:
+                message_aliases.update({key: (row + 1, block) for key, (row, block) in message_aliases.items()})
             ui.insert(
                 0,
                 {
-                    "id": None,
+                    "id": notice_id,
                     "role": "system",
                     "blocks": [
                         {

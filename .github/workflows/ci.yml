@@ -69,13 +69,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       smoke: ${{ steps.filter.outputs.smoke }}
+      transcript: ${{ steps.filter.outputs.transcript }}
     steps:
       - uses: actions/checkout@v4
         with:
           # The PR merge checkout and its base are needed for the smoke path diff.
           fetch-depth: ${{ github.event_name != 'pull_request' && '1' || '0' }}
 
-      - name: Detect product UX and tasks-overview changes (path filter)
+      - name: Detect UI smoke paths
         id: filter
         if: github.event_name == 'pull_request'
         env:
@@ -83,7 +84,12 @@ jobs:
         run: |
           CHANGED="$(git diff --name-only "$BASE_SHA...HEAD")"
           echo "$CHANGED"
-          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_(tasks_overview|product_ux|ask_user|settings_schedule)\.py$)|(^apps/web/src/components/(ConfirmModal|settings/(EnvVarsSettings|SettingsCorruptBanner|SettingsView|WorkflowsSettings))\.tsx$)|(^apps/web/src/components/scheduled/)|(^apps/web/src/lib/(workflows/|envVarsRows\.ts$|api/(workspace|workflows|settings)\.ts$))|(^apps/web/messages/(en|zh-CN)/(sched|tools)\.json$)|(^packages/runtime/src/ginno_runtime/(api/(workflows|settings|env_settings)\.py$|workflows/|settings_store\.py$|settings_gate\.py$|env_store\.py$|scheduler\.py$|schedule_store\.py$|startup_tasks\.py$|paths\.py$))|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
+          TRANSCRIPT=false
+          if grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_transcript_event_rows\.py$)|(^apps/web/src/components/chat/(ChatStream\.tsx$|blocks\.tsx$|blocks/(chips|sources|subagentCards|reportFold|ProcessFold)\.(ts|tsx)$|stream/(FindBar|TranscriptList|findHighlight|useSessionFind)\.(ts|tsx)$))|(^apps/web/src/lib/sessionFind(\.test)?\.ts$)' <<< "$CHANGED"; then
+            TRANSCRIPT=true
+          fi
+          echo "transcript=$TRANSCRIPT" >> "$GITHUB_OUTPUT"
+          if [ "$TRANSCRIPT" = true ] || grep -Eq '(^packages/runtime/tests/e2e/test_packaged_ui_(tasks_overview|product_ux|ask_user|settings_schedule)\.py$)|(^apps/web/src/components/(ConfirmModal|settings/(EnvVarsSettings|SettingsCorruptBanner|SettingsView|WorkflowsSettings))\.tsx$)|(^apps/web/src/components/scheduled/)|(^apps/web/src/lib/(workflows/|envVarsRows\.ts$|api/(workspace|workflows|settings)\.ts$))|(^apps/web/messages/(en|zh-CN)/(sched|tools)\.json$)|(^packages/runtime/src/ginno_runtime/(api/(workflows|settings|env_settings)\.py$|workflows/|settings_store\.py$|settings_gate\.py$|env_store\.py$|scheduler\.py$|schedule_store\.py$|startup_tasks\.py$|paths\.py$))|(^packages/runtime/tests/e2e/_sidecar\.py$)|(^apps/web/src/components/(right/(TasksOverviewPanel|RightPanel)|shell/SidebarHeader)\.tsx$)|(^apps/web/src/lib/tasks(Overview|Counts)\.ts$)|(^apps/web/src/lib/api/tasks(Overview|Counts)\.ts$)|(^apps/web/messages/(en|zh-CN)/right\.json$)|(^packages/runtime/src/ginno_runtime/api/(tasks_overview|tasks_counts|plans|schedule)\.py$)|(^packages/runtime/src/ginno_runtime/plans/)|(^\.github/workflows/ci\.yml$)' <<< "$CHANGED"; then
             echo "smoke=true" >> "$GITHUB_OUTPUT"
           else
             echo "smoke=false" >> "$GITHUB_OUTPUT"
@@ -385,6 +391,14 @@ jobs:
           GINNO_E2E_RUNTIME: source
           GINNO_E2E_STRICT: "1"
         run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_settings_schedule.py -q --timeout=720
+
+      - name: Run transcript and session find regression (source sidecar)
+        if: needs.web.outputs.transcript == 'true'
+        working-directory: packages/runtime
+        env:
+          GINNO_E2E_RUNTIME: source
+          GINNO_E2E_STRICT: "1"
+        run: uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_transcript_event_rows.py -q
 
       - name: Assert smoke actually ran (skip = fail, anti fake-green)
         if: needs.web.outputs.smoke == 'true'

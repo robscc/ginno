@@ -5,7 +5,8 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
+import type { HistoryTarget } from "@/lib/api/sessions";
 import type { MutableRefObject, RefObject } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -32,38 +33,59 @@ import {
   HandoffDivider,
   TurnIdChip,
 } from "../streamCards";
-import { type ChatMsg, failedTurnBannerVisible } from "../streamCore";
+import type { ChatMsg } from "../streamCore";
 import type { CompactionStage } from "../engine/handlers/11-context";
+import { transcriptRowKeys } from "@/lib/sessionFind";
 import { CopyBubbleButton } from "./CopyBubbleButton";
 import { useMarkdownFileLinks } from "./useMarkdownFileLinks";
 import type { SessionMeta } from "@/lib/types";
-import {
-  consumeMessageTarget,
-  flashMessageAnchor,
-  scrollToMessageAnchor,
-} from "@/components/shell/searchShared";
-import {
-  SLICE_INITIAL_BLOCKS,
-  SLICE_STEP_BLOCKS,
-  clampSkip,
-  sliceResetNeeded,
-  sliceStart,
-} from "@/lib/transcriptSlices";
+import { useTranscriptWindow } from "./useTranscriptWindow";
 
 function isIndependentEvent(block: Block): block is Extract<Block, { kind: "task_event" | "plan_update" }> {
   return block.kind === "task_event" || block.kind === "plan_update";
 }
 
 function IndependentEvents({ blocks }: { blocks: Block[] }) {
-  return blocks.filter(isIndependentEvent).map((block, index) => (
+  return blocks.map((block, index) => !isIndependentEvent(block) ? null : (
     block.kind === "task_event"
       ? <TaskEventBand key={`task-${block.taskId}-${index}`} block={block} />
-      : <PlanUpdateCard key={`plan-${block.planId}-${index}`} block={block} />
+      : <PlanUpdateCard key={`plan-${block.planId}-${index}`} block={block} blockIndex={index} />
   ));
+}
+
+/** One projection for both find and transcript rendering, with original row addresses
+ * preserved for windowing. Find row keys also cover replay rows without a message id. */
+export function useTranscriptProjection(messages: ChatMsg[], sessionId?: string) {
+  const g = useGinno();
+  // 回报折叠（方案 A，2026-11-25）：紧跟助手消息的子代理结果/清单更新并入该
+  // 消息尾部，与它的工具步骤合成同一个「执行过程」折叠组；失败、停止、等待
+  // 回答的留在组外。纯逻辑在 reportFold（vitest 覆盖），行数与顺序不变，所以
+  // 窗口化、分片挂载和消息锚点照旧按原列表寻址。
+  const planItemsById = useMemo(() => {
+    const byId = new Map<string, number>();
+    for (const plan of g.plansBySession[sessionId ?? ""] ?? []) {
+      byId.set(plan.plan_id, plan.items.length);
+    }
+    return byId;
+  }, [g.plansBySession, sessionId]);
+  const folded = useMemo(() => {
+    const childStatus = new Map(g.sessions.map((s) => [s.id, s.subagent?.status]));
+    return foldReportRows(messages, {
+      attention: (block) =>
+        reportAttention(
+          block,
+          block.kind === "subagent_result" ? childStatus.get(block.sessionId) : undefined,
+        ),
+      planTotal: (planId) => planItemsById.get(planId) ?? null,
+    });
+  }, [messages, g.sessions, planItemsById]);
+  const rowKeys = useMemo(() => transcriptRowKeys(messages), [messages]);
+  return useMemo(() => ({ folded, rowKeys }), [folded, rowKeys]);
 }
 
 export function TranscriptList({
   messages,
+  projection,
   session,
   liveId,
   running,
@@ -81,8 +103,13 @@ export function TranscriptList({
   dismissContext,
   scrollRef,
   stickRef,
+  latestWindowRef,
+  onWindowEndChange,
+  hasOlderHistory,
+  loadHistory,
 }: {
   messages: ChatMsg[];
+  projection: ReturnType<typeof useTranscriptProjection>;
   session: SessionMeta | null;
   liveId: string | null;
   running: boolean;
@@ -105,39 +132,20 @@ export function TranscriptList({
   retryFailed: (msgId: string) => void;
   retryError: (msgId: string) => void;
   retryFromCheckpoint: (msgId: string) => void;
-  /** 系统提示条（context chips）逐条关闭（2026-11-05）：从 store 移除该块。 */
-  dismissContext?: (msgId: string, blockIndex: number) => void;
-  /** 滚动容器与贴底标志（ChatStream 持有）：分片挂载的滚动补偿用——
-   *  stick 时每片重新贴底；用户上翻时按 prepend 高度差平移 scrollTop。 */
-  scrollRef?: RefObject<HTMLDivElement | null>;
-  stickRef?: MutableRefObject<boolean>;
+  /** Hide one system notice in the current transcript. */
+  dismissContext?: (msgId: string, block: Extract<Block, { kind: "context" }>) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  stickRef: MutableRefObject<boolean>;
+  latestWindowRef: MutableRefObject<(() => void) | null>;
+  onWindowEndChange: (hasLater: boolean) => void;
+  hasOlderHistory: boolean;
+  loadHistory: (sid: string, target?: string) => Promise<HistoryTarget | null>;
 }) {
   const g = useGinno();
   const tc = useTranslations("chat");
   const router = useRouter();
   const onFileLink = useMarkdownFileLinks(session);
-  // 回报折叠（方案 A，2026-11-25）：紧跟助手消息的子代理结果/清单更新并入该
-  // 消息尾部，与它的工具步骤合成同一个「执行过程」折叠组；失败、停止、等待
-  // 回答的留在组外。纯逻辑在 reportFold（vitest 覆盖），行数与顺序不变，所以
-  // 窗口化、分片挂载和消息锚点照旧按原列表寻址。
-  const planItemsById = useMemo(() => {
-    const byId = new Map<string, number>();
-    for (const plan of g.plansBySession[session?.id ?? ""] ?? []) {
-      byId.set(plan.plan_id, plan.items.length);
-    }
-    return byId;
-  }, [g.plansBySession, session?.id]);
-  const folded = useMemo(() => {
-    const childStatus = new Map(g.sessions.map((s) => [s.id, s.subagent?.status]));
-    return foldReportRows(messages, {
-      attention: (block) =>
-        reportAttention(
-          block,
-          block.kind === "subagent_result" ? childStatus.get(block.sessionId) : undefined,
-        ),
-      planTotal: (planId) => planItemsById.get(planId) ?? null,
-    });
-  }, [messages, g.sessions, planItemsById]);
+  const { folded, rowKeys } = projection;
   const rows = folded.rows;
   const onInspectProcess = useCallback(() => {
     if (stickRef) stickRef.current = false;
@@ -182,248 +190,56 @@ export function TranscriptList({
     });
   }
 
-  // ── 窗口化渲染（2026-11-08 长会话切换卡顿治理）─────────────────────────
-  // 长会话（实测 60+ 条消息 / 834 blocks）一次性 mount 是切换卡顿主因之二。
-  // 首屏只挂最近 WINDOW_INITIAL 条，顶部「加载更早」按钮逐步扩窗——渲染
-  // 语义不变，只是分批挂载（全量数据仍在 store，⌘K 锚点命中窗口外消息
-  // 时 revealUpTo 先扩窗再滚）。数值：80 条 ≈ 数百 blocks 的首屏成本上
-  // 限，同时覆盖绝大多数会话的全量（不出现按钮）。
-  const WINDOW_INITIAL = 80;
-  const WINDOW_STEP = 60;
-  const [headKeep, setHeadKeep] = useState(WINDOW_INITIAL);
-  const sessionId = session?.id;
-  useEffect(() => {
-    setHeadKeep(WINDOW_INITIAL);
-  }, [sessionId]);
-  const hiddenCount = Math.max(0, rows.length - headKeep);
-  const visible = hiddenCount > 0 ? rows.slice(-headKeep) : rows;
-  const visibleOffset = messages.length - visible.length; // 窗口首条的全量索引
-
-  // ── 时间分片挂载（2026-11-17 perf）─────────────────────────────────────
-  // 窗口化之后，重会话首屏（~80 条 / ~1700 blocks）仍是一次性同步 React
-  // mount——切换剩余 max longtask（实测 ~341ms）的主体。现在尾部先挂
-  // （SLICE_INITIAL_BLOCKS 块预算，首帧即见最新消息），更旧的消息经
-  // setTimeout 逐片向上 prepend（每片 ≤ SLICE_STEP_BLOCKS blocks，~1 片/帧），
-  // 片间让出主线程。不用 rIC 的理由见下方推进 effect（idle 队列被逐块
-  // 高亮升级塞满会饿死分片）。纯逻辑（预算切片/夹紧/重置判定）在
-  // lib/transcriptSlices.ts，vitest 覆盖。
-  const blockCounts = useMemo(() => visible.map((m) => m.blocks.length), [visible]);
-  const countsRef = useRef(blockCounts);
-  countsRef.current = blockCounts;
-  const [headSkip, setHeadSkip] = useState(0);
-  const slicePrevRef = useRef<{ sid: string | undefined; len: number }>({
-    sid: undefined,
-    len: 0,
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState(false);
+  const { rendered, earlier, later, move, moveAfterLoad } = useTranscriptWindow({
+    sessionId: session?.id, messages, folded, rowKeys, scrollRef, stickRef,
+    latestWindowRef, onWindowEndChange, loadHistory,
   });
-  // 重置必须 render 期派生：等 useEffect 的话首帧已整窗同步 mount，长任务
-  // 照样发生。同组件 render 期 setState 是 React 文档的「render 期调整
-  // state」模式——commit 前立即重渲染，不会多挂一帧。
-  if (sliceResetNeeded(slicePrevRef.current, sessionId, messages.length)) {
-    slicePrevRef.current = { sid: sessionId, len: messages.length };
-    const next = sliceStart(blockCounts, visible.length, SLICE_INITIAL_BLOCKS);
-    if (next !== headSkip) setHeadSkip(next);
-  }
-  slicePrevRef.current.len = messages.length;
-  // 夹紧：旧会话残留 skip / 消息缩水时仍保底尾部 SLICE_MIN_RENDERED 条。
-  const skip = clampSkip(headSkip, visible.length);
-  const rendered = skip > 0 ? visible.slice(skip) : visible;
-
-  const revealUpTo = (id: string) => {
-    const i = messages.findIndex((m) => m.id === id);
-    if (i < 0) return;
-    if (i < visibleOffset) {
-      setHeadKeep(messages.length - i + 8); // +8：目标行上方的少量上下文
-      // 扩窗后目标位于窗口 idx 8：立即挂到目标行（不等分片），锚点
-      // 重试环下一帧自然命中。min：不收回已挂载的行。
-      setHeadSkip((s) => Math.min(s, 8));
-    } else {
-      // 目标在窗口内但可能尚未分片挂载：同样立即挂到目标行。
-      const idx = i - visibleOffset;
-      setHeadSkip((s) => Math.min(s, idx));
-    }
-  };
-
-  // 分片滚动补偿：idle 回调在 commit 前记录高度/位置，useLayoutEffect
-  // （paint 前）按两种姿态之一补偿——贴底则重新贴底（pinToBottom 的 12 帧
-  // 窗口早已结束，分片期靠这里续贴）；用户上翻则按 prepend 高度差平移，
-  // 视口内容纹丝不动。只在分片 commit 时生效（comp 仅由 idle 回调写入），
-  // 不干预流式增长/缩水等其它高度变化。
-  const sliceCompRef = useRef<{ height: number; top: number; stuck: boolean } | null>(null);
-  useLayoutEffect(() => {
-    const comp = sliceCompRef.current;
-    sliceCompRef.current = null;
-    const el = scrollRef?.current;
-    if (!comp || !el) return;
-    if (comp.stuck) {
-      el.scrollTop = el.scrollHeight;
-    } else {
-      const delta = el.scrollHeight - comp.height;
-      if (delta > 0) el.scrollTop = comp.top + delta;
-    }
-  });
-
-  // 逐片推进。deps 只用 skip（数值）：messages 引用随流式每帧翻新，
-  // 若进 deps 会不停取消重排 → 直播期间分片饿死；最新块数经 countsRef 读。
-  // 用 setTimeout 而非 rIC：Markdown 逐块 idle 高亮升级在 mount 期排入数千
-  // 个 rIC，idle 队列长期满员 → 分片回调只能等 timeout 兜底（实测 ~300ms/
-  // 片，全量挂载 10s+）。挂载是结构性进度，不能被 idle 队列饿死；宏任务
-  // 队列独立，~1 片/帧。goal 允许 rIC 或 setTimeout 切片，此处取后者。
-  useEffect(() => {
-    if (skip <= 0) return;
-    let cancelled = false;
-    const id = setTimeout(() => {
-      if (cancelled) return;
-      const el = scrollRef?.current;
-      if (el) {
-        sliceCompRef.current = {
-          height: el.scrollHeight,
-          top: el.scrollTop,
-          stuck: stickRef?.current ?? true,
-        };
-      }
-      setHeadSkip((s) => {
-        const cur = clampSkip(s, countsRef.current.length);
-        return sliceStart(countsRef.current, cur, SLICE_STEP_BLOCKS);
-      });
-    }, 16);
-    return () => {
-      cancelled = true;
-      clearTimeout(id);
-    };
-  }, [skip, scrollRef, stickRef]);
-
-  // 分片落定事件：晚挂载的行错过了 ⌘F 高亮的首次 paint，useSessionFind
-  // 监听本事件按当前 hits 补刷（window 事件范式同 ginno:scroll-to-message）。
-  const sliceSettledRef = useRef(true);
-  useEffect(() => {
-    if (skip > 0) {
-      sliceSettledRef.current = false;
-      return;
-    }
-    if (!sliceSettledRef.current) {
-      sliceSettledRef.current = true;
-      window.dispatchEvent(new Event("ginno:transcript-slices-settled"));
-    }
-  }, [skip]);
-
-  // ── V2 P0-1 message anchoring ────────────────────────────────────────────
-  // data-msg-id mapping: user rows carry their own HumanMessage id; assistant
-  // rows carry the merged bubble's id, which the backend (_messages_to_ui)
-  // takes from the turn's FIRST AIMessage. A search hit on a later AI step or
-  // on a ToolMessage therefore has no row and is a graceful no-op.
-  //
-  // The ⌘K modal stores the target id in sessionStorage before switching
-  // sessions (history may still be loading there). Consume it here and keep
-  // re-centering across frames: ChatStream's session-switch effect pins the
-  // transcript to the bottom for its first ~12 frames, which would otherwise
-  // override a single scrollIntoView.
-  const anchorRef = useRef<{ id: string; until: number; sid: string | undefined } | null>(null);
-  useEffect(() => {
-    // 锚点属于它被消费的那次会话入口：会话切换即清——否则 3s 重定位环会
-    // 在窗口期内的下次入口复活，重新扩窗并强制整挂（时间分片挂载后实测
-    // 会把 76 行一次性 mount，长任务 ~180ms；基线代码同 bug 表现为热切换
-    // 被拽回旧锚点、贴底断言失败）。放在 messages 守卫之前：切到空会话也要清。
-    if (anchorRef.current && anchorRef.current.sid !== session?.id) {
-      anchorRef.current = null;
-    }
-    if (!messages.length) return;
-    if (!anchorRef.current) {
-      const id = consumeMessageTarget();
-      // 3s：会话切换后历史可能异步拉取；期间 ChatStream 还会把转录钉到底部
-      // ~12 帧，所以这里持续把目标行重新居中直到窗口结束。
-      if (id) anchorRef.current = { id, until: Date.now() + 3000, sid: session?.id };
-    }
-    const anchor = anchorRef.current;
-    if (!anchor) return;
-    let raf = 0;
-    let flashed = false;
-    const tick = () => {
-      try {
-        const el = scrollToMessageAnchor(anchor.id);
-        if (!el) revealUpTo(anchor.id); // 窗口外消息：先扩窗，下一帧重试
-        if (el && !flashed) {
-          flashed = true;
-          flashMessageAnchor(el);
-        }
-      } catch {
-        /* selector/storage failure — no-op */
-      }
-      if (Date.now() < anchor.until) {
-        raf = requestAnimationFrame(tick);
-      } else if (anchorRef.current === anchor) {
-        anchorRef.current = null;
-      }
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [messages, session?.id]);
-
-  // Same-session message hit: the modal broadcasts this instead of a storage
-  // hand-off (the session-switch effect does not re-run, so no messages change
-  // would ever consume it). Retries a few frames in case the row just mounted.
-  // revealUpTo 经 ref 读最新闭包：本 effect 只挂一次（deps []），直接引用
-  // 会捕获首帧的 revealUpTo（那时 messages 还是空，findIndex 恒 -1）——
-  // 窗口外命中永远扩不了窗（2026-11-17 时间分片挂载时实锤修复）。
-  const revealRef = useRef(revealUpTo);
-  revealRef.current = revealUpTo;
-  useEffect(() => {
-    let raf = 0;
-    const onScrollToMessage = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      if (!id) return;
-      let frames = 0;
-      const tick = () => {
-        try {
-          const el = scrollToMessageAnchor(id);
-          if (el) {
-            flashMessageAnchor(el);
-            return;
-          }
-          revealRef.current(id); // 窗口外消息：扩窗后帧重试自然完成
-        } catch {
-          return;
-        }
-        if (++frames < 60) raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
-    };
-    window.addEventListener("ginno:scroll-to-message", onScrollToMessage);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("ginno:scroll-to-message", onScrollToMessage);
-    };
-  }, []);
+  const historyButton = "rounded-full border border-line bg-card px-3 py-1 text-[11px] text-muted transition-colors hover:bg-elev focus-visible:outline focus-visible:outline-violet";
 
   return (
     <>
-      {hiddenCount > 0 && (
+      {(earlier > 0 || hasOlderHistory) && (
         <div className="my-3 flex justify-center">
-          <button
-            type="button"
-            className="rounded-full border border-line bg-card px-3 py-1 text-[11px] text-faint transition-colors hover:bg-elev"
-            data-testid="load-earlier"
-            onClick={() => setHeadKeep((h) => h + WINDOW_STEP)}
-          >
-            ↑ {tc("loadEarlier", { hidden: hiddenCount, showingMore: Math.min(WINDOW_STEP, hiddenCount) })}
+          <button type="button" className={historyButton} data-testid="load-earlier"
+            disabled={loadingOlder}
+            onClick={async (event) => {
+              const focus = event.currentTarget === document.activeElement;
+              if (earlier >= 60 || !hasOlderHistory || !session) {
+                move(-1, focus);
+                return;
+              }
+              setLoadingOlder(true);
+              setOlderError(false);
+              const reposition = moveAfterLoad(focus);
+              try { await loadHistory(session.id); }
+              catch { reposition(); setOlderError(true); }
+              finally { setLoadingOlder(false); }
+            }}>
+            ↑ {loadingOlder ? tc("history.loading") : olderError ? tc("history.retryEarlier") :
+              hasOlderHistory ? tc("history.earlier") : tc("loadEarlier", { hidden: earlier })}
           </button>
         </div>
       )}
-      {rendered.map((m, idx) =>
-        folded.absorbed.has(visibleOffset + skip + idx) ? null
-        : isReportRow(m) ? (
+      {rendered.map((rowIndex) => {
+        const m = rows[rowIndex];
+        const rowKey = rowKeys[rowIndex];
+        const findAnchor = { "data-find-row": rowKey, "data-msg-id": m.id || undefined, tabIndex: -1 };
+        return isReportRow(m) ? (
           // 带回报的系统行：走与助手气泡同一个折叠渲染器——没挂靠到助手消息的
           // 回报串在这里自成一行「执行过程」，需要用户处理的卡留在组外；与员工
           // 回传等合并在一条的回报，实时与回放因此折得一样。
-          <div key={m.id} className="mx-auto w-full max-w-[85%]">
+          <div key={rowKey} {...findAnchor} className="mx-auto w-full max-w-[85%]">
             <InnerBlocks blocks={m.blocks} foldProcess onFileLink={onFileLink} onInspectProcess={onInspectProcess} />
           </div>
         ) : m.role === "system" ? (
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <ContextBlocks
-              blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
+              blocks={m.blocks}
               onDismiss={
                 dismissContext
-                  ? (bi) => dismissContext(m.id, bi)
+                  ? (block) => dismissContext(m.id, block)
                   : undefined
               }
             />
@@ -438,6 +254,7 @@ export function TranscriptList({
                   <SubagentPlanCard key={b.planId} block={b} onDecide={decideSubagentPlan} />
                 ))}
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 blocks={m.blocks.filter(
                   (b): b is Extract<Block, { kind: "subagent_result" }> =>
                     b.kind === "subagent_result",
@@ -445,6 +262,7 @@ export function TranscriptList({
               />
               {/* worker 协议信封卡（live 吸收路径 handle.ts 折出的 system 行） */}
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 blocks={m.blocks.filter(
                   (
                     b,
@@ -458,7 +276,7 @@ export function TranscriptList({
             </div>
           </div>
         ) : m.role === "user" && m.blocks.every(isIndependentEvent) && m.blocks.length > 0 ? (
-          <div key={m.id} className="mx-auto flex w-full max-w-[85%] flex-col gap-2">
+          <div key={rowKey} {...findAnchor} className="mx-auto flex w-full max-w-[85%] flex-col gap-2">
             <IndependentEvents blocks={m.blocks} />
           </div>
         ) : m.role === "user" &&
@@ -474,10 +292,11 @@ export function TranscriptList({
           // user 角色回来：折成卡片系统行渲染，而不是落到 UserBlocks
           // （它不认识这些块，会渲染成空气泡）。worker 协议信封
           // （<ginno_worker_result>/<ginno_worker_assign>）同通道同处理。
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <div className="flex w-full max-w-[85%] flex-col gap-2">
               <IndependentEvents blocks={m.blocks} />
               <SubagentBlocks
+                sourceBlocks={m.blocks}
                 session={session?.type === "subagent" ? session : undefined}
                 blocks={m.blocks.filter(
                   (
@@ -502,18 +321,17 @@ export function TranscriptList({
           // by the turn's first model request, or the transcript ended on
           // it): a full-width band, not a right-aligned bubble — it is not a
           // turn of its own (design §4.2).
-          <div key={m.id} className="flex flex-col gap-1">
+          <div key={rowKey} {...findAnchor} className="flex flex-col gap-1">
             {m.blocks
-              .filter((b): b is Extract<Block, { kind: "steer" }> => b.kind === "steer")
-              .map((b) => (
-                <SteerBand key={b.steerId ?? m.id} block={b} />
+              .map((b, index) => b.kind === "steer" && (
+                <div key={b.steerId ?? index} data-block-idx={index}><SteerBand block={b} /></div>
               ))}
           </div>
         ) : m.role === "user" &&
           m.blocks.some((b) => b.kind === "text" && b.text.trimStart().startsWith("[lastwords]")) ? (
           // 遗言信封（2026-11-19）：机器注入的 [lastwords] 文本——全宽系统卡，
           // 不落右对齐用户气泡（见 blocks.LastwordsCard 注释）。
-          <div key={m.id} className="flex flex-col items-center gap-2">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-center gap-2">
             <div className="flex w-full justify-center">
               <LastwordsCard
                 text={
@@ -527,7 +345,7 @@ export function TranscriptList({
             <TurnIdChip turnId={m.turnId} />
           </div>
         ) : m.role === "user" ? (
-          <div key={m.id} data-msg-id={m.id} className="flex flex-col items-end gap-1">
+          <div key={rowKey} {...findAnchor} className="flex flex-col items-end gap-1">
             <TurnIdChip turnId={m.turnId} />
             {/* w-full (not max-w-full): the row width must be definite so the
                 bubble's max-w-[78%] resolves against the column, not against
@@ -656,30 +474,22 @@ export function TranscriptList({
             )}
           </div>
         ) : m.error ? (
-          // 过时恢复横幅（2026-11-18 用户反馈）：失败 turn 之后一旦出现更新
-          // 的用户/助手消息（新一轮对话），旧横幅整体不渲染——它是「会话停在
-          // 失败终态」的恢复入口，点了会重放旧 turn。该 turn 已生成的部分
-          // 回复气泡（m.failed 分支）不受影响，历史数据/checkpoint 绝不动。
-          // 判定用全量索引（visibleOffset + skip + idx，与 handoffBefore 同款
-          // 换算），窗口化/时间分片保尾，不影响「其后无消息」语义。
-          failedTurnBannerVisible(messages, visibleOffset + skip + idx) ? (
-            <div key={m.id} data-msg-id={m.id} className="min-w-0 rounded-xl">
-              <ErrorCard
-                message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
-                turnId={m.turnId}
-                canRetry={!!m.sendPayload && m.id === lastRetryableId}
-                busy={running}
-                onRetry={() => retryError(m.id)}
-                onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
-              />
-            </div>
-          ) : null
+          <div key={rowKey} {...findAnchor} className="min-w-0 rounded-xl">
+            <ErrorCard
+              message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
+              turnId={m.turnId}
+              canRetry={!!m.sendPayload && m.id === lastRetryableId}
+              busy={running}
+              onRetry={() => retryError(m.id)}
+              onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
+            />
+          </div>
         ) : (
-          <Fragment key={m.id}>
-            {handoffBefore[visibleOffset + skip + idx] && (
+          <Fragment key={rowKey}>
+            {handoffBefore[rowIndex] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
-            <div data-msg-id={m.id} className="min-w-0 rounded-xl">
+            <div {...findAnchor} className="min-w-0 rounded-xl">
             {m.teamReply ? (
               // AgentTeam 成员回帖（§5.2 要点 2）：渲染成回帖卡而非普通气泡。
               <TeamReplyCard meta={m.teamReply} agentId={m.agentId} blocks={m.blocks} />
@@ -728,7 +538,15 @@ export function TranscriptList({
             )}
             </div>
           </Fragment>
-        ),
+        );
+      })}
+      {later > 0 && (
+        <div className="my-3 flex justify-center">
+          <button type="button" className={historyButton} data-testid="load-later"
+            onClick={(event) => move(1, event.currentTarget === document.activeElement)}>
+            ↓ {tc("loadLater", { hidden: later })}
+          </button>
+        </div>
       )}
     </>
   );

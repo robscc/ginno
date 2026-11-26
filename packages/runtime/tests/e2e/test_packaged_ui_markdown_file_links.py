@@ -71,7 +71,7 @@ def test_markdown_file_links_in_chat_and_history(tmp_path, monkeypatch):
             "context_folders": mounts, "primary_folder": mounts[0],
         })
         session_id = session["id"]
-        history_url = f"http://127.0.0.1:{port}/api/sessions/{session_id}/history"
+        history_url = f"http://127.0.0.1:{port}/api/sessions/{session_id}/history?turns=40"
         with sync_playwright() as pw:
             browser, page = smoke._new_page(pw)
             try:

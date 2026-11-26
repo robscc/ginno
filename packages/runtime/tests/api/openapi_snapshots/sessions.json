@@ -1,9 +1,9 @@
 {
  "_meta": {
   "covers": "path+method+parameters+requestBody+responses(status+schema)+schema闭包",
-  "endpoints": 28,
+  "endpoints": 29,
   "note": "OpenAPI contract snapshot — 拆分资源 Router 的验收基准，勿手改；契约有意识变更时再生成并连同本文件一起提交。",
-  "paths": 21,
+  "paths": 22,
   "regenerate": "cd packages/runtime && GINNO_UPDATE_OPENAPI_SNAPSHOT=1 uv run --group test --extra docs pytest tests/api/test_openapi_contract.py -q",
   "router": "ginno_runtime.api.sessions.router",
   "source_module": "src/ginno_runtime/api/sessions.py",
@@ -1222,6 +1222,114 @@
        "title": "Session Id",
        "type": "string"
       }
+     },
+     {
+      "in": "query",
+      "name": "turns",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maximum": 80,
+         "minimum": 1,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Turns"
+      }
+     },
+     {
+      "in": "query",
+      "name": "before",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Before"
+      }
+     },
+     {
+      "in": "query",
+      "name": "refresh",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Refresh"
+      }
+     },
+     {
+      "in": "query",
+      "name": "coverage",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Coverage"
+      }
+     },
+     {
+      "in": "query",
+      "name": "revision",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Revision"
+      }
+     },
+     {
+      "in": "query",
+      "name": "target",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Target"
+      }
+     },
+     {
+      "in": "query",
+      "name": "index",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Index",
+       "type": "boolean"
+      }
      }
     ],
     "responses": {
@@ -1231,6 +1339,52 @@
         "schema": {
          "additionalProperties": true,
          "title": "Response Get Session History Api Sessions  Session Id  History Get",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sessions/{session_id}/history/tools/{key}": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "key",
+      "required": true,
+      "schema": {
+       "title": "Key",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get History Tool Api Sessions  Session Id  History Tools  Key  Get",
          "type": "object"
         }
        }

@@ -1,40 +1,79 @@
-/**
- * sessionFind — Cmd+F 会话内搜索的纯函数层（docs/design/session-find-bar-design.md §3）。
- *
- * 索引看数据（messages 全量，窗口外天然可搜），高亮看 DOM（findHighlight.ts）。
- * node 环境可测（vitest）。
- */
+import type { Block } from "@/components/chat/blocks/types";
+import type { ChatMsg } from "@/components/chat/streamCore";
+import type { FoldReportRowsResult } from "@/components/chat/blocks/reportFold";
 
-export interface FindIndexEntry {
-  msgId: string;
+export const FIND_REVEAL_ROW = "ginno:find-reveal-row";
+
+/** Address in the projected transcript. Hosts can change when history reconciles. */
+export interface FindTarget {
+  rowKey: string;
   blockIdx: number;
-  kind: string;
+}
+
+export interface FindIndexEntry extends FindTarget {
+  /** Identity of the source block, independent of its render host. */
+  sourceKey: string;
   text: string;
-  streaming: boolean;
 }
 
-export interface FindHit {
-  msgId: string;
-  blockIdx: number;
-  kind: string;
-  start: number;
-  len: number;
+export interface FindHit extends FindTarget {
+  sourceKey: string;
+  /** Zero-based occurrence of this query within the source block. */
+  occurrence: number;
 }
 
-/** 每条消息一个版本缓存条目：blocks 数组引用变才重提取（§3.1）。 */
-interface MsgCacheEntry {
-  version: unknown;
-  entries: Array<Pick<FindIndexEntry, "blockIdx" | "kind" | "text">>;
+type FindMessage = Pick<ChatMsg, "blocks" | "role" | "turnId"> & { id?: string | null };
+
+export function mergeFindHistory(history: ChatMsg[], current: ChatMsg[], liveId: string | null): ChatMsg[] {
+  const saved = new Set(history.map((row) => row.id));
+  const live = liveId ? current.find((row) => row.id === liveId) : undefined;
+  const rows = live && saved.has(live.id) ? history.map((row) => {
+    if (row.id !== live.id) return row;
+    // A stream can resume in the same bubble that the checkpoint indexed.
+    // Take the displayed blocks and restore full bodies to lazy tool previews.
+    const tools = new Map(row.blocks.flatMap((block) =>
+      block.kind === "tool" && block.id ? [[block.id, block] as const] : []));
+    const blocks = live.blocks.map((block) => {
+      if (block.kind !== "tool" || !block.detail || !block.id) return block;
+      const full = tools.get(block.id);
+      return full?.name === block.name ? { ...block, content: full.content, diff: full.diff ?? block.diff } : block;
+    });
+    return { ...live, blocks };
+  }) : history;
+  return [...rows, ...current.filter((row) => !saved.has(row.id))];
 }
 
-const msgCache = new Map<string, MsgCacheEntry>();
+function nextOrdinal(counts: Map<string, number>, key: string): number {
+  const ordinal = counts.get(key) ?? 0;
+  counts.set(key, ordinal + 1);
+  return ordinal;
+}
 
-function searchableText(block: Record<string, unknown>): string | null {
+export function transcriptRowKeys(messages: readonly FindMessage[]): string[] {
+  const counts = new Map<string, number>();
+  return messages.map((message) => {
+    const key = message.id ? JSON.stringify(["message", message.id])
+      : JSON.stringify(["legacy", message.role, message.turnId, message.blocks[0]?.kind]);
+    return `${key}:${nextOrdinal(counts, key)}`;
+  });
+}
+
+function sourceBlockDiscriminator(block: Block): unknown[] {
+  // Reports can be separate live rows and replay at the head of a different
+  // message. Their envelope fields survive both paths (and null history ids).
+  if (block.kind === "subagent_result") return [block.kind, block.sessionId];
+  if (block.kind === "plan_update") return [block.kind, block.planId, block.text];
+  if (block.kind === "worker_result" && block.msgId) return [block.kind, block.msgId];
+  return [];
+}
+
+const textCache = new WeakMap<Block, string | null>();
+
+function extractBlockText(block: Block): string | null {
   switch (block.kind) {
     case "text":
     case "thinking":
     case "steer":
-    case "context":
       return typeof block.text === "string" ? block.text : null;
     case "reasoning_summary": {
       if (!Array.isArray(block.parts)) return null;
@@ -52,9 +91,8 @@ function searchableText(block: Record<string, unknown>): string | null {
         .map((value) => String(value ?? "")).join("\n");
     case "skill":
       return `/${String(block.name ?? "")} ${String(block.text ?? "")}`;
-    case "subagent_result":
     case "worker_result":
-      return [block.goal, block.summary, block.text].map((value) => String(value ?? "")).join("\n");
+      return [block.goal, block.summary].map((value) => String(value ?? "")).join("\n");
     case "file":
     case "ref":
       return String(block.name ?? "");
@@ -63,57 +101,53 @@ function searchableText(block: Record<string, unknown>): string | null {
   }
 }
 
-export function extractSearchableText(blocks: Array<Record<string, unknown>>): string[] {
-  return blocks.flatMap((block) => {
-    const text = searchableText(block);
-    return text === null ? [] : [text];
-  });
+export function searchableBlockText(block: Block): string | null {
+  if (!textCache.has(block)) textCache.set(block, extractBlockText(block));
+  return textCache.get(block) ?? null;
 }
 
+/** Use the same projection the transcript renders, in presentation order. */
 export function buildFindIndex(
-  messages: Array<{ id: string; blocks?: Array<Record<string, unknown>> }>,
-  liveId: string | null | undefined,
+  messages: readonly FindMessage[],
+  projection: { folded: Pick<FoldReportRowsResult<ChatMsg>, "rows" | "origins">; rowKeys: string[] },
+  displayText: (block: Block, row: ChatMsg) => string | null,
+  originalMessages: readonly FindMessage[] = messages,
 ): FindIndexEntry[] {
-  const entries: FindIndexEntry[] = [];
-  for (const message of messages) {
-    const blocks = message.blocks ?? [];
-    let cached = msgCache.get(message.id);
-    if (!cached || cached.version !== blocks) {
-      // Keep the original ordinal so the hit still finds its DOM wrapper
-      // when earlier process records are folded or excluded from the index.
-      const entries = blocks.flatMap((block, blockIdx) => {
-        const text = searchableText(block);
-        return text === null ? [] : [{ blockIdx, text, kind: String(block.kind) }];
-      });
-      cached = { version: blocks, entries };
-      msgCache.set(message.id, cached);
+  const { folded, rowKeys } = projection;
+  const counts = new Map<string, number>();
+  const originalNotices = originalMessages === messages ? null : new Map(
+    originalMessages.filter((message) => message.role === "system").map((message) => [message.id, message.blocks]),
+  );
+  const keys = messages.map((message, row) => message.blocks.map((block, index) => {
+    // Dismissing one chip can change the visible ordinals of its siblings.
+    if (block.kind === "context") {
+      const originalIndex = originalNotices?.get(message.id)?.indexOf(block) ?? index;
+      return JSON.stringify([rowKeys[row], block.kind, originalIndex]);
     }
-    for (const entry of cached.entries) {
-      entries.push({ ...entry, msgId: message.id, streaming: message.id === liveId });
-    }
-  }
-  return entries;
+    const semantic = sourceBlockDiscriminator(block);
+    const recordId = "id" in block ? block.id : "requestId" in block ? block.requestId : undefined;
+    const identity = semantic.length > 0 ? semantic : [rowKeys[row], block.kind, recordId];
+    const key = JSON.stringify(identity);
+    return `${key}:${nextOrdinal(counts, key)}`;
+  }));
+  return folded.rows.flatMap((row, rowIndex) => row.blocks.flatMap((block, blockIdx) => {
+    const text = displayText(block, row);
+    if (!text) return [];
+    const origin = folded.origins[rowIndex][blockIdx];
+    return [{ sourceKey: keys[origin.row][origin.block], rowKey: rowKeys[rowIndex], blockIdx, text }];
+  }));
+}
+
+/** Keep offsets in the original text even for Unicode case-insensitive matching. */
+export function findOccurrences(text: string, query: string): Iterable<RegExpMatchArray> {
+  const literal = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return literal ? text.matchAll(new RegExp(literal, "giu")) : [];
 }
 
 export function searchFindIndex(index: FindIndexEntry[], query: string): FindHit[] {
-  const q = query.trim();
-  if (!q) return [];
-  const needle = q.toLowerCase();
-  const hits: FindHit[] = [];
-  for (const e of index) {
-    const hay = e.text.toLowerCase();
-    let from = 0;
-    for (;;) {
-      const at = hay.indexOf(needle, from);
-      if (at < 0) break;
-      hits.push({ msgId: e.msgId, blockIdx: e.blockIdx, kind: e.kind, start: at, len: q.length });
-      from = at + Math.max(1, needle.length);
-    }
-  }
-  // 会话时间序：messages 顺序即时间序，index 本身有序——hits 自然有序。
-  return hits;
-}
-
-export function resetFindCache(): void {
-  msgCache.clear();
+  const needle = query.trim();
+  if (!needle) return [];
+  return index.flatMap(({ text, ...target }) =>
+    Array.from(findOccurrences(text, needle), (_, occurrence) => ({ ...target, occurrence })),
+  );
 }

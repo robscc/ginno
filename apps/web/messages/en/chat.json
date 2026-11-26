@@ -347,6 +347,10 @@
     "refChip": {
       "workflowPrefix": "Workflow: ",
       "clickOpen": "Click to open",
+      "fileMissing": "Cannot open “{name}”. The file could not be found at its original location. It may have been moved or deleted.\n{path}",
+      "sessionUnavailable": "Cannot open “{name}”. The associated session could not be found.",
+      "connectionFailed": "Cannot open “{name}”. Could not connect to the Ginno runtime. Try again.",
+      "openFailed": "Cannot open “{name}”. The runtime could not prepare the file for preview. Try again.",
       "remoteBadge": "remote",
       "remoteNotice": "“{name}” lives on the remote node {peer} ({path}) — not available locally",
       "remoteTitle": "Remote file (on {peer})\n{path}\nNot available locally; click shows the remote path"
@@ -764,7 +768,17 @@
       }
     },
     "jumpLatest": "Jump to latest message",
-    "loadEarlier": "Load earlier ({showingMore} of {hidden} hidden messages)",
+    "history": {
+      "earlier": "Load earlier messages",
+      "loading": "Loading…",
+      "retryEarlier": "Retry loading earlier messages",
+      "loadingOutput": "Loading tool output…",
+      "retryOutput": "Retry loading tool output",
+      "copyOutput": "Copy tool output",
+      "retrySearch": "Retry loading search"
+    },
+    "loadEarlier": "Load earlier ({hidden} hidden messages)",
+    "loadLater": "Load later ({hidden} hidden messages)",
     "find": {
       "placeholder": "Find in session…",
       "none": "No hits",

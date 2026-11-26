@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Loader2, Sparkles } from "lucide-react";
 import { connectorAction } from "@/lib/runtime";
+import { copyText } from "../copyText";
+import { loadHistoryTool } from "./historyTool";
+import type { HistoryToolDetail } from "@/lib/api/sessions";
 import { toolLabelOptions } from "@/lib/toolLabels";
 import { parseDelegation } from "./delegation";
 import { useChatT } from "./i18n";
@@ -10,7 +13,7 @@ import { TaskCard, parseBgTaskId } from "../TaskCard";
 import { parseShellOutput } from "@/lib/toolOutput";
 import { toolFailed, toolInterrupted } from "./processGroups";
 import { DiffView } from "./diffView";
-import type { EditDiffPayload as ImportDiffPayload } from "./types";
+import type { EditDiffPayload as ImportDiffPayload, HistoryToolRef } from "./types";
 
 // Every tool output is collapsible. Long outputs (over these thresholds)
 // default to a compact header row and expand into a capped, internally
@@ -45,11 +48,26 @@ function BrowserHandoffCard() {
   );
 }
 
-export function ToolBlock({ name, content, pending, failed, argsPreview, argsStream, diff, isLatestTurn = true }: { name: string; content: string; pending: boolean; failed?: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload; isLatestTurn?: boolean }) {
+export function ToolBlock({ name, content, pending, failed, argsPreview, argsStream, diff, detail, isLatestTurn = true }: { name: string; content: string; pending: boolean; failed?: boolean; argsPreview?: string; argsStream?: string; diff?: ImportDiffPayload; detail?: HistoryToolRef; isLatestTurn?: boolean }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; value: HistoryToolDetail }>();
+  const [failedKey, setFailedKey] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
   const { tc } = useChatT();
+  const key = detail ? `${detail.sessionId}/${detail.key}` : undefined;
+  const value = loaded?.key === key ? loaded?.value : undefined;
+  const detailFailed = failedKey !== undefined && failedKey === key;
+  useEffect(() => {
+    if (!detail || open !== true || pending || !key || value) return;
+    let alive = true;
+    loadHistoryTool(detail.sessionId, detail.key).then(
+      (result) => { if (alive) setLoaded({ key, value: result }); },
+      () => { if (alive) setFailedKey(key); },
+    );
+    return () => { alive = false; };
+  }, [open, pending, key, detail, value, attempt]);
   // A configured label may carry several "|" separated names — pick one at
   // random per tool call (memoized so it stays stable pending → done and
   // across re-renders; a fresh call rolls again).
@@ -91,17 +109,20 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
       </div>
     );
   }
-  const lineCount = content.split("\n").length;
-  const shell = parseShellOutput(content);
+  const body = value?.content ?? content;
+  const bodyDiff = value?.diff ?? diff;
+  const lineCount = detail?.lines ?? content.split("\n").length;
+  const charCount = detail?.chars ?? content.length;
+  const shell = parseShellOutput(body);
   const del = name === "delegate_agent" ? parseDelegation(content) : null;
   // 机器头与溯源行是给模型/回放跳转看的，展示层剥掉。
   const shown = del
-    ? content
+    ? body
         .split("\n")
         .filter((l, idx) => idx > 0 && !/^delegation=/.test(l))
         .join("\n")
         .trim()
-    : content;
+    : body;
   // spawn_subagent 的回执是固定模板（"已启动 session_id=… / 它在后台独立运行…"），
   // 每次委派都全展开会把主 agent 的内容挤下去——默认只留标题行，点开看全文
   // （2026-10-01 空间优化）。模型侧拿到的仍是全文，这里只影响显示。
@@ -109,10 +130,10 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
     name === "spawn_subagent" ||
     name === "delegate_agent" ||
     lineCount > LONG_OUTPUT_LINES ||
-    content.length > LONG_OUTPUT_CHARS;
+    charCount > LONG_OUTPUT_CHARS;
   // 编辑 diff（2026-11-21）：历史 turn 默认收起（长会话里旧 diff 铺满屏），
   // 只有最新 turn 保持默认展开；用户手动点开/收起（open 非 null）恒优先。
-  const expanded = open ?? (diff && !isLatestTurn ? false : !isLong);
+  const expanded = open ?? (!detail && (!diff || isLatestTurn) && !isLong);
   const fail = toolFailed(content, failed);
   const interrupted = !fail && toolInterrupted(content);
   const reason = fail ? shell?.stderr?.trim().split("\n")[0] || content.trim().split("\n")[0] : "";
@@ -130,7 +151,7 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
       )}
       <button
         type="button" aria-expanded={expanded} data-reveal-record
-        onClick={() => setOpen(!expanded)}
+        onClick={() => { setFailedKey(undefined); setOpen(!expanded); }}
         className="flex w-full cursor-pointer items-center gap-1.5 py-1.5 pl-3.5 pr-2.5 text-left transition-colors hover:bg-card2/50"
         title={`${name} — ${expanded ? tc("tools.collapse") : tc("tools.expand")}`}
       >
@@ -164,7 +185,7 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
           </span>
         )}
         <span className="ml-auto shrink-0 text-[10px] text-faint">
-          {tc("tools.stats", { lines: lineCount, chars: content.length })}
+          {tc("tools.stats", { lines: lineCount, chars: charCount })}
         </span>
       </button>
       {del?.sid && (
@@ -177,9 +198,21 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
           {tc("tools.openDelegation")} ↗
         </button>
       )}
-      {expanded && (
+      {expanded && detail && !value && (detailFailed ? (
+        <button type="button" className="px-2.5 py-1 text-red" onClick={() => {
+          setFailedKey(undefined);
+          setAttempt((n) => n + 1);
+        }}>{tc("history.retryOutput")}</button>
+      ) : <div data-tool-detail-loading role="status" className="px-2.5 py-1 text-faint">{tc("history.loadingOutput")}</div>)}
+      {expanded && (!detail || value) && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
-          {diff && <DiffView diff={diff} />}
+          {body && (
+            <button type="button" aria-label={tc("history.copyOutput")} title={tc("history.copyOutput")}
+              onClick={() => void copyText(body)} className="ml-2 mt-1 rounded p-1 text-faint hover:text-txt">
+              <Copy className="h-3 w-3" />
+            </button>
+          )}
+          {bodyDiff && <DiffView diff={bodyDiff} />}
           {(() => {
             const sh = shell;
             if (!sh) return <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{shown}</pre>;

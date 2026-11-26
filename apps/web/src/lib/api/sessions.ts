@@ -4,7 +4,7 @@
  *
  * Split out of lib/runtime.ts, which re-exports every name unchanged.
  */
-import { BASE, H, json } from "./core";
+import { BASE, H, json, jsonStrict } from "./core";
 import { currentLocale } from "../../i18n/provider";
 import { isDoctorReport, type DoctorReport } from "../doctor";
 import type { Goal, GoalStatus, SessionMeta, SessionUsage } from "../types";
@@ -298,26 +298,66 @@ export async function deleteSession(id: string, cascade = false) {
   });
 }
 
+type HistoryMessage<Role extends string> = {
+  id?: string;
+  role: Role;
+  agentId?: string | null;
+  blocks: any[];
+  turnId?: string;
+  teamReply?: import("../types").TeamReplyMeta | null;
+};
+
+export interface HistoryResult<Role extends string = "user" | "assistant" | "system"> {
+  ok: boolean;
+  messages: HistoryMessage<Role>[];
+  last_error?: {
+    turn_id?: string; message?: string;
+    i18n_key?: string; params?: Record<string, string | number>;
+  } | null;
+}
+
+export type HistoryTarget = { id: string; block: number | null };
+
+export interface HistoryPage {
+  mode: "replace" | "prepend" | "refresh" | "locate";
+  tail: string | null;
+  before: string | null;
+  coverage: string | null;
+  revision: string;
+  notice: HistoryResult["messages"][number] | null;
+  target: HistoryTarget | null;
+}
+
 export async function getSessionHistory(id: string) {
-  return json<{
-    ok: boolean;
-    messages: Array<{
-      id?: string;
-      role: "user" | "assistant";
-      agentId?: string | null;
-      blocks: any[];
-      turnId?: string;
-      // AgentTeam 回帖标记（messages_ui 序列化，agent-team-design.md §5.2）。
-      teamReply?: import("../types").TeamReplyMeta | null;
-    }>;
-    // Persisted turn failure (server-side); the client re-surfaces it as an
-    // error card so the retry affordance survives reloads / switches.
-    // i18n_key+params(事件契约 §3)随行持久化,回放时翻译。
-    last_error?: {
-      turn_id?: string; message?: string;
-      i18n_key?: string; params?: Record<string, string | number>;
-    } | null;
-  }>(`${BASE}/sessions/${id}/history`);
+  return json<HistoryResult<"user" | "assistant">>(
+    `${BASE}/sessions/${id}/history`,
+  );
+}
+
+export function getSessionHistoryIndex(id: string) {
+  return jsonStrict<HistoryResult>(`${BASE}/sessions/${encodeURIComponent(id)}/history?index=true`);
+}
+
+export function getSessionHistoryPage(
+  id: string,
+  options: Partial<Record<"before" | "refresh" | "coverage" | "revision" | "target", string | null>>,
+) {
+  const query = new URLSearchParams({ turns: "40" });
+  for (const [name, value] of Object.entries(options)) if (value) query.set(name, value);
+  return jsonStrict<HistoryResult & { page: HistoryPage }>(
+    `${BASE}/sessions/${encodeURIComponent(id)}/history?${query}`,
+  );
+}
+
+export interface HistoryToolDetail {
+  content: string;
+  diff: import("@/components/chat/blocks/types").EditDiffPayload | null;
+}
+
+export function getHistoryTool(id: string, key: string) {
+  return jsonStrict<HistoryToolDetail>(
+    `${BASE}/sessions/${encodeURIComponent(id)}/history/tools/${encodeURIComponent(key)}`,
+  );
 }
 
 // 停止一个会话（P2 共享契约 4）。POST /api/sessions/{id}/stop → 202 { stopped: true }。
