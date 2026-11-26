@@ -65,6 +65,72 @@ def save_messages(sid, messages):
     )
 
 
+@pytest.mark.parametrize(("app", "missing", "disconnected"), [
+    ("en", "The file could not be found at its original location", "Could not connect to the Ginno runtime"),
+    ("zh-CN", "原路径找不到文件", "无法连接 Ginno 运行时"),
+], indirect=["app"])
+def test_file_reference_shows_open_failure_and_can_retry(app, missing, disconnected, tmp_path):
+    page, port, sid = app
+    path = tmp_path.resolve() / "previously-attached-report.md"
+    name = "Preview fixture report"
+    save_messages(sid, [
+        HumanMessage(id="file-reference-request", content="Please attach the report"),
+        AIMessage(id="file-reference-response", content="Here is the report.", tool_calls=[{
+            "name": "attach_ref", "id": "attach-report", "args": {
+                "kind": "file", "name": name, "ref_id": str(path),
+            },
+        }]),
+        ToolMessage(content="Attached", tool_call_id="attach-report"),
+    ])
+    endpoint = "**/api/files/ensure-registered"
+    requests = []
+    page.on("request", lambda req: requests.append(req.post_data_json)
+            if req.url.endswith("/api/files/ensure-registered") else None)
+    open_session(page, port, sid)
+    chip = page.get_by_role("button", name=name, exact=True)
+    with page.expect_response(lambda res: res.url.endswith("/api/files/ensure-registered")) as rejected:
+        chip.press("Enter")
+    assert rejected.value.json()["ok"] is False
+    reason = page.get_by_role("alert").filter(has_text=missing)
+    expect(reason).to_contain_text(name)
+    expect(reason).to_contain_text(str(path))
+    expect(chip).to_be_focused()
+
+    page.route(endpoint, lambda route: route.abort("failed"), times=1)
+    chip.click()
+    expect(page.get_by_role("alert").filter(has_text=disconnected)).to_contain_text(name)
+    assert len(requests) == 2
+
+    path.write_text("# Recovered preview content", encoding="utf-8")
+    chip.click()
+    expect(page.get_by_role("heading", name="Recovered preview content", exact=True)).to_be_visible()
+    assert requests == [{"session_id": sid, "path": str(path), "name": name}] * 3
+
+
+def test_artifact_preview_explains_missing_file_record(app, tmp_path):
+    from ginno_runtime.artifacts import add_artifact
+
+    page, port, sid = app
+    path = tmp_path / "unregistered-report.md"
+    name = "Artifact without a file record"
+    add_artifact("default", "file", name, str(path), sid)
+    open_session(page, port, sid)
+    row = page.get_by_text(name, exact=True)
+    row.click()
+    reason = page.get_by_role("alert").filter(has_text="No file record was found for this artifact")
+    expect(reason).to_contain_text(name)
+    expect(reason).to_contain_text(str(path))
+
+    pattern = "**/api/files?project_slug=default"
+    page.route(pattern, lambda route: route.abort("failed"), times=1)
+    row.click()
+    expect(page.get_by_role("alert").filter(has_text="Could not connect to the Ginno runtime")).to_contain_text(name)
+
+    page.route(pattern, lambda route: route.fulfill(status=500, json={"detail": "fixture error"}), times=1)
+    row.click()
+    expect(page.get_by_role("alert").filter(has_text="Could not load the file record")).to_contain_text(name)
+
+
 def test_mid_turn_compaction_renders_as_short_notice(app):
     page, port, sid = app
     summary_body = "summary-body-sentinel" * 9_000

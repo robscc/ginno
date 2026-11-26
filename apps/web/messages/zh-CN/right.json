@@ -305,6 +305,9 @@
         "noChanges": "无改动"
       },
       "reveal": "在 Finder 中显示",
+      "unregisteredFile": "无法预览「{name}」。本机找不到该产物的文件记录。\n{path}",
+      "connectionFailed": "无法预览「{name}」。无法连接 Ginno 运行时，请重试。",
+      "fileLookupFailed": "无法预览「{name}」。读取文件记录失败，请重试。",
       "remoteNotice": "「{name}」是远端产物（{path}），文件在远端节点上，本机无法直接打开",
       "remoteBadge": "远端",
       "filterPlaceholder": "过滤产物（名称/拼音/kind）",

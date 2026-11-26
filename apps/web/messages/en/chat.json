@@ -346,6 +346,10 @@
     "refChip": {
       "workflowPrefix": "Workflow: ",
       "clickOpen": "Click to open",
+      "fileMissing": "Cannot open “{name}”. The file could not be found at its original location. It may have been moved or deleted.\n{path}",
+      "sessionUnavailable": "Cannot open “{name}”. The associated session could not be found.",
+      "connectionFailed": "Cannot open “{name}”. Could not connect to the Ginno runtime. Try again.",
+      "openFailed": "Cannot open “{name}”. The runtime could not prepare the file for preview. Try again.",
       "remoteBadge": "remote",
       "remoteNotice": "“{name}” lives on the remote node {peer} ({path}) — not available locally",
       "remoteTitle": "Remote file (on {peer})\n{path}\nNot available locally; click shows the remote path"
