@@ -119,9 +119,13 @@ export async function deleteArtifact(id: string, project_slug = "default") {
 }
 
 // Inspector payload: panel record + file facts + the exact injectable schema.
-export async function getArtifactMetadata(id: string, project_slug = "default") {
+export async function getArtifactMetadata(
+  id: string, project_slug = "default", options?: { candidates?: boolean; includeSchema?: boolean },
+) {
+  const candidates = options?.candidates ? "&candidates=true" : "";
+  const schema = options?.includeSchema === false ? "&include_schema=false" : "";
   return json<import("../types").ArtifactMeta>(
-    `${BASE}/artifacts/${id}/metadata?project_slug=${project_slug}`,
+    `${BASE}/artifacts/${id}/metadata?project_slug=${project_slug}${candidates}${schema}`,
   );
 }
 

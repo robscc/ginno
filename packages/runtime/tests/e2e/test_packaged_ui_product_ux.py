@@ -277,3 +277,106 @@ def test_task_phases_badge_and_keyboard(app):
     expect(title).to_be_focused()
     page.keyboard.press('Enter')
     expect(page).to_have_url(re.compile(r'/scheduled/?$'))
+
+
+def test_moved_artifact_requires_explicit_relink(app, tmp_path):
+    """Real hover, preview and cancel leave both registrations untouched."""
+    from urllib.parse import urlsplit
+
+    from playwright.sync_api import expect
+
+    from ginno_runtime import artifacts
+
+    page, port, base = app
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    sid = smoke._api(port, 'POST', '/api/sessions', {
+        'project_slug': 'default', 'title': 'Moved artifact fixture', 'workspace': str(workspace),
+    })['id']
+    vault = tmp_path / 'vault'
+    smoke._api(port, 'PUT', '/api/kb/wiki/config', {'vault_path': str(vault), 'enabled': False})
+    name = 'Acceptance report.md'
+    source = workspace / name
+    original = b'# Original report body\n'
+    source.write_bytes(original)
+    artifact = artifacts.add_artifact('default', 'file', name, str(source), sid)
+    file_id = smoke._api(port, 'POST', '/api/files/ensure-registered', {
+        'session_id': sid, 'path': str(source), 'name': name,
+    })['file']['id']
+    target = vault / 'Z original' / name
+    unrelated = vault / 'A unrelated' / name
+    target.parent.mkdir(parents=True)
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b'# Different report body\n')
+    source.rename(target)
+    artifact_url = f"/api/artifacts/{artifact['id']}"
+    preview_url = f'/api/files/{file_id}/preview'
+    download_url = f'/api/files/{file_id}/download'
+    writes = []
+
+    def on_request(req):
+        if urlsplit(req.url).path == artifact_url and req.method == 'PUT':
+            writes.append(req.post_data_json)
+
+    def unchanged(stage):
+        stored = smoke._api(port, 'GET', artifact_url)
+        assert stored['ref'] == str(source), f'{stage}: artifact rebound to {stored["ref"]}'
+        listing = smoke._api(port, 'GET', '/api/files')
+        assert next(f for f in listing if f['id'] == file_id)['path'] == str(source.resolve())
+        assert writes == []
+
+    page.on('request', on_request)
+    page.goto(base)
+    page.wait_for_function('typeof window.__ginnoOpenSession === "function"')
+    page.evaluate('sid => window.__ginnoOpenSession(sid)', sid)
+    page.get_by_role('tab', name=re.compile('^Artifacts')).click()
+    name_label = page.get_by_text(name, exact=True).first
+    with page.expect_response(lambda res: urlsplit(res.url).path == artifact_url + '/metadata') as hover:
+        name_label.hover()
+    unchanged('hover')
+    assert hover.value.json()['file']['id'] == file_id
+    assert hover.value.json()['exists'] is False
+
+    with page.expect_response(lambda res: urlsplit(res.url).path == preview_url) as preview:
+        name_label.click()
+    assert preview.value.status == 404
+    unchanged('preview')
+    page.keyboard.press('Escape')
+
+    row = page.locator(f'[data-artifact-row="{artifact["id"]}"]')
+    row.get_by_role('button', name='Artifact details', exact=True).click()
+    card = page.get_by_role('dialog', name=f'Artifact metadata: {name}')
+    card.get_by_role('button', name='Relink file', exact=True).click()
+    exact = card.get_by_role('radio', name=str(target.resolve()), exact=True)
+    wrong = card.get_by_role('radio', name=str(unrelated.resolve()), exact=True)
+    expect(exact).to_be_visible()
+    expect(wrong).to_be_visible()
+    expect(card.get_by_role('button', name='Confirm relink')).to_be_disabled()
+    wrong.check()
+    card.get_by_role('button', name='Cancel', exact=True).click()
+    unchanged('cancel')
+
+    card.get_by_role('button', name='Relink file', exact=True).click()
+    exact.check()
+    with page.expect_response(lambda res: urlsplit(res.url).path == artifact_url and res.request.method == 'PUT') as saved:
+        card.get_by_role('button', name='Confirm relink').click()
+    assert saved.value.ok and saved.value.json()['artifact']['id'] == artifact['id']
+    assert writes == [{'relink': {
+        'path': str(target.resolve()), 'expected_ref': str(source), 'expected_file_id': file_id,
+    }}]
+    expect(row.get_by_text(str(target.resolve()), exact=True)).to_be_visible()
+    card.get_by_title('Close', exact=True).click()
+
+    with page.expect_response(lambda res: urlsplit(res.url).path == preview_url) as opened:
+        row.get_by_text(name, exact=True).click()
+    assert opened.value.status == 200 and opened.value.json()['file']['id'] == file_id
+    expect(page.get_by_text('Original report body', exact=True)).to_be_visible()
+    page.keyboard.press('Escape')
+    row.hover()
+    with page.expect_response(lambda res: urlsplit(res.url).path == download_url) as download:
+        row.get_by_title('Save to Downloads', exact=True).click()
+    assert download.value.status == 200 and download.value.body() == original
+    assert len(writes) == 1
+    print(json.dumps({'same_name_candidates': 2, 'wrong_relinks': 0,
+                      'explicit_writes': len(writes), 'file_id': file_id,
+                      'artifact_id': artifact['id'], 'original_bytes': True}))

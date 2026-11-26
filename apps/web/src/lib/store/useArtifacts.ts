@@ -147,7 +147,7 @@ export function useArtifacts({
     if (patch.kind !== undefined) artPatch.kind = patch.kind;
     if (patch.schema !== undefined) artPatch.schema = patch.schema;
     let snapshot: Artifact[] | null = null;
-    setArtifacts((prev) => {
+    if (!patch.relink) setArtifacts((prev) => {
       snapshot = prev;
       return prev.map((a) => (a.id === id ? { ...a, ...artPatch } : a));
     });

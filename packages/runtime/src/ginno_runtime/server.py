@@ -403,7 +403,6 @@ from .api.files import (  # noqa: E402, F401
     _attachment_headers,
     _compact_schema,
     _dir_stats,
-    _heal_artifact_ref,
     _heal_workspace_ref,
     _is_orphaned_session,
     _normalize_file_ref,

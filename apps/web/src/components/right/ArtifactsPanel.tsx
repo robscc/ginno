@@ -15,6 +15,7 @@ import {
   FileText,
   FolderOpen,
   Image as ImageIcon,
+  Info,
   Link2,
   Loader2,
   Pencil,
@@ -81,15 +82,11 @@ function fmtBytes(n?: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Artifact refs created before server-side path normalization can carry an
-// unresolved prefix (macOS: /tmp vs the registry's /private/tmp). Match
-// exactly first, then fall back to the trailing <session-dir>/<uuid-file>
-// segments, which are collision-resistant.
-function matchByRef(files: FileEntry[], ref: string): FileEntry | undefined {
-  return (
-    files.find((f) => f.path === ref) ??
-    files.find((f) => f.path.endsWith("/" + ref.split("/").slice(-2).join("/")))
-  );
+async function resolveArtifactFile(artifact: Artifact): Promise<FileEntry | null> {
+  if (artifact.origin === "remote") return null;
+  const meta = await api.getArtifactMetadata(artifact.id, "default", { includeSchema: false });
+  if (!meta.ok) throw new Error(meta.error || "Artifact lookup failed");
+  return meta.file ?? null;
 }
 
 // ---- P3-2: 图片折叠 ----
@@ -162,7 +159,7 @@ function ImageGroupRow({
         if (!alive) return;
         const next: Record<string, string> = {};
         for (const a of shown) {
-          const entry = matchByRef(files, a.ref);
+          const entry = a.origin !== "remote" && files.find((f) => f.path === a.ref || f.artifact_id === a.id);
           if (entry) next[a.ref] = entry.id;
         }
         setFileIdByRef(next);
@@ -257,12 +254,16 @@ export function ArtifactMetaCard({
   editing,
   setEditing,
   onClose,
+  onPin,
+  onRelinked,
 }: {
   artifact: Artifact;
   rect: Rect;
   editing: boolean;
   setEditing: (v: boolean) => void;
   onClose: () => void;
+  onPin?: () => void;
+  onRelinked?: () => void;
 }) {
   const g = useGinno();
   // i18n：t 元数据卡片框架文案（名称/路径/摘要内容是用户数据，不翻译），tc 通用按钮
@@ -276,6 +277,11 @@ export function ArtifactMetaCard({
   const [saveError, setSaveError] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [relinkMeta, setRelinkMeta] = useState<ArtifactMeta | null>(null);
+  const [relinking, setRelinking] = useState(false);
+  const [relinkPath, setRelinkPath] = useState("");
+  const [relinkError, setRelinkError] = useState("");
+  const desktop = isDesktop();
 
   // 相对时间文案（common 域，按当前 locale 组装）
   const rel = (ts: number): string => {
@@ -317,12 +323,14 @@ export function ArtifactMetaCard({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || hasOpenConfirmModal()) return;
       e.stopPropagation();
-      if (editing) setEditing(false);
+      if (saving) return;
+      if (relinking) cancelRelink();
+      else if (editing) setEditing(false);
       else onClose();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [editing, setEditing, onClose]);
+  }, [editing, relinking, saving, setEditing, onClose]);
 
   const enterEdit = () => {
     if (!meta) return;
@@ -360,6 +368,67 @@ export function ArtifactMetaCard({
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 1800);
     await load(); // reflect the canonical (trimmed/whitelisted) record + new provenance
+  }
+
+  function cancelRelink() {
+    setRelinking(false);
+    setRelinkMeta(null);
+    setRelinkPath("");
+    setRelinkError("");
+  }
+
+  async function startRelink() {
+    onPin?.();
+    setRelinkError("");
+    setSaving(true);
+    try {
+      const details = await api.getArtifactMetadata(artifact.id, "default", { candidates: true });
+      if (!details.ok || !details.artifact || details.exists) {
+        setRelinkError(t("meta.relinkConflict"));
+        return;
+      }
+      setRelinkMeta(details);
+      setRelinking(true);
+    } catch {
+      setRelinkError(t("meta.relinkFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function browseForRelink() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path = await open({ multiple: false, directory: false });
+      if (typeof path === "string") setRelinkPath(path);
+    } catch {
+      setRelinkError(t("meta.relinkFailed"));
+    }
+  }
+
+  async function submitRelink() {
+    const expectedRef = relinkMeta?.artifact?.ref;
+    if (!expectedRef || !relinkPath || saving) return;
+    setSaving(true);
+    setRelinkError("");
+    try {
+      const result = await g.patchArtifact(artifact.id, {
+        relink: { path: relinkPath, expected_ref: expectedRef, expected_file_id: relinkMeta?.file?.id ?? null },
+      });
+      if (!result.ok) {
+        const key = result.error === "relink_conflict" ? "relinkConflict"
+          : result.error === "relink_target_in_use" ? "relinkTargetInUse"
+          : result.error === "relink_invalid_target" ? "relinkInvalidTarget"
+          : "relinkFailed";
+        setRelinkError(t(`meta.${key}`));
+        return;
+      }
+      cancelRelink();
+      onRelinked?.();
+      await load();
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function copyPath(p: string) {
@@ -453,10 +522,52 @@ export function ArtifactMetaCard({
         {meta && (
           <>
             {/* missing-file warning — the first thing to verify */}
-            {isFile && meta.exists === false && (
+            {isFile && meta.exists === false && artifact.origin !== "remote" && (
               <div className="flex items-center gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-2.5 py-1.5 text-[11px] text-yellow">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 {t("meta.fileMissing")}
+              </div>
+            )}
+
+            {isFile && meta.exists === false && artifact.origin !== "remote" && onPin && !editing && (
+              <div className="space-y-2">
+                {!relinking ? (
+                  <button type="button" onClick={() => void startRelink()} disabled={saving}
+                    className="rounded border border-line2 px-2 py-1 text-xs text-txt disabled:opacity-40">
+                    {t("meta.relinkStart")}
+                  </button>
+                ) : (
+                  <fieldset disabled={saving} className="space-y-2 rounded border border-line px-2 py-1.5 text-xs">
+                    <legend className="px-1 text-txt">{t("meta.relinkChoose")}</legend>
+                    {relinkMeta?.relink_candidates?.map((path) => (
+                      <label key={path} className="flex items-start gap-2">
+                        <input type="radio" name={`relink-${artifact.id}`} checked={relinkPath === path}
+                          onChange={() => setRelinkPath(path)} />
+                        <span className="break-all text-txt">{path}</span>
+                      </label>
+                    ))}
+                    {!relinkMeta?.relink_candidates?.length && <p className="text-muted">{t("meta.relinkNoCandidates")}</p>}
+                    {desktop && (
+                      <button type="button" onClick={() => void browseForRelink()}
+                        className="rounded border border-line2 px-2 py-1 text-txt">
+                        {t("meta.relinkBrowse")}
+                      </button>
+                    )}
+                    {relinkPath && !relinkMeta?.relink_candidates?.includes(relinkPath) && (
+                      <p className="break-all text-txt">{relinkPath}</p>
+                    )}
+                    <div className="flex gap-2">
+                      <button type="button" onClick={cancelRelink} className="rounded border border-line2 px-2 py-1 text-muted">
+                        {tc("cancel")}
+                      </button>
+                      <button type="button" disabled={!relinkPath} onClick={() => void submitRelink()}
+                        className="rounded bg-violet px-2 py-1 text-white disabled:opacity-40">
+                        {t("meta.relinkSubmit")}
+                      </button>
+                    </div>
+                  </fieldset>
+                )}
+                {relinkError && <p role="alert" className="text-xs text-red">{relinkError}</p>}
               </div>
             )}
 
@@ -610,6 +721,7 @@ export function ArtifactsPanel() {
   // Hover inspector: {artifact snapshot, anchor rect, edit flag}
   const [hover, setHover] = useState<{ a: Artifact; rect: Rect } | null>(null);
   const [inspectorEditing, setInspectorEditing] = useState(false);
+  const [inspectorPinned, setInspectorPinned] = useState(false);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -747,16 +859,18 @@ export function ArtifactsPanel() {
     if (leaveTimer.current) clearTimeout(leaveTimer.current);
   };
 
+  function showInspector(a: Artifact, el: HTMLElement) {
+    const r = el.getBoundingClientRect();
+    setHover({ a, rect: { top: r.top, bottom: r.bottom, left: r.left } });
+  }
   function scheduleOpen(a: Artifact, el: HTMLElement) {
+    if (inspectorEditing || inspectorPinned) return;
     clearTimers();
-    enterTimer.current = setTimeout(() => {
-      const r = el.getBoundingClientRect();
-      setHover({ a, rect: { top: r.top, bottom: r.bottom, left: r.left } });
-    }, 200);
+    enterTimer.current = setTimeout(() => showInspector(a, el), 200);
   }
   function scheduleClose() {
     // Never auto-close while the user has unsaved edits.
-    if (inspectorEditing) return;
+    if (inspectorEditing || inspectorPinned) return;
     clearTimers();
     leaveTimer.current = setTimeout(() => setHover(null), 250);
   }
@@ -765,13 +879,11 @@ export function ArtifactsPanel() {
   }
 
   // File artifacts open in the FileViewer/document preview. The artifact
-  // only carries a path (ref), so resolve the registry entry to get its id.
+  // metadata resolves the exact registered path with the server’s normalization.
   async function openArtifact(a: Artifact) {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
     try {
-      const files = await api.listFiles();
-      if (!Array.isArray(files)) throw new Error("Invalid file list response");
-      const entry = matchByRef(files, a.ref);
+      const entry = await resolveArtifactFile(a);
       if (entry) {
         // Remember the reverse mapping so FILE_MISSING_EVENT can dim this row.
         fileToArtifactRef.current.set(entry.id, a.id);
@@ -808,7 +920,7 @@ export function ArtifactsPanel() {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
     setBusyId(a.id);
     try {
-      const entry = matchByRef(await api.listFiles(), a.ref);
+      const entry = await resolveArtifactFile(a);
       if (!entry) return;
       if (isDesktop()) {
         const r = await api.saveFileToDownloads(entry.id);
@@ -832,7 +944,7 @@ export function ArtifactsPanel() {
     e.stopPropagation();
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
     try {
-      const entry = matchByRef(await api.listFiles(), a.ref);
+      const entry = await resolveArtifactFile(a);
       if (!entry) return;
       await api.revealFileInFileManager(entry.id);
     } catch {
@@ -847,7 +959,7 @@ export function ArtifactsPanel() {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
     setBusyId(a.id);
     try {
-      const entry = matchByRef(await api.listFiles(), a.ref);
+      const entry = await resolveArtifactFile(a);
       if (!entry) return;
       await api.openFileExternal(entry.id);
     } catch {
@@ -878,8 +990,12 @@ export function ArtifactsPanel() {
     return (
       <div
         key={a.id}
+        data-artifact-row={a.id}
         onClick={(e) => {
           if (clickable) {
+            clearTimers();
+            setInspectorPinned(false);
+            setInspectorEditing(false);
             setHover(null);
             void openArtifact(a);
           }
@@ -906,6 +1022,19 @@ export function ArtifactsPanel() {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          {clickable && a.origin !== "remote" && (
+            <button type="button" title={t("meta.details")} aria-label={t("meta.details")}
+              onClick={(e) => {
+                e.stopPropagation();
+                clearTimers();
+                setInspectorEditing(false);
+                setInspectorPinned(true);
+                showInspector(a, e.currentTarget.closest<HTMLElement>("[data-artifact-row]") ?? e.currentTarget);
+              }}
+              className="rounded-md p-1 text-muted hover:bg-card2 hover:text-txt opacity-0 focus:opacity-100 group-hover:opacity-100">
+              <Info className="h-3.5 w-3.5" />
+            </button>
+          )}
           {clickable && (
             <button
               onClick={(e) => void openExternalArtifact(e, a)}
@@ -951,6 +1080,9 @@ export function ArtifactsPanel() {
           <button
             onClick={(e) => {
               e.stopPropagation();
+              clearTimers();
+              setInspectorPinned(false);
+              setInspectorEditing(false);
               setHover(null);
               setDeleteTarget(a);
             }}
@@ -1115,11 +1247,26 @@ export function ArtifactsPanel() {
         return (
           <div onMouseEnter={cancelClose} onMouseLeave={scheduleClose}>
             <ArtifactMetaCard
+              key={live.id}
               artifact={live}
               rect={hover.rect}
               editing={inspectorEditing}
               setEditing={setInspectorEditing}
+              onPin={() => {
+                clearTimers();
+                setInspectorPinned(true);
+              }}
+              onRelinked={() => {
+                setFailedIds((prev) => {
+                  const next = new Set(prev);
+                  next.delete(live.id);
+                  return next;
+                });
+                if (scope === "all") void reloadProjectArtifacts();
+              }}
               onClose={() => {
+                clearTimers();
+                setInspectorPinned(false);
                 setInspectorEditing(false);
                 setHover(null);
               }}
