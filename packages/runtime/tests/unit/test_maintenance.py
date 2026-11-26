@@ -84,7 +84,7 @@ def test_prune_orphan_artifacts(isolated_home, tmp_path, monkeypatch):
 
     maintenance.run_startup_maintenance()
     names = {a["name"] for a in art_store.list_artifacts("default")}
-    assert names == {"ok"}
+    assert names == {"ok", "gone"}
 
 
 def test_requeue_pending_titles_backfills_assistant(isolated_home, monkeypatch):
@@ -185,8 +185,7 @@ def test_requeue_gives_up_when_no_assistant_text(isolated_home, monkeypatch):
     assert meta["toolonly"]["title_llm_pending"] is False
 
 
-def test_image_and_doc_artifacts_with_missing_files_are_pruned(isolated_home, tmp_path, monkeypatch):
-    """DATA-07: the sweep must cover image/doc refs, not just kind=file."""
+def test_missing_images_can_be_relinked_and_missing_local_docs_are_pruned(isolated_home, tmp_path, monkeypatch):
     _write_index("default", [_row("s1")])
     monkeypatch.setattr(maintenance, "_has_messages", lambda slug, sid: True)
     gone = tmp_path / "missing.png"
@@ -194,13 +193,14 @@ def test_image_and_doc_artifacts_with_missing_files_are_pruned(isolated_home, tm
     ok.write_text("x", encoding="utf-8")
     art_store.add_artifact("default", "image", "gone.png", str(gone), "s1")
     art_store.add_artifact("default", "image", "ok.png", str(ok), "s1")
+    art_store.add_artifact("default", "doc", "missing-doc", str(tmp_path / "missing.md"), "s1")
     # URLs and workflow ids must survive
     art_store.add_artifact("default", "doc", "remote", "https://example.com/doc", "s1")
     art_store.add_artifact("default", "workflow", "run", "wf-run-id", "s1")
 
     maintenance.run_startup_maintenance()
     names = {a["name"] for a in art_store.list_artifacts("default")}
-    assert names == {"ok.png", "remote", "run"}
+    assert names == {"gone.png", "ok.png", "remote", "run"}
 
 
 def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
