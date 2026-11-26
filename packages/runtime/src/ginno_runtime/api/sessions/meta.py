@@ -31,7 +31,7 @@ from ...session_meta import (
 from ...session_unread import mark_session_seen as _mark_session_seen
 from ...session_unread import mark_session_unread as _session_unread_mark
 from ._base import router
-from .history import address_rows, paginate, tool_records
+from .history import address_rows, history_revision, paginate, tool_records
 
 
 # ── Session label/icon（session-label-icon-design.md §1/§2）──────────────────
@@ -394,10 +394,11 @@ async def get_session_history(
     A before cursor navigates backward. A refresh cursor lets readers keep the
     verified prefix while replacing the tail. The optional coverage row is used
     to rebuild that range when the checkpoint rewrites a retained prefix.
-    The search index uses the full projection with stable legacy row IDs.
+    The search index shares the page revision. A matching revision returns
+    an unchanged response without rows.
     """
     slug, checkpoint = await _history_snapshot(session_id)
-    if not checkpoint and turns is None:
+    if not checkpoint and turns is None and not index:
         return {"ok": True, "messages": []}
     channel = (checkpoint or {}).get("channel_values") or {}
     meta, _ = (_find_meta(session_id) or ({}, None))
@@ -409,15 +410,21 @@ async def get_session_history(
         scope = {"project_slug": slug, "session_id": session_id}
         if turns is None:
             rows = _messages_to_ui(*args, **scope)
+            result = {"ok": True, "messages": rows, "last_error": last_error or None}
             if index:
                 address_rows(rows)
-            return {"ok": True, "messages": rows, "last_error": last_error or None}
+                current, _ = history_revision(rows, set(), last_error)
+                if revision == current:
+                    return {"ok": True, "revision": current, "unchanged": True}
+                result["revision"] = current
+            return result
         starts: set[int] = set()
         aliases: dict[str, tuple[int, int | None]] = {}
         rows = _messages_to_ui(*args, **scope, turn_starts=starts, message_aliases=aliases)
         rows, page = paginate(
             rows, starts, aliases, session_id=session_id, turns=turns,
             before=before, refresh=refresh, coverage=coverage, revision=revision, target=target,
+            last_error=last_error,
         )
         return {"ok": True, "messages": rows, "last_error": last_error or None, "page": page}
 

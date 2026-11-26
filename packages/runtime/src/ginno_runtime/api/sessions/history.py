@@ -58,10 +58,30 @@ def tool_records(rows: list[dict]):
             yield row, index, block, key
 
 
+def history_revision(
+    rows: list[dict], boundaries: set[int], last_error: dict | None,
+) -> tuple[str, dict[int, str]]:
+    """Hash the addressed full projection before tool bodies are replaced by stubs."""
+    # Prefix cursors survive appends. A rewrite forces a new page projection.
+    prefix = hashlib.sha256()
+    cursors = {}
+    notice = rows[0] if rows and str(rows[0]["id"]).startswith("microcompact:") else None
+    for index in range(int(notice is not None), len(rows)):
+        row = rows[index]
+        if index in boundaries:
+            cursors[index] = f"{row['id']}:{prefix.hexdigest()[:24]}"
+        prefix.update(_digest(row).encode())
+    if notice is not None:
+        prefix.update(_digest(notice).encode())
+    if last_error:
+        prefix.update(_digest(last_error).encode())
+    return prefix.hexdigest()[:24], cursors
+
+
 def paginate(
     rows: list[dict], starts: set[int], aliases: dict[str, tuple[int, int | None]], *, session_id: str,
     turns: int, before: str | None, refresh: str | None, coverage: str | None,
-    revision: str | None, target: str | None,
+    revision: str | None, target: str | None, last_error: dict | None = None,
 ) -> tuple[list[dict], dict]:
     address_rows(rows)
 
@@ -70,19 +90,8 @@ def paginate(
         notice = rows[0]
     first = int(notice is not None)
     boundaries = sorted({first, *(i for i in starts if first <= i < len(rows))})
-    # Each cursor carries the identity of the first row and a digest of the
-    # prefix. Appending new turns preserves older boundaries. Rewrites that
-    # affect a retained prefix force a fresh projection of the loaded range.
-    prefix = hashlib.sha256()
-    cursors = {}
     start_set = set(boundaries)
-    for index in range(first, len(rows)):
-        if index in start_set:
-            cursors[index] = f"{rows[index]['id']}:{prefix.hexdigest()[:24]}"
-        prefix.update(_digest(rows[index]).encode())
-    if notice is not None:
-        prefix.update(_digest(notice).encode())
-    current = prefix.hexdigest()[:24]
+    current, cursors = history_revision(rows, start_set, last_error)
     positions = {cursor: index for index, cursor in cursors.items()}
     by_id = {row["id"]: index for index, row in enumerate(rows)}
     tail = boundaries[max(0, len(boundaries) - turns)]

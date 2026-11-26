@@ -108,8 +108,13 @@ def test_pages_follow_projected_turns_and_checkpoint_changes(client, patch_build
     assert _ids(previous["messages"])[-1] == "report-reply"
     assert "Report sentinel" in str(previous["messages"][-1])
     assert all(row_id.startswith("history-") for row_id in _ids(previous["messages"][:2]))
-    index = client.get(url, params={"index": True}).json()["messages"]
-    assert _ids(index[3:6]) == _ids(previous["messages"])
+    index = client.get(url, params={"index": True}).json()
+    assert _ids(index["messages"][3:6]) == _ids(previous["messages"])
+    revision = latest["page"]["revision"]
+    assert index["revision"] == revision
+    assert client.get(url, params={"index": True, "revision": revision}).json() == {
+        "ok": True, "revision": revision, "unchanged": True,
+    }
     # Append while an older-page cursor is in flight. The response includes
     # the changed tail so a reader cannot construct a mixed transcript.
     _save(sid, [*messages, *_turn(4)])
@@ -120,6 +125,9 @@ def test_pages_follow_projected_turns_and_checkpoint_changes(client, patch_build
     assert _ids(repaired["messages"]) == _ids(previous["messages"]) + _ids(latest["messages"]) + ["u-4", "a-4"]
     refreshed = client.get(url, params={"turns": 2, "refresh": latest["page"]["tail"]}).json()
     assert refreshed["page"]["mode"] == "refresh"
+    updated = client.get(url, params={"index": True, "revision": revision}).json()
+    assert updated["revision"] == refreshed["page"]["revision"] != revision
+    assert _ids(updated["messages"])[-2:] == ["u-4", "a-4"]
     assert _ids(refreshed["messages"]) == ["u-2", "a-2", "u-3", "a-3", "u-4", "a-4"]
     # Compaction removes the old prefix. A surviving coverage anchor rebuilds
     # the full loaded span with the new checkpoint and a fresh notice state.
@@ -129,6 +137,21 @@ def test_pages_follow_projected_turns_and_checkpoint_changes(client, patch_build
     }).json()
     assert compacted["page"]["mode"] == "replace" and compacted["page"]["notice"] is None
     assert _ids(compacted["messages"]) == _ids(client.get(url).json()["messages"])
+
+
+def test_index_revision_includes_tool_body_rewrites_and_empty_checkpoints(client, patch_build_model, tmp_path):
+    sid = _session(client, patch_build_model, tmp_path)
+    url = f"/api/sessions/{sid}/history"
+    empty = client.get(url, params={"turns": 40}).json()["page"]["revision"]
+    assert client.get(url, params={"index": True}).json()["revision"] == empty
+    _save(sid, _turn(0, "[exit 0]\noriginal body"))
+    first = client.get(url, params={"index": True, "revision": empty}).json()
+    assert first["revision"] != empty
+    _save(sid, _turn(0, "[exit 0]\nrewritten body"))
+    page = client.get(url, params={"turns": 40}).json()
+    updated = client.get(url, params={"index": True, "revision": first["revision"]}).json()
+    assert updated["revision"] == page["page"]["revision"] != first["revision"]
+    assert updated["messages"][1]["blocks"][0]["content"] == "[exit 0]\nrewritten body"
 
 
 @pytest.mark.parametrize("anchor", [False, True])

@@ -287,6 +287,7 @@ export function ChatStream({
     finishSynthesisWait,
   });
   const sessionFind = useSessionFind({
+    historyLoading: historyStatus.kind === "loading",
     messages, projection, sessionId, scrollRef, sourceMessages, liveId,
     visibleMessages, mapHistory, loadHistory, historyRevision,
   });
