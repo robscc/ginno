@@ -67,12 +67,26 @@
       "skip": "Skip · let the agent use its best judgment",
       "freeTextOverrideHint": "Type a custom answer to override the selected option"
     },
+    "fileFailure": {
+      "fileUnregistered": "No file record was found.",
+      "fileMoved": "The file has been moved or deleted.",
+      "launcherFailed": "Could not launch the system application. {detail}",
+      "fileManagerFailed": "Could not launch the file manager. {detail}",
+      "downloadsWriteFailed": "Could not write to Downloads. {detail}",
+      "httpFailed": "File request failed (HTTP {status}). {detail}",
+      "requestFailed": "Could not read or save the file. Try again.",
+      "invalidResponse": "The Ginno runtime returned an invalid file response. Try again.",
+      "connectionFailed": "Could not connect to the Ginno runtime. Try again.",
+      "businessRejected": "The file operation was rejected. {detail}",
+      "remoteFile": "This file is on the remote node ({path})."
+    },
     "sheet": {
       "savedTo": "Saved to {path}",
       "saveFailed": "Save failed",
       "downloadStarted": "Download started",
       "downloadFailed": "Download failed",
       "previewFailed": "Preview failed",
+      "imageDecodeFailed": "This image could not be decoded. It may be damaged or use an unsupported format.",
       "fileDeleted": "File deleted",
       "runtimeUnreachable": "Cannot connect to the runtime",
       "rowsRange": "rows {from}–{to} / {total}",

@@ -315,6 +315,8 @@
         "noChanges": "No changes"
       },
       "reveal": "Reveal in Finder",
+      "fileActionFailed": "{action} failed for “{name}”. {reason}",
+      "artifactUnavailable": "The artifact record is no longer available.",
       "unregisteredFile": "Cannot preview “{name}”. No file record was found for this artifact.\n{path}",
       "connectionFailed": "Cannot preview “{name}”. Could not connect to the Ginno runtime. Try again.",
       "fileLookupFailed": "Cannot preview “{name}”. Could not load the file record. Try again.",

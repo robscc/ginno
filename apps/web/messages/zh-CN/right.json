@@ -315,6 +315,8 @@
         "noChanges": "无改动"
       },
       "reveal": "在 Finder 中显示",
+      "fileActionFailed": "「{name}」操作失败（{action}）。{reason}",
+      "artifactUnavailable": "找不到该产物记录。",
       "unregisteredFile": "无法预览「{name}」。本机找不到该产物的文件记录。\n{path}",
       "connectionFailed": "无法预览「{name}」。无法连接 Ginno 运行时，请重试。",
       "fileLookupFailed": "无法预览「{name}」。读取文件记录失败，请重试。",
