@@ -305,6 +305,9 @@
         "noChanges": "No changes"
       },
       "reveal": "Reveal in Finder",
+      "unregisteredFile": "Cannot preview “{name}”. No file record was found for this artifact.\n{path}",
+      "connectionFailed": "Cannot preview “{name}”. Could not connect to the Ginno runtime. Try again.",
+      "fileLookupFailed": "Cannot preview “{name}”. Could not load the file record. Try again.",
       "remoteNotice": "“{name}” is a remote artifact ({path}) — the file lives on the remote node and can't be opened locally",
       "remoteBadge": "remote",
       "filterPlaceholder": "Filter artifacts (name / initials / kind)",

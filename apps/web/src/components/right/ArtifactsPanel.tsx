@@ -769,7 +769,9 @@ export function ArtifactsPanel() {
   async function openArtifact(a: Artifact) {
     if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
     try {
-      const entry = matchByRef(await api.listFiles(), a.ref);
+      const files = await api.listFiles();
+      if (!Array.isArray(files)) throw new Error("Invalid file list response");
+      const entry = matchByRef(files, a.ref);
       if (entry) {
         // Remember the reverse mapping so FILE_MISSING_EVENT can dim this row.
         fileToArtifactRef.current.set(entry.id, a.id);
@@ -784,9 +786,18 @@ export function ArtifactsPanel() {
           dedupeKey: `remote-artifact:${a.id}`,
           inbox: false,
         });
+        return;
       }
-    } catch {
-      /* sidecar hiccup — ignore */
+      pushNotice("error", t("unregisteredFile", { name: a.name, path: a.ref }), {
+        dedupeKey: `artifact-preview:${a.id}`,
+        inbox: false,
+      });
+    } catch (error) {
+      const key = error instanceof TypeError ? "connectionFailed" : "fileLookupFailed";
+      pushNotice("error", t(key, { name: a.name }), {
+        dedupeKey: `artifact-preview:${a.id}`,
+        inbox: false,
+      });
     }
   }
 

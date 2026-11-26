@@ -399,12 +399,12 @@ async def ensure_registered_endpoint(req: dict) -> dict:
     src = req.get("path") or ""
     meta = _resolve_session_meta(session_id)
     if meta is None:
-        return {"ok": False, "error": f"session not found: {session_id}"}
+        return {"ok": False, "code": "session_not_found", "error": f"session not found: {session_id}"}
     slug = meta.get("project_slug") or "default"
     ref = _normalize_file_ref(slug, session_id, src)
     p = Path(ref).expanduser()
     if not p.is_file():
-        return {"ok": False, "error": f"File not found: {src}"}
+        return {"ok": False, "code": "file_not_found", "error": f"File not found: {src}"}
     entry = files_mod.get_registry(slug).register(
         req.get("name") or p.name, ref, session_id=session_id
     )

@@ -155,15 +155,38 @@ function RefChip({
       return;
     }
     const sid = g.activeSessionId;
-    if (!sid) return;
-    const r = await ensureFileRegistered(sid, refId, name);
-    if (r.ok && r.file) {
-      g.openPreview({
-        id: r.file.id,
-        name: r.file.name ?? name,
-        path: r.file.path ?? refId,
-        kind: r.file.kind,
+    const reportFailure = (reason: "fileMissing" | "sessionUnavailable" | "connectionFailed" | "openFailed") => {
+      pushNotice("error", tc(`refChip.${reason}`, { name, path: refId }), {
+        dedupeKey: `file-ref-open:${sid}:${refId}`,
+        inbox: false,
       });
+    };
+    if (!sid) {
+      reportFailure("sessionUnavailable");
+      return;
+    }
+    try {
+      const r = await ensureFileRegistered(sid, refId, name);
+      if (r?.ok && r.file) {
+        g.openPreview({
+          id: r.file.id,
+          name: r.file.name ?? name,
+          path: r.file.path ?? refId,
+          kind: r.file.kind,
+        });
+        return;
+      }
+      // Older runtimes return the same error text without a code.
+      const message = typeof r?.error === "string" ? r.error : "";
+      if (r?.code === "file_not_found" || message.startsWith("File not found:")) {
+        reportFailure("fileMissing");
+      } else if (r?.code === "session_not_found" || message.startsWith("session not found:")) {
+        reportFailure("sessionUnavailable");
+      } else {
+        reportFailure("openFailed");
+      }
+    } catch (error) {
+      reportFailure(error instanceof TypeError ? "connectionFailed" : "openFailed");
     }
   };
   return (
