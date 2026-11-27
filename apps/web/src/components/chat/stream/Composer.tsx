@@ -287,7 +287,6 @@ export function Composer({
       <textarea
         ref={textareaRef}
         value={input}
-        readOnly={voiceBusy}
         onChange={(e) => {
           const v = e.target.value;
           setInput(v);
