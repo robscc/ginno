@@ -7,6 +7,26 @@ versions.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-27
+
+### 长会话
+
+- 会话内查找按实际可见文本匹配，定位时自动展开所属卡片。流式更新保留已选命中。空查找不下载索引，同一历史版本复用索引数据。（#359、#362、#369）
+- 转录窗口随阅读位置和查找结果移动。相同 640 轮样本定位最早消息时，挂载行数由 1,280 降至 80。（#360）
+- 首屏按完整轮次加载最近历史，工具正文展开时读取。同一 640 轮样本首屏历史响应由 4,343,711 B 降至 35,159 B，减少 99.19%。全文查找、复制、导出及历史 diff、图片和 Mermaid 回放保留。（#361）
+- 切回会话恢复阅读位置。首次加载历史失败时显示原因，可原地重试。（#364、#371）
+- 重载会话时，最新一轮的短编辑 diff 恢复默认展开。旧轮仍可按需打开。（#373）
+
+### 文件和产物
+
+- 文件引用打不开、系统打开失败、Finder 定位失败或下载失败时，显示原因。图片预览区分解码失败与文件缺失。（#363、#368）
+- 已移动的文件可手选重新关联。重启保留待关联记录，连续切换预览时只显示当前文件的响应。（#365–#367）
+- 启动迁移只处理符合旧版格式的附件和分析结果，保留工作区及 Obsidian 报告的原路径。（#372）
+
+### 界面
+
+- 恢复聊天操作卡的运行指示，收纳工具错误。关闭的系统提示在流式更新与历史同步期间保持隐藏。（#357、#358）
+
 ## [0.5.2] - 2026-11-25
 
 ### 聊天和任务
@@ -564,7 +584,8 @@ First public release 🎉 (~2.5 months, 220+ commits, daily dogfooding).
 - **Channels**: DingTalk connector (Stream mode), WeCom.
 - Platforms: macOS (Apple Silicon).
 
-[Unreleased]: https://github.com/robscc/ginno/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/robscc/ginno/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/robscc/ginno/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/robscc/ginno/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/robscc/ginno/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/robscc/ginno/compare/v0.4.1...v0.5.0
