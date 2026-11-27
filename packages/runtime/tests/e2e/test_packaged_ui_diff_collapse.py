@@ -132,28 +132,29 @@ def app(tmp_path):
 
 
 def test_old_turn_diffs_collapse_latest_expands(app):
+    from playwright.sync_api import expect
+
     page = app
     ta = page.locator("textarea").first
-    ta.click(); ta.fill("第一轮"); ta.press("Enter")
-    page.wait_for_timeout(3000)
-    ta.click(); ta.fill("第二轮"); ta.press("Enter")
-    page.wait_for_timeout(3500)
+    for message, summary in (("第一轮", "第一轮改好了。"), ("第二轮", "第二轮也改好了。")):
+        ta.fill(message)
+        ta.press("Enter")
+        expect(page.get_by_text(summary, exact=True)).to_be_visible()
+        expect(ta).to_be_editable()
+
+    requests = []
+    page.on("request", lambda req: requests.append(req.url) if "/history/tools/" in req.url else None)
     page.reload(wait_until="load")
-    page.wait_for_timeout(1800)
-
-    edit_rows = page.locator('[title^="edit_file"], [title^="write_file"]')
-    assert edit_rows.count() >= 2, f"expected ≥2 edit tool rows, got {edit_rows.count()}"
-
+    older = page.locator('button[title^="write_file"]')
+    latest = page.locator('button[title^="edit_file"]')
+    expect(older).to_have_attribute("aria-expanded", "false")
+    expect(latest).to_have_attribute("aria-expanded", "true")
+    expect(older).to_contain_text("+3")
     diffs = page.locator("div.diff")
-    assert diffs.count() == 1, (
-        f"expected exactly 1 expanded diff (latest turn only), got {diffs.count()}"
-    )
+    expect(diffs).to_have_count(1)
+    expect(diffs.first).to_contain_text("BETA-2")
+    assert len(requests) == 1
 
-    # the collapsed (older) row still shows its +N −M badge
-    body = page.locator("body").inner_text()
-    assert "+3" in body, "older turn should still carry the +N badge"
-
-    # expand the older row on demand → second .diff appears
-    edit_rows.first.click()
-    page.wait_for_timeout(400)
-    assert page.locator("div.diff").count() == 2, "on-demand expand should reveal old diff"
+    older.click()
+    expect(diffs).to_have_count(2)
+    assert len(requests) == len(set(requests)) == 2

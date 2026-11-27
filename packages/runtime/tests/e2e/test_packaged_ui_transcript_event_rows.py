@@ -1192,6 +1192,8 @@ def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
         ToolMessage(content="[exit 0]\n" + encode_images_marker([str(img)]), tool_call_id="plot-call"),
         ToolMessage(content="Synthetic edit receipt", tool_call_id="edit-call"),
         AIMessage(content="```mermaid\ngraph TD\n  A[Start] --> B[Finish]\n```"),
+        HumanMessage(id="diagram-followup", content="Continue the conversation"),
+        AIMessage(id="diagram-followup-answer", content="Latest answer without an edit"),
     ])
     tool_requests = []
     page.on("request", lambda req: tool_requests.append(req.url) if "/history/tools/" in req.url else None)
