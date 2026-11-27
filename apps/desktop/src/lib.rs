@@ -52,6 +52,8 @@ mod shell_ui;
 mod sidecar;
 mod tray;
 mod tray_anim;
+#[cfg(target_os = "macos")]
+mod voice_shortcut;
 
 #[cfg(not(debug_assertions))]
 use std::net::{SocketAddr, TcpStream};
@@ -301,6 +303,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            voice_shortcut::install(app.handle().clone());
             // G1 无头热更新 watcher（L3+L4）：企微 y 授权后壳在无 webview 的
             // 情况下也能 finish（含壳重启窗口的冷启动补执行）。
             crate::dev_swap::spawn_unattended_watcher(app.handle().clone());

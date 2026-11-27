@@ -273,6 +273,7 @@ from .api import team_templates as _team_tpl_api  # noqa: E402
 from .api import teams as _teams_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
+from .api import voice as _voice_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
 from .mods import api as _mods_api  # noqa: E402
 
@@ -307,6 +308,8 @@ app.include_router(_team_gen_api.router)
 app.include_router(_team_tpl_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
+app.include_router(_voice_api.router)
+
 app.include_router(_workflows_api.router)
 
 

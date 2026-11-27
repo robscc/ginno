@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl";
 import { SettingsNav } from "./SettingsNav";
 import { SettingsTabs } from "./SettingsTabs";
 import { defaultTab, getGroup, isValidSub } from "./settingsGroups";
+import { VoiceSettings } from "./VoiceSettings";
 import { ModelApiSettings } from "./ModelApiSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { McpSettings } from "./McpSettings";
@@ -31,6 +32,8 @@ import { SettingsCorruptBanner } from "./SettingsCorruptBanner";
 // 按 (group, sub) 渲染对应面板；sub 缺省取分组默认 tab，非法 sub 走 unknownTab 兜底。
 function TabPanel({ tab }: { tab: string }) {
   switch (tab) {
+    case "voice":
+      return <VoiceSettings />;
     case "model-api":
       return <ModelApiSettings />;
     case "mcp":

@@ -55,6 +55,8 @@ ginno-mod-broker = { path = "../../crates/mod-broker" }
 # policy: "avoid" = default macOS behavior, "overlay" = FullScreenAuxiliary).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "block2"] }
 # preview-macos-un: modern UNUserNotificationCenter backend. The default
 # NSUserNotification path is deprecated and, on current macOS, only ever
 # shows the generic first-use banner for background apps — the notification

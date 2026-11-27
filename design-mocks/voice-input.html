@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno 语音输入 · 三套交互原型</title>
+<style>
+:root{color-scheme:dark;font:15px/1.6 system-ui,sans-serif;--bg:#14131a;--surface:#201f29;--line:#383444;--muted:#b6adc5;--accent:#c6b1ff;--ink:#f5f0ff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}main{max-width:980px;margin:0 auto;padding:46px 24px}h1{font-size:32px;margin:0 0 16px;letter-spacing:-.045em}button,textarea{font:inherit}button{border:1px solid var(--line);border-radius:9px;padding:8px 14px;cursor:pointer;background:#292635;color:var(--ink)}button:hover:not(:disabled){border-color:var(--accent)}button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.45;cursor:default}.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.tabs button[aria-pressed=true],.primary{background:var(--accent);color:#211933;border-color:transparent;font-weight:650}.shell{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--surface);display:grid;grid-template-columns:184px minmax(0,1fr)}aside{padding:16px;border-right:1px solid var(--line);background:#1b1922}aside strong{font-size:18px}aside p{color:var(--muted);font-size:13px}.selected{background:#30273f;border-radius:8px;padding:7px 9px;color:var(--ink)}.chat{min-width:0;padding:20px;display:flex;flex-direction:column;min-height:480px}.session{font-weight:650;padding-bottom:12px;border-bottom:1px solid var(--line)}.history{flex:1;padding:24px 0;display:flex;flex-direction:column;gap:12px;align-items:flex-start}.bubble{margin:0;background:#282533;border-radius:10px;padding:10px 12px;overflow-wrap:anywhere}.user{align-self:flex-end;background:#352b48}.composer{border:1px solid var(--line);border-radius:13px;padding:12px;background:#191720}textarea{resize:vertical;width:100%;min-height:70px;background:transparent;color:var(--ink);border:0;padding:8px}.toolbar,.recorder{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.toolbar .status{margin-right:auto}.status,.note{color:var(--muted);font-size:13px}.recorder{padding:10px;border:1px solid #635277;border-radius:8px;background:#282138;margin-bottom:10px}.panel{padding:16px;margin-top:10px}.partial{width:100%;color:var(--accent);overflow-wrap:anywhere}.error{color:#ffadac}.dot{width:9px;height:9px;margin:0 3px;background:#ff9ea9;border-radius:50%;display:inline-block}.dot.active{animation:pulse 1s infinite alternate}@keyframes pulse{to{opacity:.35}}.mic-icon{width:17px;height:17px;vertical-align:-3px;fill:none;stroke:currentColor;stroke-width:1.8;margin-right:6px}[hidden]{display:none!important}.note{margin:12px 0 0}@media(max-width:600px){main{padding:24px 12px}.shell{grid-template-columns:1fr}aside{display:none}.chat{padding:12px;min-height:420px}}@media(prefers-reduced-motion:reduce){.dot.active{animation:none}}
+.settings{padding:18px;border:1px solid var(--line);border-radius:13px;background:var(--surface);margin:16px 0}.settings h2{margin:0 0 12px;font-size:20px}.settings select{display:block;width:100%;max-width:520px;font:inherit;background:#191720;color:var(--ink);padding:8px;border:1px solid var(--line);border-radius:8px;margin:6px 0}.settings .toolbar{margin-top:12px}
+</style>
+</head>
+<body><main>
+<h1>Ginno 语音输入</h1>
+<button id="settingsButton" aria-controls="voiceSettings" aria-expanded="false">语音输入设置</button>
+<section class="settings" id="voiceSettings" hidden>
+  <h2>设置 · 语音输入</h2>
+  <label for="asr">语音识别模型</label>
+  <select id="asr" aria-describedby="asrHint">
+    <option value="">请选择模型</option>
+    <option value="bailian-beijing">阿里云百炼 · 北京 · qwen-audio-3.1-asr-flash-message</option>
+    <option value="bailian-singapore">阿里云百炼 · 新加坡 · qwen-audio-3.1-asr-flash-message</option>
+  </select>
+  <p class="note" id="asrHint"></p>
+  <div class="toolbar"><button id="modelSettings">前往模型 API 配置</button><button id="saveAsr" class="primary">保存模型</button></div>
+  <p class="note" id="modelSettingsHint" role="status" hidden>在「模型 API」添加并启用支持实时听写的 ASR 配置。这里的选项是演示配置。</p>
+</section>
+<div class="tabs" aria-label="交互方案"><button data-mode="inline" aria-pressed="false">A · 输入框内语音</button><button data-mode="panel" aria-pressed="false">B · 独立录音面板</button><button data-mode="live" aria-pressed="true">C · 实时听写</button></div>
+<div class="shell"><aside><strong>Ginno</strong><p class="selected">发布复盘</p></aside><section class="chat" aria-label="聊天"><header class="session">发布复盘</header><div class="history" id="history"><p class="bubble user">帮我整理本周的发布复盘。</p><p class="bubble">你可以先告诉我这次发布最值得关注的问题。</p></div>
+<div class="composer"><div class="recorder" id="inline" hidden></div><textarea id="draft" aria-label="消息草稿" placeholder="输入消息…">重点看一下热更新。</textarea><div class="toolbar"><span class="status" id="status" role="status"></span><button id="mic"><svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-3 0h6"/></svg><span id="micLabel">开始听写</span></button><button id="send" class="primary">发送</button></div></div>
+<div class="recorder panel" id="panel" hidden></div></section></div>
+<p class="note" id="note"></p><p class="note" id="shortcutNote">桌面方案按住 Fn / 🌐 说话，松开结束。网页原型用 <kbd>F8</kbd> 模拟。</p><p class="note">演示使用模拟音频和转写结果。快捷键 Esc 可取消录音或转写。</p>
+</main><script>
+const $ = id => document.getElementById(id);
+const draft = $('draft'), tabs = [...document.querySelectorAll('[data-mode]')];
+const sample = '另外，请把复现步骤、影响范围和回滚条件分别列出来。';
+const modes = {
+  inline: { label:'语音输入', note:'点击麦克风开始说话，结束后把转写插入光标位置。' },
+  panel: { label:'打开录音面板', note:'在面板里完成录音和转写，确认「插入草稿」后再回到聊天。' },
+  live: { label:'开始听写', note:'边说边看文字。亮色是已确认的内容，灰色是仍可能变化的文字。' },
+};
+let selectedAsr='bailian-beijing';
+try { selectedAsr=localStorage.getItem('ginno-voice-demo-asr') ?? selectedAsr; } catch {}
+const asrSelect=$('asr');
+asrSelect.value=selectedAsr;
+function updateAsrHint(){
+  const region=asrSelect.value==='bailian-beijing'?'北京':'新加坡';
+  $('asrHint').textContent=asrSelect.value ? `听写音频会发送至阿里云百炼（${region}）。` : '选择已启用的实时语音识别模型后，即可开始听写。';
+}
+function openSettings(){
+  $('voiceSettings').hidden=false;
+  $('settingsButton').setAttribute('aria-expanded','true');
+  asrSelect.focus();
+}
+$('settingsButton').onclick=()=>{
+  if($('voiceSettings').hidden) openSettings();
+  else { $('voiceSettings').hidden=true; $('settingsButton').setAttribute('aria-expanded','false'); }
+};
+asrSelect.onchange=updateAsrHint;
+$('modelSettings').onclick=()=>{ $('modelSettingsHint').hidden=false; };
+$('saveAsr').onclick=()=>{
+  selectedAsr=asrSelect.value;
+  try { localStorage.setItem('ginno-voice-demo-asr',selectedAsr); } catch {}
+  $('voiceSettings').hidden=true;
+  $('settingsButton').setAttribute('aria-expanded','false');
+  $('settingsButton').focus();
+};
+updateAsrHint();
+let held=false, holdTimer;
+let mode='live', state='idle', started=0, timer, pending, committed='', partial='', insertion;
+function button(label, action, strong=false){const item=document.createElement('button');item.textContent=label; item.onclick=action;if(strong)item.className='primary';return item;}
+function reset(next='idle'){
+  clearInterval(timer);
+  clearTimeout(pending);
+  clearTimeout(holdTimer);
+  held=false;
+  state=next;
+  committed=partial='';
+  render();
+}
+function elapsed(){return '00:'+String(Math.min(59,Math.floor((Date.now()-started)/1000))).padStart(2,'0');}
+function updatePreview(){
+  const final=$('confirmed'), interim=$('partial');
+  if(final) final.textContent=committed;
+  if(interim) interim.textContent=partial || (committed ? '' : '正在等待语音…');
+}
+function start(){
+  insertion=[draft.selectionStart,draft.selectionEnd];
+  state='recording';
+  started=Date.now();
+  committed=partial='';
+  render();
+  timer=setInterval(()=>{
+    const clock=$('clock');
+    if(clock) clock.textContent=elapsed();
+    if(mode!=='live') return;
+    const preview=sample.slice(0,Math.floor((Date.now()-started)/110));
+    const lastBoundary=Math.max(preview.lastIndexOf('、'),preview.lastIndexOf('。'))+1;
+    committed=preview.slice(0,lastBoundary);
+    partial=preview.slice(lastBoundary);
+    updatePreview();
+  },150);
+}
+function stop(){
+  clearInterval(timer);
+  state='processing';
+  render();
+  pending=setTimeout(()=>{
+    if(mode==='panel'){ state='review'; render(); }
+    else insert();
+  },650);
+}
+function simulateDisconnect(){
+  clearInterval(timer);
+  partial='';
+  state='disconnected';
+  render();
+}
+function insert(text=sample){
+  const [start,end]=insertion;
+  const spacer=start>0&&!/\s$/.test(draft.value.slice(0,start)) ? ' ' : '';
+  draft.setRangeText(spacer+text,start,end,'end');
+  reset();
+  $('status').textContent='转写已插入草稿';
+  draft.focus();
+}
+function render(){tabs.forEach(t=>t.setAttribute('aria-pressed',t.dataset.mode===mode));$('note').textContent=modes[mode].note;$('shortcutNote').hidden=mode!=='live';$('micLabel').textContent=modes[mode].label;$('mic').disabled=state!=='idle';$('send').disabled=state!=='idle'||!draft.value.trim();draft.readOnly=state!=='idle';$('status').textContent=state==='processing'?'正在转写…':'';
+for(const id of ['inline','panel']){const box=$(id);box.hidden=state==='idle'||(mode==='panel' ? id!=='panel' : id!=='inline');box.replaceChildren();if(box.hidden)continue;
+if(state==='ready')box.append('录音面板',button('开始录音',start,true));
+if(state==='recording'){const dot=document.createElement('span');dot.className='dot active';dot.setAttribute('aria-hidden','true');const clock=document.createElement('span');clock.id='clock';clock.textContent=elapsed();box.append(dot,mode==='live'?'听写中':'录音中',clock,held?'松开结束':button('结束',stop,true));}
+if(state==='processing')box.append(mode==='live'?'正在确认最后一段…':'正在转写录音');
+if(state==='disconnected'){
+  box.append('听写连接已中断');
+  if(committed) box.append(button('保留已确认文字',()=>insert(committed),true));
+}
+if(mode==='live'&&state==='recording')box.append(button('模拟断线',simulateDisconnect));
+if(state==='review')box.append(button('插入草稿',()=>insert(),true),button('重录',start));
+box.append(button('取消',()=>{reset();draft.focus();}));
+if(mode==='live'||state==='review'){
+  const region=document.createElement('div');
+  region.className='partial';
+  if(state==='review') region.textContent=sample;
+  else {
+    const final=document.createElement('span'), interim=document.createElement('span');
+    final.id='confirmed'; interim.id='partial'; interim.style.color='var(--muted)';
+    region.append(final,interim);
+  }
+  box.append(region);
+  if(mode==='live') updatePreview();
+}
+}}
+tabs.forEach(t=>t.onclick=()=>{mode=t.dataset.mode;reset();});$('mic').onclick=()=>{if(mode==='live'&&!selectedAsr) openSettings();else if(mode==='panel') reset('ready');else start();};draft.addEventListener('input',render); $('send').onclick=()=>{if(state!=='idle'||!draft.value.trim())return;const message=document.createElement('p');message.className='bubble user';message.textContent=draft.value;$('history').append(message);draft.value='';render();};document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&(state!=='idle'||held)){reset();draft.focus();return;}
+  if(e.key!=='F8'||mode!=='live'||!$('voiceSettings').hidden) return;
+  e.preventDefault();
+  if(e.repeat||held||state!=='idle') return;
+  if(!selectedAsr){openSettings();return;}
+  held=true;
+  holdTimer=setTimeout(start,200);
+});
+document.addEventListener('keyup',e=>{
+  if(e.key!=='F8'||!held) return;
+  e.preventDefault();
+  clearTimeout(holdTimer);
+  held=false;
+  if(state==='recording') stop();
+});
+window.addEventListener('blur',()=>{if(held) reset();});
+render();
+</script></body></html>

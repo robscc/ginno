@@ -9,6 +9,8 @@
      deep_link_open_session 恢复窗口并导航到会话。 -->
 <plist version="1.0">
 <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Ginno uses the microphone when you start voice dictation.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

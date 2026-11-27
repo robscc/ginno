@@ -22,6 +22,7 @@ export type SettingsGroupId =
   | "diagnostics";
 
 export type SettingsTabKey =
+  | "voice"
   | "modelApi"
   | "mcp"
   | "webSearch"
@@ -57,6 +58,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     color: "#a78bfa",
     tabs: [
       { id: "model-api", label: "modelApi" },
+      { id: "voice", label: "voice" },
       { id: "web", label: "webSearch" },
       { id: "external-agents", label: "externalAgents" },
     ],
