@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { BASE } from "@/lib/api/core";
-import { getVoiceSettings } from "@/lib/api/voice";
+import { getVoiceSettings, watchVoiceShortcut, type VoiceShortcut } from "@/lib/api/voice";
 
 export const VOICE_SETTINGS_PATH = "/settings/connections/voice";
+type HoldShortcut = "fn" | "ctrl-alt-v";
 type Phase = "idle" | "starting" | "recording" | "finishing" | "failed";
 type Task = {
   stream?: MediaStream;
@@ -11,6 +12,7 @@ type Task = {
   node?: AudioWorkletNode;
   socket?: WebSocket;
   timer?: ReturnType<typeof setTimeout>;
+  firstFrame?: ReturnType<typeof setTimeout>;
   final: Map<number, string>;
   partial: Map<number, string>;
   insert: (text: string) => void;
@@ -19,6 +21,7 @@ const ordered = (parts: Map<number, string>) => [...parts].sort(([a], [b]) => a 
 
 function release(task: Task) {
   clearTimeout(task.timer);
+  clearTimeout(task.firstFrame);
   task.stream?.getTracks().forEach((track) => track.stop());
   task.node?.disconnect();
   if (task.context && task.context.state !== "closed") void task.context.close().catch(() => {});
@@ -36,8 +39,8 @@ export function useVoiceDictation(
   const [preview, setPreview] = useState("");
   const taskRef = useRef<Task | null>(null);
   const phaseRef = useRef<Phase>("idle");
-  const held = useRef<{ mode: "fn" | "ctrl-alt-v"; timer: ReturnType<typeof setTimeout>; started: boolean } | null>(null);
-  const [shortcut, setShortcut] = useState("off");
+  const held = useRef<{ mode: HoldShortcut; timer: ReturnType<typeof setTimeout>; started: boolean } | null>(null);
+  const shortcut = useRef<VoiceShortcut>("off");
 
   function transition(next: Phase) {
     phaseRef.current = next;
@@ -79,12 +82,14 @@ export function useVoiceDictation(
     if (phaseRef.current === "starting") { cancel(); return; }
     if (phaseRef.current !== "recording") return;
     transition("finishing");
+    clearTimeout(task.firstFrame);
     clearTimeout(task.timer);
     task.timer = setTimeout(() => fail(task, "connection"), 7000);
     task.node?.port.postMessage("stop");
   }
 
   async function start() {
+    if (phaseRef.current === "failed" && !taskRef.current?.final.size) cancel();
     if (phaseRef.current !== "idle") return;
     const task: Task = { final: new Map(), partial: new Map(), insert: insertAtSelection() };
     taskRef.current = task;
@@ -98,12 +103,13 @@ export function useVoiceDictation(
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 }, video: false });
       if (taskRef.current !== task) { stream.getTracks().forEach((track) => track.stop()); return; }
       task.stream = stream;
-      micAuthorized.current = true;
       stream.getAudioTracks().forEach((track) => track.addEventListener("ended", () => fail(task, "microphone")));
       const context = task.context = new AudioContext();
       await context.audioWorklet.addModule("/voice/pcm-worklet.js");
       if (taskRef.current !== task) return;
-      const node = task.node = new AudioWorkletNode(context, "ginno-pcm", { numberOfOutputs: 0 });
+      const node = task.node = new AudioWorkletNode(context, "ginno-pcm");
+      // The worklet leaves its output silent. Connecting it keeps Safari pulling inputs.
+      node.connect(context.destination);
       const socket = task.socket = new WebSocket(`${BASE.replace(/^http/, "ws")}/voice/dictation/ws`);
       task.timer = setTimeout(() => fail(task, "connection"), 12000);
       socket.onopen = () => socket.send(JSON.stringify({ type: "start", session_id: sessionId }));
@@ -116,7 +122,10 @@ export function useVoiceDictation(
           stream.getTracks().forEach((track) => track.stop());
           socket.send("stop");
         } else if (socket.bufferedAmount > 32000) fail(task, "connection");
-        else socket.send(data);
+        else {
+          clearTimeout(task.firstFrame);
+          socket.send(data);
+        }
       };
       socket.onmessage = ({ data }) => {
         if (taskRef.current !== task || phaseRef.current === "failed") return;
@@ -125,7 +134,8 @@ export function useVoiceDictation(
           clearTimeout(task.timer);
           context.createMediaStreamSource(stream).connect(node);
           transition("recording");
-          void context.resume().catch(() => fail(task, "microphone"));
+          task.firstFrame = setTimeout(() => fail(task, "capture"), 3000);
+          void context.resume().catch(() => fail(task, "capture"));
           // Leave room to flush the final frame within the runtime's 60s audio limit.
           task.timer = setTimeout(stop, 59900);
         } else if (message.type === "final") {
@@ -145,7 +155,7 @@ export function useVoiceDictation(
     }
   }
 
-  function onShortcut(mode: "fn" | "ctrl-alt-v", down: boolean) {
+  function onShortcut(mode: HoldShortcut, down: boolean) {
     if (!down) {
       if (held.current?.mode !== mode) return;
       const { started, timer } = held.current;
@@ -153,34 +163,44 @@ export function useVoiceDictation(
       if (started) stop();
       return;
     }
-    if (shortcut !== mode || held.current || phaseRef.current !== "idle" || !ownsShortcut()) return;
-    // Permissions are requested through the microphone button first.
-    held.current = { mode, started: false, timer: setTimeout(async () => {
+    const retryable = phaseRef.current === "failed" && !taskRef.current?.final.size;
+    if (shortcut.current !== mode || held.current || (!retryable && phaseRef.current !== "idle") || !ownsShortcut()) return;
+    if (retryable) cancel();
+    held.current = { mode, started: false, timer: setTimeout(() => {
       const press = held.current;
       if (!press) return;
-      let granted = false;
-      try { granted = (await navigator.permissions.query({ name: "microphone" as PermissionName })).state === "granted"; } catch { /* WKWebView may not expose Permissions API. */ }
-      if (held.current !== press) return;
-      if (!granted && !micAuthorized.current) { held.current = null; setError("authorize"); return; }
+      // getUserMedia is the permission authority. WKWebView does not always
+      // expose the OS microphone grant through navigator.permissions.
       press.started = true;
       void start();
     }, 200) };
   }
   function ownsShortcut() {
     if (!document.hasFocus() || !composer.current?.getClientRects().length) return false;
-    if (document.querySelectorAll('[data-composer="1"]').length <= 1) return true;
-    return composer.current.contains(document.activeElement);
+    const composers = Array.from(document.querySelectorAll('[data-composer="1"]'));
+    return composers.filter((el) => el.getClientRects().length > 0).length <= 1 ||
+      composer.current.contains(document.activeElement);
   }
-  const micAuthorized = useRef(false);
   const handlers = useRef({ onShortcut, cancel, ownsShortcut });
   handlers.current = { onShortcut, cancel, ownsShortcut };
   useEffect(() => {
     let mounted = true;
     let unlisten: (() => void) | undefined;
-    const refresh = () => { void getVoiceSettings().then((cfg) => { if (mounted) setShortcut(cfg.shortcut); }).catch(() => {}); };
+    let revision = 0;
+    const refresh = () => {
+      const request = ++revision;
+      void getVoiceSettings().then((cfg) => {
+        if (mounted && request === revision) shortcut.current = cfg.shortcut;
+      }).catch(() => {});
+    };
+    const unwatch = watchVoiceShortcut((value) => {
+      revision++;
+      shortcut.current = value;
+      if (held.current && held.current.mode !== value) handlers.current.cancel();
+    });
     refresh();
     const down = (e: KeyboardEvent) => {
-      if (e.code === "KeyV" && e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && shortcut === "ctrl-alt-v" && handlers.current.ownsShortcut()) {
+      if (e.code === "KeyV" && e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && shortcut.current === "ctrl-alt-v" && handlers.current.ownsShortcut()) {
         e.preventDefault();
         if (!e.repeat) handlers.current.onShortcut("ctrl-alt-v", true);
       }
@@ -192,17 +212,24 @@ export function useVoiceDictation(
     window.addEventListener("keyup", up);
     window.addEventListener("blur", blur);
     window.addEventListener("focus", refresh);
-    if ("__TAURI_INTERNALS__" in window) void listen<string>("voice-fn", ({ payload }) => {
-      if (payload === "cancel") { if (held.current?.mode === "fn") handlers.current.cancel(); }
-      else handlers.current.onShortcut("fn", payload === "down");
-    })
-      .then((dispose) => { if (mounted) unlisten = dispose; else dispose(); }).catch(() => {});
+    if ("__TAURI_INTERNALS__" in window) {
+      const subscribe = (mode: HoldShortcut, event: string) => listen<string>(event, ({ payload }) => {
+        if (payload === "cancel") { if (held.current?.mode === mode) handlers.current.cancel(); }
+        else handlers.current.onShortcut(mode, payload === "down");
+      }).then((dispose) => {
+        if (!mounted) { dispose(); return; }
+        const previous = unlisten;
+        unlisten = () => { previous?.(); dispose(); };
+      }).catch(() => {});
+      void subscribe("fn", "voice-fn");
+      void subscribe("ctrl-alt-v", "voice-ctrl-alt-v");
+    }
     return () => {
-      mounted = false; unlisten?.();
+      mounted = false; unwatch(); unlisten?.();
       window.removeEventListener("keydown", down, true); window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur); window.removeEventListener("focus", refresh);
     };
-  }, [shortcut]);
+  }, []);
   useEffect(() => {
     handlers.current.cancel();
     return () => {

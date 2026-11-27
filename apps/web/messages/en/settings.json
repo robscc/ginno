@@ -5,10 +5,18 @@
       "model": "Speech recognition model",
       "none": "Select a model",
       "destination": "Audio is sent to Alibaba Cloud Model Studio ({region}).",
-      "setup": "Add and enable an ASR card with qwen-audio-3.1-asr-flash-message and the HTTPS workspace URL from Alibaba Cloud Model Studio.",
+      "gatewayDestination": "Audio is sent to the configured speech recognition gateway.",
+      "setup": "Add and enable an ASR card with qwen3-asr-flash-realtime and an HTTPS workspace or gateway URL that supports realtime ASR.",
+      "unavailableTitle": "Configurations unavailable for real-time dictation",
+      "unavailable": {
+        "disabled": "Enable this configuration in Model API.",
+        "unsupported_model": "Ginno currently supports qwen3-asr-flash-realtime for real-time dictation.",
+        "missing_key": "Add an API key in Model API.",
+        "service_url": "Enter an HTTPS workspace or gateway URL that supports realtime ASR."
+      },
       "modelApi": "Open Model API",
       "shortcut": "Hold to talk",
-      "shortcutHint": "Works while Ginno is focused. Use the microphone button to grant access first. If macOS captures Fn, choose the combination instead.",
+      "shortcutHint": "Works while Ginno is focused. If macOS captures Fn, choose the combination instead.",
       "off": "Off",
       "save": "Save",
       "saved": "Saved",
@@ -26,6 +34,7 @@
       "failed": "Dictation stopped",
       "errors": {
         "configuration": "Choose a speech recognition model in Settings.",
+        "capture": "The microphone opened, but no audio reached the recorder.",
         "microphone": "Could not access the microphone. Check macOS microphone permissions.",
         "connection": "Speech recognition disconnected or timed out.",
         "unsupported": "This window does not support microphone capture.",

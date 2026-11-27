@@ -83,7 +83,12 @@ app: check guard-app-not-running
 	  echo "   Set bundle.macOS.signingIdentity in apps/desktop/tauri.conf.json."; \
 	  exit 1; \
 	fi
-	@echo "✅ Code signature OK (not linker-signed)"
+	@app="$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"; \
+	if [ "$$(codesign -d --entitlements - --xml "$$app" 2>/dev/null | plutil -extract 'com\.apple\.security\.device\.audio-input' raw -o - - 2>/dev/null)" != true ]; then \
+	  echo "❌ $$app is missing the signed microphone entitlement."; \
+	  exit 1; \
+	fi
+	@echo "✅ Code signature and microphone entitlement OK"
 	@echo ""
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
