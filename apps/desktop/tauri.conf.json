@@ -41,7 +41,8 @@
       "resources/mod-runner.mjs"
     ],
     "macOS": {
-      "signingIdentity": "Ginno Local Code Signing"
+      "signingIdentity": "Ginno Local Code Signing",
+      "entitlements": "entitlements.plist"
     }
   }
 }

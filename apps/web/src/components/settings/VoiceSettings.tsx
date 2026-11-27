@@ -26,10 +26,19 @@ export function VoiceSettings() {
         <select className="field w-full" value={model?.id ?? ""} disabled={saving}
           onChange={(e) => { setSaved(false); setConfig({ ...config, selected: e.target.value }); }}>
           <option value="">{t("none")}</option>
-          {config.models.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.region} · {item.model}</option>)}
+          {config.models.map((item) => <option key={item.id} value={item.id}>{[item.name, item.region, item.model].filter(Boolean).join(" · ")}</option>)}
         </select>
       </label>
-      <p className="text-sm text-muted">{model ? t("destination", { region: model.region }) : t("setup")}</p>
+      <p className="text-sm text-muted">{model ? model.region ? t("destination", { region: model.region }) : t("gatewayDestination") : t("setup")}</p>
+      {!!config.unavailable?.length && <div className="space-y-2 text-sm">
+        <h3 className="font-medium">{t("unavailableTitle")}</h3>
+        <ul className="space-y-2 text-muted">
+          {config.unavailable.map((item) => <li key={item.id}>
+            <span className="break-words font-medium text-txt">{item.name}{item.models.length ? ` · ${item.models.join(", ")}` : ""}</span>
+            <p>{t(`unavailable.${item.reason}`)}</p>
+          </li>)}
+        </ul>
+      </div>}
       <Link className="text-violet underline" href="/settings/connections/model-api">{t("modelApi")}</Link>
       <label className="block max-w-xl space-y-1">
         <span>{t("shortcut")}</span>

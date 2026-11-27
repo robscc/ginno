@@ -496,13 +496,14 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
         }
     from .. import voice_asr
 
-    if draft.get("kind") == "asr" and voice_asr.MODEL in prov_mod.normalize_config(draft)["models"]:
-        if not voice_asr.endpoint(draft):
+    normalized = prov_mod.normalize_config(draft)
+    if normalized["kind"] == "asr" and voice_asr.MODEL in normalized["models"]:
+        if not voice_asr.endpoint(normalized):
             return {"ok": False, "error": t(
-                "Enter the HTTPS URL of a supported Alibaba Cloud Model Studio workspace.",
-                "请输入受支持的阿里云百炼工作空间 HTTPS 地址。",
+                "Enter a supported HTTPS workspace or gateway URL and an API key.",
+                "请输入受支持的工作空间或网关 HTTPS 地址及 API Key。",
             )}
-        result = await voice_asr.verify(draft)
+        result = await voice_asr.verify(normalized)
     else:
         result = await asyncio.to_thread(prov_mod.verify_config_draft, draft)
     if not result.get("ok"):

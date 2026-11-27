@@ -28,27 +28,21 @@
 
 - 设置 → 连接 → 语音输入新增「按住说话」。首选 `Fn / 🌐`，可改为普通组合键或关闭。仅当 Ginno 聊天窗口在前台且有可编辑的会话时生效。首次启用时验证按下和松开能否被应用收到，并提示可能与系统听写、输入法或表情菜单冲突。发生冲突时可改用组合键，麦克风按钮也可继续使用。
 - 按住约 200 ms 开始听写。界面显示「准备听写」或「松开结束」，就绪后实时显示文字。短按不启动录音。松开立即停止采集，收齐尾段后回填原草稿，用户手动发送。
-- 首次授权从麦克风按钮发起。快捷键在连接准备阶段松开时，取消本次启动，禁止授权或连接回包迟到后开始录音。重复按键只触发一次。窗口失焦、切换会话、Esc 取消或收到组合键时，停止本次按住听写，保留原草稿。60 秒上限与按钮入口共用。
+- 麦克风按钮或长按快捷键均可发起首次授权。快捷键在连接准备阶段松开时，取消本次启动，禁止授权或连接回包迟到后开始录音。重复按键只触发一次。窗口失焦、切换会话、Esc 取消或收到组合键时，停止本次按住听写，保留原草稿。60 秒上限与按钮入口共用。
 
 ### macOS 快捷键接入
 
 - 单独的 `Fn / 🌐` 先用 AppKit 本地 `NSEvent` 监听验证。捕获 `flagsChanged`，用 `.function` 标志的变化判断按下和松开，再核对 `keyCode` 与内置键盘、外接键盘的实际事件。功能键本身也可能带 `.function` 标志，须验证 `Fn + F1` 等组合不会误启动或被拦截。系统优先处理按键、无法成对收到事件或与系统动作冲突时，标记 Fn 不可用并引导改键。
-- 应用内备用组合键为 `Ctrl + Option + V`，由聊天窗口消费按下、松开及修饰键释放。现有浮窗全局快捷键保持独立。
+- 应用内备用组合键为 `Ctrl + Option + V`，桌面端通过 AppKit 监听按下、松开及修饰键释放，浏览器保留 DOM 键盘事件入口。现有浮窗全局快捷键保持独立。
 - 桌面层只传递按下、松开与取消。Composer 将它们接到和麦克风按钮相同的听写状态机，使用同一听写 ID 绑定会话和草稿。打包版需验收 Fn 短按、长按、组合键、系统动作冲突、失焦和松开丢失。首版以应用内触发为验收范围，全局 Fn 单键另行评估。
 
 ## 模型选型
 
-| 模型 | 用途 | 理由 |
-| --- | --- | --- |
-| **阿里云百炼 `qwen-audio-3.1-asr-flash-message`** | 首选，北京工作空间 | 官方面向短语音和输入法场景。开启 `intermediate_result_enabled` 后支持边说边回显，返回句子序号和结束标记，后续可加显式配置的热词。 |
-| `qwen3-asr-flash-realtime` | 首选模型不可开通或实测不达标时的备选 | 百炼稳定模型，支持实时转写和 VAD。需要单独实现其 JSON/Base64 协议适配，并重新跑识别与延迟验收。 |
-| macOS Speech 设备端识别 | 后续离线模式 | 适合有离线需求的 macOS 用户。先验证目标系统、设备和语言的设备端覆盖，再决定支持范围。 |
-
-首版实现一个供应商适配器。现有「模型 API」的 ASR 配置入口可复用，增加实时 ASR 协议和区域/工作空间配置。原有 `qwen3-asr-flash` 文件转写继续走现有 HTTP 客户端。模型开通、区域可用性和当前价格以实际账号控制台为准。切换供应商需用户明确选择。
+实时听写使用 `qwen3-asr-flash-realtime`。现有 ASR 配置卡只要已启用、模型列表包含它、填写 API Key，并指向支持实时协议的 HTTPS 服务，就可在语音输入设置中选择。HTTP 文件转写继续使用独立的文件转写入口。
 
 ## 设置 → 连接 → 语音输入
 
-- **语音识别模型**下拉框只显示「已启用、配置完整、Ginno 支持实时听写协议」的 ASR 卡片。选项显示配置名称、模型 ID、服务商和区域。首版支持阿里云百炼 `qwen-audio-3.1-asr-flash-message`。现有文件转写卡片和聊天模型不出现在候选项里。
+- **语音识别模型**下拉框只显示「已启用、配置完整、Ginno 支持实时听写协议」的 ASR 卡片。选项显示配置名称、模型 ID、服务商和区域。首版支持阿里云百炼 `qwen3-asr-flash-realtime`。现有文件转写卡片和聊天模型不出现在候选项里。
 - 首次未选择模型时，麦克风按钮引导打开此页，按住说话不启动录音。列表为空时显示「前往模型 API 配置」。返回后刷新候选，原草稿保留。设置页同时显示音频会发送到的服务商及区域。
 - 保存稳定的 ASR 配置 ID，例如 `voice_asr_config_id`，与默认聊天模型独立。开始听写时由 runtime 校验配置并读取密钥、模型及区域。配置失效时提示重新选择，不自动切换供应商。更改选择从下一次听写生效，进行中的听写沿用启动时的配置。
 
@@ -63,16 +57,16 @@
 ### 本机 runtime 和百炼协议
 
 - 使用 `/api/voice/dictation/ws`，独立于聊天连接。沿用 runtime 的本地来源和会话访问校验。`start` 携带当前会话 ID，runtime 在连接开始时读取已保存的 ASR 配置。每条 WebSocket 只承载一个听写任务。采集端发送 PCM 二进制帧和 `stop` / `cancel` 控制帧。前端不接触供应商密钥。
-- runtime 复用现有 Python `websockets` 依赖，以 `Authorization: Bearer …` 连接 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`。发送 `run-task`，指定 `format=pcm`、`sample_rate=16000`、`intermediate_result_enabled=true`，保留 `disfluency_removal_enabled=false`。先用默认分句参数实测。收到 `task-started` 才提示用户开口并发送音频。
-- `result-generated` 按 `sentence_id` 归并。同一句临时结果覆盖前一版，`sentence_end=true` 后冻结该句。忽略心跳及已确认句的迟到临时结果，最终按句序拼接。runtime 可归一为 `ready`、`partial`、`final`、`done`、`error`，事件与当前 WebSocket 绑定。
-- 点击结束后先停采集，发送剩余音频帧和 `finish-task`，继续接收尾段，收到 `task-finished` 才回填草稿。建议结束等待超时先设 5 秒，超时进入「保留已确认文字」交互。重复结束只处理一次。
+- runtime 使用已配置 HTTPS 服务的同一主机和端口，连接 `/api-ws/v1/realtime?model=qwen3-asr-flash-realtime`。使用 Bearer Key，禁止重定向。发送 `session.update` 设置 16 kHz PCM 和 `server_vad`，收到 `session.updated` 后开始发送音频。
+- `input_audio_buffer.append` 携带 Base64 PCM。临时文本通过 `conversation.item.input_audio_transcription.text` 返回，最终文本通过 `conversation.item.input_audio_transcription.completed` 返回。按 `item_id` 映射成稳定的句序，前端覆盖临时文本并按顺序拼接最终结果。
+- 松键后发送剩余音频帧和 `session.finish`。收到 `session.finished` 后回填。收尾超时或连接失败时，界面允许保留已确认的文字。
 - 每个桌面实例同一时间只允许一个听写任务。音频队列有上限，积压超过 1 秒则结束当前任务并提示网络问题。断线后释放麦克风和两端连接，保留已确认文字供用户选择，不跨连接自动重放音频。原音频只在短时缓冲中存在，不写磁盘或日志；聊天记录和附件不作为识别上下文上传。
 
 ### 实现顺序
 
 1. 用可公开的中英混合录音做最小百炼接入验证，按实时速度送 PCM，核对临时结果、句尾和账号开通。再在打包版用内置麦克风、耳机麦克风验证采集。
 2. 接入 runtime 专用 WebSocket 和 Composer，补权限、取消、草稿选区以及发送状态保护。用假供应商回放覆盖重复回包、停止时还有尾段、旧任务回包、掉线、积压和会话切换。
-3. 用真实麦克风对比普通话、中英混说、产品名和数字。记录首字可见时延、结束回填时延、中文字符错误率、术语准确率和单次用量。使用 `task-finished` 的累计用量，避免按中间事件重复计数。
+3. 用真实麦克风对比普通话、中英混说、产品名和数字。记录首字可见时延、结束回填时延、中文字符错误率、术语准确率和单次用量。用量按单次会话记录，避免按中间转写事件重复计数。
 
 ## 首版验收
 
@@ -83,9 +77,9 @@
 
 ## 参考
 
+- [百炼 Qwen-ASR-Realtime WebSocket](https://www.alibabacloud.com/help/en/model-studio/qwen-asr-realtime-interaction-process)
+
 - [百炼实时语音识别选型](https://www.alibabacloud.com/help/en/model-studio/real-time-speech-recognition-user-guide)
-- [Message 模型 WebSocket 接入](https://www.alibabacloud.com/help/en/model-studio/qwen-asr-message-websocket-api)
-- [客户端事件](https://www.alibabacloud.com/help/en/model-studio/qwen-asr-message-client-events)与[服务端事件](https://www.alibabacloud.com/help/en/model-studio/qwen-asr-message-server-events)
 
 - [现有云端转写](../../packages/runtime/src/ginno_runtime/asr.py)
 - [聊天输入框](../../apps/web/src/components/chat/stream/Composer.tsx)
