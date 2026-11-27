@@ -1,6 +1,6 @@
 """Artifacts, uploaded/attached files, and session-files management.
 
-Covers the Artifacts panel (list/delete/metadata/update + ref healing),
+Covers the Artifacts panel (list/delete/metadata/update + explicit relinking),
 composer uploads and drag-in attachments (upload/preview/download/save),
 and the Settings → 会话文件 browser (dirs/list/reveal/delete).
 """
@@ -76,43 +76,20 @@ async def delete_artifact_endpoint(artifact_id: str, project_slug: str = "defaul
     return {"ok": art_store.delete_artifact(project_slug, artifact_id)}
 
 
-def _heal_artifact_ref(art: dict, project_slug: str) -> str | None:
-    """Re-point an artifact whose file was moved — typical case: generated
-    markdown later moved/copied into the knowledge vault — so artifact links
-    and previews keep working from the new home instead of showing "file
-    missing". Searches the vault by basename/stem; on hit, rewrites the
-    artifact ref and relocates (or registers) the file-registry entry.
-    Returns the new path, or None when nothing was found."""
-    ref = art.get("ref") or ""
-    if not ref or Path(ref).is_file():
-        return None
-    try:
-        from ..knowledge.config import load_knowledge_config
+def _artifact_relink_candidates(ref: str) -> list[str]:
+    """Offer exact-name matches for the user to inspect and select."""
+    from ..knowledge.config import load_knowledge_config
 
-        vault = Path(str(load_knowledge_config().vault_path)).expanduser()
-        if not vault.is_dir():
-            return None
-        name, stem = Path(ref).name, Path(ref).stem
-        hit = next(
-            (c for c in sorted(vault.rglob("*.md")) if c.name == name or c.stem == stem),
-            None,
-        )
-        if hit is None:
-            return None
-        new = str(hit)
-        art_store.set_ref(project_slug, art["id"], new)
-        reg = files_mod.get_registry(project_slug)
-        old_entry = reg.find_by_path(ref)
-        if old_entry:
-            reg.relocate(old_entry["id"], new)
-        else:
-            reg.register(
-                hit.name, new, session_id=art.get("session_id"), artifact_id=art["id"]
-            )
-        return new
-    except Exception:
-        _log.exception("artifact_ref_heal_failed artifact=%s", art.get("id"))
-        return None
+    vault_path = load_knowledge_config().vault_path
+    if not vault_path:
+        return []
+    vault = Path(vault_path).expanduser()
+    if not vault.is_dir():
+        return []
+    name = Path(ref).name
+    return sorted({
+        files_mod.norm_path(p) for p in vault.rglob("*") if p.name == name and p.is_file()
+    })
 
 
 def _session_workspace(slug: str, session_id: str) -> Path:
@@ -158,29 +135,20 @@ def _register_artifact_file(slug: str, session_id: str, art: dict, ref: str) -> 
 
 
 def _heal_workspace_ref(art: dict, project_slug: str) -> str | None:
-    """Heal refs stored relative to the session workspace (models echo the
-    relative path they passed write_file — see 2026-08 us_stock_report). On
-    hit, rewrites the artifact ref to the absolute path and registers the
-    file-registry entry — same shape as _heal_artifact_ref, and covers
-    records persisted before registration-side normalization existed."""
+    """Resolve a legacy relative ref against its recorded workspace."""
     ref = (art.get("ref") or "").strip()
-    if not ref or Path(ref).is_file():
-        return None
     sid = art.get("session_id") or ""
-    if not sid:
+    if not ref or not sid or art.get("origin") == "remote" or Path(ref).expanduser().is_absolute():
         return None
     try:
-        # Path join with an absolute `ref` yields `ref` itself, which is
-        # already known missing — so broken absolute refs heal to nothing
-        # here and fall through to the vault healer unchanged.
-        candidate = Path(str(_session_workspace(project_slug, sid) / ref)).expanduser()
+        candidate = _session_workspace(project_slug, sid) / ref
         if not candidate.is_file():
             return None
-        new = files_mod.norm_path(str(candidate))
+        new = files_mod.norm_path(candidate)
+        reg = files_mod.get_registry(project_slug)
+        if not reg.find_by_path(new):
+            reg.register(art.get("name") or candidate.name, new, session_id=sid, artifact_id=art["id"])
         art_store.set_ref(project_slug, art["id"], new)
-        files_mod.get_registry(project_slug).register(
-            art.get("name") or candidate.name, new, session_id=sid, artifact_id=art["id"]
-        )
         return new
     except Exception:
         _log.exception("artifact_workspace_heal_failed artifact=%s", art.get("id"))
@@ -208,7 +176,10 @@ def _compact_schema(path: str) -> str:
 
 
 @router.get("/api/artifacts/{artifact_id}/metadata")
-async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "default") -> dict:
+async def artifact_metadata_endpoint(
+    artifact_id: str, project_slug: str = "default", candidates: bool = False,
+    include_schema: bool = True,
+) -> dict:
     """Full inspector payload for one artifact: the panel record, its file
     registry entry (size/mtime/kind), whether the file still exists on disk,
     and the EXACT schema summary that prompt injection would use — with its
@@ -223,28 +194,34 @@ async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "defa
     schema = ""
     schema_source = ""
     ref = art.get("ref") or ""
-    if art.get("kind") == "file" and ref:
-        reg = files_mod.get_registry(project_slug)
-        if not Path(ref).is_file():
-            # The ref may be workspace-relative (models echo write_file's
-            # relative path) or the file may have moved into the knowledge
-            # vault — re-point ref + registry so the link heals instead of
-            # breaking. Workspace heal first: it's cheaper and the common case.
-            healed = _heal_workspace_ref(art, project_slug) or _heal_artifact_ref(
-                art, project_slug
-            )
-            if healed:
-                ref = healed
-        file_entry = reg.find_by_path(ref)
-        path = (file_entry or {}).get("path") or ref
-        exists = Path(path).is_file()
-        override = (art.get("schema") or "").strip()
-        effective_kind = (file_entry or {}).get("kind") or files_ex.classify(path)
-        if override:
-            schema, schema_source = override, "override"
-        elif effective_kind in ("spreadsheet", "table"):
-            schema = _compact_schema(path)
-            schema_source = "computed" if schema else ""
+    local_file = art.get("kind") in ("file", "image") and art.get("origin") != "remote"
+    if local_file and ref:
+        # Relative legacy refs use their exact workspace path. A missing file
+        # at a known path has no implied successor.
+        if healed := _heal_workspace_ref(art, project_slug):
+            ref = healed
+            art = {**art, "ref": healed}
+        resolved = Path(ref).expanduser()
+        if not resolved.is_absolute() and art.get("session_id"):
+            resolved = _session_workspace(project_slug, art["session_id"]) / resolved
+        if resolved.is_absolute():
+            file_entry = files_mod.get_registry(project_slug).find_by_path(resolved)
+        path = (file_entry or {}).get("path") or str(resolved)
+        exists = resolved.is_absolute() and resolved.is_file()
+        if include_schema and art.get("kind") == "file":
+            override = (art.get("schema") or "").strip()
+            effective_kind = (file_entry or {}).get("kind") or files_ex.classify(path)
+            if override:
+                schema, schema_source = override, "override"
+            elif exists and effective_kind in ("spreadsheet", "table"):
+                schema = _compact_schema(path)
+                schema_source = "computed" if schema else ""
+    paths_to_choose = []
+    if candidates and local_file and ref and not exists:
+        try:
+            paths_to_choose = await asyncio.to_thread(_artifact_relink_candidates, ref)
+        except (OSError, ValueError):
+            _log.exception("artifact_candidates_failed artifact=%s", artifact_id)
     return {
         "ok": True,
         "artifact": art,
@@ -252,7 +229,69 @@ async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "defa
         "exists": exists,
         "schema": schema,
         "schema_source": schema_source,
+        "relink_candidates": paths_to_choose,
     }
+
+
+def _relink_artifact(project_slug: str, art: dict, selection: Any) -> dict | JSONResponse:
+    def rejected(status: int, error: str) -> JSONResponse:
+        return JSONResponse(status_code=status, content={"ok": False, "error": error})
+
+    ref = art.get("ref") or ""
+    if art.get("kind") not in ("file", "image") or art.get("origin") == "remote" or not ref:
+        return rejected(409, "relink_conflict")
+    if not isinstance(selection, dict) or not isinstance(selection.get("path"), str):
+        return rejected(400, "relink_invalid_target")
+    reg = files_mod.get_registry(project_slug)
+    old_path = Path(ref).expanduser()
+    if not old_path.is_absolute():
+        old_path = _session_workspace(project_slug, art.get("session_id") or "") / old_path
+    entry = reg.find_by_path(old_path)
+    file_id = (entry or {}).get("id")
+    if (
+        selection.get("expected_ref") != ref
+        or "expected_file_id" not in selection
+        or selection["expected_file_id"] != file_id
+        or old_path.is_file()
+        or (entry and (entry.get("project_slug") != project_slug
+                       or entry.get("artifact_id") not in (None, "", art["id"])))
+        or any(e.get("artifact_id") == art["id"] and e["id"] != file_id for e in reg.list_all())
+    ):
+        return rejected(409, "relink_conflict")
+
+    target = Path(selection["path"])
+    try:
+        if not target.is_absolute():
+            return rejected(400, "relink_invalid_target")
+        new = files_mod.norm_path(target)
+        if not Path(new).is_file():
+            return rejected(404, "relink_invalid_target")
+    except (OSError, ValueError, RuntimeError):
+        return rejected(404, "relink_invalid_target")
+    if reg.find_by_path(new) or any(
+        a["id"] != art["id"] and a.get("origin") != "remote"
+        and a.get("kind") in ("file", "image")
+        and a.get("ref") and Path(a["ref"]).expanduser().is_absolute()
+        and files_mod.norm_path(a["ref"]) == new
+        for a in art_store.list_artifacts(project_slug)
+    ):
+        return rejected(409, "relink_target_in_use")
+
+    updated = art_store.set_ref(project_slug, art["id"], new)
+    try:
+        if file_id:
+            reg.relocate(file_id, new, artifact_id=art["id"])
+        else:
+            reg.register(art["name"], new, session_id=art.get("session_id") or "", artifact_id=art["id"], require_file=True)
+    except OSError as exc:
+        art_store.set_ref(project_slug, art["id"], ref)
+        if isinstance(exc, FileNotFoundError):
+            return rejected(404, "relink_invalid_target")
+        if isinstance(exc, FileExistsError):
+            return rejected(409, "relink_target_in_use")
+        _log.exception("artifact_relink_failed artifact=%s", art["id"])
+        return rejected(500, "relink_failed")
+    return {"ok": True, "artifact": updated}
 
 
 @router.put("/api/artifacts/{artifact_id}")
@@ -263,8 +302,11 @@ async def update_artifact_endpoint(
     land on the artifact record (``schema`` becomes the injection override);
     ``file_kind`` corrects the registry's classification, which steers the
     prompt's tool guidance (schema summary shown for tables)."""
-    if art_store.get_artifact(project_slug, artifact_id) is None:
+    art = art_store.get_artifact(project_slug, artifact_id)
+    if art is None:
         return {"ok": False, "error": "not found"}
+    if "relink" in data:
+        return _relink_artifact(project_slug, art, data["relink"])
     patch = {k: data[k] for k in ("name", "kind", "ref", "schema") if data.get(k) is not None}
     updated = art_store.update_artifact(project_slug, artifact_id, patch)
     if updated is None:
@@ -440,13 +482,6 @@ async def file_preview_endpoint(
             status_code=404,
             content={"ok": False, "error": f"file not found: {file_id}"},
         )
-    if not Path(entry["path"]).is_file() and entry.get("artifact_id"):
-        # File may have been moved into the knowledge vault — heal the
-        # registry entry (via its artifact) and retry from the new path.
-        slug = entry.get("project_slug") or "default"
-        art = art_store.get_artifact(slug, entry["artifact_id"])
-        if art is not None and _heal_artifact_ref(art, slug):
-            entry = files_mod.get_by_id(file_id) or entry
     path = entry["path"]
     try:
         payload = await asyncio.to_thread(

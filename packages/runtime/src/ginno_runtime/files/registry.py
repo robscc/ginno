@@ -14,6 +14,8 @@ file-only storage). The registry is also the reactive touch-point:
 
 from __future__ import annotations
 
+import stat
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -81,7 +83,14 @@ def _persist(slug: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     from ginno_runtime import jsonx as json
 
-    p.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=p.parent, delete=False) as tmp:
+        staging = Path(tmp.name)
+        try:
+            tmp.write(json.dumps(entries, indent=2, ensure_ascii=False))
+            tmp.close()
+            staging.replace(p)
+        finally:
+            staging.unlink(missing_ok=True)
 
 
 class FileRegistry:
@@ -101,6 +110,8 @@ class FileRegistry:
         size: int = 0,
         session_id: str = "",
         artifact_id: str | None = None,
+        *,
+        require_file: bool = False,
     ) -> FileEntry:
         """Register a file (idempotent by path: re-registering updates it)."""
         from .extractors import classify
@@ -109,9 +120,13 @@ class FileRegistry:
         existing = _BY_PATH.get(norm)
         try:
             st = Path(norm).stat()
+            if require_file and not stat.S_ISREG(st.st_mode):
+                raise FileNotFoundError(norm)
             mtime = st.st_mtime
             size = size or st.st_size
         except OSError:
+            if require_file:
+                raise
             mtime = 0.0
         if existing is not None:
             existing.update(
@@ -144,7 +159,12 @@ class FileRegistry:
         }
         _BY_ID[entry["id"]] = entry
         _BY_PATH[norm] = entry
-        _persist(self.slug)
+        try:
+            _persist(self.slug)
+        except OSError:
+            _BY_ID.pop(entry["id"])
+            _BY_PATH.pop(norm)
+            raise
         return entry
 
     def mark_stale(self, file_id: str, stale: bool = True) -> FileEntry | None:
@@ -161,28 +181,44 @@ class FileRegistry:
             _persist(self.slug)
         return e
 
-    def relocate(self, file_id: str, new_path: str | Path) -> FileEntry | None:
-        """Point an existing entry at a new on-disk path (e.g. after a move).
-
-        Re-keys the module-global ``_BY_PATH`` index (editing ``path`` in place
-        would desync lookups) and re-stats size/mtime.
-        """
+    def relocate(
+        self, file_id: str, new_path: str | Path, *, artifact_id: str | None = None,
+    ) -> FileEntry | None:
+        """Re-key the same file ID and re-stat its destination."""
         e = _BY_ID.get(file_id)
         if e is None:
             return None
         old_norm = _norm(e["path"])
         new_norm = _norm(new_path)
-        _BY_PATH.pop(old_norm, None)
-        e["path"] = new_norm
+        occupant = _BY_PATH.get(new_norm)
+        if occupant is not None and occupant is not e:
+            raise FileExistsError(new_norm)
+        before = e.copy()
         try:
             st = Path(new_norm).stat()
-            e["size"] = st.st_size
-            e["mtime"] = st.st_mtime
+            if artifact_id and not stat.S_ISREG(st.st_mode):
+                raise FileNotFoundError(new_norm)
+            e.update(size=st.st_size, mtime=st.st_mtime)
         except OSError:
+            if artifact_id:
+                raise
             e["mtime"] = 0.0
-        e["stale"] = False
+        if artifact_id:
+            e["artifact_id"] = artifact_id
+            if Path(old_norm).suffix.lower() != Path(new_norm).suffix.lower():
+                from .extractors import classify
+
+                e.update(kind=classify(new_norm), mime="")
+        _BY_PATH.pop(old_norm, None)
+        e.update(path=new_norm, stale=False)
         _BY_PATH[new_norm] = e
-        _persist(self.slug)
+        try:
+            _persist(self.slug)
+        except OSError:
+            _BY_PATH.pop(new_norm)
+            e.update(before)
+            _BY_PATH[old_norm] = e
+            raise
         return e
 
     def unregister(self, file_id: str) -> bool:

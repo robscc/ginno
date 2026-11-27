@@ -422,3 +422,114 @@ def test_attach_path_normal_file_lands_and_registers(client, sid, tmp_path):
     assert f["artifact_id"]
     listed = client.get(f"/api/files?session_id={sid}").json()
     assert [x["id"] for x in listed] == [f["id"]]
+
+
+@pytest.mark.parametrize("other_copy", [False, True])
+def test_missing_artifact_is_relinked_only_after_explicit_selection(client, sid, tmp_path, other_copy):
+    from ginno_runtime import artifacts
+    from ginno_runtime.files import get_registry
+
+    vault = tmp_path / "vault"
+    original = b"# Original report\n"
+    target = vault / "Z original" / "report.md"
+    target.parent.mkdir(parents=True)
+    if other_copy:
+        wrong = vault / "A unrelated" / target.name
+        wrong.parent.mkdir()
+        wrong.write_bytes(b"# Unrelated same-name report\n")
+    source = tmp_path / target.name
+    source.write_bytes(original)
+    art = artifacts.add_artifact("default", "file", target.name, str(source), sid)
+    registry = get_registry("default")
+    entry = registry.register(target.name, source, session_id=sid, artifact_id=art["id"])
+    file_id = entry["id"]
+    url = f"/api/artifacts/{art['id']}"
+    preview = f"/api/files/{file_id}/preview"
+    download = f"/api/files/{file_id}/download"
+    assert client.get(url + "/metadata").json()["exists"] is True
+    assert client.get(preview).json()["ok"] is True
+    assert client.get(download).content == original
+    assert client.put("/api/kb/wiki/config", json={"vault_path": str(vault), "enabled": False}).is_success
+    source.rename(target)
+
+    meta = client.get(url + "/metadata?candidates=true").json()
+    expected = [str(p.resolve()) for p in ([wrong, target] if other_copy else [target])]
+    assert meta["relink_candidates"] == expected
+    assert meta["exists"] is False and meta["file"]["id"] == file_id
+    assert client.get(preview).status_code == 404
+    assert client.get(download).status_code == 404
+    assert client.get(url).json() == art
+    assert entry["path"] == str(source.resolve())
+
+    choice = {"path": str(target), "expected_ref": art["ref"], "expected_file_id": file_id}
+    bad = client.put(url, json={"relink": {**choice, "path": str(vault / "vanished.md")}})
+    assert (bad.status_code, bad.json()["error"]) == (404, "relink_invalid_target")
+    stale = client.put(url, json={"relink": {**choice, "expected_file_id": "superseded"}})
+    assert (stale.status_code, stale.json()["error"]) == (409, "relink_conflict")
+    if other_copy:
+        occupied = registry.register(wrong.name, wrong, session_id=sid)
+        conflict = client.put(url, json={"relink": {**choice, "path": str(wrong)}})
+        assert (conflict.status_code, conflict.json()["error"]) == (409, "relink_target_in_use")
+        assert registry.find_by_path(wrong) is occupied
+    assert client.get(url).json() == art
+    assert entry["path"] == str(source.resolve())
+
+    relinked = client.put(url, json={"relink": choice}).json()
+    assert relinked == {"ok": True, "artifact": {**art, "ref": str(target.resolve())}}
+    assert client.put(url, json={"relink": choice}).status_code == 409
+    reset_registries()
+    meta = client.get(url + "/metadata").json()
+    assert meta["exists"] is True and meta["file"]["id"] == file_id
+    assert meta["file"]["path"] == str(target.resolve())
+    assert client.get(preview).json()["ok"] is True
+    assert client.get(download).content == original
+
+
+def test_artifact_metadata_resolves_only_local_workspace_refs(client, sid):
+    from ginno_runtime import artifacts
+    from ginno_runtime.session_meta import _resolve_session_meta
+
+    source = Path(_resolve_session_meta(sid)["workspace"]) / "local.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"# Local workspace file")
+    local = artifacts.add_artifact("default", "file", source.name, "./local.md", sid)
+    peer = artifacts.add_artifact("default", "file", source.name, str(source), sid, origin="remote")
+    remote_url = f"/api/artifacts/{peer['id']}"
+    meta = client.get(f"/api/artifacts/{local['id']}/metadata").json()
+    assert meta["exists"] is True
+    assert meta["artifact"]["ref"] == str(source.resolve())
+    assert meta["file"]["path"] == str(source.resolve())
+    original_id = meta["file"]["id"]
+    assert client.get(f"/api/files/{original_id}/download").content == source.read_bytes()
+    remote = client.get(remote_url + "/metadata?candidates=true").json()
+    assert remote["artifact"] == peer
+    assert remote["exists"] is False and remote["file"] is None and remote["relink_candidates"] == []
+    assert client.put(remote_url, json={"relink": {"path": str(source)}}).status_code == 409
+
+
+def test_relink_registry_write_failure_restores_old_ref(client, sid, tmp_path, monkeypatch):
+    from ginno_runtime import artifacts
+    from ginno_runtime.files import registry
+
+    old = tmp_path / "old.md"
+    target = tmp_path / "new.md"
+    old.write_text("original")
+    artifact = artifacts.add_artifact("default", "file", old.name, str(old), sid)
+    reg = registry.get_registry("default")
+    entry = reg.register(old.name, old, session_id=sid, artifact_id=artifact["id"])
+    file_id = entry["id"]
+    old.rename(target)
+
+    def fail_persist(_slug):
+        raise OSError("disk write failed")
+
+    monkeypatch.setattr(registry, "_persist", fail_persist)
+    url = f"/api/artifacts/{artifact['id']}"
+    response = client.put(url, json={"relink": {
+        "path": str(target), "expected_ref": str(old), "expected_file_id": file_id,
+    }})
+    assert (response.status_code, response.json()["error"]) == (500, "relink_failed")
+    assert client.get(url).json() == artifact
+    assert reg.find_by_path(old)["id"] == file_id
+    assert reg.find_by_path(target) is None
+    assert target.read_bytes() == b"original"

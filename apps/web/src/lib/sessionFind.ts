@@ -40,7 +40,9 @@ export function mergeFindHistory(history: ChatMsg[], current: ChatMsg[], liveId:
     });
     return { ...live, blocks };
   }) : history;
-  return [...rows, ...current.filter((row) => !saved.has(row.id))];
+  // An addressed history row missing from the current snapshot was removed
+  // by a checkpoint rewrite. The current transcript can still lag behind it.
+  return [...rows, ...current.filter((row) => !saved.has(row.id) && (!row.history || row.id === liveId))];
 }
 
 function nextOrdinal(counts: Map<string, number>, key: string): number {

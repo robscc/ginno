@@ -8,13 +8,11 @@ React mount，构成切换剩余 max longtask 的主体。治理：尾部先挂�
 挂到目标行（revealUpTo 扩窗管线不变）。
 
 本用例在真实浏览器里验证四件事：
-1. 分片挂载后消息**完整渲染**（窗口 80 行 + load-earlier 扩到全量，首尾
-   marker 齐全有序），且首帧确实是增量挂载（早期行数 < 80）；
+1. 首屏 80 行与较早的窗口均按历史顺序渲染，窗口移动后总挂载数保持 80；
 2. **滚动位置稳定**：分片进行中把 scrollTop 置到中段，落定后视口中央的
    消息行位移 ≤40px（补偿生效，不跳动）；
-3. **⌘K 搜索锚点**：命中窗口外消息 → 扩窗 + 定位居中 + violet ring；
-   **⌘F 会话内搜索**：计数全量、落定后 CSS Custom Highlight 补刷覆盖晚挂载
-   行、Enter 遍历 active 高亮 + 窗口外命中扩窗定位；
+3. **⌘K 搜索锚点**：命中窗口外消息时挂载目标并定位居中，显示 violet ring。
+   **⌘F 会话内搜索**：计数全量，晚挂载行补刷高亮，Enter 遍历活动命中；
 4. **max longtask 实测**：PerformanceObserver('longtask') 记录冷/热切换窗口
    内的最长任务，打印改前/改后对比数值（基线冷 ~341ms，见 PR）。
 
@@ -358,15 +356,16 @@ def test_packaged_ui_time_slice_mount(tmp_path):
             )
             assert page.locator('[data-testid="load-earlier"]').count() == 1
 
-            # ── load-earlier 扩窗不回归 ───────────────────────────────────
+            # load-earlier shifts the window and keeps the overlapping rows.
             page.locator('[data-testid="load-earlier"]').click()
-            page.wait_for_function(f"{_rows_js()} === {total}", timeout=10000)
-            assert page.evaluate(
-                """() => Array.from(document.querySelectorAll('[data-msg-id]'))
-                    .some(r => (r.textContent || '').includes('slice-marker-00'))"""
-            ), "load-earlier must reveal the hidden head messages"
+            page.locator('[data-msg-id="turn-00"]').wait_for()
+            page.wait_for_function(f"{_rows_js()} === {WINDOW}", timeout=10000)
+            older_ids = page.locator('[data-msg-id]').evaluate_all(
+                "rows => rows.map(row => row.dataset.msgId)"
+            )
+            assert older_ids == [m["id"] for m in msgs[:WINDOW]]
 
-            # ── ⌘K 跨会话锚点：窗口外命中 → 扩窗 + 居中 + violet ring ─────
+            # ⌘K prioritizes the requested anchor over the saved reading position.
             page.get_by_text("Light Slice E2E", exact=False).first.click()
             page.wait_for_timeout(600)
             page.evaluate("() => { window.__lt = []; }")
@@ -400,7 +399,7 @@ def test_packaged_ui_time_slice_mount(tmp_path):
                     };
                 }"""
             )
-            assert anchor["rows"] == total, "anchor must expand the window to all rows"
+            assert anchor["rows"] <= WINDOW, "finding an anchor must respect the mount budget"
             assert anchor["top"] >= 0 and anchor["bottom"] <= 800, (
                 f"anchor row must be scrolled into viewport: {anchor}"
             )
@@ -408,13 +407,14 @@ def test_packaged_ui_time_slice_mount(tmp_path):
                 f"anchor row must be roughly centered: {anchor}"
             )
             assert anchor["ring"], "anchor row must carry the violet flash ring"
-            page.wait_for_function(f"{_rows_js()} === {total}", timeout=10000)
-            page.wait_for_timeout(800)
+            page.wait_for_function(f"{_rows_js()} === {WINDOW}", timeout=10000)
             anchor_max = _max_longtask(page)
             print(f"[time-slice] WARM switch (⌘K anchor expand) max longtask = {anchor_max:.1f}ms")
             _dump_longtasks(page, "ANCHOR", t_anchor)
 
-            # ── 热切换（store 已缓存）：纯 mount 长任务 ───────────────────
+            # Leave from the tail so this warm switch exercises tail following.
+            page.get_by_role("button", name="Jump to latest message", exact=True).click()
+            page.locator('[data-msg-id="turn-41"]').wait_for(state="visible")
             page.get_by_text("Light Slice E2E", exact=False).first.click()
             page.wait_for_timeout(600)
             page.evaluate("() => { window.__lt = []; }")
@@ -468,13 +468,12 @@ def test_packaged_ui_time_slice_mount(tmp_path):
                 print("[time-slice][debug] rows:", page.evaluate(_rows_js()))
                 page.screenshot(path="/tmp/time-slice-find-fail.png")
                 raise
-            page.wait_for_timeout(400)
-            painted = page.evaluate(
-                "() => (CSS.highlights.get('find-hit') || { size: 0 }).size"
-            )
-            # 窗口内每个 marker 用户行各含 1 处命中；晚挂载行由落定事件补刷。
-            assert painted >= len(expected_markers) - 2, (
-                f"find-hit ranges must cover late-mounted rows after settle, got {painted}"
+            # The first match moves the window; wait for the new slice and its
+            # highlight pass to settle before inspecting late-mounted rows.
+            page.wait_for_function(
+                f"{_rows_js()} === {WINDOW} && "
+                f"(CSS.highlights.get('find-hit')?.size ?? 0) >= {len(expected_markers) - 2}",
+                timeout=15000,
             )
             page.keyboard.press("Enter")
             page.keyboard.press("Enter")  # activeIdx=2 → turn 02（窗口头部）
@@ -485,7 +484,7 @@ def test_packaged_ui_time_slice_mount(tmp_path):
             )
             # 遍历到窗口外命中（activeIdx=1 → turn 01）：扩窗 + 定位 + 高亮。
             page.keyboard.press("Shift+Enter")
-            page.wait_for_function(f"{_rows_js()} === {total}", timeout=10000)
+            page.wait_for_function(f"{_rows_js()} === {WINDOW}", timeout=10000)
             page.wait_for_function(
                 """() => {
                     const rows = Array.from(document.querySelectorAll('[data-msg-id]'));

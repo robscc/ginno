@@ -16,8 +16,10 @@ import { isReportRow, planUpdateNeedsAttention } from "../blocks/reportFold";
 import { cleanAgentText, splitInlineWidgets } from "../blocks/inlineWidgets";
 import { markdownSearchText } from "@/lib/markdownSearchText";
 import type { ChatMsg } from "../streamCore";
+import type { HistoryReadOptions } from "../engine/history";
 import { useTranscriptProjection } from "./TranscriptList";
-import { getSessionHistoryIndex, type HistoryResult, type HistoryTarget } from "@/lib/api/sessions";
+import type { HistoryIndex, HistoryResult, HistoryTarget } from "@/lib/api/sessions";
+import { FIND_HISTORY_CHANGED, sessionFindCache } from "@/lib/sessionFindCache";
 import type { Block } from "../blocks/types";
 import * as painter from "./findHighlight";
 
@@ -55,7 +57,7 @@ export interface SessionFindState {
 
 export function useSessionFind({
   messages, projection, sessionId, scrollRef, sourceMessages, liveId,
-  visibleMessages, mapHistory, loadHistory, historyRevision,
+  visibleMessages, mapHistory, loadHistory, historyRevision, historyLoading,
 }: {
   messages: ChatMsg[];
   projection: ReturnType<typeof useTranscriptProjection>;
@@ -65,12 +67,16 @@ export function useSessionFind({
   sourceMessages: ChatMsg[];
   visibleMessages: (rows: ChatMsg[]) => ChatMsg[];
   historyRevision: string | undefined;
+  historyLoading: boolean;
   mapHistory: (response: HistoryResult) => ChatMsg[];
-  loadHistory: (sid: string, target: string) => Promise<HistoryTarget | null>;
+  loadHistory: (sid: string, target: string, options?: HistoryReadOptions) => Promise<HistoryTarget | null>;
 }): SessionFindState {
-  const [open, setOpen] = useState(false);
+  const [openSession, setOpenSession] = useState<string>();
+  const open = openSession !== undefined && openSession === sessionId;
   const [query, updateQuery] = useState("");
-  const [debounced, setDebounced] = useState("");
+  const [debouncedQuery, setDebounced] = useState("");
+  const debounced = open && query.trim() ? debouncedQuery : "";
+  const searching = debounced !== "";
   const [selected, setSelected] = useState<{ query: string; hit: FindHit }>();
   const [jumpRequest, setJumpRequest] = useState(0);
   const [focusRequest, setFocusRequest] = useState(0);
@@ -83,29 +89,49 @@ export function useSessionFind({
     return () => clearTimeout(timer);
   }, [query]);
 
-  const [snapshot, setSnapshot] = useState<{ sid: string; rows: ChatMsg[] }>();
-  const [indexStatus, setIndexStatus] = useState<SessionFindState["indexStatus"]>("loading");
+  const [invalidation, setInvalidation] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
+  type ReadScope = { sid: string; revision?: string; invalidation: number; retryCount: number };
+  const readScope = useMemo<ReadScope | undefined>(() => searching && !historyLoading && sessionId
+    ? { sid: sessionId, revision: historyRevision, invalidation, retryCount } : undefined,
+  [searching, historyLoading, sessionId, historyRevision, invalidation, retryCount]);
+  const previousRead = useRef<ReadScope>();
+  const [indexRead, setIndexRead] = useState<{ scope: ReadScope; response?: HistoryIndex }>();
+
   useEffect(() => {
-    if (!open || !sessionId) return;
+    const changed = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== sessionId || !sessionId) return;
+      sessionFindCache.invalidate(sessionId);
+      setInvalidation((value) => value + 1);
+    };
+    window.addEventListener(FIND_HISTORY_CHANGED, changed);
+    return () => window.removeEventListener(FIND_HISTORY_CHANGED, changed);
+  }, [sessionId]);
+
+  useEffect(() => {
+    const prior = previousRead.current;
+    previousRead.current = readScope;
+    if (!readScope) return;
+    const { sid, revision } = readScope;
+    // Reopening validates against the current checkpoint, since the last page
+    // may predate an out-of-band rewrite. A new page can also confirm an index
+    // that arrived ahead of that page, without reading it again.
+    const verify = prior?.sid !== sid || prior.invalidation !== readScope.invalidation ||
+      prior.retryCount !== readScope.retryCount;
     let alive = true;
-    setIndexStatus("loading");
-    getSessionHistoryIndex(sessionId).then(
-      (result) => {
-        if (!alive) return;
-        setSnapshot({ sid: sessionId, rows: mapHistory(result) });
-        setIndexStatus("ready");
-      },
-      () => { if (alive) setIndexStatus("error"); },
+    sessionFindCache.read(sid, revision, verify).then(
+      (response) => { if (alive) setIndexRead({ scope: readScope, response }); },
+      () => { if (alive) setIndexRead({ scope: readScope }); },
     );
     return () => { alive = false; };
-  }, [open, sessionId, retryCount, mapHistory, historyRevision]);
+  }, [readScope]);
 
+  const current = indexRead?.scope === readScope ? indexRead : undefined;
+  const snapshot = useMemo(() => current?.response ? mapHistory(current.response) : undefined, [current, mapHistory]);
   const searchSource = useMemo(() => {
-    if (!open) return [];
-    if (!snapshot || snapshot.sid !== sessionId) return sourceMessages;
-    return mergeFindHistory(snapshot.rows, sourceMessages, liveId);
-  }, [open, snapshot, sessionId, sourceMessages, liveId]);
+    if (!searching) return [];
+    return snapshot ? mergeFindHistory(snapshot, sourceMessages, liveId) : sourceMessages;
+  }, [searching, snapshot, sourceMessages, liveId]);
   const searchMessages = useMemo(() => visibleMessages(searchSource), [visibleMessages, searchSource]);
   const searchProjection = useTranscriptProjection(searchMessages, sessionId);
   const sessionsById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
@@ -129,15 +155,16 @@ export function useSessionFind({
   }, [sessionsById, eventText, tc, tr, liveId]);
   const index = useMemo(() => buildFindIndex(searchMessages, searchProjection, displayText, searchSource),
     [searchMessages, searchProjection, displayText, searchSource]);
-  const addresses = useMemo(() => new Map((open
+  const addresses = useMemo(() => new Map((searching
     ? buildFindIndex(messages, projection, displayText, sourceMessages) : [])
-    .map((entry) => [entry.sourceKey, entry])), [open, messages, projection, displayText, sourceMessages]);
+    .map((entry) => [entry.sourceKey, entry])), [searching, messages, projection, displayText, sourceMessages]);
 
   const hits = useMemo(() => searchFindIndex(index, debounced), [index, debounced]);
-  const activeIdx = selected?.query === debounced ? Math.max(0, hits.findIndex(
+  const selectedIdx = selected?.query === debounced ? hits.findIndex(
     (hit) => hit.sourceKey === selected.hit.sourceKey && hit.occurrence === selected.hit.occurrence,
-  )) : 0;
-  const active = hits[activeIdx];
+  ) : 0;
+  const activeIdx = Math.max(0, selectedIdx);
+  const active = selectedIdx < 0 && !current ? undefined : hits[activeIdx];
   const paintState = useRef({ hits, activeIdx, debounced });
   paintState.current = { hits: hits.map((hit) => ({ ...hit, ...addresses.get(hit.sourceKey) })), activeIdx, debounced };
   const paint = useCallback(() => {
@@ -157,18 +184,33 @@ export function useSessionFind({
     };
   }, [open, sessionId, paint]);
 
-  const address = active && addresses.get(active.sourceKey);
+  const visibleAddress = active && addresses.get(active.sourceKey);
+  const indexRevision = current?.response?.revision;
+  // The search projection can be newer than the paged rows. Re-read a loaded
+  // row if its current preview cannot address a hit from that newer revision.
+  const previewNeedsRefresh = visibleAddress && indexRevision && indexRevision !== historyRevision &&
+    searchFindIndex([visibleAddress], debounced).length <= active.occurrence;
+  const address = previewNeedsRefresh ? undefined : visibleAddress;
   const rowKey = address?.rowKey;
   const blockIdx = address?.blockIdx;
   const occurrence = active?.occurrence;
   const requestId = active && !address
     ? searchMessages[searchProjection.rowKeys.indexOf(active.rowKey)]?.id : undefined;
+  const [targetError, setTargetError] = useState<{ scope: ReadScope; id: string }>();
   useEffect(() => {
-    if (!open || !sessionId || !requestId) return;
+    if (!readScope || !requestId) return;
     let alive = true;
-    loadHistory(sessionId, requestId).catch(() => { if (alive) setIndexStatus("error"); });
+    loadHistory(readScope.sid, requestId, { indexRevision }).catch(() => {
+      if (alive) setTargetError({ scope: readScope, id: requestId });
+    });
     return () => { alive = false; };
-  }, [open, sessionId, requestId, loadHistory, retryCount]);
+  }, [readScope, requestId, loadHistory, indexRevision]);
+  let indexStatus: SessionFindState["indexStatus"] = searching && historyLoading ? "loading" : "ready";
+  if (readScope) {
+    if ((targetError?.scope === readScope && targetError.id === requestId) || (current && !current.response)) {
+      indexStatus = "error";
+    } else if (!current) indexStatus = "loading";
+  }
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!open || !scroll || rowKey === undefined || blockIdx === undefined || occurrence === undefined) return;
@@ -179,14 +221,15 @@ export function useSessionFind({
     updateQuery("");
     setDebounced("");
     setSelected(undefined);
-    setOpen(false);
-    setSnapshot(undefined);
+    setOpenSession(undefined);
+    setIndexRead(undefined);
+    setTargetError(undefined);
   }, [sessionId]);
 
   useEffect(() => {
     const onOpen = () => {
       if (!sessionId) return;
-      setOpen(true);
+      setOpenSession(sessionId);
       setFocusRequest((n) => n + 1);
     };
     window.addEventListener("ginno:find-open", onOpen);
@@ -200,8 +243,9 @@ export function useSessionFind({
     setJumpRequest((n) => n + 1);
   };
   const close = () => {
-    setOpen(false);
-    setSnapshot(undefined);
+    setOpenSession(undefined);
+    setIndexRead(undefined);
+    setTargetError(undefined);
     updateQuery("");
     setDebounced("");
     setSelected(undefined);

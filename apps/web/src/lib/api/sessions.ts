@@ -334,18 +334,26 @@ export async function getSessionHistory(id: string) {
   );
 }
 
-export function getSessionHistoryIndex(id: string) {
-  return jsonStrict<HistoryResult>(`${BASE}/sessions/${encodeURIComponent(id)}/history?index=true`);
+export type HistoryIndex = HistoryResult & { revision: string };
+
+export function getSessionHistoryIndex(id: string, revision?: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ index: "true" });
+  if (revision !== undefined) query.set("revision", revision);
+  return jsonStrict<HistoryIndex | { ok: true; revision: string; unchanged: true }>(
+    `${BASE}/sessions/${encodeURIComponent(id)}/history?${query}`, { signal, cache: "no-store" },
+  );
 }
 
 export function getSessionHistoryPage(
   id: string,
   options: Partial<Record<"before" | "refresh" | "coverage" | "revision" | "target", string | null>>,
+  signal?: AbortSignal,
 ) {
   const query = new URLSearchParams({ turns: "40" });
   for (const [name, value] of Object.entries(options)) if (value) query.set(name, value);
   return jsonStrict<HistoryResult & { page: HistoryPage }>(
     `${BASE}/sessions/${encodeURIComponent(id)}/history?${query}`,
+    signal ? { signal } : undefined,
   );
 }
 

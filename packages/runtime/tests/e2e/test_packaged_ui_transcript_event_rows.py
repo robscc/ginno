@@ -8,6 +8,7 @@ toggle. Background task bands are unchanged.
 import json
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import test_packaged_ui_tasks_overview as harness
@@ -114,7 +115,7 @@ def test_artifact_preview_explains_missing_file_record(app, tmp_path):
     page, port, sid = app
     path = tmp_path / "unregistered-report.md"
     name = "Artifact without a file record"
-    add_artifact("default", "file", name, str(path), sid)
+    artifact = add_artifact("default", "file", name, str(path), sid)
     open_session(page, port, sid)
     row = page.get_by_text(name, exact=True)
     row.click()
@@ -122,7 +123,7 @@ def test_artifact_preview_explains_missing_file_record(app, tmp_path):
     expect(reason).to_contain_text(name)
     expect(reason).to_contain_text(str(path))
 
-    pattern = "**/api/files?project_slug=default"
+    pattern = f"**/api/artifacts/{artifact['id']}/metadata?project_slug=default&include_schema=false"
     page.route(pattern, lambda route: route.abort("failed"), times=1)
     row.click()
     expect(page.get_by_role("alert").filter(has_text="Could not connect to the Ginno runtime")).to_contain_text(name)
@@ -242,6 +243,180 @@ def test_compaction_blocks_sending_but_keeps_draft(app):
     expect(composer).to_have_value("Keep this next query as a draft")
     composer.press("Enter")
     expect(page.get_by_text("Keep this next query as a draft", exact=True)).to_be_visible()
+
+
+@pytest.mark.parametrize(("app", "method", "loading_label", "error_label", "retry_label", "empty_label"), [
+    ("en", "keyboard", "Loading conversation history…", "Could not load conversation history (HTTP 503).",
+     "Retry loading history", "Start the conversation"),
+    ("zh-CN", "click", "正在加载会话历史…", "无法加载会话历史（HTTP 503）。", "重试加载历史", "开始对话"),
+], indirect=["app"], ids=["keyboard-en", "click-zh-CN"])
+def test_cold_history_503_can_retry_in_place(app, method, loading_label, error_label, retry_label, empty_label):
+    page, port, sid = app
+    messages = [
+        HumanMessage(id="cold-user-1", content="First saved question"),
+        AIMessage(id="cold-assistant-1", content="First saved response"),
+        HumanMessage(id="cold-user-2", content="Second saved question"),
+        AIMessage(id="cold-assistant-2", content="Second saved response"),
+    ]
+    expected = {message.id: message.content for message in messages}
+    save_messages(sid, messages)
+    path = f"/api/sessions/{sid}/history?turns=40"
+    oracle = harness._api(port, "GET", path)
+    assert [row["id"] for row in oracle["messages"]] == list(expected)
+    requests = []
+    held = []
+    history_path = f"/api/sessions/{sid}/history"
+    page.on("request", lambda req: requests.append(req.url) if history_path in req.url else None)
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    capture_socket(page)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    transcript = page.locator("[data-chat-scroll]")
+    empty = transcript.get_by_text(empty_label, exact=False)
+    loading = transcript.get_by_role("status").filter(has_text=loading_label)
+    loading_before_response = loading.is_visible()
+    empty_before_response = empty.is_visible()
+    assert len(held) == 1 and len(requests) == 1
+    with page.expect_response(lambda res: res.url.endswith(path)) as failed:
+        held[0].fulfill(status=503, json={"detail": "Temporary fixture outage"})
+    assert failed.value.status == 503
+
+    reason = transcript.get_by_role("alert").filter(has_text=error_label)
+    retry = transcript.get_by_role("button", name=retry_label, exact=True)
+    # The baseline displays its empty-session prompt before and after the 503.
+    # Print the DOM observations before waiting for the new recovery controls.
+    if empty_before_response:
+        expect(empty).to_be_visible()
+        print(json.dumps({"phase": "before-retry", "status": failed.value.status,
+                          "saved_rows": len(oracle["messages"]), "empty_visible": empty.is_visible(),
+                          "visible_history_rows": transcript.locator("[data-msg-id]").count(),
+                          "alerts": reason.count(), "retry_buttons": retry.count()}))
+    expect(reason).to_be_visible()
+    assert loading_before_response and not empty_before_response
+    expect(loading).to_have_count(0)
+    expect(empty).to_have_count(0)
+
+    # The socket can still update this session while history is unavailable.
+    live_title = "Live receipt during history outage"
+    send_frame(page, sid, "steer.absorbed", steer_id="history-live-receipt",
+               task={"task": "t_history", "kind": "finished", "title": live_title, "exit": 0})
+    live = transcript.get_by_text(live_title, exact=True)
+    expect(live).to_be_visible()
+    expect(reason).to_be_visible()
+
+    transcript.focus()
+    page.keyboard.press("Tab")
+    expect(retry).to_be_focused()
+    with page.expect_response(lambda res: res.url.endswith(path)) as recovered:
+        if method == "keyboard":
+            page.keyboard.press("Enter")
+        else:
+            retry.click()
+    assert recovered.value.ok
+    assert recovered.value.json() == oracle
+    for row_id, text in expected.items():
+        expect(transcript.locator(f'[data-msg-id="{row_id}"]').get_by_text(text, exact=True)).to_be_visible()
+    expect(live).to_be_visible()
+    expect(empty).to_have_count(0)
+    expect(reason).to_have_count(0)
+    expect(retry).to_have_count(0)
+    assert len(requests) == 2
+    print(json.dumps({"phase": "recovered", "input": method, "statuses": [503, recovered.value.status],
+                      "history_requests": len(requests), "saved_rows": list(expected), "live_retained": True}))
+
+
+@pytest.mark.parametrize(("failure", "error_label"), [
+    ("connection", "Could not connect to the Ginno runtime to load conversation history."),
+    ("invalid", "The Ginno runtime returned an invalid conversation history response."),
+    ("rejected", "The Ginno runtime returned an invalid conversation history response."),
+], ids=["connection", "invalid-envelope", "rejected-envelope"])
+def test_cold_history_failure_stays_with_its_session(app, tmp_path, failure, error_label):
+    page, port, sid = app
+    other = harness._api(port, "POST", "/api/sessions", {
+        "project_slug": "default", "workspace": str(tmp_path), "title": "Empty history control",
+    })["id"]
+    save_messages(sid, [HumanMessage(id="isolated-user", content="Only in the failed session")])
+    path = f"/api/sessions/{sid}/history?turns=40"
+    empty_path = f"/api/sessions/{other}/history?turns=40"
+    requests = []
+    held = []
+    page.on("request", lambda req: requests.append(req.url.split(f"127.0.0.1:{port}", 1)[1])
+            if req.url.endswith((path, empty_path)) else None)
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    transcript = page.locator("[data-chat-scroll]")
+    loading = transcript.get_by_text("Loading conversation history…", exact=True)
+    empty = transcript.get_by_text("Start the conversation", exact=False)
+    reason = transcript.get_by_role("alert").filter(has_text=error_label)
+    row = transcript.locator('[data-msg-id="isolated-user"]')
+    expect(loading).to_be_visible()
+    with page.expect_response(lambda res: res.url.endswith(empty_path)) as other_history:
+        page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    assert other_history.value.ok and other_history.value.json()["messages"] == []
+    expect(empty).to_be_visible()
+
+    # Re-enter with the original request still held. Only one request may be in flight.
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(loading).to_be_visible()
+    expect(empty).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    expect(empty).to_be_visible()
+    assert len(held) == 1
+    event = "requestfailed" if failure == "connection" else "requestfinished"
+    with page.expect_event(event, predicate=lambda req: req.url.endswith(path)):
+        if failure == "connection":
+            held[0].abort("failed")
+        elif failure == "invalid":
+            held[0].fulfill(json={"ok": True, "messages": []})
+        else:
+            held[0].fulfill(json={**harness._api(port, "GET", path), "ok": False, "messages": []})
+    expect(empty).to_be_visible()
+    expect(reason).to_have_count(0)
+    expect(row).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(reason).to_be_visible()
+    expect(empty).to_have_count(0)
+    transcript.get_by_role("button", name="Retry loading history", exact=True).click()
+    expect(row.get_by_text("Only in the failed session", exact=True)).to_be_visible()
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", other)
+    expect(empty).to_be_visible()
+    expect(row).to_have_count(0)
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(row.get_by_text("Only in the failed session", exact=True)).to_be_visible()
+    expect(reason).to_have_count(0)
+    assert requests == [path, empty_path, path]
+
+
+def test_cold_history_keeps_one_parked_question_during_socket_replay(app):
+    page, port, sid = app
+    title = "Choose an option for the history race"
+    options = ["First choice", "Second choice"]
+    save_messages(sid, [
+        HumanMessage(id="race-user", content="History question race"),
+        AIMessage(id="race-assistant", content="", tool_calls=[{
+            "name": "ask_user", "id": "race-question", "args": {"question": title, "options": options},
+        }]),
+    ])
+    path = f"/api/sessions/{sid}/history?turns=40"
+    held = []
+    page.route("**" + path, lambda route: held.append(route), times=1)
+    capture_socket(page)
+    with page.expect_request(lambda req: req.url.endswith(path)):
+        open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    send_frame(page, sid, "user.question", turn_id="race-user", id="race-question", question=title, options=options)
+    transcript = page.locator("[data-chat-scroll]")
+    question = transcript.get_by_text(title, exact=True)
+    expect(question).to_have_count(1)
+    expect(transcript.locator('[data-msg-id="race-assistant"]')).to_have_count(0)
+    held[0].continue_()
+    replay = transcript.locator('[data-msg-id="race-assistant"]').get_by_text(title, exact=True)
+    expect(replay).to_be_visible()
+    expect(question).to_have_count(1)
+    send_frame(page, sid, "user.question", turn_id="race-user", id="race-question", question=title, options=options)
+    expect(question).to_have_count(1)
 
 
 def test_independent_event_rows_from_stream(app):
@@ -637,6 +812,213 @@ def test_bounded_window_keeps_find_navigation_and_live_reading(app):
     expect(latest).to_have_count(0)
 
 
+def save_sidebar_reading_sessions(port, sid, workspace):
+    messages = [message for i in range(640) for message in (
+        HumanMessage(id=f"reading-user-{i}", content=f"Reading request {i:04d}"),
+        AIMessage(id=f"reading-answer-{i}", content=f"Reading answer {i:04d}"),
+    )]
+    save_messages(sid, messages)
+    for title in ("Reading sidebar B", "Reading sidebar C"):
+        other = harness._api(port, "POST", "/api/sessions", {
+            "project_slug": "default", "workspace": str(workspace), "title": title,
+        })["id"]
+        save_messages(other, [HumanMessage(id=f"reader-{other}", content=f"{title} message")])
+
+
+def park_reading_position(page, scroll):
+    anchor_id = "reading-user-70"
+    page.evaluate('id => window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: id}))', anchor_id)
+    anchor = scroll.locator(f'[data-msg-id="{anchor_id}"]')
+    expect(anchor).to_be_in_viewport()
+    expect(scroll.locator("[data-find-row]")).to_have_count(80)
+    before = anchor.evaluate('''row => {
+        const scroll = row.closest('[data-chat-scroll]');
+        const offset = () => row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+        scroll.scrollTop += offset() + 13;
+        return offset();
+    }''')
+    assert abs(before + 13) <= 1
+    return anchor, before
+
+
+def wait_for_reading_offset(page, anchor, before):
+    page.wait_for_function('''([id, before]) => {
+        const scroll = document.querySelector('[data-chat-scroll]');
+        const row = scroll?.querySelector(`[data-msg-id="${id}"]`);
+        return row && Math.abs(row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - before) <= 2;
+    }''', arg=[anchor.get_attribute("data-msg-id"), before])
+    return anchor.evaluate('row => row.getBoundingClientRect().top - row.closest("[data-chat-scroll]").getBoundingClientRect().top')
+
+
+def test_sidebar_return_restores_bounded_reading_position(app, tmp_path):
+    page, port, sid = app
+    save_sidebar_reading_sessions(port, sid, tmp_path)
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    scroll = page.locator("[data-chat-scroll]")
+    rows = scroll.locator("[data-find-row]")
+    latest = scroll.locator('[data-msg-id="reading-answer-639"]')
+    expect(latest).to_be_in_viewport()
+    anchor, before = park_reading_position(page, scroll)
+    expect(latest).to_have_count(0)
+    path = f"/api/sessions/{sid}/history"
+    requests = []
+    page.on("request", lambda req: requests.append(req.url) if urlsplit(req.url).path == path else None)
+    scroll.evaluate('''el => {
+        window.readingPeakRows = 0;
+        new MutationObserver(() => {
+            window.readingPeakRows = Math.max(window.readingPeakRows, el.querySelectorAll('[data-find-row]').length);
+        }).observe(el, {childList: true, subtree: true});
+    }''')
+    page.get_by_text("Reading sidebar B", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+    page.get_by_text("Transcript event rows", exact=True).first.click()
+    expect(rows).to_have_count(80)
+    print(json.dumps({"phase": "sidebar-return", "id": "reading-user-70", "before_px": before,
+                      "mounted": anchor.count(), "latest_in_view": latest.count() > 0 and latest.evaluate(
+                          'row => row.getBoundingClientRect().top < row.closest("[data-chat-scroll]").getBoundingClientRect().bottom'),
+                      "rows": rows.count(), "history_requests": len(requests)}))
+    expect(anchor).to_be_in_viewport()
+    after = wait_for_reading_offset(page, anchor, before)
+    expect(latest).to_have_count(0)
+    assert not requests
+    assert page.evaluate("window.readingPeakRows") == 80
+    print(json.dumps({"phase": "restored", "after_px": after, "delta_px": abs(after - before),
+                      "peak_rows": page.evaluate("window.readingPeakRows"), "history_requests": len(requests)}))
+
+    # A notification explicitly asks to display the tail even with a saved reading position.
+    page.get_by_text("Reading sidebar B", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+    page.evaluate("sid => window.__ginnoOpenSession(sid)", sid)
+    expect(latest).to_be_in_viewport()
+    expect(anchor).to_have_count(0)
+
+    # Tail visits and subsequent live output follow the newest message.
+    page.get_by_text("Reading sidebar C", exact=True).first.click()
+    expect(scroll.get_by_text("Reading sidebar C message", exact=True)).to_be_in_viewport()
+    page.get_by_text("Transcript event rows", exact=True).first.click()
+    expect(latest).to_be_in_viewport()
+    send_frame(page, sid, "turn.start", turn_id="reading-tail", agent_id="dev")
+    send_frame(page, sid, "token.delta", content="New response while following latest")
+    expect(scroll.get_by_text("New response while following latest", exact=True)).to_be_in_viewport()
+    expect(rows).to_have_count(80)
+    assert not requests
+
+
+@pytest.mark.parametrize("outcome", ["restore", "message", "find", "rapid", "wheel", "missing", "error"])
+def test_sidebar_reading_target_request_is_scoped_to_the_visit(app, tmp_path, outcome):
+    page, port, sid = app
+    save_sidebar_reading_sessions(port, sid, tmp_path)
+    capture_socket(page)
+    open_session(page, port, sid)
+    wait_for_session_socket(page, sid, require_turn_state=True)
+    scroll = page.locator("[data-chat-scroll]")
+    rows = scroll.locator("[data-find-row]")
+    latest = scroll.locator('[data-msg-id="reading-answer-639"]')
+    expect(latest).to_be_in_viewport()
+    anchor, before = park_reading_position(page, scroll)
+    other = page.get_by_text("Reading sidebar B", exact=True).first
+    own = page.get_by_text("Transcript event rows", exact=True).first
+    other.click()
+    expect(scroll.get_by_text("Reading sidebar B message", exact=True)).to_be_in_viewport()
+
+    path = f"/api/sessions/{sid}/history"
+    def target(url):
+        parts = urlsplit(url)
+        return parts.path == path and parse_qs(parts.query).get("target") == ["reading-user-70"]
+
+    held = []
+    requests = []
+    find_targets = []
+
+    def count_target_requests(request):
+        uri = urlsplit(request.url)
+        if uri.path != path:
+            return
+        wanted = parse_qs(uri.query).get("target")
+        if wanted == ["reading-user-70"]:
+            requests.append(request.url)
+        if wanted == ["reading-user-50"]:
+            find_targets.append(request.url)
+
+    page.on("request", count_target_requests)
+
+    def hold_target(route):
+        held.append(route)
+        page.evaluate("console.debug('Reading target intercepted')")
+
+    page.route(target, hold_target)
+
+    # Simulate a checkpoint refresh replacing the browser's coverage with a
+    # tail page while the original reading target remains in server history.
+    tail = harness._api(port, "GET", f"{path}?turns=40")
+    page.route(f"**{path}?*refresh=*", lambda route: route.fulfill(json=tail))
+    send_frame(page, sid, "turn.start", turn_id="reading-background-refresh", agent_id="dev")
+    with page.expect_response(lambda res: "refresh=" in res.url and urlsplit(res.url).path == path) as refreshed:
+        send_frame(page, sid, "turn.state", running=False)
+    assert refreshed.value.finished() is None
+
+    def intercepted(message):
+        return message.text == "Reading target intercepted"
+
+    with page.expect_console_message(predicate=intercepted):
+        own.click()
+    assert len(held) == len(requests) == 1
+    expect(anchor).to_have_count(0)
+
+    if outcome == "restore":
+        held[0].continue_()
+        expect(anchor).to_be_in_viewport()
+        after = wait_for_reading_offset(page, anchor, before)
+        expect(rows).to_have_count(80)
+        print(json.dumps({"phase": "target-page", "delta_px": abs(after - before),
+                          "rows": rows.count(), "target_requests": len(requests)}))
+    elif outcome in ("missing", "error"):
+        if outcome == "missing":
+            held[0].fulfill(json={**tail, "messages": [], "page": {**tail["page"], "mode": "locate", "target": None}})
+        else:
+            held[0].fulfill(status=503, json={"detail": "fixture history error"})
+        expect(latest).to_be_in_viewport()
+        expect(anchor).to_have_count(0)
+    else:
+        with page.expect_event("requestfailed", predicate=lambda req: target(req.url)) as cancelled:
+            if outcome == "message":
+                page.evaluate('window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", {detail: "reading-user-615"}))')
+            elif outcome == "find":
+                find_in_session(page, "Reading request 0050")
+            elif outcome == "wheel":
+                scroll.hover()
+                page.mouse.wheel(0, 200)
+            else:
+                other.click()
+        assert cancelled.value.failure == "net::ERR_ABORTED"
+        held[0].abort()
+        if outcome == "message":
+            expect(scroll.locator('[data-msg-id="reading-user-615"]')).to_be_in_viewport()
+            expect(anchor).to_have_count(0)
+        elif outcome == "find":
+            expect_active_find(page, "Reading request 0050", row="reading-user-50")
+            expect(anchor).not_to_be_in_viewport()
+            assert len(find_targets) == 1
+        elif outcome == "rapid":
+            page.get_by_text("Reading sidebar C", exact=True).first.click()
+            expect(scroll.get_by_text("Reading sidebar C message", exact=True)).to_be_in_viewport()
+            with page.expect_console_message(predicate=intercepted):
+                own.click()
+            assert len(held) == 2
+            held[1].continue_()
+            expect(anchor).to_be_in_viewport()
+            assert abs(wait_for_reading_offset(page, anchor, before) - before) <= 2
+            assert len(requests) == 2
+            return
+        else:
+            expect(anchor).to_have_count(0)
+            page.wait_for_function('document.querySelector("[data-chat-scroll]").scrollTop > 0')
+    assert len(requests) == 1
+    assert rows.count() <= 80
+
+
 def test_paged_history_defers_tool_details_and_search_index(app):
     page, port, sid = app
     history_path = f"/api/sessions/{sid}/history"
@@ -653,6 +1035,9 @@ def test_paged_history_defers_tool_details_and_search_index(app):
         ])
     save_messages(sid, messages)
     requests = []
+    indexes = []
+    page.on("response", lambda res: indexes.append(res) if res.url.startswith(
+        f"http://127.0.0.1:{port}{history_path}?index=true") else None)
     page.on("request", lambda request: requests.append(request.url.split(f"127.0.0.1:{port}")[-1])
             if history_path in request.url else None)
     page.context.grant_permissions(["clipboard-read", "clipboard-write"])
@@ -661,11 +1046,23 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     wait_for_session_socket(page, sid, require_turn_state=True)
     expect(page.get_by_text("History answer 639", exact=True)).to_be_in_viewport()
     assert requests == [f"{history_path}?turns=40"]
+    for query in ("", "   ", ""):
+        field = find_in_session(page, query)
+        assert field.input_value() == query
+        field.press("Escape")
+        expect(field).not_to_be_visible()
+    assert requests == [f"{history_path}?turns=40"]
     expect(page.locator('[data-msg-id="history-user-0"]')).to_have_count(0)
     expect(page.locator('[data-msg-id="history-user-580"]')).to_have_count(0)
+    page.route(f"**{history_path}?turns=40&before=*", lambda route: route.fulfill(status=503), times=1)
     page.get_by_test_id("load-earlier").click()
+    retry_earlier = page.get_by_test_id("load-earlier").filter(has_text="Retry loading earlier messages")
+    expect(retry_earlier).to_be_visible()
+    expect(page.get_by_text("History answer 639", exact=True)).to_be_attached()
+    expect(page.get_by_role("button", name="Retry loading history", exact=True)).to_have_count(0)
+    retry_earlier.click()
     expect(page.locator('[data-msg-id="history-user-580"]')).to_be_attached()
-    assert len(requests) == 2 and "before=" in requests[1]
+    assert len(requests) == 3 and requests[1] == requests[2] and "before=" in requests[1]
     assert all("index=" not in request and "/tools/" not in request for request in requests)
 
     # Index the saved synthetic checkpoint, then use the actual global search.
@@ -694,6 +1091,113 @@ def test_paged_history_defers_tool_details_and_search_index(app):
     assert sum("/tools/" in request for request in requests) == 1
     assert page.locator("[data-chat-scroll] [data-find-row]").count() <= 80
 
+    assert len(indexes) == 1 and "messages" in indexes[0].json()
+    revision = indexes[0].json()["revision"]
+    field.press("Escape")
+    with page.expect_response(lambda res: res.url.endswith(f"?index=true&revision={revision}")) as check:
+        field = find_in_session(page, "First tool search sentinel")
+    expect_active_find(page, "First tool search sentinel", row="history-assistant-0")
+    assert check.value.json() == {"ok": True, "unchanged": True, "revision": revision}
+    assert len(indexes) == 2
+    print(f"find index, 640 turns: full={len(indexes[0].body())} B validation={len(check.value.body())} B")
+
+
+def test_find_index_retry_remote_revision_and_fork_isolation(app, tmp_path):
+    page, port, _ = app
+    remote = harness._api(port, "POST", "/api/sessions", {
+        "project_slug": "default", "workspace": str(tmp_path), "title": "Remote source fixture",
+        "remote_peer": "fixture-peer",
+    })["id"]
+    path = f"/api/sessions/{remote}/history"
+    old = [item for i in range(42) for item in (
+        HumanMessage(id=f"remote-user-{i}", content=f"Remote request {i}"),
+        AIMessage(id=f"remote-answer-{i}", content=f"Remote response {i}"),
+    )]
+    save_messages(remote, old)
+    capture_socket(page)
+    open_session(page, port, remote)
+    wait_for_session_socket(page, remote, require_turn_state=True)
+    expect(page.get_by_text("Remote response 41", exact=True)).to_be_in_viewport()
+    page.route(f"**{path}?index=true", lambda route: route.fulfill(status=503), times=1)
+    responses = []
+    page.on("response", lambda res: responses.append(res) if "/history?index=true" in res.url else None)
+    field = find_in_session(page, "Remote response 0")
+    retry = page.get_by_role("button", name="Retry loading search")
+    expect(retry).to_be_visible()
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true") and res.ok) as first:
+        retry.click()
+    expect_active_find(page, "Remote response 0", row="remote-answer-0")
+    revision = first.value.json()["revision"]
+    assert [res.status for res in responses] == [503, 200]
+
+    # Remote completion writes its local mirror before sending message.end.
+    # A non-orphan message.end leaves the paged revision unchanged until a page is requested.
+    rewritten = [old[0], AIMessage(id="remote-answer-0", content="Rewritten remote sentinel"), *old[2:]]
+    save_messages(remote, rewritten)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true&revision={revision}")) as changed:
+        send_frame(page, remote, "message.end", frame_session=remote, turn_id="remote-user-41")
+    assert changed.value.json()["revision"] != revision
+    field.fill("Rewritten remote sentinel")
+    expect_active_find(page, "Rewritten remote sentinel", row="remote-answer-0")
+    assert len(responses) == 3  # The target page also confirms the revision.
+    field.press("Escape")
+    page.get_by_text("Remote source fixture", exact=True).first.click(button="right")
+    with page.expect_response(lambda res: res.url.endswith(f"/api/sessions/{remote}/fork")) as forked:
+        page.get_by_role("menuitem", name="Fork", exact=True).click()
+    fork = forked.value.json()["new_id"]
+    expect(page.get_by_text("Remote response 41", exact=True)).to_be_in_viewport()
+    with page.expect_response(lambda res: res.url.endswith(f"/{fork}/history?index=true")) as copied:
+        find_in_session(page, "Rewritten remote sentinel")
+    expect_active_find(page, "Rewritten remote sentinel")
+    assert not any(row["id"] == "remote-answer-0" for row in copied.value.json()["messages"])
+    assert [res.status for res in responses] == [503, 200, 200, 200]
+
+
+def test_find_refreshes_once_when_history_page_revision_changes(app):
+    page, port, sid = app
+    path = f"/api/sessions/{sid}/history"
+    messages = [item for i in range(81) for item in (
+        HumanMessage(id=f"rev-user-{i}", content=f"Revision request {i}"),
+        AIMessage(id=f"rev-answer-{i}", content=f"Revision answer {i}"),
+    )]
+    save_messages(sid, messages)
+    open_session(page, port, sid)
+    expect(page.get_by_text("Revision answer 80", exact=True)).to_be_in_viewport()
+    indexes = []
+    page.on("request", lambda req: indexes.append(req.url) if f"{path}?index=true" in req.url else None)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true")) as original:
+        field = find_in_session(page, "New checkpoint sentinel")
+    revision = original.value.json()["revision"]
+    expect(page.get_by_text("No hits", exact=True)).to_be_visible()
+    messages[1] = AIMessage(id="rev-answer-0", content="New checkpoint sentinel")
+    save_messages(sid, messages)
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true&revision={revision}")) as updated:
+        page.get_by_test_id("load-earlier").click()
+    assert updated.value.json()["revision"] != revision
+    expect_active_find(page, "New checkpoint sentinel", row="rev-answer-0")
+    field.fill("Revision answer 0")
+    expect(page.get_by_text("No hits", exact=True)).to_be_visible()
+    assert len(indexes) == 2
+
+
+def test_find_waits_for_cold_history_revision(app):
+    page, port, sid = app
+    path = f"/api/sessions/{sid}/history"
+    save_messages(sid, [HumanMessage(id="cold-index", content="Cold find sentinel")])
+    held, indexes = [], []
+    page.route(f"**{path}?turns=40", lambda route: held.append(route), times=1)
+    page.on("request", lambda req: indexes.append(req.url) if f"{path}?index=true" in req.url else None)
+    page.clock.install()
+    open_session(page, port, sid)
+    expect(page.get_by_text("Loading conversation history…", exact=True)).to_be_visible()
+    find_in_session(page, "Cold find sentinel")
+    page.clock.run_for(200)  # Advance the query debounce while the history response is held.
+    assert len(held) == 1 and indexes == []
+    with page.expect_response(lambda res: res.url.endswith(f"{path}?index=true")):
+        held[0].continue_()
+    expect_active_find(page, "Cold find sentinel", row="cold-index")
+    assert len(indexes) == 1
+
 
 def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
     from PIL import Image
@@ -713,6 +1217,8 @@ def test_paged_replay_renders_mermaid_image_and_lazy_diff(app, tmp_path):
         ToolMessage(content="[exit 0]\n" + encode_images_marker([str(img)]), tool_call_id="plot-call"),
         ToolMessage(content="Synthetic edit receipt", tool_call_id="edit-call"),
         AIMessage(content="```mermaid\ngraph TD\n  A[Start] --> B[Finish]\n```"),
+        HumanMessage(id="diagram-followup", content="Continue the conversation"),
+        AIMessage(id="diagram-followup-answer", content="Latest answer without an edit"),
     ])
     tool_requests = []
     page.on("request", lambda req: tool_requests.append(req.url) if "/history/tools/" in req.url else None)

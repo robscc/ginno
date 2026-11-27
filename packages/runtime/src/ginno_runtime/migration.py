@@ -15,6 +15,7 @@ stats dict; never raises.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -33,8 +34,24 @@ def _inside_session_dir(norm_file: str, slug: str, session_id: str) -> bool:
         return False
 
 
+def _legacy_subdir(src: Path, session_id: str) -> str | None:
+    # A registry entry associates a file with a session for preview. It does
+    # not imply that Ginno owns the file. Match the layouts of the old writers.
+    if (
+        src.parent.name == session_id
+        and src.parent.parent.name == "uploads"
+        and re.fullmatch(r"[0-9a-f]{8}-.+", src.name, flags=re.DOTALL)
+    ):
+        return "uploads"
+    if src.parent.name == "results" and re.fullmatch(
+        r".+-result-[0-9a-f]{8}\.csv", src.name, flags=re.DOTALL,
+    ):
+        return "results"
+    return None
+
+
 def migrate_session_files() -> dict:
-    """Move session-attributed files that live outside their session dir into it.
+    """Move legacy managed uploads and analysis results into their session dirs.
 
     Returns ``{"scanned", "moved", "missing", "skipped", "errors"}``.
     """
@@ -67,6 +84,10 @@ def migrate_session_files() -> dict:
                 stats["skipped"] += 1  # already migrated (idempotent)
                 continue
             src = Path(old_norm)
+            subdir = _legacy_subdir(src, session_id)
+            if subdir is None:
+                stats["skipped"] += 1  # external reference, not a managed legacy file
+                continue
             if not src.is_file():
                 # tmp was cleared / file removed: keep the record but flag it so
                 # the UI shows the missing-file state instead of a broken link.
@@ -74,9 +95,6 @@ def migrate_session_files() -> dict:
                 stats["missing"] += 1
                 continue
 
-            # Legacy shape heuristic: files under a "results/" parent were
-            # analysis outputs; everything else (uploads) goes to uploads/.
-            subdir = "results" if src.parent.name == "results" else "uploads"
             dest_dir = paths.session_files_dir(slug, session_id) / subdir
             try:
                 dest_dir.mkdir(parents=True, exist_ok=True)
