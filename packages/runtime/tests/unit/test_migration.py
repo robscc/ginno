@@ -23,7 +23,7 @@ def _seed_legacy(isolated_home, tmp_path, sid="s1"):
     reg = get_registry("default")
 
     # legacy upload at <workspace>/uploads/<sid>/<file>  (shared workspace shape)
-    up = tmp_path / "gw" / "uploads" / sid / "abc123-data.xlsx"
+    up = tmp_path / "gw" / "uploads" / sid / "abc12345-data.xlsx"
     up.parent.mkdir(parents=True, exist_ok=True)
     up.write_bytes(b"x")
     art_up = art_store.add_artifact("default", "file", "data.xlsx", norm_path(up), sid)
@@ -55,7 +55,7 @@ def test_migration_moves_legacy_files_into_session_dirs(isolated_home, tmp_path)
     assert norm_path(new_up).startswith(norm_path(up_dir))
     assert norm_path(new_res).startswith(norm_path(res_dir))
     # physical files moved (old gone, new present)
-    assert not (tmp_path / "gw" / "uploads" / sid / "abc123-data.xlsx").exists()
+    assert not (tmp_path / "gw" / "uploads" / sid / "abc12345-data.xlsx").exists()
     from pathlib import Path
 
     assert Path(new_up).is_file() and Path(new_res).is_file()
@@ -63,6 +63,36 @@ def test_migration_moves_legacy_files_into_session_dirs(isolated_home, tmp_path)
     assert art_store.get_artifact("default", art_up["id"])["ref"] == norm_path(new_up)
     assert art_store.get_artifact("default", art_res["id"])["ref"] == norm_path(new_res)
     assert len(art_store.list_artifacts("default")) == 2
+
+
+@pytest.mark.parametrize('parts', [
+    ('vault', 'Ginno', 'Raw', 'scheduled-report.md'),
+    ('workspace', 'results', 'report.csv'),
+    ('workspace', 'uploads', 's1', 'report.md'),
+    ('workspace', 'uploads', 'another-session', 'deadbeef-report.md'),
+    ('workspace', 'results', 'data-result-2026.csv'),
+])
+def test_migration_leaves_external_artifact_and_original_ref_intact(isolated_home, tmp_path, parts):
+    from ginno_runtime.api.files import _register_artifact_file
+
+    sid = 's1'
+    path = tmp_path.joinpath(*parts)
+    path.parent.mkdir(parents=True)
+    content = b'# Scheduled report\n'
+    path.write_bytes(content)
+    original = norm_path(path)
+    artifact = art_store.add_artifact('default', 'file', path.name, original, sid)
+    _register_artifact_file('default', sid, artifact, original)
+    registry = get_registry('default')
+    file_id = registry.find_by_path(original)['id']
+
+    for _ in range(2):
+        stats = migration.migrate_session_files()
+        assert stats['moved'] == 0
+        assert stats['skipped'] == 1
+        assert path.read_bytes() == content
+        assert registry.get(file_id)['path'] == original
+        assert art_store.get_artifact('default', artifact['id'])['ref'] == original
 
 
 def test_migration_idempotent_second_run_noop(isolated_home, tmp_path):
@@ -76,7 +106,7 @@ def test_migration_idempotent_second_run_noop(isolated_home, tmp_path):
 
 def test_migration_missing_file_marks_stale(isolated_home, tmp_path):
     reg = get_registry("default")
-    ghost = tmp_path / "gw" / "uploads" / "s2" / "gone.csv"
+    ghost = tmp_path / "gw" / "uploads" / "s2" / "abcdef01-gone.csv"
     ghost.parent.mkdir(parents=True, exist_ok=True)
     ghost.write_text("x")
     e = reg.register("gone.csv", ghost, session_id="s2")
