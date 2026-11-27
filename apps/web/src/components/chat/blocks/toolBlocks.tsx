@@ -59,15 +59,22 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
   const key = detail ? `${detail.sessionId}/${detail.key}` : undefined;
   const value = loaded?.key === key ? loaded?.value : undefined;
   const detailFailed = failedKey !== undefined && failedKey === key;
+  const lineCount = detail?.lines ?? content.split("\n").length;
+  const charCount = detail?.chars ?? content.length;
+  const isLong = name === "spawn_subagent" || name === "delegate_agent" ||
+    lineCount > LONG_OUTPUT_LINES || charCount > LONG_OUTPUT_CHARS;
+  // The latest edit diff is visible by default even when replay gives us a
+  // lightweight header. Other deferred outputs stay closed until opened.
+  const expanded = open ?? ((diff ? isLatestTurn : !detail) && !isLong);
   useEffect(() => {
-    if (!detail || open !== true || pending || !key || value) return;
+    if (!detail || !expanded || pending || !key || value) return;
     let alive = true;
     loadHistoryTool(detail.sessionId, detail.key).then(
       (result) => { if (alive) setLoaded({ key, value: result }); },
       () => { if (alive) setFailedKey(key); },
     );
     return () => { alive = false; };
-  }, [open, pending, key, detail, value, attempt]);
+  }, [expanded, pending, key, detail, value, attempt]);
   // A configured label may carry several "|" separated names — pick one at
   // random per tool call (memoized so it stays stable pending → done and
   // across re-renders; a fresh call rolls again).
@@ -111,8 +118,6 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
   }
   const body = value?.content ?? content;
   const bodyDiff = value?.diff ?? diff;
-  const lineCount = detail?.lines ?? content.split("\n").length;
-  const charCount = detail?.chars ?? content.length;
   const shell = parseShellOutput(body);
   const del = name === "delegate_agent" ? parseDelegation(content) : null;
   // 机器头与溯源行是给模型/回放跳转看的，展示层剥掉。
@@ -123,17 +128,6 @@ export function ToolBlock({ name, content, pending, failed, argsPreview, argsStr
         .join("\n")
         .trim()
     : body;
-  // spawn_subagent 的回执是固定模板（"已启动 session_id=… / 它在后台独立运行…"），
-  // 每次委派都全展开会把主 agent 的内容挤下去——默认只留标题行，点开看全文
-  // （2026-10-01 空间优化）。模型侧拿到的仍是全文，这里只影响显示。
-  const isLong =
-    name === "spawn_subagent" ||
-    name === "delegate_agent" ||
-    lineCount > LONG_OUTPUT_LINES ||
-    charCount > LONG_OUTPUT_CHARS;
-  // 编辑 diff（2026-11-21）：历史 turn 默认收起（长会话里旧 diff 铺满屏），
-  // 只有最新 turn 保持默认展开；用户手动点开/收起（open 非 null）恒优先。
-  const expanded = open ?? (!detail && (!diff || isLatestTurn) && !isLong);
   const fail = toolFailed(content, failed);
   const interrupted = !fail && toolInterrupted(content);
   const reason = fail ? shell?.stderr?.trim().split("\n")[0] || content.trim().split("\n")[0] : "";
