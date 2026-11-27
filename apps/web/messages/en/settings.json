@@ -1,5 +1,40 @@
 {
   "settings": {
+    "voice": {
+      "title": "Voice input",
+      "model": "Speech recognition model",
+      "none": "Select a model",
+      "destination": "Audio is sent to Alibaba Cloud Model Studio ({region}).",
+      "setup": "Add and enable an ASR card with qwen-audio-3.1-asr-flash-message and the HTTPS workspace URL from Alibaba Cloud Model Studio.",
+      "modelApi": "Open Model API",
+      "shortcut": "Hold to talk",
+      "shortcutHint": "Works while Ginno is focused. Use the microphone button to grant access first. If macOS captures Fn, choose the combination instead.",
+      "off": "Off",
+      "save": "Save",
+      "saved": "Saved",
+      "loading": "Loading voice settings…",
+      "error": "Could not load or save voice settings.",
+      "retry": "Retry",
+      "start": "Start dictation",
+      "stop": "Finish",
+      "keep": "Keep confirmed text",
+      "cancel": "Cancel",
+      "idle": "Ready",
+      "starting": "Preparing dictation…",
+      "recording": "Listening",
+      "finishing": "Confirming the last words…",
+      "failed": "Dictation stopped",
+      "errors": {
+        "configuration": "Choose a speech recognition model in Settings.",
+        "microphone": "Could not access the microphone. Check macOS microphone permissions.",
+        "connection": "Speech recognition disconnected or timed out.",
+        "unsupported": "This window does not support microphone capture.",
+        "busy": "Another dictation is active.",
+        "empty": "No speech was recognized.",
+        "authorize": "Use the microphone button to grant access first.",
+        "unavailable": "Dictation is unavailable in this session."
+      }
+    },
     "language": {
       "label": "Language",
       "help": "UI language. \"Auto (system)\" follows your OS language; model replies follow this setting as well.",

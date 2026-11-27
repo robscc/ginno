@@ -6,7 +6,9 @@
 
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useState } from "react";
-import { Boxes, Paperclip, Keyboard, ArrowUp, AlertCircle, Server, Square, RotateCcw } from "lucide-react";
+import { Boxes, Paperclip, Keyboard, ArrowUp, AlertCircle, Server, Square, RotateCcw, Mic } from "lucide-react";
+import Link from "next/link";
+import { useVoiceDictation, VOICE_SETTINGS_PATH } from "./useVoiceDictation";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import type { useGinno } from "@/lib/store";
@@ -125,6 +127,34 @@ export function Composer({
   const [policyOpen, setPolicyOpen] = useState(false);
   const ctp = useTranslations("composer.toolPolicy");
   const tc = useTranslations("chat");
+  const tv = useTranslations("settings.voice");
+  const voice = useVoiceDictation(session?.id, composerBoxRef, () => {
+    const el = textareaRef.current;
+    const begin = el?.selectionStart ?? input.length;
+    const end = el?.selectionEnd ?? input.length;
+    return (text) => {
+      const left = input.slice(0, begin);
+      const right = input.slice(end);
+      const lead = /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(text) ? " " : "";
+      const tail = /[A-Za-z0-9]$/.test(text) && /^[A-Za-z0-9]/.test(right) ? " " : "";
+      const next = `${left}${lead}${text}${tail}${right}`;
+      // If a separate draft action changed the document, append without replacing text.
+      setInput((current) => current === input ? next : `${current}${current ? " " : ""}${text}`);
+      requestAnimationFrame(() => {
+        if (textareaRef.current !== el || !el) return;
+        el.focus();
+        const caret = el.value === next ? begin + lead.length + text.length : el.value.length;
+        el.setSelectionRange(caret, caret);
+      });
+    };
+  });
+  const voiceBusy = voice.phase !== "idle" && voice.phase !== "failed";
+  const sendDraft = () => {
+    if (voice.blocked()) return;
+    if (voice.phase === "failed") voice.cancel();
+    send();
+  };
+
   // 远端会话（审计 C2）：remote turn 只转发 user_text，附件/@mention/slash
   // skill 都到不了对端——入口全部禁用并说明原因（发送纯文本不受影响；
   // 后端 fail-loud 由 C1 补）。范式同 ModelChipMenu：disabled + tooltip。
@@ -244,9 +274,20 @@ export function Composer({
       {session && steerItems.length > 0 && (
         <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
       )}
+      {(voice.phase !== "idle" || voice.error) && <div className="mx-2 mb-2 rounded-lg border border-line bg-card px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <span role="status" className="mr-auto">{voice.error ? tv(`errors.${voice.error}` as "errors.connection") : tv(voice.phase)}</span>
+          {voice.phase === "recording" && <button className="text-violet" onClick={voice.stop}>{tv("stop")}</button>}
+          {voice.error === "configuration" && <Link className="text-violet" href={VOICE_SETTINGS_PATH}>{tv("title")}</Link>}
+          {voice.phase === "failed" && voice.confirmed && <button className="text-violet" onClick={voice.keep}>{tv("keep")}</button>}
+          <button className="text-muted" onClick={voice.cancel}>{tv("cancel")}</button>
+        </div>
+        {(voice.confirmed || voice.preview) && <p className="mt-1 break-words whitespace-pre-wrap">{voice.confirmed}<span className="text-muted">{voice.preview}</span></p>}
+      </div>}
       <textarea
         ref={textareaRef}
         value={input}
+        readOnly={voiceBusy}
         onChange={(e) => {
           const v = e.target.value;
           setInput(v);
@@ -379,7 +420,7 @@ export function Composer({
           }
           if (e.key === "Enter" && !e.shiftKey && !composing) {
             e.preventDefault();
-            send();
+            sendDraft();
           }
         }}
         rows={2}
@@ -515,6 +556,11 @@ export function Composer({
           onPick={(pid, m) => void pickModel(pid, m)}
           onPickModelEffort={(pid, m, e) => void pickModelAndThinking(pid, m, e)}
         />
+        <button type="button" aria-label={tv("start")} title={tv("start")}
+          disabled={voiceBusy} onClick={() => { if (voice.phase === "failed") voice.cancel(); void voice.start(); }}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-card hover:text-violet disabled:opacity-50">
+          <Mic className="h-4 w-4" />
+        </button>
         {running && session && !parked ? (
           <button
             onClick={stopTurn}
@@ -526,9 +572,10 @@ export function Composer({
           </button>
         ) : (
         <button
-          onClick={send}
+          onClick={sendDraft}
           aria-label={tc("composer.sendAria")}
           disabled={
+            voiceBusy ||
             parked ||
             running ||
             compacting ||

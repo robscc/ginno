@@ -29,6 +29,7 @@
       "groupSystem": "系统",
       "diagnosticsBadge": "诊断: {n} 项提醒",
       "items": {
+        "voice": "语音输入",
         "modelApi": "模型 API",
         "skills": "技能",
         "mcp": "MCP 工具",
@@ -954,8 +955,8 @@
         "kindLabel": "类型",
         "kindChat": "对话模型",
         "kindAsr": "语音识别",
-        "asrHint": "语音转写端点（OpenAI 兼容）：base_url + API Key + 转写模型（如 qwen3-asr-flash）。不参与对话与默认模型。",
-        "asrProtocolNote": "语音识别固定走 OpenAI 兼容端点（chat/completions + input_audio）。",
+        "asrHint": "语音识别配置需要服务地址、API Key 和模型。实时听写请填写百炼工作空间 HTTPS 地址，并选择实时 ASR 模型。",
+        "asrProtocolNote": "文件转写走 chat/completions，实时听写走百炼工作空间端点。",
         "thinkingParamStyleLabel": "思考参数风格",
         "thinkingParamStyleAuto": "自动（按协议）",
         "thinkingParamStyleEffort": "reasoning_effort 直传",

@@ -29,6 +29,7 @@
       "groupSystem": "System",
       "diagnosticsBadge": "Diagnostics: {n} warnings",
       "items": {
+        "voice": "Voice input",
         "modelApi": "Model API",
         "skills": "Skills",
         "mcp": "MCP Tools",
@@ -954,8 +955,8 @@
         "kindLabel": "Type",
         "kindChat": "Chat model",
         "kindAsr": "Speech-to-text",
-        "asrHint": "Speech-to-text endpoint (OpenAI-compatible): base URL + API key + transcription model (e.g. qwen3-asr-flash). Never used for chat or as the default model.",
-        "asrProtocolNote": "Speech-to-text always uses the OpenAI-compatible endpoint (chat/completions + input_audio).",
+        "asrHint": "Speech recognition requires an endpoint, API key, and model. For realtime dictation, use the Alibaba Cloud Model Studio HTTPS workspace URL and a realtime ASR model.",
+        "asrProtocolNote": "File transcription uses chat/completions. Realtime dictation uses the Alibaba Cloud Model Studio workspace endpoint.",
         "thinkingParamStyleLabel": "Thinking param style",
         "thinkingParamStyleAuto": "Auto (by protocol)",
         "thinkingParamStyleEffort": "reasoning_effort passthrough",

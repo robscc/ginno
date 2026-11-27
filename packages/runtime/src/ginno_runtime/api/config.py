@@ -494,7 +494,17 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
                 "API Key 仍是掩码占位值，请重新填写真实 Key",
             ),
         }
-    result = await asyncio.to_thread(prov_mod.verify_config_draft, draft)
+    from .. import voice_asr
+
+    if draft.get("kind") == "asr" and voice_asr.MODEL in prov_mod.normalize_config(draft)["models"]:
+        if not voice_asr.endpoint(draft):
+            return {"ok": False, "error": t(
+                "Enter the HTTPS URL of a supported Alibaba Cloud Model Studio workspace.",
+                "请输入受支持的阿里云百炼工作空间 HTTPS 地址。",
+            )}
+        result = await voice_asr.verify(draft)
+    else:
+        result = await asyncio.to_thread(prov_mod.verify_config_draft, draft)
     if not result.get("ok"):
         return {
             "ok": False,

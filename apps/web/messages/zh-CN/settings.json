@@ -1,5 +1,40 @@
 {
   "settings": {
+    "voice": {
+      "title": "语音输入",
+      "model": "语音识别模型",
+      "none": "请选择模型",
+      "destination": "听写音频会发送至阿里云百炼（{region}）。",
+      "setup": "请在模型 API 中添加并启用语音识别配置，填入 qwen-audio-3.1-asr-flash-message 和百炼工作空间的 HTTPS 地址。",
+      "modelApi": "前往模型 API",
+      "shortcut": "按住说话",
+      "shortcutHint": "仅在 Ginno 前台生效。请先点击麦克风授权。若 Fn 被 macOS 拦截，可改用组合键。",
+      "off": "关闭",
+      "save": "保存",
+      "saved": "已保存",
+      "loading": "正在加载语音设置…",
+      "error": "无法读取或保存语音设置。",
+      "retry": "重试",
+      "start": "开始听写",
+      "stop": "结束",
+      "keep": "保留已确认文字",
+      "cancel": "取消",
+      "idle": "就绪",
+      "starting": "准备听写…",
+      "recording": "听写中",
+      "finishing": "正在确认最后一段…",
+      "failed": "听写已停止",
+      "errors": {
+        "configuration": "请在设置中选择语音识别模型。",
+        "microphone": "无法访问麦克风，请检查 macOS 麦克风权限。",
+        "connection": "语音识别连接中断或超时。",
+        "unsupported": "此窗口不支持麦克风采集。",
+        "busy": "已有听写正在进行。",
+        "empty": "没有识别到语音。",
+        "authorize": "请先点击麦克风按钮授权。",
+        "unavailable": "当前会话无法使用听写。"
+      }
+    },
     "language": {
       "label": "语言",
       "help": "界面显示语言；「自动（跟随系统）」按系统语言选择，模型回复语言也随之切换。",
