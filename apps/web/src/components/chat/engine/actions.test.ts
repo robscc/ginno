@@ -33,6 +33,7 @@ function mkCtx(card: ChatMsg, sock: unknown = undefined) {
   const ctx = {
     curSessionIdRef: { current: "s1" },
     busyBySessionRef: { current: {} as Record<string, boolean> },
+    compactStageRef: { current: {} },
     storeRef: { current: { s1: [card] } as Record<string, ChatMsg[]> },
     socketsRef: { current: { s1: sock } as Record<string, WebSocket> },
     syncDisplay: vi.fn(),

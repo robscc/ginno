@@ -122,6 +122,7 @@ export function settleRecalled(ctx: EngineCtx, sid: string, ids: Array<string>):
  *  still queued, Claude Code sends only the oldest as the next turn"). The
  *  rest stay queued and follow the same rule on that turn's end (design §3.3). */
 export function flushSteerQueue(ctx: EngineCtx, sid: string) {
+  if (ctx.compactStageRef.current[sid]) return;
   // Pop the oldest out of the queue (the shared hook owns the ref write), then
   // promote it to the next turn here — turning it into a turn is this window's
   // concern, not the queue's.

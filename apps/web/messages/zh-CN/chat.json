@@ -60,7 +60,8 @@
       "channelReadonly": "{channel} 会话 · 此处只读",
       "channelHint": "回复在聊天应用里进行；在此改的智能体/模型/挂载目录仍会生效",
       "channelGeneric": "渠道",
-      "compactingPlaceholder": "压缩中……输入内容将在压缩完成后注入本轮对话",
+      "compactingPlaceholder": "正在压缩历史，完成后可发送",
+      "sendAria": "发送",
       "remoteAttachTitle": "远端会话暂不支持附件——文件不会送达远端节点",
       "remoteSlashTitle": "远端会话暂不支持 / 命令与 @ 提及",
       "remoteSteerHint": "远端会话运行中 · 输入将在本轮结束后作为新消息送达远端节点"
@@ -172,6 +173,7 @@
       "ariaRetry": "发送失败，点击重试",
       "editResend": "编辑重发",
       "delete": "删除",
+      "compacting": "正在压缩历史，完成后可发送",
       "textTooLong": "文本过长（上限 1MB），消息未发送"
     },
     "permission": {
@@ -311,7 +313,6 @@
     "reasoningSummary": {
       "title": "思考摘要",
       "receiving": "接收中",
-      "saved": "已记录",
       "offline": "连接中断",
       "offlineHint": "已收到的摘要可以继续查看。",
       "count": "{count} 段"

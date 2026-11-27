@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .... import commands as _commands
 from ....server_shared import (
+    _COMPACTING,
     _MANAGED_TURNS,
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -79,6 +80,18 @@ async def _touch_session_title(
 
 
 
+async def reject_compacting_invoke(conn: WsConn, turn_id: str) -> bool:
+    if conn.session_id not in _COMPACTING:
+        return False
+    # Only the originating socket has a placeholder for the rejected invoke.
+    await conn.ws.send_text(_ev("notice", {
+        "message": "Wait for compaction to finish before sending",
+        "i18n_key": "stream.busy_compacting",
+    }, turn_id))
+    await conn.ws.send_text(_ev("message.end", {}, turn_id))
+    return True
+
+
 async def handle_invoke(conn: WsConn, msg: dict) -> None:
     ws = conn.ws
     session_id = conn.session_id
@@ -107,6 +120,8 @@ async def handle_invoke(conn: WsConn, msg: dict) -> None:
         # event), else mint one. Forward it via config so _stream_graph
         # tags every emitted event + log line with it.
         turn_id = msg.get("turn_id") or str(uuid.uuid4())
+        if await reject_compacting_invoke(conn, turn_id):
+            return
         _imgs = msg.get("images") or []
         _log.info(
             "invoke session=%s turn=%s agent=%s imgs=%d text=%r",
@@ -169,19 +184,22 @@ async def handle_invoke(conn: WsConn, msg: dict) -> None:
                 from ....subagent_plan import run_background_command
 
                 if plan.builtin_async == "compact":
-                    await _push_session_event(
-                        session_id, "notice",
-                        {"message": "压缩已启动，完成后通知结果",
-                         "i18n_key": "stream.compact_started"},
-                        turn_id,
-                    )
+                    # Reserve before yielding so a second socket cannot start a
+                    # turn or another compaction before the background job runs.
+                    reservation = _COMPACTING[session_id] = {"stage": "summarizing"}
+                    task = spawn_bg(run_background_command(
+                        session, plan.builtin_async, plan.builtin_args, turn_id,
+                        compaction_reservation=reservation,
+                    ))
+
+                    def release_unstarted_compaction(_task):
+                        if _COMPACTING.get(session_id) is reservation:
+                            _COMPACTING.pop(session_id)
+
+                    task.add_done_callback(release_unstarted_compaction)
+                    return
                 spawn_bg(
-                    run_background_command(
-                        session,
-                        plan.builtin_async,
-                        plan.builtin_args,
-                        turn_id,
-                    )
+                    run_background_command(session, plan.builtin_async, plan.builtin_args, turn_id)
                 )
                 await _push_session_event(
                     session_id, "message.end", {}, turn_id
@@ -299,6 +317,9 @@ async def handle_invoke(conn: WsConn, msg: dict) -> None:
         if not plan.agent_override and user_text.strip():
             if await handle_plaza_route(conn, msg, turn_id, user_text):
                 return
+
+        if await reject_compacting_invoke(conn, turn_id):
+            return
 
         # Busy check: a turn task is already live for this session
         # (multi-tab race — the frontend gates sends on `running`).

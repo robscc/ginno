@@ -6,6 +6,7 @@ import type { ServerEvent } from "./types";
 import type { Block } from "@/components/chat/blocks";
 import type { ContextChange } from "@/lib/types";
 import { mid } from "../../streamCore";
+import { flushSteerQueue } from "../steer";
 
 export function onContextUpdated(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   // WorldState change announcement (world-state-plan §7). Chip display
@@ -81,6 +82,11 @@ export function compactionStageAfterFrame(stage: CompactionStage | null, ev: Ser
 
 export function onContextCompacting(ctx: EngineCtx, sid: string, ev: ServerEvent) {
   ctx.compactStageRef.current[sid] = compactionStageAfterFrame(ctx.compactStageRef.current[sid] ?? null, ev);
+  if (ev.event === "context.compacting" && ev.stage === "done" &&
+      !ctx.serverRunningRef.current[sid] && !ctx.busyBySessionRef.current[sid] &&
+      !ctx.liveBySessionRef.current[sid] && ctx.steerQ.itemsFor(sid)?.length) {
+    flushSteerQueue(ctx, sid);
+  }
 }
 
 export function onContextCompacted(ctx: EngineCtx, sid: string, ev: ServerEvent) {

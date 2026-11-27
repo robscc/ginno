@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import AsyncExitStack
 
 from ginno_runtime import jsonx as json
 
@@ -298,38 +299,46 @@ async def cancel_plan_and_broadcast(session_id: str, plan_id: str) -> bool:
 
 
 async def run_background_command(
-    session: dict, name: str, args: str, turn_id: str = ""
+    session: dict, name: str, args: str, turn_id: str = "", *,
+    compaction_reservation: dict[str, str] | None = None,
 ) -> None:
     """The WS background job for the subagent command family (P3 contract 5,
     P2 遗留): run the builtin async handler OFF the receive loop and broadcast
     its reply as a ``notice``. The invoking socket gets its message.end
-    immediately (the WS branch), so ping/stop/steer keep flowing while the
+    before the handler starts, so ping/stop keep flowing while the
     decompose LLM call runs; the split form's ``subagent.plan`` broadcast
     happens inside issue_plan on the same completion path (契约不变)."""
     from .commands.registry import BUILTINS
-    from . import session_state
 
     sid = session.get("session_id") or ""
-    # /compact 是 session 级状态重写：迁移 compacting（前端 spinner +
-    # 输入框锁定），完成/失败回 idle。subagent 族不迁（它们不改本会话状态）。
-    if name == "compact":
-        await session_state.set_state(sid, "compacting", detail="LLM 摘要中")
-    try:
-        reply = await BUILTINS[name].async_handler(
-            session.get("project_slug"), session, args
-        )
-    except Exception as e:
-        _log.exception(
-            "subagent_async_job_failed name=%s session=%s",
-            name, session.get("session_id"),
-        )
-        reply = t(
-            f"/{name} failed: {type(e).__name__}: {e}",
-            f"/{name} 失败：{type(e).__name__}: {e}",
-        )
-    finally:
+    async with AsyncExitStack() as activity:
         if name == "compact":
-            await session_state.set_state(sid, "idle")
+            from . import session_state
+            from .compaction import compaction_activity
+
+            await activity.enter_async_context(compaction_activity(
+                sid, turn_id, reservation=compaction_reservation,
+            ))
+            activity.push_async_callback(session_state.set_state, sid, "idle")
+            await session_state.set_state(sid, "compacting", detail="LLM 摘要中")
+            await _push_session_event(sid, "notice", {
+                "message": "压缩已启动，完成后通知结果",
+                "i18n_key": "stream.compact_started",
+            }, turn_id)
+            await _push_session_event(sid, "message.end", {}, turn_id)
+        try:
+            reply = await BUILTINS[name].async_handler(
+                session.get("project_slug"), session, args
+            )
+        except Exception as e:
+            _log.exception(
+                "subagent_async_job_failed name=%s session=%s",
+                name, session.get("session_id"),
+            )
+            reply = t(
+                f"/{name} failed: {type(e).__name__}: {e}",
+                f"/{name} 失败：{type(e).__name__}: {e}",
+            )
     try:
         await _push_session_event(
             session.get("session_id") or "", "notice", {"message": reply}, turn_id

@@ -31,6 +31,7 @@ from ....session_meta import _session_meta_patch
 from ...sessions import _emit_goal_event, _first_agent_id, _start_goal_driver
 from ..engine import _stop_parked_turn, _stream_graph, turn_error_fields
 from .handshake import WsConn
+from .invoke import reject_compacting_invoke
 
 
 async def handle_plan_confirm(conn: WsConn, msg: dict) -> None:
@@ -277,6 +278,8 @@ async def handle_retry_from_checkpoint(conn: WsConn, msg: dict) -> None:
     # successful state. This preserves tool calls and intermediate
     # results, avoiding redundant work on long-running turns.
     turn_id = msg.get("turn_id") or str(uuid.uuid4())
+    if await reject_compacting_invoke(conn, turn_id):
+        return
     # Client-facing id (the error card's retry round-trips it). If
     # the failed attempt was ABANDONED (stall watchdog / user stop)
     # its id is poisoned for checkpoint writes — FileCheckpointer

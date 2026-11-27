@@ -1020,6 +1020,14 @@ describe("③ 压缩阶段", () => {
     expect(refOf(bag, "compactStageRef")).toBeNull();
   });
 
+  it("另一个窗口抢发被服务端拒绝时保留可重试消息", () => {
+    const bag = makeBag();
+    bag.ctx.storeRef.current[SID] = [{ id: "u", role: "user", blocks: [], turnId: "t1", status: "sending" }];
+    handle(bag.ctx, SID, { event: "notice", turn_id: "t1", i18n_key: "stream.busy_compacting" });
+    handle(bag.ctx, SID, { event: "message.end", turn_id: "t1" });
+    expect(rows(bag).find((m) => m.id === "u")).toMatchObject({ status: "failed", failReason: "compacting" });
+  });
+
   it("压缩完成即清除阶段", () => {
     const bag = makeBag();
     handle(bag.ctx, SID, { event: "context.compacting", stage: "summarizing" });
