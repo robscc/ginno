@@ -144,7 +144,9 @@ function RefChip({
   const onOpen = async () => {
     if (!refId) return;
     if (refKind === "link") {
-      openLinkExternal(refId);
+      // Match Markdown links: the desktop opener needs explicit intent for loopback previews.
+      const localPreview = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+(?:[/?#]|$)/i.test(refId);
+      openLinkExternal(refId, localPreview);
       return;
     }
     if (isRemote) {
