@@ -4,14 +4,13 @@
 函数 docstring）。与 ``finalize.py``（正常收尾/finally 清理）共同构成
 finalize 阶段；拆开只为满足「每文件 ≤600 行」的模块预算。
 
-``handle_turn_error`` 返回 ``True`` 表示 steer-continue / auto-retry 分支
-已递归接管本轮（legacy 在 except 块内 ``return``——编排器据此 return，
-其后 finally 照常执行，与 legacy 的 Python 语义一致）。
+``handle_turn_error`` 返回真实收尾结果，递归接管时沿用接力段的结果。
 """
 
 from __future__ import annotations
 
 from .. import engine as eng
+from ..outcome import TurnOutcome
 from .ctx import StreamTurnCtx
 
 
@@ -48,12 +47,8 @@ async def handle_turn_stopped(ctx: StreamTurnCtx) -> None:
         )
 
 
-async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> bool:
-    """legacy engine.py:1468-1744 — except Exception。
-
-    返回 True = steer-continue / auto-retry 已递归接管（legacy 的
-    ``return``），编排器据此返回；finally 仍照常执行。
-    """
+async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> TurnOutcome:
+    """Persist a failure or return the outcome of a continuation attempt."""
     import asyncio
 
     # A turn the USER steered mid-flight outran the budget it was sized
@@ -96,7 +91,7 @@ async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> bool:
                 )
                 from .run import stream_graph_staged
 
-                await stream_graph_staged(
+                return await stream_graph_staged(
                     ctx.graph,
                     {
                         **ctx.config,
@@ -115,7 +110,6 @@ async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> bool:
                     input_state=None,
                     command=None,
                 )
-                return True
     # Transient provider/network failure (SSL drop, connection error,
     # 429/5xx, stall watchdog): auto-retry from the latest checkpoint with
     # a backoff instead of failing the turn — see AUTO_RETRY_MAX notes.
@@ -191,13 +185,12 @@ async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> bool:
                 if _has_ckpt or ctx.input_state is not None:
                     from .run import stream_graph_staged
 
-                    await stream_graph_staged(
+                    return await stream_graph_staged(
                         ctx.graph,
                         _retry_conf,
                         input_state=None if _has_ckpt else ctx.input_state,
                         command=None,
                     )
-                    return True
     eng._log.exception(
         "turn_error session=%s turn=%s", ctx.session_id, ctx.turn_id
     )
@@ -255,6 +248,6 @@ async def handle_turn_error(ctx: StreamTurnCtx, e: Exception) -> bool:
         eng._log.exception(
             "mods_turn_complete_failed session=%s", ctx.session_id
         )
-    return False
+    return TurnOutcome.FAILED
 
 

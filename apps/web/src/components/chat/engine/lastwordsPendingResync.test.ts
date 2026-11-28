@@ -44,6 +44,7 @@ describe("lastwords pending 拉取式兜底", () => {
     expect(engine).toMatch(
       /handle\(sid,\s*\{\s*event:\s*"runtime\.lastwords_pending",\s*\.\.\.it\s*\}\)/,
     );
+    expect(engine).toContain('handle(sid, { event: "runtime.lastwords_status", ...receipt });');
   });
 
   it("逐条遍历且跳过无 session_id 的条目", () => {
@@ -59,6 +60,6 @@ describe("lastwords pending 拉取式兜底", () => {
 
   it("handler 侧 dedupeKey 保证真实帧与拉取帧不双弹", () => {
     const h = read("src/components/chat/engine/handlers/07-runtime-events.ts");
-    expect(h).toContain("lastwords-pending:${lpSid}");
+    expect(h).toContain("lastwords-pending:${recoveryId || lpSid}");
   });
 });

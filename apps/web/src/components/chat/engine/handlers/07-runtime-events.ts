@@ -5,7 +5,7 @@ import type { EngineCtx } from "../ctx";
 import type { ServerEvent } from "./types";
 import { dismissLastwords, resumeLastwords } from "@/lib/runtime";
 import { notifyNative } from "@/lib/desktop";
-import { pushNotice } from "@/lib/notice";
+import { noticeRevision, pushNotice, type NoticeLevel } from "@/lib/notice";
 import { pushDevSwapRun } from "@/lib/devswap/bus";
 import { normalizeDevSwapRun } from "@/lib/devswap/types";
 import { markDelivered } from "../liveBubble";
@@ -29,17 +29,21 @@ export function onDevswapProgress(ctx: EngineCtx, sid: string, ev: ServerEvent) 
   if (run) pushDevSwapRun(run);
 }
 
+function lastwordsRevision(ev: ServerEvent): number | undefined {
+  return typeof ev.updated_at === "number" && Number.isFinite(ev.updated_at) && ev.updated_at > 0
+    ? ev.updated_at
+    : undefined;
+}
+
 export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent) {
-  // 遗言恢复确认（2026-11-16 交互补齐）：旧实现只投一条通知、点击仅跳
-  // 会话，靠注入带里的「请从中断处继续」让 agent 自己动——用户没有按钮
-  // 可点（「遗言好像没触发过」的直接原因之一）。现在通知卡片即决策面：
-  // 「恢复」真调 /api/lastwords/resume，「忽略」调同端点 dismiss:true；
-  // 常驻（duration:0）等用户决策，绝不 6s 自动消失。点卡片本体仍跳会话
-  // （actionMeta 保留）。后端契约：人工会话 + 任意 reason + notify/auto
-  // 都发本事件；payload 带 head（请求摘要）与 bg_interrupted（被重启杀掉
-  // 的后台任务数）——文案必须呈现，用户才知道要恢复的是什么。
   const lpSid = String(ev.session_id ?? "");
+  const recoveryId = String(ev.recovery_id ?? "");
   if (!lpSid) return;
+  const pendingKey = `lastwords-pending:${recoveryId || lpSid}`;
+  const revision = lastwordsRevision(ev);
+  const previous = noticeRevision(pendingKey);
+  if (previous !== undefined && (revision === undefined || revision < previous)) return;
+  const cardIsCurrent = () => (noticeRevision(pendingKey) ?? 0) <= (revision ?? 0);
   {
     const { tr } = ctx.i18nRef.current;
     const tools = Number(ev.tool_calls ?? 0);
@@ -51,24 +55,32 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
       String(ev.head || ev.user_request_head || "").trim() ||
       tr("notice.lastwords-no-head");
     const bgInterrupted = Number(ev.bg_interrupted ?? 0);
-    const text = tr("notice.lastwords-pending", { head, tools, elapsed: mm, bgInterrupted });
-    const pendingKey = `lastwords-pending:${lpSid}`;
+    const pending = tr("notice.lastwords-pending", { head, tools, elapsed: mm, bgInterrupted });
+    const text = ev.uncertain ? `${pending} ${tr("notice.lastwords-uncertain")}` : pending;
     const jumpMeta = { kind: "session" as const, id: lpSid };
     // 反馈复用 pending dedupeKey：收件箱条目原位刷新成结果文案，不残留
     // 过期的「要恢复吗」；失败卡带重试按钮（错误不吞、可再点）。
     const doResume = () => {
       void (async () => {
         try {
-          const r = await resumeLastwords(lpSid);
-          if (r?.ok) {
+          const r = await (recoveryId ? resumeLastwords(lpSid, recoveryId) : resumeLastwords(lpSid));
+          if (r?.ok && recoveryId && r.status === "queued") {
+            onLastwordsStatus(ctx, sid, { ...r, event: "runtime.lastwords_status", session_id: lpSid, recovery_id: recoveryId });
+          } else if (!cardIsCurrent()) {
+            return;
+          } else if (r?.ok) {
             pushNotice("success", tr("notice.lastwords-resume-ok"), {
               source: "general",
               kind: "lastwords",
               dedupeKey: pendingKey,
               actionMeta: jumpMeta,
             });
-          } else if (r?.error === "no_pending") {
-            // 条目已过期/已处置（TTL 或别处已确认）——明确告知，不重试。
+          } else if (r?.error === "awaiting_input") {
+            pushNotice("info", tr("notice.lastwords-awaiting-input"), {
+              source: "general", kind: "lastwords", dedupeKey: pendingKey, actionMeta: jumpMeta,
+            });
+          } else if (r?.error === "no_pending" || r?.error === "stale_recovery") {
+            // An old card cannot act on a later recovery for the same session.
             pushNotice("warn", tr("notice.lastwords-resume-expired"), {
               source: "general",
               kind: "lastwords",
@@ -78,7 +90,9 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
           } else {
             pushNotice(
               "error",
-              tr("notice.lastwords-resume-failed", { error: String(r?.error ?? "unknown") }),
+              r?.error === "session_busy"
+                ? tr("notice.lastwords-session-busy")
+                : tr("notice.lastwords-resume-failed", { error: String(r?.error ?? "unknown") }),
               {
                 source: "general",
                 kind: "lastwords",
@@ -90,6 +104,7 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
             );
           }
         } catch (e) {
+          if (!cardIsCurrent()) return;
           pushNotice(
             "error",
             tr("notice.lastwords-resume-failed", {
@@ -110,14 +125,22 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
     const doDismiss = () => {
       void (async () => {
         try {
-          await dismissLastwords(lpSid);
-          pushNotice("info", tr("notice.lastwords-dismissed"), {
+          const r = await (recoveryId ? dismissLastwords(lpSid, recoveryId) : dismissLastwords(lpSid));
+          if (r.ok && recoveryId && r.status === "dismissed") {
+            onLastwordsStatus(ctx, sid, { ...r, event: "runtime.lastwords_status", session_id: lpSid, recovery_id: recoveryId });
+            return;
+          }
+          if (!cardIsCurrent()) return;
+          if (!r.ok && r.error !== "stale_recovery") throw new Error(r.error || "unknown");
+          pushNotice("info", tr(r.had === false || r.error === "stale_recovery"
+            ? "notice.lastwords-resume-expired" : "notice.lastwords-dismissed"), {
             source: "general",
             kind: "lastwords",
             dedupeKey: pendingKey,
             actionMeta: jumpMeta,
           });
         } catch (e) {
+          if (!cardIsCurrent()) return;
           pushNotice(
             "error",
             tr("notice.lastwords-dismiss-failed", {
@@ -140,6 +163,7 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
       kind: "lastwords",
       countInBadge: true,
       dedupeKey: pendingKey,
+      revision,
       duration: 0,
       actionMeta: jumpMeta,
       action: { label: tr("notice.lastwords-resume-btn"), onClick: doResume },
@@ -150,6 +174,7 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
     // P1-5：但仍必须过偏好闸门——修复前这一路连总开关都不看，用户关掉
     // 「启用桌面提醒」它照样弹。归类 askUser（等人确认），闸门由
     // notifyNative 出口统一施加。
+    if (revision !== undefined && revision === previous) return;
     void notifyNative({
       kind: "session",
       notifyKind: "askUser",
@@ -160,7 +185,42 @@ export function onLastwordsPending(ctx: EngineCtx, sid: string, ev: ServerEvent)
   }
 }
 
+const lastwordsStatuses: Record<string, { key: string; level: NoticeLevel }> = {
+  queued: { key: "lastwords-resume-ok", level: "info" },
+  running: { key: "lastwords-running", level: "info" },
+  awaiting_input: { key: "lastwords-awaiting-input", level: "info" },
+  completed: { key: "lastwords-completed", level: "success" },
+  notified: { key: "lastwordsRestored", level: "info" },
+  failed: { key: "lastwords-execution-failed", level: "error" },
+  stopped: { key: "lastwords-stopped", level: "info" },
+  interrupted: { key: "lastwords-uncertain", level: "warn" },
+  dismissed: { key: "lastwords-dismissed", level: "info" },
+  stale: { key: "lastwords-resume-expired", level: "warn" },
+};
+
+export function onLastwordsStatus(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  const sessionId = String(ev.session_id ?? "");
+  const recoveryId = String(ev.recovery_id ?? "");
+  const status = lastwordsStatuses[String(ev.status ?? "")];
+  if (!sessionId || !recoveryId || !status) return;
+  const dedupeKey = `lastwords-pending:${recoveryId}`;
+  const revision = lastwordsRevision(ev);
+  const previous = noticeRevision(dedupeKey);
+  if (previous !== undefined && (revision === undefined || revision <= previous)) return;
+  pushNotice(status.level, ctx.i18nRef.current.tr(`notice.${status.key}`), {
+    source: "general",
+    kind: "lastwords",
+    dedupeKey,
+    revision,
+    actionMeta: { kind: "session", id: sessionId },
+  });
+}
+
 export function onLastwordsRestored(ctx: EngineCtx, sid: string, ev: ServerEvent) {
+  if (ev.recovery_id) {
+    onLastwordsStatus(ctx, sid, ev);
+    return;
+  }
   // 遗言恢复回执（docs/lastwords-design.md P2 通知中心待恢复列表）：
   // 新 sidecar 启动扫描后广播——投一条收件箱条目（kind:"lastwords"，
   // countInBadge:true，dedupeKey 按会话去重），action 跳回原会话。

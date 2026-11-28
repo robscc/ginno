@@ -14,7 +14,7 @@ mode（notify|auto|off）注入回原 session——agent 被唤醒接着干，�
   增量覆盖写（reason="running"）——SIGKILL 场景最多丢最后一次增量。
 
 消费方：``recover_lastwords()``（server.py lifespan 启动段后台 task）。
-exactly-once：注入成功/session 不存在/异常终态/TTL 过期 → 删文件。
+恢复回执按恢复 ID 持久化。已失败的原始快照留作诊断，启动扫描会跳过。
 
 快照不调 LLM（重启窗口宝贵）；注入走 tasks/inject 的 ``[task …]`` 首行
 族格式（``[lastwords] …`` 前缀），前端 foldTaskEventBlocks 家族识别折叠。
@@ -22,15 +22,23 @@ exactly-once：注入成功/session 不存在/异常终态/TTL 过期 → 删文
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from . import paths
 
-_log = logging.getLogger("ginno.lastwords")
+_log = logging.getLogger("ginno.turn.lastwords")
+
+# Serialize publication and cleanup with the prepare worker thread.
+_WRITE_LOCK = threading.RLock()
 
 # TTL：遗言只在重启后短时间内有意义（更晚的注入用户已无上下文），
 # 过期文件在启动扫描时直接清理。按 reason 分级（2026-11-07 首跑质量修）：
@@ -48,7 +56,7 @@ REASON_RUNNING = "running"
 EXPLICIT_REASONS = (REASON_DEV_SWAP, REASON_SIGNAL)
 
 # settings.json → devswap.lastwords.mode 的合法值（默认 notify）。
-# notify：人工会话挂起待确认（点「恢复」续跑）；subagent 无感直跑。
+# notify：人工会话挂起待确认，子代理会话仅注入提示。
 # auto  ：人工会话**重启后也自动续跑**（2026-11-19 恢复语义，用户配置化
 #         opt-in——默认不变，选 auto 即接受自动接着干）；subagent 同。
 # off   ：不注入不复跑，仅启动扫描清过期文件。
@@ -257,9 +265,34 @@ def _resolve_slug(session_id: str) -> str | None:
 
 def _write_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _publish_snapshot(sid: str, snap: dict, effort: dict | None) -> None:
+    """Publish under _WRITE_LOCK after the caller verifies ownership."""
+    if effort:
+        snap["turn_id"] = effort["turn_id"]
+        snap["registered_turn_id"] = effort["registered_turn_id"]
+        snap["effort"] = {key: effort[key] for key in ("turn_id", "started_at", "tool_calls")}
+        if "request_head" in effort:
+            snap["user_request_head"] = effort["request_head"]
+    _write_atomic(_path(sid), snap)
+    _LAST_WRITE_AT[sid] = time.monotonic()
 
 
 def write_lastwords(
@@ -286,35 +319,41 @@ def write_lastwords(
         if not slug:
             _log.info("lastwords_skip_no_slug session=%s", sid)
             continue
+        with _WRITE_LOCK:
+            effort = _EFFORT.get(sid)
+            remote = _REMOTE_HEADS.get(sid)
         try:
             msgs = loader(slug, sid)
+            if effort and effort["registered_turn_id"] == turn_id:
+                if "request_head" in effort:
+                    msgs = _messages_from_turn(msgs, effort["turn_id"], turn_id)
+            elif not remote or remote["turn_id"] != turn_id:
+                # A WS invoke registers before entering the engine. Use a
+                # matching checkpoint when opening has not yet supplied input.
+                msgs = _messages_from_turn(msgs, turn_id, turn_id)
+                if not msgs:
+                    continue
             snap = snapshot_from_messages(
-                sid, slug, msgs, reason=reason, fingerprint_old=fingerprint_old
+                sid, slug, msgs, reason=reason, fingerprint_old=fingerprint_old,
             )
             snap["turn_id"] = turn_id
-            # 出站远程 turn 覆盖（2026-11-18）：本地 checkpoint 没有在途
-            # 请求（远端会话只在 turn 结束时落盘），快照必须取自执行器
-            # 注册表里的真实 user_text / 流式尾部，否则抓到的是上一轮。
-            reg = _REMOTE_HEADS.get(sid)
-            if reg is not None and reg.get("turn_id") == turn_id:
-                head = str(reg.get("user_text") or "").strip()
-                if head:
-                    snap["user_request_head"] = head[:HEAD_CHARS]
-                tail = str(reg.get("agent_tail") or "").strip()
-                if tail:
-                    snap["last_agent_message"] = tail[-HEAD_CHARS:]
-                snap["remote"] = True
-                if reg.get("peer"):
-                    snap["peer"] = str(reg["peer"])
-                if reg.get("last_tool"):
-                    snap["running_tools"] = [str(reg["last_tool"])]
-            # 工作量信号（首跑质量修）：进程内计数随快照落盘——消费侧
-            # 门槛判定需要（dev-swap/signal 遗言同样要带）。
-            if sid in _EFFORT:
-                snap["effort"] = dict(_EFFORT[sid])
-            _write_atomic(_path(sid), snap)
-            _LAST_WRITE_AT[sid] = time.monotonic()
-            count += 1
+            with _WRITE_LOCK:
+                # The checkpoint read above can race a finish or another start.
+                if sessions is None and shared._RUNNING_TURNS.get(sid) != turn_id:
+                    continue
+                if _EFFORT.get(sid) is not effort or _REMOTE_HEADS.get(sid) is not remote:
+                    continue
+                if remote and remote["turn_id"] == turn_id:
+                    snap.update(
+                        user_request_head=remote["user_text"][:HEAD_CHARS],
+                        last_agent_message=remote["agent_tail"][-HEAD_CHARS:],
+                        running_tools=[remote["last_tool"]] if remote["last_tool"] else [],
+                        remote=True,
+                        peer=remote["peer"],
+                    )
+                owned_effort = effort if effort and effort["registered_turn_id"] == turn_id else None
+                _publish_snapshot(sid, snap, owned_effort)
+                count += 1
         except Exception:  # noqa: BLE001 — 单 session 失败不拖累其余
             _log.exception("lastwords_write_failed session=%s", sid)
     if not count and reason in (REASON_DEV_SWAP, REASON_SIGNAL):
@@ -345,19 +384,25 @@ def write_lastwords(
 # --------------------------------------------------------------------------- #
 
 
-def _reset_effort(session_id: str, turn_id: str) -> dict:
-    e = {"turn_id": turn_id, "started_at": time.time(), "tool_calls": 0}
-    _EFFORT[session_id] = e
-    return e
+def _reset_effort(session_id: str, turn_id: str, registered_turn_id: str) -> dict:
+    effort = {
+        "turn_id": turn_id,
+        "registered_turn_id": registered_turn_id,
+        "started_at": time.time(),
+        "tool_calls": 0,
+    }
+    _EFFORT[session_id] = effort
+    return effort
 
 
-def _bump_effort(session_id: str, turn_id: str) -> dict:
-    """工具边界计数 +1（节流之外每次都记——节流只限写盘频率，不限计数）。"""
-    e = _EFFORT.get(session_id)
-    if e is None or e.get("turn_id") != turn_id:
-        e = _reset_effort(session_id, turn_id)
-    e["tool_calls"] = int(e.get("tool_calls") or 0) + 1
-    return e
+def _messages_from_turn(messages: list[Any], turn_id: str, registered_turn_id: str) -> list[Any]:
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if getattr(msg, "type", None) == "human" and getattr(msg, "id", None) in (
+            turn_id, registered_turn_id,
+        ):
+            return messages[i:]
+    return []
 
 
 def _write_remote_snapshot(session_id: str, reason: str) -> None:
@@ -382,10 +427,7 @@ def _write_remote_snapshot(session_id: str, reason: str) -> None:
     if reg.get("peer"):
         snap["peer"] = str(reg["peer"])
     snap["turn_id"] = str(reg.get("turn_id") or "")
-    if session_id in _EFFORT:
-        snap["effort"] = dict(_EFFORT[session_id])
-    _write_atomic(_path(session_id), snap)
-    _LAST_WRITE_AT[session_id] = time.monotonic()
+    _publish_snapshot(session_id, snap, _EFFORT.get(session_id))
 
 
 def note_remote_turn_start(
@@ -406,20 +448,17 @@ def note_remote_turn_start(
     if not session_id or not user_text:
         return
     try:
-        _REMOTE_HEADS[session_id] = {
-            "turn_id": turn_id,
-            "user_text": user_text,
-            "peer": peer,
-            "agent_tail": "",
-            "last_tool": "",
-            "project_slug": project_slug,
-        }
-        snap_effort = _reset_effort(session_id, turn_id)
-        _write_remote_snapshot(session_id, REASON_RUNNING)
-        _log.info(
-            "lastwords_remote_turn_start session=%s turn=%s peer=%s effort=%s",
-            session_id, turn_id, peer, snap_effort.get("tool_calls"),
-        )
+        with _WRITE_LOCK:
+            _REMOTE_HEADS[session_id] = {
+                "turn_id": turn_id,
+                "user_text": user_text,
+                "peer": peer,
+                "agent_tail": "",
+                "last_tool": "",
+                "project_slug": project_slug,
+            }
+            _reset_effort(session_id, turn_id, turn_id)
+            _write_remote_snapshot(session_id, REASON_RUNNING)
     except Exception:  # noqa: BLE001 — 遗言绝不拖累 turn 本体
         _log.exception("lastwords_remote_turn_start_failed session=%s", session_id)
 
@@ -437,51 +476,76 @@ def note_remote_progress(
     IO，每帧都调）；tool 边界 bump effort 并按 ``TOOL_WRITE_MIN_INTERVAL_S``
     节流覆盖写 WAL——计数每次都加，节流只限写盘频率。
     """
-    reg = _REMOTE_HEADS.get(session_id)
-    if reg is None or reg.get("turn_id") != turn_id:
-        return
     try:
-        if agent_tail is not None:
-            reg["agent_tail"] = (str(reg.get("agent_tail") or "") + str(agent_tail))[-2000:]
-        if tool_name:
-            _bump_effort(session_id, turn_id)
-            reg["last_tool"] = str(tool_name)
-            now = time.monotonic()
-            last = _LAST_WRITE_AT.get(session_id)
-            if last is None or (now - last) >= TOOL_WRITE_MIN_INTERVAL_S:
-                _write_remote_snapshot(session_id, REASON_RUNNING)
+        with _WRITE_LOCK:
+            reg = _REMOTE_HEADS.get(session_id)
+            if reg is None or reg["turn_id"] != turn_id:
+                return
+            if agent_tail is not None:
+                reg["agent_tail"] = (reg["agent_tail"] + agent_tail)[-2000:]
+            if tool_name:
+                _EFFORT[session_id]["tool_calls"] += 1
+                reg["last_tool"] = tool_name
+                last = _LAST_WRITE_AT.get(session_id, -float("inf"))
+                if time.monotonic() - last >= TOOL_WRITE_MIN_INTERVAL_S:
+                    _write_remote_snapshot(session_id, REASON_RUNNING)
     except Exception:  # noqa: BLE001
         _log.exception("lastwords_remote_progress_failed session=%s", session_id)
 
 
-def note_remote_turn_end(session_id: str, turn_id: str) -> None:
-    """远端 turn 收口：注销注册表 + 走 note_turn_end 语义（删遗言）。
-
-    必须挂在执行体 finally（协程被取消也要清）；优雅关闭中不删文件
-    （``_SHUTTING_DOWN``，与本地版同款 SIGTERM 保护）。
-    """
-    reg = _REMOTE_HEADS.pop(session_id, None)
-    if reg is not None and reg.get("turn_id") != turn_id:
-        # 后继 turn 已重注册：把注册表还回去，只按身份校验跳过清理
-        _REMOTE_HEADS[session_id] = reg
-        return
-    note_turn_end(session_id, turn_id)
+def note_remote_turn_end(
+    session_id: str, turn_id: str, *, outcome: str | None = None, interrupted: bool = False,
+) -> None:
+    with _WRITE_LOCK:
+        reg = _REMOTE_HEADS.get(session_id)
+        if reg is not None and reg["turn_id"] != turn_id:
+            return
+        _REMOTE_HEADS.pop(session_id, None)
+        note_turn_end(session_id, turn_id, outcome=outcome, interrupted=interrupted)
 
 
-def note_turn_start(session_id: str, turn_id: str, project_slug: str | None) -> None:
-    """turn 启动即写初始遗言（reason=running）——工具执行期被 SIGKILL 也有底。"""
+def note_turn_start(
+    session_id: str,
+    turn_id: str,
+    project_slug: str | None,
+    *,
+    input_messages: list[Any] | None = None,
+    registered_turn_id: str | None = None,
+) -> None:
+    """Capture the submitted input before the first checkpoint is committed."""
     if not session_id:
         return
     try:
         slug = project_slug or _resolve_slug(session_id)
         if not slug:
             return
-        msgs = _load_thread_messages(slug, session_id)
-        snap = snapshot_from_messages(session_id, slug, msgs, reason=REASON_RUNNING)
-        snap["turn_id"] = turn_id
-        snap["effort"] = _reset_effort(session_id, turn_id)
-        _write_atomic(_path(session_id), snap)
-        _LAST_WRITE_AT[session_id] = time.monotonic()
+        logical_id = registered_turn_id or turn_id
+        messages = input_messages
+        if messages is None:
+            messages = _load_thread_messages(slug, session_id)
+            if registered_turn_id is not None:
+                messages = _messages_from_turn(messages, turn_id, logical_id)
+        snap = snapshot_from_messages(session_id, slug, messages, reason=REASON_RUNNING)
+        for msg in reversed(messages):
+            if getattr(msg, "id", None) not in (turn_id, logical_id):
+                continue
+            if getattr(msg, "type", None) != "human":
+                continue
+            marker = (getattr(msg, "additional_kwargs", None) or {}).get("ginno_lastwords") or {}
+            snap["user_request_head"] = str(
+                marker.get("request_head", _text_of(msg.content))
+            )[:HEAD_CHARS]
+            break
+        with _WRITE_LOCK:
+            prior = _EFFORT.get(session_id)
+            effort = _reset_effort(session_id, turn_id, logical_id)
+            effort["request_head"] = snap["user_request_head"]
+            if prior and prior["registered_turn_id"] == logical_id:
+                effort["started_at"] = prior["started_at"]
+                effort["tool_calls"] = prior["tool_calls"]
+                if not messages and "request_head" in prior:
+                    effort["request_head"] = prior["request_head"]
+            _publish_snapshot(session_id, snap, effort)
     except Exception:  # noqa: BLE001 — 遗言绝不拖累 turn 本体
         _log.exception("lastwords_turn_start_failed session=%s", session_id)
 
@@ -489,47 +553,49 @@ def note_turn_start(session_id: str, turn_id: str, project_slug: str | None) -> 
 def note_tool_boundary(
     session_id: str, turn_id: str, project_slug: str | None, messages: list[Any]
 ) -> None:
-    """工具调用边界增量覆盖写（节流：同 session ≥TOOL_WRITE_MIN_INTERVAL_S）。"""
+    """Count every tool batch and coalesce writes for the current attempt."""
     if not session_id:
         return
-    # 计数先行（节流前）——被节流丢掉的写盘不丢工作量信号。
-    effort = _bump_effort(session_id, turn_id)
-    now = time.monotonic()
-    last = _LAST_WRITE_AT.get(session_id)
-    if last is not None and (now - last) < TOOL_WRITE_MIN_INTERVAL_S:
-        return
     try:
-        slug = project_slug or _resolve_slug(session_id)
-        if not slug:
-            return
-        snap = snapshot_from_messages(session_id, slug, messages, reason=REASON_RUNNING)
-        snap["turn_id"] = turn_id
-        snap["effort"] = dict(effort)
-        _write_atomic(_path(session_id), snap)
-        _LAST_WRITE_AT[session_id] = now
+        with _WRITE_LOCK:
+            effort = _EFFORT.get(session_id)
+            if effort is not None and effort["turn_id"] != turn_id:
+                return
+            if effort is None:
+                effort = _reset_effort(session_id, turn_id, turn_id)
+            effort["tool_calls"] += 1
+            last = _LAST_WRITE_AT.get(session_id)
+            if last is not None and time.monotonic() - last < TOOL_WRITE_MIN_INTERVAL_S:
+                return
+            slug = project_slug or _resolve_slug(session_id)
+            if slug:
+                snap = snapshot_from_messages(session_id, slug, messages, reason=REASON_RUNNING)
+                _publish_snapshot(session_id, snap, effort)
     except Exception:  # noqa: BLE001
         _log.exception("lastwords_tool_boundary_failed session=%s", session_id)
 
 
-def note_turn_end(session_id: str, turn_id: str) -> None:
-    """turn 正常收尾：遗言作废即删——绝不把已完成的 turn 当恢复对象。
-
-    interrupt 停车（PENDING_RESUME）也算段结束：parked turn 重启后由
-    checkpoint resume 机制自己管，遗言注入反而多余。
-    例外：进程优雅关闭中（lifespan shutdown 后 asyncio loop teardown
-    cancel 残余 turn 协程也会走到这里）不删——刚写好的 signal 遗言
-    正等着重启后的新进程消费，见模块尾「SIGTERM 兜底诊断」。
-    """
+def note_turn_end(
+    session_id: str, turn_id: str, *, outcome: str | None = None, interrupted: bool = False
+) -> None:
+    """Mark a proven terminal attempt before cleanup, or retain its WAL."""
     if not session_id:
         return
-    _LAST_WRITE_AT.pop(session_id, None)
-    _EFFORT.pop(session_id, None)
-    if _SHUTTING_DOWN:
-        return
     try:
-        p = _path(session_id)
-        if p.exists():
-            p.unlink()
+        with _WRITE_LOCK:
+            effort = _EFFORT.get(session_id)
+            if effort and effort["turn_id"] != turn_id:
+                return
+            _LAST_WRITE_AT.pop(session_id, None)
+            _EFFORT.pop(session_id, None)
+            if interrupted or (_SHUTTING_DOWN and outcome is None):
+                return
+            path = _path(session_id)
+            snap = _read_object(path)
+            if snap and snap.get("turn_id") == turn_id:
+                if outcome:
+                    _write_atomic(path, {**snap, "terminal": outcome})
+                _drop(path)
     except Exception:  # noqa: BLE001
         _log.exception("lastwords_turn_end_failed session=%s", session_id)
 
@@ -579,50 +645,55 @@ def _worth_restoring(snap: dict) -> bool:
     return tool_calls >= min_tc or elapsed >= min_s
 
 
+def _elapsed(snap: dict) -> float:
+    started = (snap.get("effort") or {}).get("started_at")
+    return max(0.0, float(snap.get("ts") or 0) - float(started)) if started else 0.0
+
+
 def consume_lastwords(*, now: float | None = None) -> list[dict]:
-    """扫描遗言目录：TTL 过期/低价值即删；返回有效条目（不删——恢复流程处置）。"""
+    """Collect valid candidates and discard only the snapshot examined."""
     now = time.time() if now is None else now
     out: list[dict] = []
-    d = lastwords_dir()
-    if not d.is_dir():
-        return out
-    for p in sorted(d.glob("*.json")):
-        try:
-            snap = json.loads(p.read_text())
-        except Exception:  # noqa: BLE001 — 损坏文件（写一半撞 SIGKILL 等）
-            _log.warning("lastwords_corrupt_dropped file=%s", p.name)
-            _drop(p)
-            continue
-        if p.name == _MARKER_NAME:
-            # 空标记：无 session 可注入，留痕即删。
-            _log.info("lastwords_marker_consumed reason=%s", snap.get("reason"))
-            _drop(p)
-            continue
-        ts = snap.get("ts") or 0
-        ttl = RUNNING_TTL_S if str(snap.get("reason")) == REASON_RUNNING else TTL_S
-        if now - ts > ttl:
-            _log.info(
-                "lastwords_expired_dropped session=%s age=%.0fs",
-                snap.get("session_id"),
-                now - ts,
-            )
-            _drop(p)
-            continue
-        if not snap.get("session_id"):
-            _drop(p)
-            continue
-        if not _worth_restoring(snap):
-            eff = snap.get("effort") or {}
-            _log.info(
-                "lastwords_low_effort_dropped session=%s reason=%s tool_calls=%s elapsed=%.0fs",
-                snap.get("session_id"),
-                snap.get("reason"),
-                eff.get("tool_calls"),
-                float(snap.get("ts") or 0) - float(eff.get("started_at") or 0),
-            )
-            _drop(p)
-            continue
-        out.append(snap)
+    for path in sorted(lastwords_dir().glob("*.json")):
+        with _WRITE_LOCK:
+            snap = _read_object(path)
+            if snap is None:
+                _log.warning("lastwords_corrupt_dropped file=%s", path.name)
+                _drop(path)
+                continue
+            if path.name == _MARKER_NAME:
+                _log.info("lastwords_marker_consumed reason=%s", snap.get("reason"))
+                _drop(path)
+                continue
+            if snap.get("session_id") != path.stem or snap.get("terminal"):
+                _drop(path)
+                continue
+            if snap.get("failed_recovery_id"):
+                continue
+            try:
+                receipt = _receipt_for_snapshot(snap)
+                if receipt and receipt["status"] == "failed":
+                    continue
+                pending_at = receipt.get("pending_at") if receipt and receipt["status"] == "pending" else None
+                freshness = float(pending_at) if pending_at else float(snap.get("ts") or 0)
+                ttl = RUNNING_TTL_S if not pending_at and snap.get("reason") == REASON_RUNNING else TTL_S
+                if now - freshness > ttl:
+                    _log.info("lastwords_expired_dropped session=%s age=%.0fs", path.stem, now - freshness)
+                    _drop(path)
+                    continue
+                if not receipt and not _worth_restoring(snap):
+                    eff = snap.get("effort") or {}
+                    _log.info(
+                        "lastwords_low_effort_dropped session=%s reason=%s tool_calls=%s elapsed=%.0fs",
+                        path.stem, snap.get("reason"), eff.get("tool_calls"), _elapsed(snap),
+                    )
+                    _drop(path)
+                    continue
+            except (TypeError, ValueError, KeyError, AttributeError):
+                _log.warning("lastwords_corrupt_dropped file=%s", path.name)
+                _drop(path)
+                continue
+            out.append(snap)
     return out
 
 
@@ -766,293 +837,371 @@ def render_continuation(snap: dict) -> str:
 
 
 
+_TERMINAL_RECEIPTS = {"completed", "failed", "stopped", "dismissed", "stale", "notified"}
+
+
+def _receipt_path(session_id: str) -> Path:
+    return lastwords_dir() / "receipts" / f"{session_id}.json"
+
+
+def _source_id(snap: dict) -> str:
+    turn = snap.get("registered_turn_id") or snap.get("turn_id") or f"legacy-{snap.get('ts')}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"ginno/lastwords/{snap['session_id']}/{turn}").hex
+
+
+def _receipt_for_snapshot(snap: dict) -> dict | None:
+    receipt = _read_object(_receipt_path(snap["session_id"]))
+    if receipt and receipt.get("recovery_id") and receipt.get("status"):
+        turn = snap.get("registered_turn_id") or snap.get("turn_id")
+        recovery_id = str(receipt["recovery_id"])
+        if len(recovery_id) != 32 or any(c not in "0123456789abcdef" for c in recovery_id):
+            return None
+        if receipt.get("source_id") == _source_id(snap) or (turn and receipt.get("resume_turn_id") == turn):
+            return receipt
+    return None
+
+
+def _same_snapshot(snap: dict) -> bool:
+    current = _read_object(_path(snap["session_id"]))
+    return bool(
+        current and current.get("session_id") == snap["session_id"] and not current.get("terminal")
+        and current.get("turn_id") == snap.get("turn_id") and _source_id(current) == _source_id(snap)
+    )
+
+
+def _drop_candidate(snap: dict) -> None:
+    with _WRITE_LOCK:
+        if _same_snapshot(snap):
+            drop_lastwords(snap["session_id"])
+
+
+def _save_receipt(snap: dict, status: str, **fields: Any) -> dict:
+    sid = snap["session_id"]
+    old = _receipt_for_snapshot(snap) or {}
+    source = _source_id(snap)
+    receipt = {
+        **old,
+        "session_id": sid,
+        "recovery_id": old.get("recovery_id") or source,
+        "source_id": source,
+        "reason": snap.get("reason", ""),
+        "status": status,
+        "updated_at": max(time.time(), float(old.get("updated_at") or 0) + 0.000001),
+        **fields,
+    }
+    if old and all(old.get(key) == value for key, value in receipt.items() if key != "updated_at"):
+        return old
+    _write_atomic(_receipt_path(sid), receipt)
+    _log.info(
+        "lastwords_recovery session=%s recovery=%s status=%s reason=%s diagnostic=%s",
+        sid, receipt["recovery_id"], status, receipt["reason"], receipt.get("diagnostic") or "-",
+    )
+    return receipt
+
+
+def list_receipts() -> list[dict]:
+    cutoff = time.time() - TTL_S
+    receipts = []
+    for path in (lastwords_dir() / "receipts").glob("*.json"):
+        receipt = _read_object(path)
+        if not receipt or receipt.get("session_id") != path.stem:
+            continue
+        updated = receipt.get("updated_at")
+        if not isinstance(updated, (int, float)) or updated < cutoff:
+            continue
+        if receipt.get("recovery_id") and receipt.get("status") not in (None, "pending"):
+            receipts.append(_public_receipt(receipt))
+    return sorted(receipts, key=lambda item: item["updated_at"])[-32:]
+
+
+def _public_receipt(receipt: dict) -> dict:
+    return {key: receipt[key] for key in ("session_id", "recovery_id", "status", "updated_at")}
+
+
+def _retained_path(receipt: dict) -> Path:
+    return lastwords_dir() / "retained" / f"{receipt['recovery_id']}.json"
+
+
+def _retain_source(snap: dict, receipt: dict) -> None:
+    with _WRITE_LOCK:
+        path = _retained_path(receipt)
+        if not path.exists():
+            stored = _read_object(_path(snap["session_id"])) if _same_snapshot(snap) else None
+            _write_atomic(path, stored or snap)
+
+
+async def _finish_recovery(snap: dict, outcome: str, diagnostic: str = "") -> bool:
+    receipt = _save_receipt(snap, outcome, diagnostic=diagnostic)
+    retained = _retained_path(receipt)
+    if outcome == "failed":
+        # The attempt's WAL may have replaced the source and then been cleaned
+        # by the turn itself. Keep the original even when another turn owns WAL.
+        with _WRITE_LOCK:
+            original = _read_object(retained)
+            live = _read_object(_path(snap["session_id"]))
+            if original and (live is None or _same_snapshot(snap)
+                             or live.get("turn_id") == receipt.get("resume_turn_id")):
+                _write_atomic(_path(snap["session_id"]), {
+                    **original, "failed_recovery_id": receipt["recovery_id"],
+                })
+    elif outcome != "awaiting_input":
+        _drop_candidate(snap)
+        _drop(retained)
+    await _publish_receipt(receipt)
+    return outcome == "completed"
+
+
+async def _publish_receipt(receipt: dict) -> None:
+    from . import server_shared as shared
+
+    event = ("runtime.lastwords_restored" if receipt["status"] in ("completed", "notified")
+             else "runtime.lastwords_status")
+    try:
+        await shared._push_global_event(event, _public_receipt(receipt))
+    except Exception:  # noqa: BLE001 — REST can rehydrate the durable receipt
+        _log.exception("lastwords_receipt_broadcast_failed session=%s", receipt["session_id"])
+
+
 def pending_resume_snapshot(session_id: str) -> dict | None:
-    """待确认续跑条目（过期视为无）。"""
     snap = _PENDING_RESUME.get(session_id)
     if not snap:
         return None
-    if time.time() - float(snap.get("pending_at") or 0) > TTL_S:
+    expired = time.time() - float(snap.get("pending_at") or 0) > TTL_S
+    if expired or (snap.get("recovery_id") and not _same_snapshot(snap)):
         _PENDING_RESUME.pop(session_id, None)
-        drop_lastwords(session_id)
+        if expired:
+            _drop_candidate({**snap, "session_id": session_id})
         return None
     return snap
 
 
+def _pending_payload(snap: dict) -> dict:
+    head = str(snap.get("user_request_head") or "")[:160]
+    return {
+        "session_id": snap["session_id"],
+        "recovery_id": snap.get("recovery_id"),
+        "head": head,
+        "user_request_head": head,
+        "reason": snap.get("reason", ""),
+        "remote": bool(snap.get("remote")),
+        "uncertain": bool(snap.get("uncertain")),
+        "bg_running": len(snap.get("bg_tasks") or []),
+        "bg_interrupted": len(snap.get("bg_interrupted") or []),
+        "bg_interrupted_ids": list(snap.get("bg_interrupted") or []),
+        "tool_calls": (snap.get("effort") or {}).get("tool_calls", 0),
+        "elapsed_s": _elapsed(snap),
+        "pending_at": float(snap.get("pending_at") or 0),
+        "updated_at": float(snap.get("updated_at") or 0),
+    }
+
+
 def list_pending(*, now: float | None = None) -> list[dict]:
-    """列出待确认续跑条目（2026-11-16 新增，供前端**拉取式**重建决策卡）。
-
-    为什么必须拉取而不能只靠广播：``_push_global_event`` 只遍历**当前活着
-    的 socket**（server_shared.py），无缓冲无重放；而 recover 在 lifespan
-    +2s 就广播，前端 WS 重连间隔 3s——**真实帧经常先于 socket 就绪发出，
-    静默丢失**。这正是用户「遗言好像没触发过」的最后一环（前两环是
-    notify 无交互 + pending 条件太窄，已修）。packaged e2e 作者实测撞上
-    此竞态，不得不按契约补投一帧才测得下去。
-
-    拉取式另修一个缺口：收件箱条目的 action 回调不可序列化，应用重启后
-    只剩「跳会话」，决策按钮丢失；有了本端点，前端连上即可重建。
-
-    过期的顺手清掉（与 pending_resume_snapshot 同口径）。
-    """
     now = time.time() if now is None else now
-    out: list[dict] = []
-    for sid in list(_PENDING_RESUME.keys()):
-        snap = _PENDING_RESUME.get(sid) or {}
+    out = []
+    for sid, snap in list(_PENDING_RESUME.items()):
         if now - float(snap.get("pending_at") or 0) > TTL_S:
             _PENDING_RESUME.pop(sid, None)
-            drop_lastwords(sid)
-            continue
-        eff = snap.get("effort") or {}
-        out.append({
-            "session_id": sid,
-            "head": str(snap.get("user_request_head") or "")[:160],
-            "user_request_head": str(snap.get("user_request_head") or "")[:160],
-            "reason": str(snap.get("reason") or ""),
-            "bg_running": len(snap.get("bg_tasks") or []),
-            "bg_interrupted": len(snap.get("bg_interrupted") or []),
-            "bg_interrupted_ids": list(snap.get("bg_interrupted") or []),
-            "tool_calls": eff.get("tool_calls", 0),
-            "elapsed_s": max(
-                0.0,
-                float(snap.get("ts") or 0) - float(eff.get("started_at") or 0),
-            ),
-            "pending_at": float(snap.get("pending_at") or 0),
-        })
-    return sorted(out, key=lambda d: d["pending_at"])
+            _drop_candidate({**snap, "session_id": sid})
+        elif not snap.get("recovery_id") or _same_snapshot(snap):
+            out.append(_pending_payload({**snap, "session_id": sid}))
+        else:
+            _PENDING_RESUME.pop(sid, None)
+    return sorted(out, key=lambda item: item["pending_at"])
 
 
-async def resume_pending(session_id: str) -> dict:
-    """确认续跑（/api/lastwords/resume）。
+def _parked(session: dict) -> bool:
+    saver = getattr(session.get("graph"), "checkpointer", None)
+    get_pending = getattr(saver, "get_pending_interrupt", None)
+    return bool(get_pending and get_pending({"configurable": {"thread_id": session["session_id"]}}))
 
-    2026-11-17 修复「恢复失败：Load failed」：原实现在 HTTP 请求里同步
-    await 整个续跑 turn（数分钟），响应迟迟不返回 → 浏览器 fetch 空闲超时
-    抛 "Load failed"（后端 turn 其实可能在正常跑）。改为 spawn_bg 异步起
-    turn、立即返回 ``{ok:true}``（=已发起续跑），与 auto 路径 headless 续跑
-    同范式；终态清理 / 广播在后台任务里完成。
-    """
-    snap = pending_resume_snapshot(session_id)
-    if not snap:
-        return {"ok": False, "error": "no_pending"}
-    _PENDING_RESUME.pop(session_id, None)
+
+def awaiting_recovery_snapshot(session_id: str) -> dict | None:
+    snap = _read_object(_path(session_id))
+    receipt = _receipt_for_snapshot(snap) if snap else None
+    if snap and receipt and receipt["status"] == "awaiting_input":
+        return {**snap, "resume_turn_id": receipt.get("resume_turn_id")}
+    return None
+
+
+async def finish_awaiting_recovery(snap: dict, outcome: str) -> None:
+    try:
+        await _finish_recovery(snap, outcome, "execution_failed" if outcome == "failed" else "")
+    except Exception:  # noqa: BLE001 — the normal interrupt resume has already settled
+        _log.exception("lastwords_parked_receipt_failed session=%s", snap.get("session_id"))
+
+
+async def _run_recovery_job(session: dict, snap: dict) -> bool:
+    from . import server_shared as shared
+
+    sid = snap["session_id"]
+    async with shared._turn_lock(sid):
+        receipt = _receipt_for_snapshot(snap)
+        if not receipt or receipt["status"] != "queued":
+            return False
+        diagnostic = ""
+        try:
+            if not _same_snapshot(snap):
+                outcome = "stale"
+            elif _parked(session):
+                outcome = "awaiting_input"
+            elif shared.turn_gate_busy(sid):
+                outcome = "stale"
+            else:
+                _retain_source(snap, receipt)
+                current = _save_receipt(snap, "running", resume_turn_id=f"lw-{uuid.uuid4().hex}")
+                outcome = await _run_lastwords_turn(session, {**snap, **current})
+                if outcome not in ("completed", "failed", "stopped", "awaiting_input"):
+                    outcome = "failed"
+                if outcome == "failed":
+                    diagnostic = "remote_execution_failed" if snap.get("remote") else "execution_failed"
+        except asyncio.CancelledError:
+            _save_receipt(snap, "interrupted")
+            raise
+        except Exception as exc:  # noqa: BLE001 — retain the failure receipt
+            _log.exception("lastwords_run_failed session=%s", sid)
+            outcome = "failed"
+            diagnostic = type(exc).__name__
+        return await _finish_recovery(snap, outcome, diagnostic)
+
+
+async def resume_pending(session_id: str, recovery_id: str | None = None) -> dict:
     from . import server_shared as shared
     from .api.sessions import _ensure_session
 
-    session = _ensure_session(session_id)
+    lock = shared._turn_lock(session_id)
+    if lock.locked():
+        return {"ok": False, "error": "session_busy"}
+    async with lock:
+        snap = pending_resume_snapshot(session_id)
+        if not snap:
+            return {"ok": False, "error": "no_pending"}
+        if recovery_id is not None and recovery_id != snap.get("recovery_id"):
+            return {"ok": False, "error": "stale_recovery"}
+        session = _ensure_session(session_id)
+        if not session:
+            return {"ok": False, "error": "no_session"}
+        if _parked(session):
+            receipt = _save_receipt(snap, "awaiting_input")
+            _retain_source(snap, receipt)
+            _PENDING_RESUME.pop(session_id, None)
+            await _publish_receipt(receipt)
+            return {"ok": False, "error": "awaiting_input"}
+        if shared.turn_gate_busy(session_id):
+            return {"ok": False, "error": "session_busy"}
+        receipt = _save_receipt(snap, "queued", via="manual")
+        _PENDING_RESUME.pop(session_id, None)
+        shared.spawn_bg(_run_recovery_job(session, snap))
+        return {
+            "ok": True, "recovery_id": receipt["recovery_id"],
+            "status": "queued", "updated_at": receipt["updated_at"],
+        }
 
-    async def _resume_bg() -> None:
-        ok = False
-        try:
-            ok = await _run_lastwords_turn(session, snap)
-        except Exception:  # noqa: BLE001
-            _log.exception("lastwords_resume_failed session=%s", session_id)
-        drop_lastwords(session_id)
-        if ok:
-            _log.info("lastwords_restored session=%s mode=auto-confirmed reason=%s",
-                      session_id, snap.get("reason"))
-            try:
-                await shared._push_global_event(
-                    "runtime.lastwords_restored",
-                    {"session_id": session_id, "mode": "auto-confirmed"},
-                )
-            except Exception:  # noqa: BLE001
-                pass
 
-    shared.spawn_bg(_resume_bg())
-    return {"ok": True}
+def dismiss_pending(session_id: str, recovery_id: str | None = None) -> dict:
+    snap = pending_resume_snapshot(session_id)
+    if not snap:
+        return {"ok": True, "had": False}
+    if recovery_id is not None and recovery_id != snap.get("recovery_id"):
+        return {"ok": False, "error": "stale_recovery"}
+    receipt = _save_receipt(snap, "dismissed")
+    _drop(_retained_path(receipt))
+    _PENDING_RESUME.pop(session_id, None)
+    _drop_candidate(snap)
+    return {"ok": True, "had": True, **_public_receipt(receipt)}
 
 
-def dismiss_pending(session_id: str) -> dict:
-    """用户放弃续跑：清 pending + 删遗言文件。"""
-    had = _PENDING_RESUME.pop(session_id, None) is not None
-    drop_lastwords(session_id)
-    if had:
-        _log.info("lastwords_pending_dismissed session=%s", session_id)
-    return {"ok": True, "had": had}
+async def confirm_dismissal(session_id: str, recovery_id: str) -> dict:
+    result = dismiss_pending(session_id, recovery_id)
+    if result.get("had"):
+        await _publish_receipt(result)
+    return result
+
+
+async def _register_pending(session: dict, snap: dict, prior: dict) -> None:
+    from . import server_shared as shared
+
+    uncertain = bool(prior.get("uncertain") or prior.get("status") in ("running", "interrupted"))
+    receipt = _save_receipt(
+        snap, "pending", pending_at=prior.get("pending_at") or time.time(), uncertain=uncertain,
+    )
+    snap = {**snap, **receipt}
+    await _inject_lastwords_message(session, snap)
+    _PENDING_RESUME[snap["session_id"]] = snap
+    await shared._push_global_event("runtime.lastwords_pending", _pending_payload(snap))
+
+
+def _legacy_snapshot_superseded(snap: dict) -> bool:
+    """Older builds could leave a WAL behind after the session last finished."""
+    if snap.get("registered_turn_id"):
+        return False
+    from .session_meta import _find_meta
+
+    found = _find_meta(snap["session_id"])
+    return bool(found and float(found[0].get("last_finished") or 0) >= float(snap.get("ts") or 0) + 1)
 
 
 async def recover_lastwords() -> int:
-    """启动扫描 → 按 mode 注入 → exactly-once 删文件。
-
-    notify（默认）/signal·running 崩溃遗言：把 ``[lastwords]`` 带作为
-    HumanMessage 追加进 session 历史（aupdate_state，compaction 同款先例）
-    ——不跑 turn 不烧 token，agent 下次被唤醒时可见，重放折叠不露长原文。
-    auto 且（reason=dev-swap **或 subagent 型会话**）：另起 headless 续跑
-    turn（scheduler 同款安全）——subagent 本就 headless，自动续跑零打扰
-    （2026-11-07 首跑追加：app 重启杀掉的子会话无人点「继续」，auto 放宽
-    到 signal/running）。
-    任何终态（成功/session 不存在/异常）都删文件——TTL 之外的第二道
-    exactly-once 闸。
-    """
-    entries = consume_lastwords()
-    if not entries:
-        return 0
+    """Restore recent candidates using the configured recovery policy."""
     from . import server_shared as shared
+    from .api.sessions import _ensure_session
+    from .api.stream.remote_turn import remote_peer_of
 
-    m = mode()
+    selected_mode = mode()
     restored = 0
-    for snap in entries:
-        sid = str(snap.get("session_id"))
-        reason = str(snap.get("reason") or "")
+    for snap in consume_lastwords():
+        auto = False
+        sid = snap["session_id"]
         try:
-            from .api.sessions import _ensure_session
-
+            prior = _receipt_for_snapshot(snap) or {}
+            if selected_mode == "off" or prior.get("status") in _TERMINAL_RECEIPTS:
+                _drop_candidate(snap)
+                continue
+            if _legacy_snapshot_superseded(snap):
+                _drop_candidate(snap)
+                _log.info("lastwords_superseded session=%s", sid)
+                continue
             session = _ensure_session(sid)
-        except Exception:  # noqa: BLE001
-            _log.exception("lastwords_session_lookup_failed session=%s", sid)
-            session = None
-        if session is None:
-            _log.info("lastwords_dropped_no_session session=%s", sid)
-            drop_lastwords(sid)
-            continue
-        if m == "off":
-            _log.info("lastwords_off_dropped session=%s", sid)
-            drop_lastwords(sid)
-            continue
-        # 注入前实时核对 bg 任务状态（首跑质量修）：快照过时的已完成任务
-        # 从「可收割」提示中移除，避免误导 agent/用户。
-        try:
-            reconcile_bg_tasks(snap)
-        except Exception:  # noqa: BLE001 — 核对绝不拦注入
-            _log.exception("lastwords_bg_reconcile_failed session=%s", sid)
-        ok = False
-        how = "notify"
-        try:
-            # auto 分级（§4 + 首跑追加）：subagent 会话本就 headless——自动
-            # 续跑零打扰，reason 放宽到 dev-swap/signal/running；人工会话
-            # 维持仅 dev-swap（有真人在看，自动续跑反而打扰 + 崩溃/信号
-            # 场景自动烧 token 的既有安全分级不破）。
-            # 2026-11-10 产品化：人工会话的 auto 不再直接续跑——注入带 +
-            # 挂起待确认（广播 runtime.lastwords_pending，用户点通知进会话
-            # 后经 /api/lastwords/resume 一键续跑）；subagent 保持无感直跑。
-            # 2026-11-18 出站远程会话（remote_peer）：**自动续跑一律拦下**，
-            # 降级为挂起待确认。本地重启不影响远端进程——对端任务很可能
-            # 仍在跑或已完成，无脑重发用户请求 = 重复派活/并发冲突；只有
-            # 用户经 resume 显式确认后才重发（_run_lastwords_turn 对远端
-            # 会话重发最后用户请求原文，远端凭自己的 checkpoint 续跑）。
-            from .api.stream.remote_turn import remote_peer_of
-
-            is_remote = bool(remote_peer_of(session or {}))
-            if is_remote:
-                ok = await _inject_lastwords_message(session, snap)
-                how = "notify"
-                if ok:
-                    _PENDING_RESUME[sid] = {**snap, "pending_at": time.time()}
-                    try:
-                        eff = snap.get("effort") or {}
-                        await shared._push_global_event(
-                            "runtime.lastwords_pending",
-                            {
-                                "session_id": sid,
-                                "head": str(snap.get("user_request_head") or "")[:160],
-                                "user_request_head": str(
-                                    snap.get("user_request_head") or ""
-                                )[:160],
-                                "reason": reason,
-                                "remote": True,
-                                "tool_calls": eff.get("tool_calls", 0),
-                                "elapsed_s": max(
-                                    0.0,
-                                    float(snap.get("ts") or 0)
-                                    - float(eff.get("started_at") or 0),
-                                ),
-                            },
-                        )
-                    except Exception:  # noqa: BLE001 — 广播失败不拦注入
-                        _log.exception("lastwords_pending_broadcast_failed session=%s", sid)
-                    _log.info(
-                        "lastwords_remote_pending_confirm session=%s reason=%s", sid, reason
-                    )
-                    continue  # 文件保留——resume/dismiss 时才处置
-            elif is_subagent_session(session):
-                if m == "auto":
-                    # subagent 本就 headless：auto 下无感直跑（reason 不限，
-                    # 2026-11-07 首跑语义）。
-                    ok = await _run_lastwords_turn(session, snap)
-                    how = "auto"
+            if session is None:
+                _drop_candidate(snap)
+                _log.info("lastwords_dropped_no_session session=%s", sid)
+                continue
+            lock = shared._turn_lock(sid)
+            if lock.locked():
+                continue
+            async with lock:
+                if not _same_snapshot(snap):
+                    continue
+                if _parked(session):
+                    receipt = _save_receipt(snap, "awaiting_input")
+                    _retain_source(snap, receipt)
+                    _PENDING_RESUME.pop(sid, None)
+                    await _publish_receipt(receipt)
+                    continue
+                if shared.turn_gate_busy(sid):
+                    continue
+                reconcile_bg_tasks(snap)
+                remote = bool(remote_peer_of(session))
+                snap["remote"] = remote
+                prior_status = prior.get("status")
+                manual_claim = prior_status == "queued" and prior.get("via") == "manual"
+                if prior_status in ("pending", "running", "interrupted", "awaiting_input"):
+                    await _register_pending(session, snap, prior)
+                elif manual_claim or (selected_mode == "auto" and not remote):
+                    _save_receipt(snap, "queued", via="manual" if manual_claim else "auto")
+                    auto = True
+                elif remote or not is_subagent_session(session):
+                    await _register_pending(session, snap, prior)
                 else:
-                    ok = await _inject_lastwords_message(session, snap)
-                    how = "notify"
-            elif m == "auto":
-                # 人工会话 auto=**真自动续跑**（2026-11-19 恢复语义，用户
-                # 配置化：settings.json → devswap.lastwords.mode="auto"，
-                # 无 UI）。2026-11-10/16 曾把人工会话的 auto 收敛为挂起
-                # 待确认（防崩溃后自动烧 token 打扰真人）；但 auto 因此与
-                # notify 完全等价成为死配置。现在恢复分级：
-                #   notify（默认）= 挂起待确认，点「恢复」才续跑；
-                #   auto = 重启/崩溃后人工会话也无感自动续跑（subagent
-                #          路径同款 _run_lastwords_turn，质量门槛/TTL/
-                #          exactly-once/remote 拦截全部沿用）。
-                # 安全边界不破：默认仍是 notify；选 auto 即用户显式接受
-                # 「重启后自动接着干烧 token」；remote 会话在上面已拦。
-                ok = await _run_lastwords_turn(session, snap)
-                how = "auto"
-            elif m == "notify":
-                # 人工会话：**任何 reason** 都挂起待确认（2026-11-16 放宽）。
-                # 原条件 `m == "auto" and reason == REASON_DEV_SWAP` 太窄：
-                # 重启/崩溃（reason=running/signal）拿不到任何交互提示，
-                # 而默认 mode 就是 notify → 用户只看到静默注入的带 + 一条
-                # 被动收件箱条目，实测「遗言好像没触发过」。
-                # **安全分级不破**：这里只挂起 + 广播，绝不自动跑 turn；
-                # 续跑必须用户点「恢复」经 /api/lastwords/resume。崩溃场景
-                # 不自动烧 token 的既有约束因此仍然成立。
-                # off 已在上面早退，不会走到这里。
-                ok = await _inject_lastwords_message(session, snap)
-                how = "notify"
-                if ok:
-                    _PENDING_RESUME[sid] = {**snap, "pending_at": time.time()}
-                    try:
-                        eff = snap.get("effort") or {}
-                        await shared._push_global_event(
-                            "runtime.lastwords_pending",
-                            {
-                                "session_id": sid,
-                                # 快照真字段是 user_request_head；原实现取
-                                # snap["head"]（从不存在）→ 通知摘要恒空。
-                                # 两个键都发：head 兼容既有前端读法。
-                                "head": str(snap.get("user_request_head") or "")[:160],
-                                "user_request_head": str(
-                                    snap.get("user_request_head") or ""
-                                )[:160],
-                                "reason": reason,
-                                "bg_running": len(snap.get("bg_tasks") or []),
-                                "bg_interrupted": len(snap.get("bg_interrupted") or []),
-                                "bg_interrupted_ids": list(snap.get("bg_interrupted") or []),
-                                "tool_calls": eff.get("tool_calls", 0),
-                                "elapsed_s": max(
-                                    0.0,
-                                    float(snap.get("ts") or 0)
-                                    - float(eff.get("started_at") or 0),
-                                ),
-                            },
-                        )
-                    except Exception:  # noqa: BLE001 — 广播失败不拦注入
-                        _log.exception("lastwords_pending_broadcast_failed session=%s", sid)
-                    _log.info(
-                        "lastwords_pending_confirm session=%s reason=%s", sid, reason
-                    )
-                    continue  # 文件保留——resume/dismiss 时才处置
-            else:
-                ok = await _inject_lastwords_message(session, snap)
-                how = "notify"
-        except Exception:  # noqa: BLE001 — 恢复失败不炸启动
+                    await _inject_lastwords_message(session, {**snap, "recovery_id": _source_id(snap)})
+                    receipt = _save_receipt(snap, "notified")
+                    _drop_candidate(snap)
+                    await _publish_receipt(receipt)
+                    restored += 1
+            if auto and await _run_recovery_job(session, snap):
+                restored += 1
+        except Exception:  # noqa: BLE001 — isolate one broken candidate
             _log.exception("lastwords_recover_failed session=%s", sid)
-        drop_lastwords(sid)
-        if ok:
-            restored += 1
-            _log.info("lastwords_restored session=%s mode=%s reason=%s", sid, how, reason)
-            # 通知中心待恢复列表（设计 P2）：经全局 WS 广播，前端 pushNotice
-            # 进收件箱（kind:lastwords，dedupeKey: lastwords:<session>）。
-            try:
-                await shared._push_global_event(
-                    "runtime.lastwords_restored",
-                    {
-                        "session_id": sid,
-                        "reason": reason,
-                        "mode": m if m != "off" else "notify",
-                        "band": render_band(snap),
-                    },
-                )
-            except Exception:  # noqa: BLE001
-                pass
+
     return restored
 
 
@@ -1073,12 +1222,16 @@ async def _inject_lastwords_message(session: dict, snap: dict) -> bool:
             "turn_id": f"lastwords-{snap.get('turn_id') or 'x'}",
         }
     }
+    message_id = f"lastwords-{snap['recovery_id']}"
+    if any(getattr(msg, "id", None) == message_id for msg in _load_thread_messages(session["project_slug"], sid)):
+        return True
     await session["graph"].aupdate_state(
         config,
         {
             "messages": [
                 HumanMessage(
                     content=text,
+                    id=message_id,
                     additional_kwargs={
                         "ginno_task_event": {
                             "task": f"lastwords-{sid[:8]}",
@@ -1096,14 +1249,14 @@ async def _inject_lastwords_message(session: dict, snap: dict) -> bool:
     return True
 
 
-async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
+async def _run_lastwords_turn(session: dict, snap: dict) -> str:
     """auto：headless 续跑 turn（镜像 sessions._run_goal_turn / inject wake）。"""
     from . import server_shared as shared
     from .api.stream import _run_stream
 
     shared.clear_inherited_llm_context()
     sid = session["session_id"]
-    turn_id = f"lw{int(time.time())}-{sid[:6]}"
+    turn_id = snap.get("resume_turn_id") or f"lw-{uuid.uuid4().hex}"
     agent_id = session.get("agent_id")
     if not agent_id:
         from .api.sessions import _first_agent_id
@@ -1111,7 +1264,7 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
         agent_id = _first_agent_id()
     if not agent_id:
         _log.info("lastwords_auto_dropped_no_agent session=%s", sid)
-        return False
+        return "failed"
     from .api.stream.remote_turn import remote_peer_of
 
     if remote_peer_of(session):
@@ -1141,14 +1294,19 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
             "echo_user": True,
         }
     }
-    _RUNNING = shared._RUNNING_TURNS
-    _RUNNING[sid] = turn_id
+    task = asyncio.current_task()
+    stop = shared._TURN_STOP.setdefault(sid, asyncio.Event())
+    shared._TURN_TASKS[sid] = task
+    shared._RUNNING_TURNS[sid] = turn_id
+    shared._RUNNING_TURNS_AT[sid] = time.time()
     # 2026-11-21 用户决策：遗言 auto 续跑不再标记无人值守。热切换/重启恢复
     # 的 turn 大多发生在用户眼前的会话页——ask_user 正常弹卡片等人（parked
     # turn 可恢复），比「自选默认 + 假设声明」更符合「我在看着它重启」的
     # 直觉。真正无人守的通道（schedule 注入 / A2A 入站 / 无头 CLI）不变。
     try:
-        await _run_stream(
+        if snap.get("status") == "running":
+            await _publish_receipt(snap)
+        return await _run_stream(
             None,
             session["graph"],
             config,
@@ -1161,14 +1319,27 @@ async def _run_lastwords_turn(session: dict, snap: dict) -> bool:
                     "kind": "lastwords",
                     "title": str(snap.get("user_request_head") or "")[:60],
                 },
-                "ginno_lastwords": {"session_id": sid, "reason": snap.get("reason")},
+                "ginno_lastwords": {
+                    "session_id": sid,
+                    "reason": snap.get("reason"),
+                    "recovery_id": snap.get("recovery_id"),
+                    "request_head": snap.get("user_request_head", ""),
+                },
             },
             origin="lastwords",
         )
+    except asyncio.CancelledError:
+        if stop.is_set():
+            return "stopped"
+        raise
     finally:
-        if _RUNNING.get(sid) == turn_id and sid not in shared._PENDING_RESUME:
-            _RUNNING.pop(sid, None)
-    return True
+        if shared._TURN_TASKS.get(sid) is task:
+            shared._TURN_TASKS.pop(sid, None)
+        if shared._TURN_STOP.get(sid) is stop:
+            shared._TURN_STOP.pop(sid, None)
+        if shared._RUNNING_TURNS.get(sid) == turn_id and sid not in shared._PENDING_RESUME:
+            shared._RUNNING_TURNS.pop(sid, None)
+            shared._RUNNING_TURNS_AT.pop(sid, None)
 
 
 # --------------------------------------------------------------------------- #

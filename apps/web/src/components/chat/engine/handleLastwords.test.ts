@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { resumeLastwords, dismissLastwords, notifyNative } = vi.hoisted(() => ({
   resumeLastwords: vi.fn(
-    async (_sid: string): Promise<{ ok: boolean; error?: string }> => ({ ok: true }),
+    async (_sid: string, _recoveryId?: string): Promise<{ ok: boolean; error?: string; status?: string; updated_at?: number }> => ({ ok: true }),
   ),
   dismissLastwords: vi.fn(
     async (_sid: string): Promise<{ ok: boolean; had?: boolean }> => ({ ok: true, had: true }),
@@ -36,7 +36,10 @@ vi.mock("@/lib/desktop", async (importOriginal) => {
 
 import { handle } from "@/components/chat/engine/handle";
 import type { EngineCtx } from "@/components/chat/engine/ctx";
-import { clearNotices, subscribeNotices, type Notice } from "@/lib/notice";
+import {
+  clearNotices, hydrateNoticebox, markNoticeRead, NOTICEBOX_KEY,
+  subscribeNotices, unreadNoticeCount, type Notice,
+} from "@/lib/notice";
 
 // 最小 EngineCtx（同 handleNotify.test.ts）：lastwords 路径只读 i18nRef，
 // 其余字段是 handle 顶部公共段需要的最小集。
@@ -100,6 +103,7 @@ afterEach(() => {
   unsub?.();
   unsub = null;
   clearNotices();
+  vi.unstubAllGlobals();
 });
 
 /** 等 fire-and-forget 的 async onClick 落地（真实 Promise 微任务）。 */
@@ -270,5 +274,68 @@ describe("「忽略」次按钮 → 真调 dismiss:true", () => {
     expect(notices[0].text).toContain("notice.lastwords-dismiss-failed");
     expect(notices[0].text).toContain("offline");
     expect(notices[0].action?.label).toBe("notice.lastwords-dismiss-btn");
+  });
+});
+
+
+describe("持久恢复回执", () => {
+  const pending = { ...PENDING_EV, recovery_id: "recovery-1", updated_at: 1 };
+
+  it("WS 和 REST 同版本只发一次系统通知", () => {
+    const ctx = makeCtx();
+    handle(ctx, "s1", pending);
+    handle(ctx, "s1", pending);
+    expect(notifyNative).toHaveBeenCalledTimes(1);
+    expect(notices).toHaveLength(1);
+  });
+
+  it.each(["completed", "failed"])("%s 先到时，迟到的 pending 和 HTTP queued 都被忽略", async (status) => {
+    let resolve!: (value: { ok: boolean; status: string; updated_at: number }) => void;
+    resumeLastwords.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const ctx = makeCtx();
+    handle(ctx, "s1", pending);
+    notices[0].action!.onClick();
+    expect(resumeLastwords).toHaveBeenCalledWith("s1", "recovery-1");
+    handle(ctx, "s1", { ...pending, event: "runtime.lastwords_status", status, updated_at: 3 });
+    const terminalText = notices[0].text;
+    expect(terminalText).toContain(status === "failed" ? "execution-failed" : "completed");
+    expect(notices[0].action).toBeUndefined();
+    expect(notices[0].secondaryAction).toBeUndefined();
+    handle(ctx, "s1", pending);
+    resolve({ ok: true, status: "queued", updated_at: 2 });
+    await flush();
+    expect(notices[0].text).toBe(terminalText);
+    expect(notifyNative).toHaveBeenCalledTimes(1);
+  });
+
+  it("重连加载相同待确认回执时补按键且保留已读", () => {
+    const cache = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => cache.get(key) ?? null,
+      setItem: (key: string, value: string) => cache.set(key, value),
+    });
+    const ctx = makeCtx();
+    handle(ctx, "s1", pending);
+    markNoticeRead(notices[0].id);
+    const saved = cache.get(NOTICEBOX_KEY)!;
+    clearNotices();
+    cache.set(NOTICEBOX_KEY, saved);
+    hydrateNoticebox();
+    handle(ctx, "s1", pending);
+    expect(unreadNoticeCount()).toBe(0);
+    expect(notifyNative).toHaveBeenCalledTimes(1);
+    expect(notices[0].action?.label).toBe("notice.lastwords-resume-btn");
+  });
+
+  it("待回答回执指向原会话，清除遗言恢复和忽略按钮", () => {
+    const ctx = makeCtx();
+    handle(ctx, "s1", pending);
+    handle(ctx, "s1", { ...pending, event: "runtime.lastwords_status", status: "awaiting_input", updated_at: 2 });
+    expect(notices[0]).toMatchObject({
+      text: "notice.lastwords-awaiting-input",
+      actionMeta: { kind: "session", id: "s1" },
+    });
+    expect(notices[0].action).toBeUndefined();
+    expect(notices[0].secondaryAction).toBeUndefined();
   });
 });

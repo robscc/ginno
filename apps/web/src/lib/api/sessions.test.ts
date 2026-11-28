@@ -495,17 +495,17 @@ describe("markSessionSeen", () => {
 });
 
 describe("lastwords 恢复确认（resume / dismiss 同端点双语义）", () => {
-  it("resumeLastwords：POST /lastwords/resume，body 只带 session_id（无 dismiss）", async () => {
+  it("resumeLastwords 发送恢复 ID", async () => {
     const mock = stubFetch({ ok: true });
-    await expect(resumeLastwords("s1")).resolves.toEqual({ ok: true });
-    expectWrite(mock, "POST", `${API}/lastwords/resume`, { body: { session_id: "s1" } });
+    await expect(resumeLastwords("s1", "lw1")).resolves.toEqual({ ok: true });
+    expectWrite(mock, "POST", `${API}/lastwords/resume`, { body: { session_id: "s1", recovery_id: "lw1" } });
   });
 
   it("dismissLastwords：同一端点，body 带 dismiss:true", async () => {
     const mock = stubFetch({ ok: true, had: true });
-    await expect(dismissLastwords("s1")).resolves.toEqual({ ok: true, had: true });
+    await expect(dismissLastwords("s1", "lw1")).resolves.toEqual({ ok: true, had: true });
     expectWrite(mock, "POST", `${API}/lastwords/resume`, {
-      body: { session_id: "s1", dismiss: true },
+      body: { session_id: "s1", recovery_id: "lw1", dismiss: true },
     });
   });
 

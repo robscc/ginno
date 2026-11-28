@@ -159,14 +159,21 @@ async def chunked_stream(ctx: StreamTurnCtx):
         nxt.add_done_callback(
             lambda t: None if t.cancelled() else t.exception()
         )  # mark result retrieved, silence "never retrieved" warnings
-        done, _ = await asyncio.wait(
-            {nxt, ctx.stop_waiter},
-            timeout=eng.CHUNK_TIMEOUT_S,
-            # FIRST_COMPLETED, not the ALL_COMPLETED default: the
-            # stop waiter stays pending until a stop lands, and with
-            # ALL_COMPLETED every chunk would block to the timeout.
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {nxt, ctx.stop_waiter},
+                timeout=eng.CHUNK_TIMEOUT_S,
+                # FIRST_COMPLETED, not the ALL_COMPLETED default: the
+                # stop waiter stays pending until a stop lands, and with
+                # ALL_COMPLETED every chunk would block to the timeout.
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            # Cancellation can arrive before the lifespan shutdown flag. Stop
+            # the graph read too, so it cannot advance after preserving WAL.
+            eng.ABANDONED_TURNS.add(ctx.turn_id)
+            nxt.cancel()
+            raise
         if ctx.stop_waiter in done:
             nxt.cancel()
             # Same abandonment protocol as the stall watchdog below:

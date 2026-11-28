@@ -45,6 +45,8 @@ export interface NoticeOptions {
    *  解决「多窗口/多视图收到同一 WS 事件各弹一条」的噪声。
    *  P1 起收件箱同样按 key 刷新（不堆叠，刷新视为新未读）。 */
   dedupeKey?: string;
+  /** Durable server update stamp for a deduplicated notice. */
+  revision?: number;
   /** 自动消失毫秒；`0` = 常驻（需手动关）。默认 error 8000，其余 6000。
    *  silent 模式不弹卡片，该值无效果。 */
   duration?: number;
@@ -95,6 +97,7 @@ export interface InboxEntry {
   countInBadge: boolean;
   source?: NoticeSource;
   dedupeKey?: string;
+  revision?: number;
   actionMeta?: NoticeActionMeta;
 }
 
@@ -308,32 +311,19 @@ export function pushNotice(level: NoticeLevel, text: string, opts: NoticeOptions
   // 瞬时 toast——只弹几秒即逝、不进通知中心、不计 badge、不留档；适用
   // 于"操作确认"类反馈（模型切换等），错误/回传类仍默认留档。
   const ephemeral = opts.inbox === false;
-  let entryId = 0;
-  if (!ephemeral) {
-    const prevEntry = opts.dedupeKey ? inbox.find((e) => e.dedupeKey === opts.dedupeKey) : undefined;
-    if (prevEntry) {
-    entryId = prevEntry.id;
-    inbox = inbox.map((e) =>
-      e.id === prevEntry.id
-        ? {
-            ...e,
-            level,
-            text,
-            createdAt: now,
-            readAt: null,
-            kind: opts.kind,
-            countInBadge,
-            mode,
-            source: opts.source,
-            actionMeta: opts.actionMeta,
-          }
-        : e,
-    );
+  const previous = !ephemeral && opts.dedupeKey
+    ? inbox.find((entry) => entry.dedupeKey === opts.dedupeKey)
+    : undefined;
+  let entryId: number;
+  if (opts.revision !== undefined && previous?.revision !== undefined && opts.revision <= previous.revision) {
+    if (opts.revision < previous.revision || !opts.action || items.some((item) => item.id === previous.id)) return;
+    // A pending card reopened after reload only needs its live callbacks.
+    entryId = previous.id;
   } else {
-    entryId = ++uid;
-    inbox = [
-      ...inbox,
-      {
+    entryId = previous?.id ?? ++uid;
+    if (!ephemeral) {
+      const entry: InboxEntry = {
+        ...previous,
         id: entryId,
         level,
         text,
@@ -344,17 +334,14 @@ export function pushNotice(level: NoticeLevel, text: string, opts: NoticeOptions
         countInBadge,
         source: opts.source,
         dedupeKey: opts.dedupeKey,
+        revision: opts.revision ?? previous?.revision,
         actionMeta: opts.actionMeta,
-      },
-    ];
-  }
-  } // (!ephemeral)
-  if (!ephemeral) {
-    inbox = inbox.slice(-NOTICEBOX_MAX);
-    saveNoticebox();
-    emitInbox();
-  } else {
-    entryId = ++uid;
+      };
+      inbox = previous ? inbox.map((item) => item.id === entryId ? entry : item) : [...inbox, entry];
+      inbox = inbox.slice(-NOTICEBOX_MAX);
+      saveNoticebox();
+      emitInbox();
+    }
   }
 
   // ---- 第二步：toast 队列（仅 toast 模式；silent 到此为止）。
@@ -365,7 +352,8 @@ export function pushNotice(level: NoticeLevel, text: string, opts: NoticeOptions
     if (prev) {
       items = items.map((n) =>
         n.id === prev.id
-          ? { ...n, ...opts, level, text, id: entryId, entered: true }
+          ? { ...n, ...opts, action: opts.action, secondaryAction: opts.secondaryAction,
+              level, text, id: entryId, entered: true }
           : n,
       );
       emit();
@@ -420,6 +408,10 @@ export function markNoticeReadByKey(dedupeKey: string) {
 }
 
 /** 当前 badge 口径的未读数（countInBadge:false 的投影条目不计，§3.3）。 */
+export function noticeRevision(dedupeKey: string): number | undefined {
+  return inbox.find((entry) => entry.dedupeKey === dedupeKey)?.revision;
+}
+
 export function unreadNoticeCount(): number {
   return unreadIn(inbox);
 }

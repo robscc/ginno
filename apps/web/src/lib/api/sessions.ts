@@ -754,13 +754,16 @@ export async function listRunning(): Promise<RunningWork> {
  *  也修「收件箱条目跨应用重启只剩跳会话、决策按钮丢失」——回调不可
  *  序列化，重启后必须靠列表重建。范式对齐 resyncDevSwapRun。 */
 export async function listLastwordsPending() {
-  return json<{ ok: boolean; pending?: LastwordsPending[] }>(
+  return json<{ ok: boolean; pending?: LastwordsPending[]; recent?: LastwordsReceipt[] }>(
     `${BASE}/lastwords/pending`,
   );
 }
 
 export interface LastwordsPending {
   session_id: string;
+  recovery_id?: string;
+  uncertain?: boolean;
+  updated_at?: number;
   head?: string;
   user_request_head?: string;
   reason?: string;
@@ -772,20 +775,27 @@ export interface LastwordsPending {
   pending_at?: number;
 }
 
-export async function resumeLastwords(sessionId: string) {
-  return json<{ ok: boolean; error?: string }>(`${BASE}/lastwords/resume`, {
+export interface LastwordsReceipt {
+  session_id: string;
+  recovery_id: string;
+  status: string;
+  updated_at: number;
+}
+
+export async function resumeLastwords(sessionId: string, recoveryId?: string) {
+  return json<{ ok: boolean; error?: string; status?: string; updated_at?: number }>(`${BASE}/lastwords/resume`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: sessionId, recovery_id: recoveryId }),
   });
 }
 
 /** 放弃恢复：清 pending + 删遗言文件。`had` = 是否真有条目被清
  *  （false = 本来就没有，幂等无害）。 */
-export async function dismissLastwords(sessionId: string) {
-  return json<{ ok: boolean; had?: boolean }>(`${BASE}/lastwords/resume`, {
+export async function dismissLastwords(sessionId: string, recoveryId?: string) {
+  return json<{ ok: boolean; had?: boolean; error?: string; status?: string; updated_at?: number }>(`${BASE}/lastwords/resume`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ session_id: sessionId, dismiss: true }),
+    body: JSON.stringify({ session_id: sessionId, recovery_id: recoveryId, dismiss: true }),
   });
 }

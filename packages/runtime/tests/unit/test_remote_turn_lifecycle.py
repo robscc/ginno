@@ -334,12 +334,13 @@ async def test_resume_remote_reresends_last_user_request(wire, monkeypatch):
 
     async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
         captured.append(text)
+        return "completed"
 
     monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
     snap = {"user_request_head": REAL_REQUEST, "turn_id": "tid-linux",
             "reason": "dev-swap", "session_id": SID}
-    ok = await lastwords._run_lastwords_turn(wire.sess, snap)
-    assert ok is True
+    outcome = await lastwords._run_lastwords_turn(wire.sess, snap)
+    assert outcome == "completed"
     assert captured == [REAL_REQUEST], "远程会话恢复必须重发最后用户请求原文"
 
 

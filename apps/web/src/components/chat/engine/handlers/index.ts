@@ -80,6 +80,7 @@ export const EVENT_HANDLERS: ReadonlyMap<string, EventHandler> = new Map<string,
   ["runtime.devswap_progress", runtimeEvents.onDevswapProgress],
   ["runtime.lastwords_pending", runtimeEvents.onLastwordsPending],
   ["runtime.lastwords_restored", runtimeEvents.onLastwordsRestored],
+  ["runtime.lastwords_status", runtimeEvents.onLastwordsStatus],
   ["runtime.dev_swap_pending", runtimeEvents.onDevSwapPending],
   // ── 08 无 graph turn 的内联文本 ──
   ["deliver.report", inline.onDeliverReport],

@@ -536,6 +536,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
             if (!it?.session_id) continue;
             handle(sid, { event: "runtime.lastwords_pending", ...it });
           }
+          for (const receipt of r?.recent ?? []) {
+            handle(sid, { event: "runtime.lastwords_status", ...receipt });
+          }
         } catch {
           /* 拉取失败不拦连接：真实广播若到达仍能弹卡 */
         }

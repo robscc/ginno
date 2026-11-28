@@ -251,6 +251,7 @@ async def run_remote_turn(
         _log.exception("remote_turn_lastwords_start_failed session=%s", sid)
 
     state, text, task_id, err = "", "", "", ""
+    interrupted = False
     stopped = False  # 用户 ⏹（P1 stop 传播）——流式/轮询循环内置位
     try:
         task = None
@@ -634,6 +635,9 @@ async def run_remote_turn(
             sid, "done", {"turn_id": tid, "remote": True, "state": state}, tid
         )
         return {"ok": not err, "text": text, "state": state, "task_id": task_id, "error": err}
+    except asyncio.CancelledError:
+        interrupted = not _stop_requested(sid)
+        raise
     finally:
         # ── 账本收口（2026-11-18 加固）──────────────────────────────────
         # 原实现的清理段在**可抛调用**（事件推送、影子记账、终稿补发）之后
@@ -654,10 +658,11 @@ async def run_remote_turn(
             if _RUNNING_TURNS.get(sid) == tid:
                 _RUNNING_TURNS.pop(sid, None)
                 _RUNNING_TURNS_AT.pop(sid, None)
+            terminal = "stopped" if stopped or _stop_requested(sid) else state
             _TURN_STOP.pop(sid, None)
             from ...lastwords import note_remote_turn_end
 
-            note_remote_turn_end(sid, tid)
+            note_remote_turn_end(sid, tid, outcome=terminal or None, interrupted=interrupted)
         except Exception:  # noqa: BLE001 — 收口清理不得影响回执
             _log.exception("remote_turn_unregister_failed session=%s", sid)
 
