@@ -1,6 +1,7 @@
 {
   "tool": {
     "labels": {
+      "generate_image": "生成图片中",
       "read_file": "读取文件中",
       "write_file": "写文件中",
       "edit_file": "编辑文件中",

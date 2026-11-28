@@ -186,6 +186,30 @@ def test_verify_draft_success_saves(client, monkeypatch):
     assert matches[0]["name"] == "改名"
 
 
+@pytest.mark.parametrize(
+    "protocol,kind,enabled,expected",
+    [
+        ("openai-responses", "chat", True, True),
+        ("openai-responses", "chat", False, False),
+        ("openai-responses", "chat", "false", False),
+        ("openai-compatible", "chat", True, False),
+        ("openai-compatible", "asr", True, False),
+    ],
+)
+def test_verify_preserves_responses_image_settings(client, monkeypatch, protocol, kind, enabled, expected):
+    monkeypatch.setattr(prov_mod, "verify_config_draft", lambda _: {"ok": True})
+    draft = {
+        **_DRAFT, "protocol": protocol, "kind": kind,
+        "enable_image_generation": enabled, "image_generation_model": " codex/gpt-image-2 ",
+    }
+    saved = client.post("/api/model_configs/verify", json=draft).json()["config"]
+    restored = next(c for c in client.get("/api/model_configs").json()["configs"] if c["id"] == saved["id"])
+    assert restored["enable_image_generation"] is expected
+    assert restored["image_generation_model"] == "codex/gpt-image-2"
+    assert restored["models"] == draft["models"]
+    assert restored["default_model"] == draft["default_model"]
+
+
 def test_verify_draft_failure_not_saved(client, monkeypatch):
     monkeypatch.setattr(
         prov_mod,

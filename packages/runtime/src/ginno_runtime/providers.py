@@ -88,6 +88,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
 
 # Wire protocol enums (decision Q6: keep the legacy kebab strings).
 CONFIG_PROTOCOLS = ("anthropic", "openai-compatible", "openai-responses")
+DEFAULT_IMAGE_GENERATION_MODEL = "gpt-image-2"
 
 # Legacy protocol strings → canonical v2 protocols. The legacy "openai" slot
 # builds models through the exact same ChatOpenAI path as "openai-compatible"
@@ -154,6 +155,8 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     # 启发式(models.py thinking_dialect);none = 显式声明不支持(UI 置灰 +
     # 服务端把档位按 auto 处理)。
     "thinking_mode": "auto",
+    "enable_image_generation": False,
+    "image_generation_model": DEFAULT_IMAGE_GENERATION_MODEL,
     # 档位 → token 预算覆盖(low/medium/high;anthropic 与 qwen 方言用),
     # 缺省/非正整数用 models.py 内置默认(4k/16k/32k)。
     "thinking_budgets": {},
@@ -189,6 +192,15 @@ def normalize_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
     out["enabled"] = bool(out.get("enabled"))
     # kind 只有两个合法值；未知值一律回 chat（旧配置无此字段也是 chat）。
     out["kind"] = "asr" if str(out.get("kind") or "") == "asr" else "chat"
+    out["enable_image_generation"] = (
+        out["protocol"] == "openai-responses" and out["kind"] == "chat"
+        and out.get("enable_image_generation") is True
+    )
+    image_model = out.get("image_generation_model")
+    out["image_generation_model"] = (
+        (image_model.strip() if isinstance(image_model, str) else "")
+        or DEFAULT_IMAGE_GENERATION_MODEL
+    )
     return out
 
 
@@ -214,7 +226,7 @@ def legacy_providers_to_configs(stored: dict[str, Any]) -> list[dict[str, Any]]:
         model = str(merged.get("default_model") or merged.get("model") or "").strip()
         models = _coerce_models(merged.get("models")) or ([model] if model else [])
         name = str(merged.get("name") or "").strip() or _LEGACY_SLOT_NAMES.get(pid, pid)
-        cfg = normalize_config({**merged, "models": models})
+        cfg = normalize_config({**merged, "protocol": proto, "models": models})
         cfg.update(
             {
                 "id": pid,

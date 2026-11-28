@@ -105,6 +105,7 @@ export function ModelConfigForm({
   const titles = SECTION_TITLES[locale] ?? SECTION_TITLES.en;
   // 默认模型 radio 组名（同页可能同时展开多张卡的编辑体，useId 防串组）。
   const defaultRadioGroup = useId();
+  const imageModelId = useId();
   // 默认模型恒在列表内（后端不变式）：存量脏值（legacy 单模型 / 手改过
   // settings.json）mount 即收敛——保留仍在列表内的值，否则落到首条。
   const [draft, setDraft] = useState<ModelConfig>(() => {
@@ -446,6 +447,34 @@ export function ModelConfigForm({
               onChange={(e) => set("org_id", e.target.value)}
             />
           </Field>
+        )}
+
+        {isResponses && !isAsr && (
+          <div className="space-y-1">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={draft.enable_image_generation === true}
+                aria-controls={draft.enable_image_generation ? imageModelId : undefined}
+                onChange={(e) => set("enable_image_generation", e.target.checked)}
+              />
+              {t("enableImageGeneration")}
+            </label>
+            {draft.enable_image_generation && (
+              <div>
+                <label htmlFor={imageModelId} className="field-label">{t("imageGenerationModel")}</label>
+                <input
+                  id={imageModelId}
+                  className="field"
+                  placeholder="gpt-image-2"
+                  value={draft.image_generation_model ?? "gpt-image-2"}
+                  aria-describedby={`${imageModelId}-hint`}
+                  onChange={(e) => set("image_generation_model", e.target.value)}
+                />
+                <p id={`${imageModelId}-hint`} className="mt-1 text-[11px] text-faint">{t("imageGenerationHint")}</p>
+              </div>
+            )}
+          </div>
         )}
 
         {/* ②模型列表（2026-11-04 重构）：主视图 = chip 行（行内 radio 设默认

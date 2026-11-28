@@ -161,6 +161,8 @@ export interface ModelConfig {
   base_url: string;
   api_key: string;
   org_id?: string; // openai-responses only
+  enable_image_generation?: boolean; // OpenAI Responses chat connections
+  image_generation_model?: string; // ID at the same gateway's Images API
   bearer_auth?: boolean; // anthropic only: Authorization: Bearer instead of x-api-key
   server_web_search?: boolean; // anthropic only: gateway-side web_search tool
   server_web_search_max_uses?: number;

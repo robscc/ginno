@@ -72,6 +72,7 @@ from .state import AgentState
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
 from .tools.builtin import build_builtin_tools
+from .tools.image_tools import IMAGE_TOOL_NAME, build_image_tools
 from .tools.tasks import build_task_tools
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.goal_tools import GOAL_TOOL_NAMES
@@ -373,11 +374,16 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
 
     async def agent_node(state: AgentState, config=None) -> dict:
         model = model_getter()
+        # The image capability belongs to the session's selected connection,
+        # including when the router delegates a text step to another model.
+        available_tools = all_tools if getattr(model, "image_generation_model", "") else [
+            tool for tool in all_tools if tool.name != IMAGE_TOOL_NAME
+        ]
         if router is not None:
             model = await router.route(model, state, config)
         agent = _resolve_agent(_turn_agent_id(state, config))
         extra = _skill_extra_allow(state)
-        allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
+        allowed = [t for t in available_tools if tool_allowed(agent, t.name, extra)]
         # Worker ask_user 中断透传（relay-question 设计 ⑥）：本会话被登记
         # 为待代答订阅者（pending_relay[sub_sid] 非空）时补绑 relay_answer
         # （qid enum=当前待答）。工具集是 session 级静态构建，而问题运行时
@@ -406,7 +412,7 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
             build_stable_system(
                 agent,
                 state.get("project_slug", ""),
-                all_tools,
+                available_tools,
                 agent_id=_turn_agent_id(state, config),
                 mcp_tool_names=state.get("mcp_tool_names") or [],
                 session_id=((config or {}).get("configurable") or {}).get("thread_id", ""),
@@ -1024,6 +1030,7 @@ def build_all_tools(
         # [] without a session_id (workflow engine / listing endpoints): no
         # socket to answer over, and a workflow has its own `human` node.
         + build_ask_tools(project_slug, session_id)
+        + build_image_tools(project_slug, session_id)
         + (mcp_tools or [])
         + [render_widget, attach_ref]
         + ALL_TODO_TOOLS
