@@ -44,6 +44,7 @@ describe("初始状态与内置默认", () => {
       bash: "Running command",
       delegate_agent: "Delegating to external agent",
       parse_document: "Parsing document",
+      generate_image: "Generating image",
     });
   });
 
@@ -61,6 +62,7 @@ describe("locale 切换", () => {
     m.setToolLabelsLocale("zh-CN");
     expect(m.toolLabel("read_file")).toBe("读取文件中");
     expect(m.toolLabel("delegate_agent")).toBe("转交外部代理中");
+    expect(m.toolLabel("generate_image")).toBe("生成图片中");
     expect(m.toolLabel("mcp_trending_list")).toBe("调用 MCP：trending");
   });
 

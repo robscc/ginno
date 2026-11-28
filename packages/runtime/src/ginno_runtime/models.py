@@ -362,6 +362,7 @@ def _responses_chat_openai() -> type:
     if _RESPONSES_CLS is None:
         class ResponsesReasoningChatOpenAI(_reasoning_chat_openai()):
             reasoning_passthrough: bool = False
+            image_generation_model: str = ""
 
         _RESPONSES_CLS = ResponsesReasoningChatOpenAI
     return _RESPONSES_CLS
@@ -830,6 +831,9 @@ def build_model(
             timeout=_chat_timeout(cfg),
             max_retries=6,
             use_responses_api=True,
+            image_generation_model=(
+                cfg.get("image_generation_model") or prov_mod.DEFAULT_IMAGE_GENERATION_MODEL
+            ) if cfg.get("enable_image_generation") is True else "",
         )
         if max_tokens:  # None(0=不传)不传——openai 协议不强制,端点自决
             chat_kw["max_tokens"] = max_tokens
