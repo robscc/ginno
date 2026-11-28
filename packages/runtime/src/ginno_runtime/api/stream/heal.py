@@ -174,6 +174,9 @@ async def _stop_parked_turn(session: dict, session_id: str, turn_id: str) -> Non
         # i.e. after the drain. Same serialization as _resume_job.
         async with _turn_lock(session_id):
             await _heal_interrupted_turn(graph, config)
+            from ...lastwords import note_parked_stop
+
+            await note_parked_stop(session_id, turn_id)
         await _push_session_event(session_id, "turn.stopped", {}, turn_id or None)
         # This is the one way a parked turn ends WITHOUT a resume, so it is the
         # one place a parked segment's stash has to be dropped here: the segment
