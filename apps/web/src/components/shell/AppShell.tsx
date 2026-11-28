@@ -107,7 +107,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // state (including the in-flight retry affordance on error cards). By keeping
   // the workspace here and toggling visibility with `hidden`, ChatStream's refs
   // survive any route change.
-  const [running, setRunning] = useState(false);
   const didInit = useRef(false);
 
   // hash 路由兼容（2026-11-18 旅程走查 P2-7）：Next 静态导出只认 path 路由，
@@ -273,7 +272,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   const {
-    connectorDot, runningIds, waitingMap, scheduleDot, scheduleRunning, scheduleUnseen,
+    connectorDot, runningIds, compactingIds, waitingMap, scheduleDot, scheduleRunning, scheduleUnseen,
   } = useShellActivity(g, router, pathname);
 
   const onWorkspace = pathname === "/";
@@ -455,6 +454,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       selected={selected}
       unreadSessions={g.unreadSessions}
       runningIds={runningIds}
+      compactingIds={compactingIds}
       waitingMap={waitingMap}
       treeCollapsed={g.treeCollapsed}
       editingId={editingId}
@@ -722,11 +722,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 完整流程在设置页顶部（SettingsView 的 panel 横幅）。 */}
             <SettingsCorruptBanner variant="app" />
             {session && (
-              <TopBar session={session} agent={agent} running={running} usage={usage} context={contextState} />
+              <TopBar
+                session={session}
+                agent={agent}
+                running={runningIds.has(session.id)}
+                waiting={Object.hasOwn(waitingMap, session.id)}
+                compacting={compactingIds.has(session.id)}
+                usage={usage}
+                context={contextState}
+              />
             )}
             <ChatStream
               session={session}
-              onRunningChange={setRunning}
               onUsageChange={(turn) =>
                 setUsageDelta((d) => ({
                   input_tokens: (d?.input_tokens ?? 0) + turn.input_tokens,

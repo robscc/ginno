@@ -551,6 +551,91 @@ html.light [data-operation-state="interrupted"] {
   100% { transform: scale(1.6); opacity: 0; }
 }
 
+/* Session list and TopBar share the 16px rolling compaction indicator. */
+.session-compaction-roller {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #6949d0;
+  color: white;
+}
+html.light .session-compaction-roller {
+  background: #6142d0;
+}
+.session-compaction-roller > span {
+  position: absolute;
+  display: block;
+}
+.session-compaction-roller .track {
+  top: 10.4px;
+  left: 3px;
+  width: 10px;
+  height: 1.35px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.session-compaction-roller .paper {
+  top: 8px;
+  right: 3.1px;
+  width: 4.7px;
+  height: 1.4px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: right;
+  animation: ginno-compaction-paper 2.7s ease-in-out infinite;
+}
+.session-compaction-roller .wheel {
+  top: 5.1px;
+  left: 3px;
+  width: 4.7px;
+  height: 4.7px;
+  border: 1.15px solid;
+  border-radius: 50%;
+  animation: ginno-compaction-wheel 2.7s ease-in-out infinite;
+}
+.session-compaction-roller .wheel::before {
+  content: "";
+  position: absolute;
+  width: 1.15px;
+  height: 1.15px;
+  border-radius: 50%;
+  background: currentColor;
+}
+@keyframes ginno-compaction-wheel {
+  0%, 100% { transform: none; }
+  49%, 67% { transform: translateX(5.3px) rotate(240deg); }
+}
+@keyframes ginno-compaction-paper {
+  0%, 100% { transform: none; }
+  49%, 67% { transform: scaleX(0); opacity: 0; }
+}
+
+/* Only the current session's TopBar hand waves. */
+.topbar-session-activity .session-activity-hand {
+  background: #925108;
+}
+html.light .topbar-session-activity .session-activity-hand {
+  background: #b56106;
+}
+.topbar-session-activity .session-activity-hand svg {
+  transform-origin: 50% 84%;
+  animation: ginno-waiting-hand-wave 2.85s ease-in-out infinite;
+}
+@keyframes ginno-waiting-hand-wave {
+  0%, 24%, 100% { transform: rotate(0); }
+  5%, 15% { transform: rotate(-17deg); }
+  10%, 20% { transform: rotate(17deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-compaction-roller .paper,
+  .session-compaction-roller .wheel,
+  .topbar-session-activity .session-activity-hand svg {
+    animation: none;
+  }
+}
+
 /* ---- 方案 C 后台任务徽标（2026-11-19 用户选定）：8px 旋转彩虹点 +
    语义青数字（无胶囊底）。与 .running-indicator .core 同实现同色谱。 */
 .rainbow-mini-dot {

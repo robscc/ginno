@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from .server_shared import (
+    _COMPACTING,
     _PENDING_KIND,
     _PENDING_RESUME,
     live_running_turns,
@@ -63,6 +64,8 @@ def running_work_report() -> dict:
         "sessions": sessions,
         "tasks": tasks,
         "count": len(sessions) + len(tasks),
+        # UI-only: manual compaction is outside the quit-confirmation count.
+        "compacting": list(_COMPACTING),
         # 停在 interrupt 等用户应答的会话（2026-11-05：侧栏 ask_user 图标）。
         # kind ∈ user_question | *_decision（见 server_shared._PENDING_KIND），
         # 侧栏按 kind 选图标与提示文案。

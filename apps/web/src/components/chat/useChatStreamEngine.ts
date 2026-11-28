@@ -26,6 +26,7 @@ import {
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { FIND_HISTORY_CHANGED } from "@/lib/sessionFindCache";
+import { SESSION_ACTIVITY_CHANGED } from "@/lib/sessionActivity";
 import { trackReasoningSummaries } from "@/lib/reasoningSummaryStream";
 import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
 import { useEventI18nText, type Block } from "@/components/chat/blocks";
@@ -102,6 +103,11 @@ import {
   sendModUiPress as sendModUiPressImpl,
   sendModUiAnswer as sendModUiAnswerImpl,
 } from "./engine/actions";
+
+const SESSION_ACTIVITY_EVENTS = new Set([
+  "turn.state", "turn.start", "turn.stopped", "message.end", "error",
+  "user.question", "permission.request", "version.propose",
+]);
 
 export interface EngineDeps {
   g: ReturnType<typeof useGinno>;
@@ -590,7 +596,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       if (socketsRef.current[sid] !== sock) return;
       lastSeenRef.current[sid] = Date.now();
       try {
-        const ev = JSON.parse(e.data) as { event: string; frame_session?: string };
+        const ev = JSON.parse(e.data) as { event: string; frame_session?: string; stage?: string };
         // Frame-ownership guard (2026-10-01 渲染串线报告）：runtime 在每帧带上
         // frame_session（独立键——subagent 事件的 session_id 表示事件主题的
         // 子会话，不能混用）；不属于本会话的帧一律丢弃并告警。
@@ -612,6 +618,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
           "context.microcompacted", "context.compacted"].includes(ev.event);
         const revision = changesHistory ? historyRef.current.get(sid)?.page?.revision : undefined;
         handle(sid, ev);
+        if (SESSION_ACTIVITY_EVENTS.has(ev.event) ||
+            (ev.event === "context.compacting" && ev.stage !== "writing")) {
+          window.dispatchEvent(new Event(SESSION_ACTIVITY_CHANGED));
+        }
         if (changesHistory) {
           // An orphaned turn already reconciles through the paged history read.
           // If it publishes a new revision, find observes it through that path.

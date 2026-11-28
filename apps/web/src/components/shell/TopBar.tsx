@@ -14,6 +14,7 @@ import { RemotePeerBadge } from "./RemotePeerBadge";
 import { ContextFoldersChip } from "./ContextFoldersChip";
 import { LinkedSessionsChip } from "./LinkedSessionsChip";
 import { TopBarFuncButton } from "./TopBarFuncButton";
+import { SessionActivityIndicator } from "./SessionActivityIndicator";
 
 
 
@@ -163,12 +164,16 @@ export function TopBar({
   session,
   agent,
   running,
+  waiting,
+  compacting,
   usage,
   context,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
   running: boolean;
+  waiting?: boolean;
+  compacting?: boolean;
   usage?: SessionUsage | null;
   context?: ContextState | null;
 }) {
@@ -211,26 +216,8 @@ export function TopBar({
           home(无 session)整组隐藏(维持现状)。 */}
       {session && (
         <div className="flex shrink-0 items-center gap-0.5">
-          {/* ⏺ 状态位:无面板,click 无行为(决策点 A)。语义色走 --st-*
-              (主题感知:暗色青/亮色深青,不用绿色——白底洗白)。 */}
-          {/* 2026-11-19 方案 E（用户选定）：running = 10px 旋转彩虹核心 +
-              紫色脉冲波纹，指示器裸放（不要按钮框，"太小了/不要框框"）；
-              idle = 静态灰点。reduced-motion 降级静态彩虹+隐藏波纹。 */}
-          <span
-            className="flex w-8 shrink-0 items-center justify-center"
-            title={running ? tr("topbar.running") : tr("topbar.idle")}
-          >
-            {running ? (
-              <span className="running-indicator">
-                <span className="pulse" />
-                <span className="core" />
-              </span>
-            ) : (
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ background: "var(--st-skipped)" }}
-              />
-            )}
+          <span className="topbar-session-activity flex w-8 shrink-0 items-center justify-center">
+            <SessionActivityIndicator activity={waiting ? "waiting" : compacting ? "compacting" : running ? "running" : "idle"} />
           </span>
 
           <GoalChip sessionId={session.id} />
