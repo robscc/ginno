@@ -1127,6 +1127,7 @@
           "schedule": "定时任务",
           "mods": "插件",
           "classifier": "分类器",
+          "image_generation": "生图",
           "channel_resume": "渠道续跑",
           "title": "标题生成",
           "team": "团队生成",

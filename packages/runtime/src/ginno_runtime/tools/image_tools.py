@@ -5,15 +5,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import tempfile
+import time
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
+from langgraph.config import get_stream_writer
 
-from .. import paths
+from .. import paths, usage_store
 from ..files import get_registry
 from ..files.images import encode_images_marker
 from ..lang import t
+from ..usage import IMAGE_GENERATION_SOURCE
 
 IMAGE_TOOL_NAME = "generate_image"
 # Magpie's image requests can take several minutes before returning a body.
@@ -59,14 +64,16 @@ def build_image_tools(project_slug: str | None, session_id: str | None) -> list[
         return []
 
     @tool(IMAGE_TOOL_NAME)
-    async def generate_image(prompt: str) -> str:
+    async def generate_image(prompt: str, config: RunnableConfig) -> str:
         """Generate a new image from a text prompt when the user asks for one.
 
         The image appears in the conversation after the call succeeds.
         """
         from ..server_shared import _SESSIONS
+        from ..session_meta import resolve_session_model
 
-        model = (_SESSIONS.get(session_id) or {}).get("model")
+        session = _SESSIONS.get(session_id) or {}
+        model = session.get("model")
         model_id = getattr(model, "image_generation_model", "")
         if not model_id:
             raise ValueError(t(
@@ -82,7 +89,34 @@ def build_image_tools(project_slug: str | None, session_id: str | None) -> list[
             timeout=max(_IMAGE_TIMEOUT_S, model.request_timeout or 0),
             max_retries=0,
         )
+        provider, _ = resolve_session_model(session_id, session)
+        started = time.monotonic()
         reply = await client.images.generate(model=model_id, prompt=prompt, n=1)
+        usage = getattr(reply, "usage", None)
+        input_tokens = getattr(usage, "input_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
+        if (
+            type(input_tokens) is int and input_tokens >= 0
+            and type(output_tokens) is int and output_tokens >= 0
+            and (input_tokens or output_tokens)
+        ):
+            # The provider can report usage even when the download cannot be saved.
+            routing = config.get("configurable") or {}
+            tokens = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+            usage_store.record(
+                **tokens,
+                source=IMAGE_GENERATION_SOURCE,
+                provider=provider,
+                model=getattr(reply, "model", None) or model_id,
+                session_id=session_id,
+                project_slug=project_slug,
+                agent_id=routing.get("agent_id") or session.get("agent_id"),
+                turn_id=routing.get("turn_id"),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            # Direct tool invocation also records usage, without a graph stream.
+            with suppress(KeyError, RuntimeError):
+                get_stream_writer()({"ginno_image_usage": tokens})
         encoded = reply.data[0].b64_json if reply.data else None
         directory = paths.session_files_dir(project_slug, session_id) / "generated"
         path = await asyncio.to_thread(_save_image, encoded, directory)

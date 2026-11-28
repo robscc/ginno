@@ -15,6 +15,7 @@ from .. import engine as eng
 from ..engine import _session_workspace  # noqa: TC001 — re-exported helper
 from .ctx import StreamTurnCtx
 from .permission import handle_interrupt
+from .streamio import emit_usage
 from ....editdiff import make_edit_diff
 
 
@@ -300,11 +301,6 @@ async def _updates_agent(ctx: StreamTurnCtx, delta) -> None:
         if getattr(m, "id", None):
             ctx._last_ai_id = m.id
         if u:
-            acc = eng._USAGE_BY_SESSION.setdefault(
-                ctx.session_id, eng.empty_usage()
-            )
-            eng.add_usage(acc, u)
-            eng.add_usage(ctx._turn_usage, u)
             # ContextRing 平滑基线（见 _turn_ctx_tokens 声明处
             # 注释）：漏报轮（input=0）保旧值不动。
             _in_tok = u["input_tokens"] or 0
@@ -341,27 +337,7 @@ async def _updates_agent(ctx: StreamTurnCtx, delta) -> None:
                 agent_id=ctx.agent_id or None,
                 turn_id=ctx.turn_id,
             )
-            await ctx.safe_send(
-                ctx.emit(
-                    "usage",
-                    {
-                        "turn": u,
-                        "session": dict(acc),
-                        "cache_hit_ratio": eng.cache_hit_ratio(acc),
-                        # 上下文占用（TopBar 圆环）：ContextRing 的
-                        # 分子用 _turn_ctx_tokens（turn 级平滑：首
-                        # 个 usage 定基线、步间取 max、漏报轮保旧），
-                        # 而非单次调用的原始 input——修复「占比
-                        # 一会儿 10% 以下一会儿 60%+」的锯齿。
-                        # 窗口走 context_window_for 解析链不变；
-                        # 占用是「当前状态」不是累计，前端每轮
-                        # 直接替换（usage.stats-design）。
-                        "context": eng.context_state(
-                            ctx._turn_ctx_tokens, _prov, _model,
-                        ),
-                    },
-                )
-            )
+            await emit_usage(ctx, u, context=eng.context_state(ctx._turn_ctx_tokens, _prov, _model))
         for tc in getattr(m, "tool_calls", []) or []:
             nm = tc.get("name")
             args = tc.get("args") or {}

@@ -7,12 +7,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ginno_runtime import providers, server_shared
+from ginno_runtime import providers, server_shared, usage_store
 from ginno_runtime.files import get_registry
 from ginno_runtime.files.images import parse_images_marker
 from ginno_runtime.files.registry import reset_registries
 from ginno_runtime.models import build_model
 from ginno_runtime.tools.image_tools import build_image_tools
+from ginno_runtime.usage import last_chat_input_tokens, last_turn_growth_tokens
 
 pytestmark = pytest.mark.unit
 
@@ -43,7 +44,9 @@ def responses_model(monkeypatch):
         })
         monkeypatch.setattr(providers, "load_providers", lambda: {"magpie": cfg})
         model = build_model("magpie", session_id="image-session")
-        monkeypatch.setitem(server_shared._SESSIONS, "image-session", {"model": model})
+        monkeypatch.setitem(server_shared._SESSIONS, "image-session", {
+            "model": model, "model_provider": "magpie", "model_name": "codex/chat",
+        })
         return model
 
     return build
@@ -58,13 +61,20 @@ async def test_image_tool_uses_same_connection_and_saves_registry_entry(response
         return httpx.Response(200, json={
             "created": 1,
             "model": "codex/gpt-image-2",
+            "usage": {"input_tokens": 32, "output_tokens": 648, "total_tokens": 680},
             "data": [{"b64_json": base64.b64encode(PNG).decode(), "mime_type": "image/png"}],
         })
 
+    usage_store.record(
+        session_id="image-session", turn_id="image-turn", provider="magpie",
+        model="codex/chat", input_tokens=280, output_tokens=11,
+    )
     generate, = build_image_tools("default", "image-session")
     async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as transport:
         model.root_async_client._client = transport
-        result = await generate.ainvoke({"prompt": "A blue circle"})
+        result = await generate.ainvoke(
+            {"prompt": "A blue circle"}, config={"configurable": {"turn_id": "image-turn", "agent_id": "dev"}},
+        )
     request, = requests
     assert str(request.url) == "http://127.0.0.1:3425/v1/images/generations"
     assert request.headers["Authorization"] == "Bearer magpie-test"
@@ -75,6 +85,18 @@ async def test_image_tool_uses_same_connection_and_saves_registry_entry(response
     assert path.suffix == ".png" and path.read_bytes() == PNG
     file, = get_registry("default").list_session("image-session")
     assert file["path"] == str(path) and file["kind"] == "image"
+    row, = usage_store.query_requests(session_id="image-session", source="image_generation")["rows"]
+    assert {key: row[key] for key in (
+        "provider", "model", "project_slug", "session_id", "agent_id", "turn_id", "input_tokens", "output_tokens",
+    )} == {
+        "provider": "magpie", "model": "codex/gpt-image-2", "project_slug": "default",
+        "session_id": "image-session", "agent_id": "dev", "turn_id": "image-turn",
+        "input_tokens": 32, "output_tokens": 648,
+    }
+    total = usage_store.session_totals("image-session")
+    assert (total["input_tokens"], total["output_tokens"], total["calls"]) == (312, 659, 2)
+    assert last_chat_input_tokens("image-session") == 280
+    assert last_turn_growth_tokens("image-session") == 291
 
 
 async def test_disabled_tool_rejects_a_stale_call_before_network(responses_model):
@@ -95,12 +117,31 @@ async def test_disabled_tool_rejects_a_stale_call_before_network(responses_model
 async def test_bad_image_payload_creates_no_file(responses_model, invalid):
     model = responses_model(enable_image_generation=True)
     generate, = build_image_tools("default", "image-session")
-    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"created": 1, "data": [invalid]}))
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={
+        "created": 1, "data": [invalid],
+        "usage": {"input_tokens": 15, "output_tokens": 500, "total_tokens": 515},
+    }))
     async with httpx.AsyncClient(transport=transport) as client:
         model.root_async_client._client = client
         with pytest.raises(ValueError, match="Base64 图片|base64 image"):
             await generate.ainvoke({"prompt": "A blue circle"})
     assert get_registry("default").list_session("image-session") == []
+    row, = usage_store.query_requests(session_id="image-session", source="image_generation")["rows"]
+    assert (row["model"], row["input_tokens"], row["output_tokens"]) == ("gpt-image-2", 15, 500)
+
+
+@pytest.mark.parametrize("usage", [None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}])
+async def test_unreported_image_tokens_do_not_create_a_usage_row(responses_model, usage):
+    model = responses_model(enable_image_generation=True)
+    generate, = build_image_tools("default", "image-session")
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={
+        "created": 1, "data": [{"b64_json": base64.b64encode(PNG).decode()}], "usage": usage,
+    }))
+    async with httpx.AsyncClient(transport=transport) as client:
+        model.root_async_client._client = client
+        result = await generate.ainvoke({"prompt": "A blue circle"})
+    assert parse_images_marker(result)
+    assert usage_store.query_requests(session_id="image-session")["total"] == 0
 
 
 async def test_server_failure_sends_only_one_generation_request(responses_model):
@@ -119,3 +160,4 @@ async def test_server_failure_sends_only_one_generation_request(responses_model)
         with pytest.raises(openai.APIStatusError, match="upstream unavailable"):
             await generate.ainvoke({"prompt": "An orange circle"})
     assert requests == [{"model": "codex/gpt-image-2", "prompt": "An orange circle", "n": 1}]
+    assert usage_store.query_requests(session_id="image-session")["total"] == 0

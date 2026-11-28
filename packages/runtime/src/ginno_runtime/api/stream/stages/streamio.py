@@ -330,9 +330,26 @@ async def handle_messages_text(ctx: StreamTurnCtx, chunk) -> None:
             await ctx._coal.feed("thinking.delta", rk)
 
 
+async def emit_usage(ctx: StreamTurnCtx, usage: dict, *, context: dict | None = None) -> None:
+    """Update live counters. Only chat requests supply a context window sample."""
+    session = eng._USAGE_BY_SESSION.setdefault(ctx.session_id, eng.empty_usage())
+    eng.add_usage(session, usage)
+    eng.add_usage(ctx._turn_usage, usage)
+    await ctx.safe_send(ctx.emit("usage", {
+        "turn": usage,
+        "session": dict(session),
+        "cache_hit_ratio": eng.cache_hit_ratio(session),
+        **({"context": context} if context is not None else {}),
+    }))
+
+
 async def handle_custom(ctx: StreamTurnCtx, payload) -> None:
-    """legacy engine.py:728-759 的 custom 模式(模型退避 notice;其余吞掉)。"""
-    if isinstance(payload, dict) and payload.get("ginno_model_error"):
+    """Forward model backoff notices and token usage from image requests."""
+    if not isinstance(payload, dict):
+        return
+    if usage := payload.get("ginno_image_usage"):
+        await emit_usage(ctx, usage)
+    elif payload.get("ginno_model_error"):
         me = payload["ginno_model_error"]
         # 2026-11-08 429 显示优化:清洗后的错误文本(去 APIError
         # 前缀与英文括注尾巴,重置时间去重)+ 结构化 reset_at。
