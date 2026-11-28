@@ -93,6 +93,7 @@ _APP_PENDING_CHANNELS = {"parallel_progress"}
 
 # langgraph records a raised interrupt() as a pending write on this channel.
 _INTERRUPT_CHANNEL = "__interrupt__"
+STOP_HEAL_KEY = "ginno_stop_heal"
 
 
 def _dump_typed(typed: tuple[str, bytes]) -> dict:
@@ -826,6 +827,8 @@ class FileCheckpointer(BaseCheckpointSaver):
                 "channel_versions": new_versions,
                 "ts": time.time(),
             }
+            if config["configurable"].get(STOP_HEAL_KEY):
+                entry[STOP_HEAL_KEY] = True
             delta = None
             # ``parent_id == cid`` means the same checkpoint dict is being put
             # twice (langgraph never does this; a manual re-put might). A delta
@@ -944,12 +947,14 @@ class FileCheckpointer(BaseCheckpointSaver):
 
         Liveness rule: walk back to the newest entry that has ANY pending
         writes. ``__interrupt__`` there means the graph is still suspended; any
-        ordinary channel write means the turn moved on (resumed, or ran to the
-        next superstep) and a stale interrupt must never be replayed.
+        ordinary channel write means the turn moved on. A stop heal also
+        retires the earlier interrupt, even when it emits no pending writes.
         """
         session_id = config["configurable"]["thread_id"]
         record = self._read_hot(session_id)
         for entry in reversed(record.get("checkpoints") or []):
+            if entry.get(STOP_HEAL_KEY):
+                return None
             writes = entry.get("pending_writes") or []
             if not writes:
                 continue

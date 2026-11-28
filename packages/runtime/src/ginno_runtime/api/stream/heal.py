@@ -27,7 +27,7 @@ from ... import paths, usage_store
 from ... import server_shared as shared
 from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
-from ...checkpointer import ABANDONED_TURNS
+from ...checkpointer import ABANDONED_TURNS, STOP_HEAL_KEY
 from ...graph import BLOCK_PREFIX
 from ...knowledge import citations as cit
 from ...lang import t
@@ -67,7 +67,9 @@ from ..files import _normalize_file_ref, _register_artifact_file, _session_works
 from ..messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
 
 
-async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> None:
+async def _heal_interrupted_turn(
+    graph, config: dict, seg_text: str = "", *, parked: bool = False,
+) -> None:
     """Repair checkpoint state after a turn was stopped mid-superstep.
 
     Checkpoints commit per superstep, so an interrupted turn can leave:
@@ -128,7 +130,7 @@ async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> Non
                     **({"additional_kwargs": {"agent_id": agent_id}} if agent_id else {}),
                 )
             )
-        if not heal:
+        if not heal and not parked:
             return
         turn_id = (config.get("configurable") or {}).get("turn_id") or ""
         heal_config = {
@@ -136,6 +138,7 @@ async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> Non
             "configurable": {
                 **(config.get("configurable") or {}),
                 "turn_id": f"{turn_id}:stop",
+                STOP_HEAL_KEY: True,
             },
         }
         await graph.aupdate_state(
