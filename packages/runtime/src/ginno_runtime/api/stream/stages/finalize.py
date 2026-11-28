@@ -27,6 +27,7 @@ E1 ask_budget token reset（编排器内联登记，run.py）            121-126
 from __future__ import annotations
 
 from .. import engine as eng
+from ..outcome import TurnOutcome
 from .ctx import StreamTurnCtx
 
 
@@ -401,13 +402,13 @@ async def _release_turn_registration(ctx: StreamTurnCtx) -> None:
             eng._log.exception(
                 "team_settle_hook_spawn_failed session=%s", ctx.session_id
             )
-        # 遗言作废（lastwords-design P2）：turn 正常/出错收尾即删——绝不
-        # 把已完成的 turn 留给下次重启误恢复（parked interrupt 不在此列，
-        # 那是 turn 还活着等 resume，遗言保留是对的）。
+        # CancelledError 可以早于 lifespan 的 shutdown 标记。只有已知终态
+        # （包括显式 Stop）能清掉本次执行的遗言。
         try:
             from ....lastwords import note_turn_end
 
-            note_turn_end(ctx.session_id, ctx.turn_id)
+            outcome = TurnOutcome.STOPPED if _user_stopped else ctx.outcome
+            note_turn_end(ctx.session_id, ctx.turn_id, outcome=outcome, interrupted=outcome is None)
         except Exception:  # noqa: BLE001
             pass
         # 图片 turn 基线退役（image-emit-universal）：终态清除——下一 turn

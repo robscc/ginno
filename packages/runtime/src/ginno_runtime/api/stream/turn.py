@@ -33,6 +33,7 @@ from ...world_state import (
     sync_world_state,
 )
 from ..files import _compact_schema, _heal_workspace_ref
+from .outcome import TurnOutcome
 # 批次 5-2 起的分流入口（legacy 路已删，staged 为唯一引擎路径）。
 from .stages import dispatch_stream_graph as _stream_graph
 
@@ -382,7 +383,7 @@ async def _run_stream(
     skill_name: str | None = None,
     user_extra_kwargs: dict | None = None,
     origin: str = "interactive",
-) -> None:
+) -> TurnOutcome:
     """Append a HumanMessage and stream the agent loop until end or interrupt.
 
     ``images`` carries ``{"data": <base64>, "media_type": "image/png"}`` items
@@ -443,14 +444,22 @@ async def _run_stream(
             # 终态帧解锁 composer（同 team 广场分支的契约：notice 不解锁，
             # 必须补 message.end，否则输入框锁死）。
             await _push_session_event(_sid, "message.end", {}, _tid)
-            return
-        await run_remote_turn(
+            return TurnOutcome.FAILED
+        result = await run_remote_turn(
             session, user_text,
             (config.get("configurable") or {}).get("turn_id"),
             agent_id=agent_id,
             origin=origin,
         )
-        return
+        if not result:
+            return TurnOutcome.FAILED
+        if result.get("stopped"):
+            return TurnOutcome.STOPPED
+        if result.get("ok") and result.get("state") == "completed":
+            return TurnOutcome.COMPLETED
+        if result.get("ok") and result.get("state") in ("input-required", "auth-required"):
+            return TurnOutcome.AWAITING_INPUT
+        return TurnOutcome.FAILED
 
     content: Any = user_text
     # origin 标记进 config（engine 收口随 message.end 下发——见 docstring）
@@ -534,7 +543,7 @@ async def _run_stream(
         # (the graph never started), and a socket left busy on a dropped
         # prompt reads as a hung turn on every client.
         await _push_session_event(session_id, "message.end", {}, turn_id)
-        return
+        return TurnOutcome.FAILED
 
     # Vibe Island notch:UserPromptSubmit(卡片进入 working,摘要=用户输入)。
     # 用 mods 重写后的文本——与实际进 graph 的一致。开关关闭时 no-op,绝不抛。
@@ -766,10 +775,10 @@ async def _run_stream(
         "primary_path": str(session.get("primary_path") or ""),
     }
     _reset_mid_compact(config)  # 审计 B：新 turn 归零 mid 压缩节流
-    await _stream_graph(graph, config, input_state=input_state)
+    return await _stream_graph(graph, config, input_state=input_state)
 
 
-async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: dict) -> None:
+async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: dict) -> TurnOutcome:
     """Resume the graph from a pending interrupt (e.g. permission ask)."""
     # Vibe Island notch:用户已回答/批准,立刻清掉「待批准」提醒(后续 tool
     # 事件/Stop 也会清,这里只是清得更早)。开关关闭时 no-op,绝不抛。
@@ -777,4 +786,12 @@ async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: d
     if _sid:
         _vibe_island.permission_result(_sid)
     _reset_mid_compact(config)  # 审计 B：resume 再入也按新 turn 归零节流
-    await _stream_graph(graph, config, command=Command(resume=resume_value))
+    from ... import lastwords
+
+    snap = lastwords.awaiting_recovery_snapshot(_sid) if _sid else None
+    if snap and snap.get("resume_turn_id"):
+        config["configurable"].setdefault("turn_id", snap["resume_turn_id"])
+    outcome = await _stream_graph(graph, config, command=Command(resume=resume_value))
+    if snap and outcome is not None:
+        await lastwords.finish_awaiting_recovery(snap, outcome)
+    return outcome

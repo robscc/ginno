@@ -59,6 +59,7 @@ from contextlib import AsyncExitStack
 
 from ....tools.ask_tools import reset_ask_budget
 from .. import engine as eng
+from ..outcome import TurnOutcome
 from . import closeout
 from . import finalize as finalize_mod
 from .ctx import StreamTurnCtx
@@ -123,14 +124,15 @@ def _setup_identity(ctx: StreamTurnCtx, stack: AsyncExitStack) -> None:
     # 压栈后由 LIFO 在 E3(_TURN_STOP pop) 之后弹出——与 legacy finally 的
     # 段序逐行一致。登记即配对：此后本函数抛异常，注册表也必然回滚。
     stack.push_async_callback(_release_turn_registration, ctx)
-    # 遗言 WAL 护体（docs/lastwords-design.md P2）：turn 启动即写初始
-    # 遗言（reason=running）——此刻 checkpoint 还没有本 turn 的请求
-    # （快照回落上一条用户消息），工具边界写会立刻覆盖补全；SIGKILL
-    # 场景最坏只丢最后一次增量。best-effort，绝不拖累 turn。
+    # 当前输入尚未提交到 checkpoint，直接从本轮的输入构造首份遗言。
     try:
         from ....lastwords import note_turn_start
 
-        note_turn_start(ctx.session_id, ctx.turn_id, ctx.slug)
+        note_turn_start(
+            ctx.session_id, ctx.turn_id, ctx.slug,
+            input_messages=(ctx.input_state or {}).get("messages"),
+            registered_turn_id=ctx.ui_turn_id,
+        )
     except Exception:  # noqa: BLE001
         pass
     # Cooperative stop signal: setdefault so an event pre-armed by the WS
@@ -371,7 +373,7 @@ async def stream_graph_staged(
     config: dict,
     input_state: dict | None = None,
     command=None,
-) -> None:
+) -> TurnOutcome:
     """staged 版 ``_stream_graph`` — 语义复制，骨架见模块 docstring 对照表。
 
     批次 5-3：逐 turn 资源全走 ``AsyncExitStack``（入口 async with 进入）。
@@ -468,18 +470,18 @@ async def stream_graph_staged(
             await finalize_mod.post_stream_flush(ctx)
             if not ctx.saw_interrupt:
                 await finalize_mod.finalize_completed(ctx)
+                ctx.outcome = TurnOutcome.COMPLETED
             else:
+                ctx.outcome = TurnOutcome.AWAITING_INPUT
                 eng._log.info(
                     "turn_done session=%s turn=%s status=paused_at_interrupt",
                     ctx.session_id, ctx.turn_id,
                 )
         except eng.TurnStopped:
+            ctx.outcome = TurnOutcome.STOPPED
             await closeout.handle_turn_stopped(ctx)
         except Exception as e:
-            if await closeout.handle_turn_error(ctx, e):
-                # steer-continue / auto-retry 分支已递归接管（legacy 的
-                # except 内 return）；finally 仍照常执行。
-                return
-        # 批次 5-3：legacy 的 finally 清理段整体栈化（E1-E6，弹出序=
-        # 原逐行清理序，见 stream_graph_staged docstring 表）——async with
-        # 退出即全部弹出，except 分支 return 前亦然（Python 语义）。
+            ctx.outcome = await closeout.handle_turn_error(ctx, e)
+            if ctx.outcome == TurnOutcome.AWAITING_INPUT:
+                ctx.saw_interrupt = True
+        return ctx.outcome

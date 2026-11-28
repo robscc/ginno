@@ -420,32 +420,31 @@ async def lastwords_pending_list() -> dict:
     from .. import lastwords as _lw
 
     try:
-        return {"ok": True, "pending": _lw.list_pending()}
+        return {"ok": True, "pending": _lw.list_pending(), "recent": _lw.list_receipts()}
     except Exception:  # noqa: BLE001 — 读失败回落空列表，不炸前端
         import logging
 
         logging.getLogger(__name__).exception("lastwords_pending_list_failed")
-        return {"ok": True, "pending": []}
+        return {"ok": True, "pending": [], "recent": []}
 
 
 @router.post("/api/lastwords/resume")
 async def lastwords_resume(body: dict) -> dict:
-    """确认续跑（2026-11-10 产品化：auto 模式人工会话的待确认流）。
-
-    前端收 ``runtime.lastwords_pending`` 后引导用户进会话；用户确认续跑
-    时调用本端点（body ``{"session_id": "…"}``）。dismiss=true 表示放弃。
-    """
+    """Confirm or dismiss one snapshot by session and stable recovery ID."""
     from .. import lastwords as _lw
 
-    sid = str((body or {}).get("session_id") or "")
+    sid = str(body.get("session_id") or "")
     if not sid:
         return {"ok": False, "error": "session_id required"}
-    if body.get("dismiss"):
-        return _lw.dismiss_pending(sid)
     snap = _lw.pending_resume_snapshot(sid)
     if not snap:
-        return {"ok": False, "error": "no_pending"}
-    return await _lw.resume_pending(sid)
+        return {"ok": True, "had": False} if body.get("dismiss") else {"ok": False, "error": "no_pending"}
+    recovery_id = str(body.get("recovery_id") or "")
+    if not recovery_id:
+        return {"ok": False, "error": "recovery_id_required"}
+    if body.get("dismiss"):
+        return await _lw.confirm_dismissal(sid, recovery_id)
+    return await _lw.resume_pending(sid, recovery_id)
 
 
 @router.post("/api/devswap/lastwords/prepare")

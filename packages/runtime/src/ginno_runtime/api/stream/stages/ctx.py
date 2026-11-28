@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..outcome import TurnOutcome
 from ..reasoning_summary import TurnReasoningSummary
 
 
@@ -101,6 +102,7 @@ class StreamTurnCtx:
         self.input_state = input_state
         self.command = command
         self.saw_interrupt = False
+        self.outcome: TurnOutcome | None = None
         self.parked_questions: list[dict] = []
         self.ws_closed = False
         self.seg_text = []

@@ -41,7 +41,10 @@ MSGS = [
 
 
 def _fake_loader(slug: str, sid: str) -> list:
-    return list(MSGS)
+    messages = list(MSGS)
+    if turn_id := server_shared._RUNNING_TURNS.get(sid):
+        messages[2] = messages[2].model_copy(update={"id": turn_id})
+    return messages
 
 
 @pytest.fixture(autouse=True)
@@ -49,11 +52,13 @@ def _clean(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     server_shared._RUNNING_TURNS.clear()
     lastwords._LAST_WRITE_AT.clear()
     lastwords._EFFORT.clear()
+    lastwords._PENDING_RESUME.clear()
     lastwords._SHUTTING_DOWN = False
     yield
     server_shared._RUNNING_TURNS.clear()
     lastwords._LAST_WRITE_AT.clear()
     lastwords._EFFORT.clear()
+    lastwords._PENDING_RESUME.clear()
     lastwords._SHUTTING_DOWN = False
 
 
@@ -215,7 +220,7 @@ class TestWriteConsume:
 
     def test_multi_sessions(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(lastwords, "_resolve_slug", lambda sid: "default")
-        monkeypatch.setattr(lastwords, "_load_thread_messages", lambda slug, sid: list(MSGS))
+        monkeypatch.setattr(lastwords, "_load_thread_messages", _fake_loader)
         server_shared._RUNNING_TURNS.update({"s1": "t1", "s2": "t2"})
         assert lastwords.write_lastwords("signal") == 2
         entries = lastwords.consume_lastwords()
@@ -384,6 +389,7 @@ class TestRecover:
 
         async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
             calls.append({"config": config, "text": text, "kw": kw})
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -419,6 +425,7 @@ class TestRecover:
 
         async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
             calls.append({"config": config, "text": text, "kw": kw})
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -499,7 +506,7 @@ class TestRecover:
         async def slow_turn(session, snap):
             started.set()
             await finish.wait()
-            return True
+            return "completed"
 
         monkeypatch.setattr(lastwords, "_run_lastwords_turn", slow_turn)
         await lastwords.recover_lastwords()  # 人工会话 → 挂起待确认
@@ -535,6 +542,7 @@ class TestRecover:
 
         async def fake_run_stream(*a, **kw):
             stream_calls.append(1)
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -575,6 +583,7 @@ class TestRecover:
 
         async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
             calls.append({"config": config, "kw": kw})
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -603,6 +612,7 @@ class TestRecover:
 
         async def fake_run_stream(*a, **kw):
             calls.append(kw)
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -627,6 +637,7 @@ class TestRecover:
 
         async def fake_run_stream(*a, **kw):
             stream_calls.append(1)
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -1082,6 +1093,7 @@ class TestPendingForAllReasons:
 
         async def fake_run_stream(*a, **kw):
             stream_calls.append(1)
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 
@@ -1215,9 +1227,9 @@ class TestListPending:
 
     def test_expired_entry_purged_and_file_dropped(self, isolated_home):
         """过期条目拉取时顺手清掉（与 pending_resume_snapshot 同口径）。"""
-        _write_valid("s-old", reason="running")
+        snap = _write_valid("s-old", reason="running")
         lastwords._PENDING_RESUME["s-old"] = {
-            "session_id": "s-old",
+            **snap,
             "pending_at": time.time() - lastwords.TTL_S - 10,
         }
         assert lastwords.list_pending() == []
@@ -1273,6 +1285,7 @@ class TestAutoRunInteractive:
 
         async def fake_run_stream(ws, graph, config, text, session, agent_id, **kw):
             seen.append(ask_tools._INTERACTIVE.get())
+            return "completed"
 
         import ginno_runtime.api.stream as stream_mod
 

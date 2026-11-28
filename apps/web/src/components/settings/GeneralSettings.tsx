@@ -366,8 +366,7 @@ export function GeneralSettings() {
   // 在执行白名单命令前读此键（tools/rtk_bridge.py），保存后下一次调用即生效。
   const [rtk, setRtk] = useState(true);
   // 遗言模式（docs/lastwords-design.md §4）：settings.devswap.lastwords.mode，
-  // notify（默认，注入折叠带）/auto（dev-swap 后 headless 续跑）/off。runtime
-  // 启动扫描与 dev-swap prepare 读此键，保存后下一次热切换即生效。
+  // 新 Sidecar 启动扫描时读取，覆盖热切换、普通重启和崩溃后的恢复。
   const [lwMode, setLwMode] = useState("notify");
   // 界面语言：settings.language（auto/en/zh-CN，i18n-design.md §2）。
   // 值由根部的 I18nProvider 加载/校正，这里只读 context + setLocale 写回。
@@ -491,9 +490,7 @@ export function GeneralSettings() {
     }
   }
 
-  // 遗言模式三选一（lastwords-design §4）：键 settings.devswap.lastwords.mode，
-  // 其余 devswap 字段原样保留。auto 仅对 dev-swap 显式预告生效（runtime 侧
-  // 安全分级：signal/崩溃遗言永远 notify）。
+  // 按设置文档现有接口保存遗言模式。
   async function saveLastwordsMode(v: string) {
     if (!["notify", "auto", "off"].includes(v)) return;
     setLwMode(v);

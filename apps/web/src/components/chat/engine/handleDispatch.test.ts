@@ -256,7 +256,7 @@ const EXPECTED_CASES = [
   "delegate_update",
   "session.state_changed",
   "runtime.devswap_progress", "runtime.lastwords_pending",
-  "runtime.lastwords_restored", "runtime.dev_swap_pending",
+  "runtime.lastwords_restored", "runtime.lastwords_status", "runtime.dev_swap_pending",
   "deliver.report",
   "notice",
   "goal.updated", "team.changed", "plan.updated", "goal.archived", "goal.cleared",
@@ -568,6 +568,13 @@ const DISPATCH_TABLE: CaseSpec[] = [
     event: "runtime.lastwords_restored", desc: "收件箱恢复条目（跳会话）",
     ev: { session_id: SID },
     probe: () => expect(pushNotice).toHaveBeenCalledWith("info", expect.any(String), expect.objectContaining({ dedupeKey: `lastwords:${SID}`, actionMeta: { kind: "session", id: SID } })),
+  },
+  {
+    event: "runtime.lastwords_status", desc: "恢复失败刷新同一条回执",
+    ev: { session_id: SID, recovery_id: "recovery-dispatch", status: "failed", updated_at: 3 },
+    probe: () => expect(pushNotice).toHaveBeenCalledWith("error", expect.any(String), expect.objectContaining({
+      dedupeKey: "lastwords-pending:recovery-dispatch", revision: 3,
+    })),
   },
   {
     event: "runtime.dev_swap_pending", desc: "点亮确认条（非 auto 不自动重启）",
