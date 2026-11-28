@@ -287,7 +287,7 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
     )
     if _origin in ("interactive", "deliver"):
         try:
-            from ..session_links import linked_report
+            from ....session_links import linked_report
 
             _inc = (linked_report(ctx.session_id) or {}).get("incoming") or []
             if _inc:
@@ -298,7 +298,7 @@ async def finalize_completed(ctx: StreamTurnCtx) -> None:
                 # 选文案；投影失败不带键（前端按普通完成显示）。
                 _wst: str | None = None
                 try:
-                    from ..worker_bus.registry import project_status
+                    from ....worker_bus.registry import project_status
 
                     _fm = eng._find_meta(ctx.session_id)
                     if _fm:
@@ -405,7 +405,7 @@ async def _release_turn_registration(ctx: StreamTurnCtx) -> None:
         # 把已完成的 turn 留给下次重启误恢复（parked interrupt 不在此列，
         # 那是 turn 还活着等 resume，遗言保留是对的）。
         try:
-            from ..lastwords import note_turn_end
+            from ....lastwords import note_turn_end
 
             note_turn_end(ctx.session_id, ctx.turn_id)
         except Exception:  # noqa: BLE001
