@@ -1030,6 +1030,26 @@ async def finish_awaiting_recovery(snap: dict, outcome: str) -> None:
         _log.exception("lastwords_parked_receipt_failed session=%s", snap.get("session_id"))
 
 
+async def note_parked_stop(session_id: str, turn_id: str) -> None:
+    """Retire the parked WAL from the existing stop path under the turn lock."""
+    try:
+        with _WRITE_LOCK:
+            snap = _read_object(_path(session_id))
+            if not snap or snap.get("session_id") != session_id or snap.get("failed_recovery_id"):
+                return
+            if turn_id and turn_id not in (snap.get("turn_id"), snap.get("registered_turn_id")):
+                return
+            receipt = _receipt_for_snapshot(snap)
+            if exec_id := snap.get("turn_id"):
+                note_turn_end(session_id, exec_id, outcome="stopped")
+            else:
+                _drop_candidate(snap)
+        if receipt and receipt["status"] == "awaiting_input":
+            await _finish_recovery(snap, "stopped")
+    except Exception:  # noqa: BLE001 — stop was already applied to the checkpoint
+        _log.exception("lastwords_parked_stop_failed session=%s", session_id)
+
+
 async def _run_recovery_job(session: dict, snap: dict) -> bool:
     from . import server_shared as shared
 

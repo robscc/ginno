@@ -151,8 +151,9 @@ async def test_unexpected_cancel_keeps_snapshot_but_stop_is_terminal(monkeypatch
     assert not lastwords._path(sid).exists()
 
 
-def test_startup_recovery_leaves_existing_question_answerable(
-    client, create_session, ws_conv, isolated_home, monkeypatch,
+@pytest.mark.parametrize("decision", ["answer", "stop"])
+def test_startup_recovery_respects_existing_question(
+    client, create_session, ws_conv, isolated_home, monkeypatch, decision,
 ):
     monkeypatch.setattr(lastwords, "_SHUTTING_DOWN", False)
     ask = script_tool_call("ask_user", {"question": "Choose a fixture", "options": ["A", "B"]}, "ask-lw")
@@ -179,7 +180,17 @@ def test_startup_recovery_leaves_existing_question_answerable(
     with ws_conv(sid) as conv:
         reemitted = conv.recv_until("user.question", "error")[-1]
         assert reemitted["qid"] == question["qid"]
-        conv.respond_answer("A", option_index=0)
-        frames = conv.recv_until("runtime.lastwords_restored", "error")
-        assert frames[-1]["status"] == "completed"
-    assert graph.checkpointer.get_pending_interrupt(config) is None
+        if decision == "answer":
+            conv.respond_answer("A", option_index=0)
+            frames = conv.recv_until("runtime.lastwords_restored", "error")
+            assert frames[-1]["status"] == "completed"
+        else:
+            conv.send({"type": "stop"})
+            frames = conv.recv_until("turn.stopped", "error")
+            assert frames[-1]["event"] == "turn.stopped"
+            assert lastwords.list_receipts()[0]["status"] == "stopped"
+            assert not lastwords._path(sid).exists()
+    if decision == "answer":
+        assert graph.checkpointer.get_pending_interrupt(config) is None
+    assert client.portal.call(lastwords.recover_lastwords) == 0
+    assert lastwords.list_pending() == []
