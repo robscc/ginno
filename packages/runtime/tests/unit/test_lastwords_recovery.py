@@ -79,8 +79,7 @@ def test_atomic_writers_use_separate_temp_files(isolated_home, monkeypatch):
 
 @pytest.fixture
 def recovery_fixture(isolated_home, monkeypatch):
-    def seed(*, mode="notify", peer=""):
-        sid = "recovery-fixture"
+    def seed(*, mode="notify", peer="", sid="recovery-fixture"):
         interrupts = []
         messages = []
 
@@ -206,6 +205,138 @@ async def test_interrupted_attempt_reboots_to_confirmation(recovery_fixture, mon
     assert lastwords.list_pending()[0]["uncertain"] is True
     assert lastwords.list_pending()[0]["session_id"] == sid
     run.assert_awaited_once()
+
+
+async def test_startup_recovers_independently_with_bounded_concurrency(recovery_fixture, monkeypatch):
+    first, original, _, _, events = recovery_fixture(mode="auto", sid="recovery-a")
+    second, third, remote = "recovery-b", "recovery-c", "recovery-remote"
+    base = sessions._ensure_session(first)
+    for sid in (second, third, remote):
+        lastwords._write_atomic(lastwords._path(sid), {
+            **original, "session_id": sid, "turn_id": f"original-{sid}",
+        })
+    monkeypatch.setattr(sessions, "_ensure_session", lambda sid: {
+        **base, "session_id": sid, "remote_peer": "test-peer" if sid == remote else "",
+    })
+    second_started = asyncio.Event()
+    third_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+    invoked = []
+
+    async def run(_ws, _graph, _config, _text, session, *_args, **_kwargs):
+        sid = session["session_id"]
+        assert shared._turn_lock(sid).locked()
+        invoked.append(sid)
+        if sid == first:
+            await release_first.wait()
+        elif sid == second:
+            second_started.set()
+            await release_second.wait()
+            return "failed"
+        elif sid == third:
+            third_started.set()
+        return "completed"
+
+    monkeypatch.setattr(stream, "_run_stream", run)
+    recovery = asyncio.create_task(lastwords.recover_lastwords())
+    try:
+        await asyncio.wait_for(second_started.wait(), 2)
+        assert not recovery.done()
+        assert [item["session_id"] for item in lastwords.list_pending()] == [remote]
+        assert any(args.args[0] == "runtime.lastwords_pending" and args.args[1]["session_id"] == remote
+                   for args in events.await_args_list)
+        assert json.loads(lastwords._receipt_path(third).read_text())["status"] == "queued"
+        assert invoked == [first, second]
+        release_second.set()
+        await asyncio.wait_for(third_started.wait(), 2)
+        assert not release_first.is_set()
+        assert json.loads(lastwords._receipt_path(second).read_text())["status"] == "failed"
+        assert lastwords._path(second).exists()
+    finally:
+        release_first.set()
+        release_second.set()
+        restored = await asyncio.wait_for(recovery, 3)
+    assert restored == 2
+    assert invoked == [first, second, third]
+
+
+async def test_queued_candidate_survives_dispatcher_shutdown(recovery_fixture, monkeypatch):
+    first, original, _, _, _ = recovery_fixture(mode="auto", sid="recovery-a")
+    second = "recovery-b"
+    base = sessions._ensure_session(first)
+    lastwords._write_atomic(lastwords._path(second), {
+        **original, "session_id": second, "turn_id": "second-original",
+    })
+    monkeypatch.setattr(sessions, "_ensure_session", lambda sid: {**base, "session_id": sid})
+    monkeypatch.setattr(lastwords, "STARTUP_RECOVERY_CONCURRENCY", 1)
+    started = asyncio.Event()
+    invoked = []
+
+    async def run(_ws, _graph, _config, _text, session, *_args, **_kwargs):
+        sid = session["session_id"]
+        invoked.append(sid)
+        if sid == first:
+            started.set()
+            await asyncio.Future()
+        return "completed"
+
+    monkeypatch.setattr(stream, "_run_stream", run)
+    recovery = asyncio.create_task(lastwords.recover_lastwords())
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        queued = json.loads(lastwords._receipt_path(second).read_text())
+        assert queued["status"] == "queued"
+        assert invoked == [first]
+    finally:
+        recovery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await recovery
+    assert lastwords._path(second).exists()
+    assert await lastwords.recover_lastwords() == 1
+    assert invoked == [first, second]
+    assert lastwords.list_pending()[0]["session_id"] == first
+    completed = json.loads(lastwords._receipt_path(second).read_text())
+    assert (completed["recovery_id"], completed["status"]) == (queued["recovery_id"], "completed")
+
+
+async def test_queued_auto_rechecks_remote_peer_before_dispatch(recovery_fixture, monkeypatch):
+    first, original, _, _, _ = recovery_fixture(mode="auto", sid="recovery-a")
+    second = "recovery-b"
+    base = sessions._ensure_session(first)
+    lastwords._write_atomic(lastwords._path(second), {
+        **original, "session_id": second, "turn_id": "second-original",
+    })
+    late_peer = ""
+    monkeypatch.setattr(sessions, "_ensure_session", lambda sid: {
+        **base, "session_id": sid, "remote_peer": late_peer if sid == second else "",
+    })
+    monkeypatch.setattr(lastwords, "STARTUP_RECOVERY_CONCURRENCY", 1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return "completed"
+
+    local_run = AsyncMock(side_effect=run)
+    remote_run = AsyncMock()
+    monkeypatch.setattr(stream, "_run_stream", local_run)
+    monkeypatch.setattr(remote_turn, "run_remote_turn", remote_run)
+    recovery = asyncio.create_task(lastwords.recover_lastwords())
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        late_peer = "new-remote"
+    finally:
+        release.set()
+        restored = await asyncio.wait_for(recovery, 3)
+    assert restored == 1
+    local_run.assert_awaited_once()
+    remote_run.assert_not_awaited()
+    pending, = lastwords.list_pending()
+    assert pending["session_id"] == second
+    assert pending["remote"] is True
 
 
 async def test_old_id_cannot_accept_or_dismiss_new_candidate(recovery_fixture):
