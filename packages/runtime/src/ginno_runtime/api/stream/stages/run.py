@@ -128,7 +128,7 @@ def _setup_identity(ctx: StreamTurnCtx, stack: AsyncExitStack) -> None:
     # （快照回落上一条用户消息），工具边界写会立刻覆盖补全；SIGKILL
     # 场景最坏只丢最后一次增量。best-effort，绝不拖累 turn。
     try:
-        from ..lastwords import note_turn_start
+        from ....lastwords import note_turn_start
 
         note_turn_start(ctx.session_id, ctx.turn_id, ctx.slug)
     except Exception:  # noqa: BLE001
