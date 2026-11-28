@@ -79,6 +79,9 @@ DEFAULT_MIN_TURN_S = 120.0
 # （turn 启动那次不受限——首轮必须立刻有遗言护体）。
 TOOL_WRITE_MIN_INTERVAL_S = 5.0
 
+# Keep startup recovery from flooding the model provider after a restart.
+STARTUP_RECOVERY_CONCURRENCY = 2
+
 # 无活跃 turn 时的空标记文件名。下划线开头保证不与 session_id（hex）
 # 冲突；消费侧看到即删（无 session 可注入，只为审计留痕）。
 _MARKER_NAME = "_marker.json"
@@ -1050,8 +1053,10 @@ async def note_parked_stop(session_id: str, turn_id: str) -> None:
         _log.exception("lastwords_parked_stop_failed session=%s", session_id)
 
 
-async def _run_recovery_job(session: dict, snap: dict) -> bool:
+async def _run_recovery_job(snap: dict) -> bool:
     from . import server_shared as shared
+    from .api.sessions import _ensure_session
+    from .api.stream.remote_turn import remote_peer_of
 
     sid = snap["session_id"]
     async with shared._turn_lock(sid):
@@ -1060,13 +1065,17 @@ async def _run_recovery_job(session: dict, snap: dict) -> bool:
             return False
         diagnostic = ""
         try:
-            if not _same_snapshot(snap):
+            if not _same_snapshot(snap) or (session := _ensure_session(sid)) is None:
                 outcome = "stale"
             elif _parked(session):
                 outcome = "awaiting_input"
             elif shared.turn_gate_busy(sid):
                 outcome = "stale"
             else:
+                snap = {**snap, "remote": bool(remote_peer_of(session))}
+                if snap["remote"] and receipt.get("via") == "auto":
+                    await _register_pending(session, snap, receipt)
+                    return False
                 _retain_source(snap, receipt)
                 current = _save_receipt(snap, "running", resume_turn_id=f"lw-{uuid.uuid4().hex}")
                 outcome = await _run_lastwords_turn(session, {**snap, **current})
@@ -1110,7 +1119,7 @@ async def resume_pending(session_id: str, recovery_id: str | None = None) -> dic
             return {"ok": False, "error": "session_busy"}
         receipt = _save_receipt(snap, "queued", via="manual")
         _PENDING_RESUME.pop(session_id, None)
-        shared.spawn_bg(_run_recovery_job(session, snap))
+        shared.spawn_bg(_run_recovery_job(snap))
         return {
             "ok": True, "recovery_id": receipt["recovery_id"],
             "status": "queued", "updated_at": receipt["updated_at"],
@@ -1161,15 +1170,19 @@ def _legacy_snapshot_superseded(snap: dict) -> bool:
 
 
 async def recover_lastwords() -> int:
-    """Restore recent candidates using the configured recovery policy."""
+    """Register all candidates before running automatic recoveries in parallel.
+
+    The lifespan owns this background task, so shutdown cancels its children.
+    Queued candidates keep their snapshots and can be picked up on the next start.
+    """
     from . import server_shared as shared
     from .api.sessions import _ensure_session
     from .api.stream.remote_turn import remote_peer_of
 
     selected_mode = mode()
     restored = 0
+    jobs: list[tuple[dict, dict]] = []
     for snap in consume_lastwords():
-        auto = False
         sid = snap["session_id"]
         try:
             prior = _receipt_for_snapshot(snap) or {}
@@ -1207,8 +1220,8 @@ async def recover_lastwords() -> int:
                 if prior_status in ("pending", "running", "interrupted", "awaiting_input"):
                     await _register_pending(session, snap, prior)
                 elif manual_claim or (selected_mode == "auto" and not remote):
-                    _save_receipt(snap, "queued", via="manual" if manual_claim else "auto")
-                    auto = True
+                    receipt = _save_receipt(snap, "queued", via="manual" if manual_claim else "auto")
+                    jobs.append((snap, receipt))
                 elif remote or not is_subagent_session(session):
                     await _register_pending(session, snap, prior)
                 else:
@@ -1217,12 +1230,26 @@ async def recover_lastwords() -> int:
                     _drop_candidate(snap)
                     await _publish_receipt(receipt)
                     restored += 1
-            if auto and await _run_recovery_job(session, snap):
-                restored += 1
         except Exception:  # noqa: BLE001 — isolate one broken candidate
             _log.exception("lastwords_recover_failed session=%s", sid)
 
-    return restored
+    if not jobs:
+        return restored
+
+    slots = asyncio.Semaphore(STARTUP_RECOVERY_CONCURRENCY)
+
+    async def run(snap: dict, receipt: dict) -> bool:
+        await _publish_receipt(receipt)
+        async with slots:
+            try:
+                return await _run_recovery_job(snap)
+            except Exception:  # noqa: BLE001 — another session must still recover
+                _log.exception("lastwords_recover_failed session=%s", snap["session_id"])
+                return False
+
+    async with asyncio.TaskGroup() as group:
+        dispatched = [group.create_task(run(snap, receipt)) for snap, receipt in jobs]
+    return restored + sum(task.result() for task in dispatched if not task.cancelled())
 
 
 async def _inject_lastwords_message(session: dict, snap: dict) -> bool:
