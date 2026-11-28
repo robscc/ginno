@@ -118,9 +118,11 @@ def context_state(last_input_tokens: int, provider: str = "", model: str = "") -
 # 成为最后一条 → 切会话时 GET /usage seed 出被压前的高占用，与 WS usage 帧的
 # 压缩后真值（13%）交替闪烁。channels 投递（schedule/wecom/dingtalk/task/…）
 # 走 run_user_turn → 真实上下文，不在名单内。
+IMAGE_GENERATION_SOURCE = "image_generation"
+
 NON_CONTEXT_SOURCES = frozenset({
     "compaction", "external", "memory", "title", "probe", "classifier",
-    "mods", "subagent_gate", "subagent_plan", "workflow",
+    "mods", "subagent_gate", "subagent_plan", "workflow", IMAGE_GENERATION_SOURCE,
 })
 
 # sideband 记录跨过的扫描窗口：足够跨过「手动 /compact 后 + 一串 sideband 调用」

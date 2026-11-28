@@ -11,6 +11,7 @@
 /** 已知来源的正典前景色（保持既有 SRC_STYLE/SOURCE_META 观感，不再外扩）。 */
 const CANONICAL_FG: Record<string, string> = {
   chat: "#8d90f8",
+  image_generation: "#60a5fa",
   goal: "#b39df9",
   compaction: "#d9a93e",
   workflow: "#4ade80",
@@ -33,6 +34,7 @@ const CANONICAL_FG: Record<string, string> = {
 /** 来源筛选/图例的规范顺序（与 usage overview 的分桶一致）。 */
 export const USAGE_SOURCES = [
   "chat",
+  "image_generation",
   "goal",
   "compaction",
   "workflow",

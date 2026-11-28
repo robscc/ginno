@@ -12,6 +12,7 @@ import { USAGE_SOURCES, sourceBg, sourceFg } from "@/lib/sourceColor";
 /** 正典前景色（与 SRC_STYLE/SOURCE_META 历史观感一致的规格值）。 */
 const CANONICAL: Record<string, string> = {
   chat: "#8d90f8",
+  image_generation: "#60a5fa",
   goal: "#b39df9",
   compaction: "#d9a93e",
   workflow: "#4ade80",
@@ -35,15 +36,16 @@ const CANONICAL: Record<string, string> = {
 const PALETTE_400 = ["#818cf8", "#a78bfa", "#60a5fa", "#4ade80", "#facc15", "#fb923c", "#f87171"];
 
 describe("sourceFg 正典表", () => {
-  it("18 个已知来源逐一返回固定正典色", () => {
+  it("19 个已知来源逐一返回固定正典色", () => {
     for (const [name, hex] of Object.entries(CANONICAL)) {
       expect(sourceFg(name), name).toBe(hex);
     }
   });
 
-  it("USAGE_SOURCES 是 18 项规范顺序，且每项都有正典色", () => {
+  it("USAGE_SOURCES 是 19 项规范顺序，且每项都有正典色", () => {
     expect(USAGE_SOURCES).toEqual([
       "chat",
+      "image_generation",
       "goal",
       "compaction",
       "workflow",
@@ -62,7 +64,7 @@ describe("sourceFg 正典表", () => {
       "channel_resume",
       "other",
     ]);
-    expect(USAGE_SOURCES).toHaveLength(18);
+    expect(USAGE_SOURCES).toHaveLength(19);
     for (const name of USAGE_SOURCES) {
       expect(CANONICAL[name], name).toBeDefined();
       expect(sourceFg(name)).toBe(CANONICAL[name]);

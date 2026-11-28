@@ -13,6 +13,8 @@ pytestmark = pytest.mark.e2e
 CHAT_MODEL = "codex/fixture-chat"
 IMAGE_MODEL = "codex/gpt-image-2"
 PROMPT = "Draw a blue circle"
+IMAGE_TOKENS = {"input_tokens": 32, "output_tokens": 648}
+CHAT_TOKENS = {"input_tokens": 280, "output_tokens": 11}
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c626001000000ffff030000060005"
@@ -38,6 +40,7 @@ def magpie_gateway():
             if self.path == "/v1/images/generations":
                 self.write_body(json.dumps({
                     "created": 1, "model": IMAGE_MODEL,
+                    "usage": {**IMAGE_TOKENS, "total_tokens": sum(IMAGE_TOKENS.values())},
                     "data": [{"b64_json": base64.b64encode(PNG).decode(), "mime_type": "image/png"}],
                 }).encode())
                 return
@@ -65,7 +68,10 @@ def magpie_gateway():
                 events = [{"type": "response.output_text.delta", "output_index": 0,
                            "content_index": 0, "item_id": item["id"], "delta": answer}]
             response = {"id": "resp_" + request_id, "object": "response", "created_at": 1,
-                        "model": CHAT_MODEL, "status": "completed", "output": [item]}
+                        "model": CHAT_MODEL, "status": "completed", "output": [item],
+                        "usage": {**CHAT_TOKENS, "total_tokens": sum(CHAT_TOKENS.values()),
+                                  "input_tokens_details": {"cached_tokens": 0},
+                                  "output_tokens_details": {"reasoning_tokens": 0}}}
             if not request.get("stream"):
                 self.write_body(json.dumps(response).encode())
                 return
@@ -104,10 +110,10 @@ def test_configure_magpie_image_model_and_render_result(tmp_path, monkeypatch, m
     try:
         smoke._wait_health(port)
         title = "Responses image fixture"
-        smoke._api(port, "POST", "/api/sessions", {
+        sid = smoke._api(port, "POST", "/api/sessions", {
             "project_slug": "default", "workspace": str(tmp_path),
             "title": title, "provider": "custom", "model": CHAT_MODEL,
-        })
+        })["id"]
         url = f"http://127.0.0.1:{port}"
         with sync_playwright() as playwright:
             browser, page = smoke._new_page(playwright)
@@ -150,9 +156,27 @@ def test_configure_magpie_image_model_and_render_result(tmp_path, monkeypatch, m
             assert saved["default_model"] == CHAT_MODEL
             assert all(path != "/v1/images/generations" for path, _ in traffic)
 
-            page.goto(url + "/")
-            select_chat()
-            send(PROMPT, "Image is ready.")
+            with page.expect_event("websocket", predicate=lambda ws: f"/api/ws/sessions/{sid}?" in ws.url) as opened:
+                page.goto(url + "/")
+                select_chat()
+            ws = opened.value
+            frames = []
+            ws.on("framereceived", lambda frame: frames.append(json.loads(frame)))
+            with ws.expect_event("framereceived", predicate=lambda frame: json.loads(frame)["event"] == "message.end") as ended:
+                send(PROMPT, "Image is ready.")
+            done = json.loads(ended.value)
+            usage = [f for f in frames if f["event"] == "usage" and f.get("turn_id") == done["turn_id"]]
+            first_chat, image_usage, final_chat = usage
+            assert image_usage["turn"] == IMAGE_TOKENS
+            assert "context" not in image_usage
+            assert first_chat["context"]["tokens"] == final_chat["context"]["tokens"] == CHAT_TOKENS["input_tokens"]
+            assert {key: done["meta"][key] for key in CHAT_TOKENS} == {
+                key: CHAT_TOKENS[key] * 2 + IMAGE_TOKENS[key] for key in CHAT_TOKENS
+            }
+            rows = smoke._api(port, "GET", f"/api/usage/requests?session_id={sid}&source=image_generation")["rows"]
+            row, = rows
+            assert row["model"] == IMAGE_MODEL and row["turn_id"] == done["turn_id"]
+            assert {key: row[key] for key in IMAGE_TOKENS} == IMAGE_TOKENS
             image = page.locator('img[src*="/api/files/"][src*="/download"]')
             expect(image).to_have_count(1)
             expect(image).to_be_visible()
@@ -178,6 +202,14 @@ def test_configure_magpie_image_model_and_render_result(tmp_path, monkeypatch, m
             expect(image).to_have_count(1)
             expect(image).to_have_attribute("src", src)
             assert sum(path == "/v1/images/generations" for path, _ in traffic) == 1
+
+            page.goto(url + "/settings/data/usage")
+            page.get_by_role("tab", name="Request Log", exact=True).click()
+            page.get_by_role("combobox", name="Source").select_option(label="Image generation")
+            log_row = page.get_by_role("row").filter(has_text=IMAGE_MODEL)
+            expect(log_row).to_have_count(1)
+            for tokens in IMAGE_TOKENS.values():
+                expect(log_row.get_by_role("cell", name=str(tokens), exact=True)).to_have_count(1)
             browser.close()
     finally:
         smoke._stop(proc, log)
