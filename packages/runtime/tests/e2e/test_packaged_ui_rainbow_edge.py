@@ -1,4 +1,4 @@
-"""Only the running session's sidebar row animates during a packaged turn."""
+"""Only the running session shows a rainbow indicator during a packaged turn."""
 
 import json
 import threading
@@ -85,6 +85,7 @@ def test_packaged_ui_running_rainbow_edge(tmp_path, monkeypatch, model_gateway):
                 target.get_by_text(title, exact=True).click()
                 wait_for_session_socket(page, sid, require_turn_state=True)
                 edge = target.locator(".running-rainbow-edge")
+                top = page.locator(".topbar-session-activity")
                 expect(idle).to_be_visible()
                 expect(edge).to_have_count(0)
                 composer = page.locator("textarea")
@@ -94,6 +95,9 @@ def test_packaged_ui_running_rainbow_edge(tmp_path, monkeypatch, model_gateway):
                 running = harness._api(port, "GET", "/api/running")["sessions"]
                 assert {session["id"] for session in running} == {sid}
                 expect(edge).to_be_visible(timeout=10_000)
+                core = top.get_by_role("img", name="Running").locator(".core")
+                expect(core).to_be_visible()
+                assert core.evaluate("el => getComputedStyle(el, '::before').animationName") == "ginno-rainbow-spin"
                 expect(idle.locator(".running-rainbow-edge")).to_have_count(0)
                 assert "linear-gradient" in edge.evaluate("el => getComputedStyle(el).backgroundImage")
                 expect(edge).to_have_css("animation-name", "ginno-rainbow-edge")
@@ -102,6 +106,7 @@ def test_packaged_ui_running_rainbow_edge(tmp_path, monkeypatch, model_gateway):
                 release.set()
                 expect(page.get_by_text(ANSWER, exact=True)).to_be_visible()
                 expect(edge).to_have_count(0, timeout=10_000)
+                expect(top.get_by_role("img", name="Idle")).to_be_visible()
                 assert harness._api(port, "GET", "/api/running")["sessions"] == []
             finally:
                 release.set()

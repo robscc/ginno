@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl";
 import type { useGinno } from "@/lib/store";
 import { notifyScheduleRunFinished } from "@/lib/store";
 import { pushNotice } from "@/lib/notice";
+import { SESSION_ACTIVITY_CHANGED } from "@/lib/sessionActivity";
 import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import * as api from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
@@ -112,39 +113,48 @@ export function useShellActivity(
     };
   }, []);
 
-  // 运行中 turn 会话集(running-indicator-design §1):/api/running 5s 轮询,
-  // 侧栏行据此渲染边缘条+脉冲点。与连接器状态点同一模式;tasks 部分不进
-  // 本特性(/tasks 页徽标已有归属)。轮询粒度 5s:turn 起收不是亚秒级事件。
+  // Read all session activities together. WebSocket changes refresh this snapshot;
+  // polling also picks up work in sessions without an open socket.
   const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(new Set());
-  // 停在 ask_user/权限 interrupt 等待应答的会话（2026-11-05 用户需求：侧栏
-  // 明确图标提示）→ sid → kind（user_question | *_decision）。
+  const [compactingIds, setCompactingIds] = useState<ReadonlySet<string>>(new Set());
   const [waitingMap, setWaitingMap] = useState<Record<string, string>>({});
   useEffect(() => {
     let alive = true;
-    const tick = async () => {
+    let inFlight = false;
+    let refreshQueued = false;
+    const updateSet = (prev: ReadonlySet<string>, ids: string[]) => {
+      const next = new Set(ids);
+      return prev.size === next.size && ids.every(id => prev.has(id)) ? prev : next;
+    };
+    const refresh = async () => {
+      inFlight = true;
       try {
         const r = await api.listRunning();
-        if (alive) {
-          setRunningIds((prev) => {
-            const next = new Set((r.sessions ?? []).map((x) => x.id));
-            if (prev.size === next.size && [...next].every((id) => prev.has(id))) {
-              return prev; // 集合不变时保引用,避免全行无谓重渲染
-            }
-            return next;
-          });
-          const wm: Record<string, string> = {};
-          for (const w of r.waiting ?? []) wm[w.id] = w.kind ?? "unknown";
-          setWaitingMap((prev) => {
-            const pk = JSON.stringify(prev), nk = JSON.stringify(wm);
-            return pk === nk ? prev : wm;
-          });
-        }
+        // A frame that arrived during the read invalidates this response.
+        if (!alive || refreshQueued) return;
+        setRunningIds(prev => updateSet(prev, (r.sessions ?? []).map(x => x.id)));
+        setCompactingIds(prev => updateSet(prev, r.compacting ?? []));
+        const waiting = Object.fromEntries((r.waiting ?? []).map(w => [w.id, w.kind ?? "unknown"]));
+        setWaitingMap(prev => JSON.stringify(prev) === JSON.stringify(waiting) ? prev : waiting);
       } catch { /* sidecar 未起时静默 */ }
+      finally {
+        inFlight = false;
+        if (alive && refreshQueued) {
+          refreshQueued = false;
+          void refresh();
+        }
+      }
     };
-    tick();
-    const iv = setInterval(tick, 5000);
+    const invalidate = () => {
+      if (inFlight) refreshQueued = true;
+      else void refresh();
+    };
+    window.addEventListener(SESSION_ACTIVITY_CHANGED, invalidate);
+    void refresh();
+    const iv = setInterval(() => { if (!inFlight) void refresh(); }, 5000);
     return () => {
       alive = false;
+      window.removeEventListener(SESSION_ACTIVITY_CHANGED, invalidate);
       clearInterval(iv);
     };
   }, []);
@@ -295,5 +305,5 @@ export function useShellActivity(
       });
   }, [g.ready]);
 
-  return { connectorDot, runningIds, waitingMap, scheduleDot, scheduleRunning, scheduleUnseen };
+  return { connectorDot, runningIds, compactingIds, waitingMap, scheduleDot, scheduleRunning, scheduleUnseen };
 }

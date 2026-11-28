@@ -725,7 +725,7 @@ export async function deleteTeamMemberSession(
 // ---- running work (running-indicator-design §1) ----
 
 /** `/api/running` 响应：运行中 turn 的会话 + 非 detached 后台命令。侧栏
- *  运行提示只吃 sessions 部分（后台任务归 /tasks 页自己的徽标）。 */
+ *  会话活动提示读取 sessions、waiting 和 compacting。 */
 export interface RunningWork {
   ok: boolean;
   sessions: Array<{ id: string; title: string }>;
@@ -733,6 +733,8 @@ export interface RunningWork {
   count: number;
   /** 停在 interrupt 等用户应答的会话（ask_user/权限卡）。 */
   waiting?: Array<{ id: string; kind: string }>;
+  /** 正在摘要或写回上下文的会话 ID。 */
+  compacting?: string[];
 }
 
 export async function listRunning(): Promise<RunningWork> {

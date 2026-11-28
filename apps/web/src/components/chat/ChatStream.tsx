@@ -78,13 +78,11 @@ const EMPTY_TRANSCRIPT: ChatMsg[] = [];
 
 export function ChatStream({
   session,
-  onRunningChange,
   onUsageChange,
   onContextChange,
   onOpenGoal,
 }: {
   session: SessionMeta | null;
-  onRunningChange?: (b: boolean) => void;
   onUsageChange?: (u: SessionUsage) => void;
   onContextChange?: (c: ContextState) => void;
   onOpenGoal?: () => void;
@@ -365,9 +363,6 @@ export function ChatStream({
 
   const running =
     liveId !== null || !!permission || !!propose || messages.some((m) => hasPendingTool(m.blocks));
-  useEffect(() => {
-    onRunningChange?.(running);
-  }, [running, onRunningChange]);
 
   // V2 P2-1 execution-time suggestions（状态/加载/动作在 useSuggestions 内）。
   const { suggestBusy, visibleSuggestions, dismissSuggestion, runSuggestionAction } =

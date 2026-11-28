@@ -11,6 +11,7 @@
     "status": {
       "running": "Running",
       "waiting": "Waiting for your answer",
+      "compacting": "Compacting conversation",
       "summarizing": "Compressing report",
       "done": "Completed",
       "ok": "Completed",

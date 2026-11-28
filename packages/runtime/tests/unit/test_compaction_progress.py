@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime.compaction import maybe_compact_history
+from ginno_runtime.running_work import running_work_report
 
 pytestmark = pytest.mark.unit
 
@@ -43,10 +44,13 @@ async def test_registry_reports_summary_and_write_phases(isolated_home, monkeypa
     session, config, model = await _setup(isolated_home, "comp-phases")
     sid = session["session_id"]
     published = []
+    snapshots = []
+    assert sid not in running_work_report()["compacting"]
 
     async def push(session_id, event, payload, turn_id):
         assert session_id == sid and event == "context.compacting"
         published.append(payload)
+        snapshots.append(running_work_report())
 
     monkeypatch.setattr(server_shared, "_push_session_event", push)
     generate = model._agenerate
@@ -64,6 +68,10 @@ async def test_registry_reports_summary_and_write_phases(isolated_home, monkeypa
     monkeypatch.setattr(session["graph"], "aupdate_state", update)
     assert await maybe_compact_history(session, config) is not None
     assert published == [{"stage": "summarizing"}, {"stage": "writing"}, {"stage": "done"}]
+    assert [sid in report["compacting"] for report in snapshots] == [True, True, False]
+    for report in snapshots:
+        assert all(session["id"] != sid for session in report["sessions"])
+        assert report["count"] == len(report["sessions"]) + len(report["tasks"])
     assert sid not in server_shared._COMPACTING
 
 
@@ -96,6 +104,7 @@ async def test_compacting_registry_cleared_on_abort(isolated_home, monkeypatch):
 
     assert stats is None, "abort must return None (no rewrite)"
     assert session["session_id"] not in _COMPACTING, "registry cleared on abort path"
+    assert session["session_id"] not in running_work_report()["compacting"]
 
 
 def test_history_replay_surfaces_microcompact_marker():
